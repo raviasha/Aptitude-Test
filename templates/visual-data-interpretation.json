@@ -1,11 +1,35 @@
 {
-  "bank_name": "Visual Data Interpretation · Sample 01",
-  "questions": [{
-    "key": "di-quarterly-sales-01",
-    "category": "Data Interpretation",
-    "difficulty": "Medium",
-    "options": {"A":"Q1","B":"Q2","C":"Q3","D":"Q4"},
-    "correct_answer": "D",
-    "explanation": "The rise from Q3 (36) to Q4 (54) is 18 lakhs, which is the largest increase."
-  }]
+  "bank_name": "Freshers Aptitude · Sample 30 Questions",
+  "questions": [
+    {"key":"qa-01","category":"Quantitative Aptitude","difficulty":"Easy","options":{"A":"15","B":"20","C":"30","D":"35"},"correct_answer":"C","explanation":"15% of 200 is 30."},
+    {"key":"qa-02","category":"Quantitative Aptitude","difficulty":"Easy","options":{"A":"₹120","B":"₹135","C":"₹150","D":"₹180"},"correct_answer":"C","explanation":"Each notebook costs ₹30, so five cost ₹150."},
+    {"key":"qa-03","category":"Quantitative Aptitude","difficulty":"Easy","options":{"A":"20","B":"24","C":"30","D":"32"},"correct_answer":"D","explanation":"Each number doubles, so the next number is 32."},
+    {"key":"qa-04","category":"Quantitative Aptitude","difficulty":"Easy","options":{"A":"30 km/h","B":"40 km/h","C":"60 km/h","D":"360 km/h"},"correct_answer":"B","explanation":"Average speed is distance divided by time: 120 ÷ 3 = 40 km/h."},
+    {"key":"qa-05","category":"Quantitative Aptitude","difficulty":"Easy","options":{"A":"12","B":"15","C":"18","D":"20"},"correct_answer":"B","explanation":"The multiplier is 5, so girls = 3 × 5 = 15."},
+    {"key":"qa-06","category":"Quantitative Aptitude","difficulty":"Easy","options":{"A":"10","B":"12","C":"14","D":"16"},"correct_answer":"B","explanation":"(8 + 12 + 16) ÷ 3 = 12."},
+    {"key":"qa-07","category":"Quantitative Aptitude","difficulty":"Easy","options":{"A":"₹700","B":"₹720","C":"₹760","D":"₹790"},"correct_answer":"B","explanation":"A 10% discount is ₹80, so the price is ₹720."},
+    {"key":"qa-08","category":"Quantitative Aptitude","difficulty":"Easy","options":{"A":"10","B":"11","C":"12","D":"13"},"correct_answer":"C","explanation":"Subtract 7 from both sides: x = 12."},
+    {"key":"lr-01","category":"Logical Reasoning","difficulty":"Easy","options":{"A":"Apple","B":"Mango","C":"Carrot","D":"Banana"},"correct_answer":"C","explanation":"Carrot is a vegetable; the others are fruits."},
+    {"key":"lr-02","category":"Logical Reasoning","difficulty":"Easy","options":{"A":"EPH","B":"ENH","C":"DPG","D":"FPH"},"correct_answer":"A","explanation":"Shift D, O and G one letter forward to get EPH."},
+    {"key":"lr-03","category":"Logical Reasoning","difficulty":"Easy","options":{"A":"North","B":"South","C":"East","D":"West"},"correct_answer":"C","explanation":"A right turn from north points east."},
+    {"key":"lr-04","category":"Logical Reasoning","difficulty":"Easy","options":{"A":"Cook","B":"Eat","C":"Buy","D":"Serve"},"correct_answer":"B","explanation":"A book is read and food is eaten."},
+    {"key":"lr-05","category":"Logical Reasoning","difficulty":"Easy","options":{"A":"All roses fade quickly","B":"Some roses are not flowers","C":"Roses are flowers","D":"No flower is a rose"},"correct_answer":"C","explanation":"This repeats the first statement and must be true."},
+    {"key":"lr-06","category":"Logical Reasoning","difficulty":"Easy","options":{"A":"H","B":"I","C":"J","D":"K"},"correct_answer":"B","explanation":"The sequence skips one letter each time: A, C, E, G, I."},
+    {"key":"lr-07","category":"Logical Reasoning","difficulty":"Easy","options":{"A":"A","B":"B","C":"C","D":"Cannot say"},"correct_answer":"C","explanation":"Since A is taller than B and B taller than C, C is shortest."},
+    {"key":"lr-08","category":"Logical Reasoning","difficulty":"Easy","options":{"A":"3","B":"6","C":"12","D":"14"},"correct_answer":"D","explanation":"14 is not divisible by 3."},
+    {"key":"di-01","category":"Data Interpretation","difficulty":"Easy","options":{"A":"40","B":"45","C":"50","D":"60"},"correct_answer":"C","explanation":"20 + 30 = 50 pens."},
+    {"key":"di-02","category":"Data Interpretation","difficulty":"Easy","options":{"A":"10","B":"25","C":"30","D":"35"},"correct_answer":"C","explanation":"25% of 40 is 10 absent, leaving 30 present."},
+    {"key":"di-03","category":"Data Interpretation","difficulty":"Easy","options":{"A":"January","B":"February","C":"March","D":"April"},"correct_answer":"D","explanation":"April has the highest value, 25 units."},
+    {"key":"di-04","category":"Data Interpretation","difficulty":"Easy","options":{"A":"5","B":"10","C":"15","D":"20"},"correct_answer":"B","explanation":"70 − 60 = 10 votes."},
+    {"key":"di-05","category":"Data Interpretation","difficulty":"Easy","options":{"A":"70","B":"75","C":"80","D":"85"},"correct_answer":"B","explanation":"The total is 300; 300 ÷ 4 = 75."},
+    {"key":"di-06","category":"Data Interpretation","difficulty":"Easy","options":{"A":"10%","B":"20%","C":"25%","D":"30%"},"correct_answer":"C","explanation":"250 out of 1,000 is 25%."},
+    {"key":"va-01","category":"Verbal Ability","difficulty":"Easy","options":{"A":"Slow","B":"Quick","C":"Weak","D":"Late"},"correct_answer":"B","explanation":"Rapid means quick or fast."},
+    {"key":"va-02","category":"Verbal Ability","difficulty":"Easy","options":{"A":"Old","B":"Historic","C":"Modern","D":"Past"},"correct_answer":"C","explanation":"Modern is the opposite of ancient."},
+    {"key":"va-03","category":"Verbal Ability","difficulty":"Easy","options":{"A":"go","B":"going","C":"goes","D":"gone"},"correct_answer":"C","explanation":"The singular subject She takes the verb goes."},
+    {"key":"va-04","category":"Verbal Ability","difficulty":"Easy","options":{"A":"Recieve","B":"Receive","C":"Receeve","D":"Receve"},"correct_answer":"B","explanation":"Receive is the correctly spelled word."},
+    {"key":"va-05","category":"Verbal Ability","difficulty":"Easy","options":{"A":"He have completed the task.","B":"He has completed the task.","C":"He completed has the task.","D":"He completing the task."},"correct_answer":"B","explanation":"He takes has in the present perfect tense."},
+    {"key":"va-06","category":"Verbal Ability","difficulty":"Easy","options":{"A":"Start a friendly conversation","B":"Break a glass","C":"End a meeting","D":"Feel very cold"},"correct_answer":"A","explanation":"Break the ice means to begin a relaxed or friendly interaction."},
+    {"key":"ct-01","category":"Coding / Computational Thinking","difficulty":"Easy","options":{"A":"String","B":"Integer","C":"Boolean","D":"List"},"correct_answer":"C","explanation":"A Boolean stores True or False values."},
+    {"key":"ct-02","category":"Coding / Computational Thinking","difficulty":"Easy","options":{"A":"20","B":"14","C":"24","D":"9"},"correct_answer":"B","explanation":"Multiplication happens first: 2 + (3 × 4) = 14."}
+  ]
 }

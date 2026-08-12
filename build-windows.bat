@@ -12,7 +12,7 @@ call .build-venv\Scripts\activate.bat
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt pyinstaller
 
-python -m PyInstaller --noconfirm --clean --onefile --windowed --name AptitudeLabServer ^
+python -m PyInstaller --noconfirm --clean --onefile --windowed --uac-admin --name AptitudeLabServer ^
   --add-data "static;static" --add-data "templates;templates" ^
   --collect-all fastapi --collect-all starlette --collect-all uvicorn --collect-all multipart app.py
 

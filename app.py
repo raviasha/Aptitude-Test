@@ -985,4 +985,4 @@ if __name__ == "__main__":
         threading.Timer(1.1, open_local_browser).start()
         import uvicorn
 
-        uvicorn.run(app, host="0.0.0.0", port=8000, log_level="warning")
+        uvicorn.run(app, host="0.0.0.0", port=8000, log_level="warning", use_colors=False)

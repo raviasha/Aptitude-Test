@@ -1,0 +1,11 @@
+{
+  "bank_name": "Visual Data Interpretation · Sample 01",
+  "questions": [{
+    "key": "di-quarterly-sales-01",
+    "category": "Data Interpretation",
+    "difficulty": "Medium",
+    "options": {"A":"Q1","B":"Q2","C":"Q3","D":"Q4"},
+    "correct_answer": "D",
+    "explanation": "The rise from Q3 (36) to Q4 (54) is 18 lakhs, which is the largest increase."
+  }]
+}

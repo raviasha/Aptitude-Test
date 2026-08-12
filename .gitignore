@@ -1,0 +1,14 @@
+.env
+.env.local
+node_modules/
+_chat.txt
+personas/
+.DS_Store
+__pycache__/
+data/
+build/
+dist/
+release/
+.build-venv/
+*-dataless-backup/
+*-dataless-backup.md

@@ -53,6 +53,8 @@ CATEGORIES = [
 ]
 
 DEFAULT_COMPOSITION = {category: 6 for category in CATEGORIES}
+LEGACY_OPTION_KEYS = ("A", "B", "C", "D")
+SUPPORTED_OPTION_KEYS = (*LEGACY_OPTION_KEYS, "E")
 
 app = FastAPI(title="Aptitude Lab")
 app.add_middleware(SessionMiddleware, secret_key=os.getenv("SESSION_SECRET", "replace-this-before-production"), https_only=False, same_site="lax")
@@ -66,7 +68,7 @@ class LoginPayload(BaseModel):
 
 
 class AnswerPayload(BaseModel):
-    answer: Optional[str] = Field(None, pattern="^[ABCD]$")
+    answer: Optional[str] = Field(None, pattern="^[A-E]$")
 
 
 class SubmitPayload(BaseModel):
@@ -176,6 +178,39 @@ def answer_locked(response: sqlite3.Row | Dict[str, Any]) -> bool:
 
 def rows(items: List[sqlite3.Row]) -> List[Dict[str, Any]]:
     return [dict(item) for item in items]
+
+
+def question_options(question: sqlite3.Row | Dict[str, Any]) -> Dict[str, str]:
+    """Return JSON-defined choices, falling back to legacy A-D columns."""
+    columns = set(question.keys())
+    raw_options = question["options_json"] if "options_json" in columns else None
+    if raw_options:
+        try:
+            options = json.loads(raw_options)
+        except (TypeError, json.JSONDecodeError):
+            options = None
+        if isinstance(options, dict) and options and all(isinstance(key, str) and isinstance(value, str) for key, value in options.items()):
+            return options
+    return {key: question[f"option_{key.lower()}"] for key in LEGACY_OPTION_KEYS}
+
+
+def migrate_question_options(connection: sqlite3.Connection) -> None:
+    """Populate options_json for databases created before dynamic choices."""
+    questions = connection.execute(
+        "SELECT question_id, option_a, option_b, option_c, option_d, options_json FROM questions"
+    ).fetchall()
+    for question in questions:
+        try:
+            stored_options = json.loads(question["options_json"] or "{}")
+        except (TypeError, json.JSONDecodeError):
+            stored_options = {}
+        if isinstance(stored_options, dict) and stored_options:
+            continue
+        legacy_options = {key: question[f"option_{key.lower()}"] for key in LEGACY_OPTION_KEYS}
+        connection.execute(
+            "UPDATE questions SET options_json = ? WHERE question_id = ?",
+            (json.dumps(legacy_options), question["question_id"]),
+        )
 
 
 def ensure_column(connection: sqlite3.Connection, table: str, definition: str) -> None:
@@ -376,11 +411,13 @@ def parse_question_bank(html_source: str, answer_key_source: str) -> tuple[str, 
         if difficulty not in {"Easy", "Medium", "Hard"}:
             raise HTTPException(400, f"Question {key!r} has an invalid difficulty.")
         options = entry.get("options")
-        if not isinstance(options, dict) or set(options) != {"A", "B", "C", "D"} or not all(isinstance(options[value], str) and options[value].strip() for value in options):
-            raise HTTPException(400, f"Question {key!r} needs non-empty A, B, C and D options.")
+        option_keys = set(options) if isinstance(options, dict) else set()
+        if option_keys not in (set(LEGACY_OPTION_KEYS), set(SUPPORTED_OPTION_KEYS)) or not all(isinstance(options[value], str) and options[value].strip() for value in options):
+            raise HTTPException(400, f"Question {key!r} needs non-empty A, B, C and D options, with optional E.")
+        options = {option: options[option] for option in SUPPORTED_OPTION_KEYS if option in options}
         correct = entry.get("correct_answer")
-        if correct not in {"A", "B", "C", "D"}:
-            raise HTTPException(400, f"Question {key!r} needs correct_answer A, B, C or D.")
+        if correct not in options:
+            raise HTTPException(400, f"Question {key!r} needs a correct_answer matching one of its options.")
         steps = entry.get("solution_steps", [])
         option_explanations = entry.get("option_explanations", {})
         records[key] = {"category": category, "difficulty": difficulty, "options": options, "correct_answer": correct, "explanation": str(entry.get("explanation", "")).strip(), "solution_steps": steps if isinstance(steps, list) else [], "option_explanations": option_explanations if isinstance(option_explanations, dict) else {}}
@@ -424,6 +461,7 @@ def ensure_schema() -> None:
               question_id INTEGER PRIMARY KEY AUTOINCREMENT, question_text TEXT NOT NULL,
               category TEXT NOT NULL, difficulty TEXT NOT NULL, option_a TEXT NOT NULL,
               option_b TEXT NOT NULL, option_c TEXT NOT NULL, option_d TEXT NOT NULL,
+              options_json TEXT NOT NULL DEFAULT '{}',
               correct_answer TEXT NOT NULL, explanation TEXT DEFAULT '', active INTEGER NOT NULL DEFAULT 1,
               bank_id INTEGER, question_html TEXT NOT NULL DEFAULT '', solution_steps TEXT NOT NULL DEFAULT '[]', option_explanations TEXT NOT NULL DEFAULT '{}',
               created_at TEXT NOT NULL
@@ -457,6 +495,8 @@ def ensure_schema() -> None:
         ensure_column(connection, "questions", "question_html TEXT NOT NULL DEFAULT ''")
         ensure_column(connection, "questions", "solution_steps TEXT NOT NULL DEFAULT '[]'")
         ensure_column(connection, "questions", "option_explanations TEXT NOT NULL DEFAULT '{}'")
+        ensure_column(connection, "questions", "options_json TEXT NOT NULL DEFAULT '{}'")
+        migrate_question_options(connection)
         ensure_column(connection, "tests", "bank_id INTEGER")
         ensure_column(connection, "tests", "launched INTEGER NOT NULL DEFAULT 0")
         connection.execute("CREATE INDEX IF NOT EXISTS idx_questions_bank ON questions(bank_id)")
@@ -488,9 +528,9 @@ def seed_data() -> None:
             for item in QUESTION_SEEDS:
                 connection.execute(
                     """INSERT INTO questions
-                    (question_text, category, difficulty, option_a, option_b, option_c, option_d, correct_answer, explanation, bank_id, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (*item, starter_bank_id, now()),
+                    (question_text, category, difficulty, option_a, option_b, option_c, option_d, options_json, correct_answer, explanation, bank_id, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (*item[:7], json.dumps(dict(zip(LEGACY_OPTION_KEYS, item[3:7]))), *item[7:], starter_bank_id, now()),
                 )
         connection.execute("UPDATE questions SET bank_id = ? WHERE bank_id IS NULL", (starter_bank_id,))
         if not connection.execute("SELECT 1 FROM tests LIMIT 1").fetchone():
@@ -557,9 +597,9 @@ def save_question_bank(bank_name: str, questions: List[Dict[str, Any]], html_nam
             options = question["options"]
             connection.execute(
                 """INSERT INTO questions
-                (question_text, question_html, category, difficulty, option_a, option_b, option_c, option_d, correct_answer, explanation, bank_id, created_at, solution_steps, option_explanations)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (question["question_text"], question["question_html"], question["category"], question["difficulty"], options["A"], options["B"], options["C"], options["D"], question["correct_answer"], question["explanation"], bank_id, now(), json.dumps(question["solution_steps"]), json.dumps(question["option_explanations"])),
+                (question_text, question_html, category, difficulty, option_a, option_b, option_c, option_d, options_json, correct_answer, explanation, bank_id, created_at, solution_steps, option_explanations)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (question["question_text"], question["question_html"], question["category"], question["difficulty"], options["A"], options["B"], options["C"], options["D"], json.dumps(options), question["correct_answer"], question["explanation"], bank_id, now(), json.dumps(question["solution_steps"]), json.dumps(question["option_explanations"])),
             )
     return {"imported": True, "bank_id": bank_id, "bank_name": bank_name, "question_count": len(questions)}
 
@@ -589,7 +629,8 @@ def serialize_attempt(connection: sqlite3.Connection, attempt: sqlite3.Row, incl
     include_answers = include_answers or feedback_allowed(attempt)
     response_rows = connection.execute(
         """SELECT r.question_order, r.selected_answer, r.category, q.question_id, q.question_text, q.question_html,
-                  q.difficulty, q.option_a, q.option_b, q.option_c, q.option_d, q.explanation, q.correct_answer, q.solution_steps, q.option_explanations
+                  q.difficulty, q.option_a, q.option_b, q.option_c, q.option_d, q.options_json,
+                  q.explanation, q.correct_answer, q.solution_steps, q.option_explanations
            FROM responses r JOIN questions q ON q.question_id = r.question_id
            WHERE r.attempt_id = ? ORDER BY r.question_order""",
         (attempt["attempt_id"],),
@@ -599,7 +640,7 @@ def serialize_attempt(connection: sqlite3.Connection, attempt: sqlite3.Row, incl
         question = {
             "question_id": row["question_id"], "question_text": row["question_text"], "question_html": row["question_html"],
             "category": row["category"], "difficulty": row["difficulty"],
-            "options": {"A": row["option_a"], "B": row["option_b"], "C": row["option_c"], "D": row["option_d"]},
+            "options": question_options(row),
             "selected_answer": row["selected_answer"],
         }
         if include_answers:
@@ -750,9 +791,16 @@ def save_answer(attempt_id: str, question_id: int, payload: AnswerPayload, reque
         attempt = assert_student_attempt(connection, attempt_id, user["id"])
         if attempt["status"] != "in_progress":
             raise HTTPException(400, "Submitted tests cannot be changed.")
-        response = connection.execute("SELECT selected_answer FROM responses WHERE attempt_id = ? AND question_id = ?", (attempt_id, question_id)).fetchone()
+        response = connection.execute(
+            """SELECT r.selected_answer, q.option_a, q.option_b, q.option_c, q.option_d, q.options_json
+               FROM responses r JOIN questions q ON q.question_id = r.question_id
+               WHERE r.attempt_id = ? AND r.question_id = ?""",
+            (attempt_id, question_id),
+        ).fetchone()
         if not response:
             raise HTTPException(404, "Question is not part of this assessment.")
+        if payload.answer is not None and payload.answer not in question_options(response):
+            raise HTTPException(400, "The selected answer is not an option for this question.")
         if answer_locked({"launched": attempt["launched"], "selected_answer": response["selected_answer"]}):
             raise HTTPException(409, "Practice answers cannot be changed after feedback is shown.")
         if feedback_allowed(attempt):

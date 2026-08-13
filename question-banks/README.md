@@ -25,8 +25,7 @@ student-facing and should contain only the question text and visual content.
 - `quantitative_aptitude_complete_extended.html` and
   `quantitative_aptitude_complete_extended.json` — the complete quantitative
   aptitude bank; copy both files together. This source bank contains five-choice
-  questions, including answers keyed to option E. The current Aptitude Lab
-  importer supports A–D only, so this pair must not be imported until option E
-  support is added or the bank is converted to four choices.
+  questions, including answers keyed to option E. Aptitude Lab supports both
+  four-choice A–D and five-choice A–E banks.
 - `assessment-sample-30-questions.zip` — a downloadable copy of the sample bank
   included with the installer.

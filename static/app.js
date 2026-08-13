@@ -27,10 +27,11 @@ function notify(message, bad = false) {
   setTimeout(() => { toast.className = ''; }, 3500);
 }
 
-function logoutButton() { return `<button class="ghost" data-logout>Sign out</button>`; }
+function logoutButton() { return `${state.user?.role === 'admin' ? '<button class="ghost" data-stop-server>Stop server</button>' : ''}<button class="ghost" data-logout>Sign out</button>`; }
 function layout(title, subtitle, content, nav = '') {
   app.innerHTML = `<header class="top"><a class="brand" href="#" data-home><span>A</span>Aptitude <i>Lab</i></a><nav>${nav}</nav>${logoutButton()}</header><main><div class="heading"><div><p class="eyebrow">College LAN assessment server</p><h1>${title}</h1><p>${subtitle || ''}</p></div></div>${content}</main>`;
   document.querySelector('[data-logout]')?.addEventListener('click', async () => { await api('/api/logout', {method:'POST'}); state = {user:null,attempt:null,questionIndex:0}; loginScreen(); });
+  document.querySelector('[data-stop-server]')?.addEventListener('click', async () => { if (!confirm('Stop the Aptitude Lab server? All connected users will be disconnected.')) return; await api('/api/admin/shutdown', {method:'POST'}); app.innerHTML = '<div class="login-card"><h2>Server stopped</h2><p>You can close this browser window.</p></div>'; });
   document.querySelector('[data-home]')?.addEventListener('click', event => { event.preventDefault(); home(); });
   document.querySelectorAll('[data-nav]').forEach(button => button.addEventListener('click', () => admin(button.dataset.nav)));
 }

@@ -643,6 +643,13 @@ def logout(request: Request) -> Dict[str, bool]:
     return {"ok": True}
 
 
+@app.post("/api/admin/shutdown")
+def shutdown_server(request: Request) -> Dict[str, bool]:
+    require_user(request, "admin")
+    threading.Timer(0.5, os._exit, args=(0,)).start()
+    return {"stopping": True}
+
+
 @app.get("/api/student/dashboard")
 def student_dashboard(request: Request) -> Dict[str, Any]:
     user = require_user(request, "student")

@@ -37,6 +37,15 @@ class StudentRegistrationTests(unittest.TestCase):
         with self.assertRaises(app.RegistrationError):
             app.register_student("S123", "Another Student", "AI & DS", "A", "secret123")
 
+    def test_student_delete_is_allowed_without_attempts(self):
+        app.register_student("S456", "Delete Me", "AI & DS", "A", "secret123")
+
+        result = app.delete_student("S456")
+
+        self.assertEqual(result["student_id"], "S456")
+        with app.db() as connection:
+            self.assertIsNone(connection.execute("SELECT 1 FROM students WHERE student_id = ?", ("S456",)).fetchone())
+
 
 if __name__ == "__main__":
     unittest.main()

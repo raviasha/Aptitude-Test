@@ -146,6 +146,20 @@ def register_student(student_id: str, name: str, student_class: str, section: st
     return {"student_id": normalized_id, "name": normalized_name}
 
 
+def delete_student(student_id: str) -> Dict[str, str]:
+    normalized_id = student_id.strip().upper()
+    with db() as connection:
+        if not connection.execute("SELECT 1 FROM students WHERE student_id = ?", (normalized_id,)).fetchone():
+            raise RegistrationError("Student not found.")
+        attempt_ids = [row["attempt_id"] for row in connection.execute("SELECT attempt_id FROM attempts WHERE student_id = ?", (normalized_id,)).fetchall()]
+        if attempt_ids:
+            placeholders = ",".join("?" for _ in attempt_ids)
+            connection.execute(f"DELETE FROM responses WHERE attempt_id IN ({placeholders})", attempt_ids)
+            connection.execute(f"DELETE FROM attempts WHERE attempt_id IN ({placeholders})", attempt_ids)
+        connection.execute("DELETE FROM students WHERE student_id = ?", (normalized_id,))
+    return {"student_id": normalized_id}
+
+
 def rows(items: List[sqlite3.Row]) -> List[Dict[str, Any]]:
     return [dict(item) for item in items]
 
@@ -792,6 +806,15 @@ def create_student(payload: StudentPayload, request: Request) -> Dict[str, Any]:
         except sqlite3.IntegrityError:
             raise HTTPException(409, "That Student ID already exists.")
     return {"created": True}
+
+
+@app.delete("/api/admin/students/{student_id}")
+def remove_student(student_id: str, request: Request) -> Dict[str, Any]:
+    require_user(request, "admin")
+    try:
+        return {"deleted": delete_student(student_id)}
+    except RegistrationError as error:
+        raise HTTPException(404, str(error)) from error
 
 
 @app.get("/api/admin/questions")

@@ -377,7 +377,9 @@ def parse_question_bank(html_source: str, answer_key_source: str) -> tuple[str, 
         correct = entry.get("correct_answer")
         if correct not in {"A", "B", "C", "D"}:
             raise HTTPException(400, f"Question {key!r} needs correct_answer A, B, C or D.")
-        records[key] = {"category": category, "difficulty": difficulty, "options": options, "correct_answer": correct, "explanation": str(entry.get("explanation", "")).strip()}
+        steps = entry.get("solution_steps", [])
+        option_explanations = entry.get("option_explanations", {})
+        records[key] = {"category": category, "difficulty": difficulty, "options": options, "correct_answer": correct, "explanation": str(entry.get("explanation", "")).strip(), "solution_steps": steps if isinstance(steps, list) else [], "option_explanations": option_explanations if isinstance(option_explanations, dict) else {}}
     if set(records) != set(parser.fragments):
         missing = sorted(set(parser.fragments) - set(records))
         extra = sorted(set(records) - set(parser.fragments))
@@ -419,7 +421,7 @@ def ensure_schema() -> None:
               category TEXT NOT NULL, difficulty TEXT NOT NULL, option_a TEXT NOT NULL,
               option_b TEXT NOT NULL, option_c TEXT NOT NULL, option_d TEXT NOT NULL,
               correct_answer TEXT NOT NULL, explanation TEXT DEFAULT '', active INTEGER NOT NULL DEFAULT 1,
-              bank_id INTEGER, question_html TEXT NOT NULL DEFAULT '',
+              bank_id INTEGER, question_html TEXT NOT NULL DEFAULT '', solution_steps TEXT NOT NULL DEFAULT '[]', option_explanations TEXT NOT NULL DEFAULT '{}',
               created_at TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS tests (
@@ -449,6 +451,8 @@ def ensure_schema() -> None:
         )
         ensure_column(connection, "questions", "bank_id INTEGER")
         ensure_column(connection, "questions", "question_html TEXT NOT NULL DEFAULT ''")
+        ensure_column(connection, "questions", "solution_steps TEXT NOT NULL DEFAULT '[]'")
+        ensure_column(connection, "questions", "option_explanations TEXT NOT NULL DEFAULT '{}'")
         ensure_column(connection, "tests", "bank_id INTEGER")
         ensure_column(connection, "tests", "launched INTEGER NOT NULL DEFAULT 0")
         connection.execute("CREATE INDEX IF NOT EXISTS idx_questions_bank ON questions(bank_id)")
@@ -549,9 +553,9 @@ def save_question_bank(bank_name: str, questions: List[Dict[str, Any]], html_nam
             options = question["options"]
             connection.execute(
                 """INSERT INTO questions
-                (question_text, question_html, category, difficulty, option_a, option_b, option_c, option_d, correct_answer, explanation, bank_id, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (question["question_text"], question["question_html"], question["category"], question["difficulty"], options["A"], options["B"], options["C"], options["D"], question["correct_answer"], question["explanation"], bank_id, now()),
+                (question_text, question_html, category, difficulty, option_a, option_b, option_c, option_d, correct_answer, explanation, bank_id, created_at, solution_steps, option_explanations)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (question["question_text"], question["question_html"], question["category"], question["difficulty"], options["A"], options["B"], options["C"], options["D"], question["correct_answer"], question["explanation"], bank_id, now(), json.dumps(question["solution_steps"]), json.dumps(question["option_explanations"])),
             )
     return {"imported": True, "bank_id": bank_id, "bank_name": bank_name, "question_count": len(questions)}
 
@@ -581,7 +585,7 @@ def serialize_attempt(connection: sqlite3.Connection, attempt: sqlite3.Row, incl
     include_answers = include_answers or feedback_allowed(attempt)
     response_rows = connection.execute(
         """SELECT r.question_order, r.selected_answer, r.category, q.question_id, q.question_text, q.question_html,
-                  q.difficulty, q.option_a, q.option_b, q.option_c, q.option_d, q.explanation, q.correct_answer
+                  q.difficulty, q.option_a, q.option_b, q.option_c, q.option_d, q.explanation, q.correct_answer, q.solution_steps, q.option_explanations
            FROM responses r JOIN questions q ON q.question_id = r.question_id
            WHERE r.attempt_id = ? ORDER BY r.question_order""",
         (attempt["attempt_id"],),
@@ -595,7 +599,7 @@ def serialize_attempt(connection: sqlite3.Connection, attempt: sqlite3.Row, incl
             "selected_answer": row["selected_answer"],
         }
         if include_answers:
-            question.update({"correct_answer": row["correct_answer"], "explanation": row["explanation"]})
+            question.update({"correct_answer": row["correct_answer"], "explanation": row["explanation"], "solution_steps": json.loads(row["solution_steps"]), "option_explanations": json.loads(row["option_explanations"])})
         questions.append(question)
     return {**dict(attempt), "feedback_allowed": feedback_allowed(attempt), "questions": questions}
 
@@ -750,8 +754,8 @@ def save_answer(attempt_id: str, question_id: int, payload: AnswerPayload, reque
         connection.execute("UPDATE attempts SET attempted = ? WHERE attempt_id = ?", (attempted, attempt_id))
         feedback = None
         if feedback_allowed(connection.execute("SELECT t.launched FROM tests t JOIN attempts a ON a.test_id = t.test_id WHERE a.attempt_id = ?", (attempt_id,)).fetchone()):
-            question = connection.execute("SELECT correct_answer, explanation, option_a, option_b, option_c, option_d FROM questions WHERE question_id = ?", (question_id,)).fetchone()
-            feedback = {"correct": payload.answer == question["correct_answer"], "correct_answer": question["correct_answer"], "explanation": question["explanation"], "option_explanations": {key: ("Correct answer." if key == question["correct_answer"] else "This option does not match the question's correct answer.") for key in "ABCD"}}
+            question = connection.execute("SELECT correct_answer, explanation, solution_steps, option_explanations FROM questions WHERE question_id = ?", (question_id,)).fetchone()
+            feedback = {"correct": payload.answer == question["correct_answer"], "correct_answer": question["correct_answer"], "explanation": question["explanation"], "solution_steps": json.loads(question["solution_steps"]), "option_explanations": json.loads(question["option_explanations"])}
     return {"saved": True, "attempted": attempted, "feedback": feedback}
 
 

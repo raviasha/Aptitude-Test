@@ -63,6 +63,14 @@ class StudentRegistrationTests(unittest.TestCase):
         self.assertTrue(app.feedback_allowed(practice))
         self.assertFalse(app.feedback_allowed(exam))
 
+    def test_question_bank_preserves_solution_steps_and_option_explanations(self):
+        html = '<section data-question-key="q1"><h3>What is 2 + 2?</h3></section>'
+        answer_key = '{"bank_name":"Steps","questions":[{"key":"q1","category":"Quantitative Aptitude","difficulty":"Easy","options":{"A":"3","B":"4","C":"5","D":"6"},"correct_answer":"B","explanation":"Adding two and two gives four.","solution_steps":["Start with 2.","Add 2.","Get 4."],"option_explanations":{"A":"Too low.","B":"Correct.","C":"Too high.","D":"Too high."}}]}'
+        _, questions = app.parse_question_bank(html, answer_key)
+
+        self.assertEqual(questions[0]["solution_steps"], ["Start with 2.", "Add 2.", "Get 4."])
+        self.assertEqual(questions[0]["option_explanations"]["B"], "Correct.")
+
 
 if __name__ == "__main__":
     unittest.main()

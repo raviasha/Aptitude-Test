@@ -6,11 +6,13 @@ Run with: uvicorn app:app --host 0.0.0.0 --port 8000
 from __future__ import annotations
 
 import csv
+import hashlib
 import html
 import io
 import json
 import os
 import random
+import re
 import shutil
 import socket
 import sqlite3
@@ -18,10 +20,11 @@ import sys
 import threading
 import uuid
 import webbrowser
+import zipfile
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from html.parser import HTMLParser
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Dict, List, Optional
 
 import bcrypt
@@ -55,6 +58,14 @@ CATEGORIES = [
 DEFAULT_COMPOSITION = {category: 6 for category in CATEGORIES}
 LEGACY_OPTION_KEYS = ("A", "B", "C", "D")
 SUPPORTED_OPTION_KEYS = (*LEGACY_OPTION_KEYS, "E")
+UNCATEGORIZED_CHAPTER = "Uncategorized"
+MAX_ASSESSMENT_QUESTIONS = 500
+MAX_PRACTICE_QUESTIONS = 100
+MAX_LEGACY_FILE_BYTES = 25_000_000
+MAX_PACKAGE_BYTES = 50_000_000
+MAX_PACKAGE_UNPACKED_BYTES = 150_000_000
+MAX_PACKAGE_FILES = 10_000
+ALLOWED_ASSET_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".svg"}
 
 app = FastAPI(title="Aptitude Lab")
 app.add_middleware(SessionMiddleware, secret_key=os.getenv("SESSION_SECRET", "replace-this-before-production"), https_only=False, same_site="lax")
@@ -91,10 +102,22 @@ class RegistrationPayload(BaseModel):
     password: str
 
 
+class SelectionRule(BaseModel):
+    category: str
+    chapter: str = UNCATEGORIZED_CHAPTER
+    quantity: int = Field(ge=0, le=MAX_ASSESSMENT_QUESTIONS)
+
+
 class TestPayload(BaseModel):
     test_name: str
-    composition: Dict[str, int]
     bank_id: int
+    selection_rules: List[SelectionRule] = Field(default_factory=list)
+    composition: Dict[str, int] = Field(default_factory=dict)
+
+
+class PracticePayload(BaseModel):
+    bank_id: int
+    selection_rules: List[SelectionRule]
 
 
 class FolderImportPayload(BaseModel):
@@ -158,18 +181,24 @@ def delete_student(student_id: str) -> Dict[str, str]:
             placeholders = ",".join("?" for _ in attempt_ids)
             connection.execute(f"DELETE FROM responses WHERE attempt_id IN ({placeholders})", attempt_ids)
             connection.execute(f"DELETE FROM attempts WHERE attempt_id IN ({placeholders})", attempt_ids)
+        connection.execute("DELETE FROM tests WHERE owner_student_id = ?", (normalized_id,))
         connection.execute("DELETE FROM students WHERE student_id = ?", (normalized_id,))
     return {"student_id": normalized_id}
 
 
 def student_available_tests(connection: sqlite3.Connection) -> List[Dict[str, Any]]:
-    launched = connection.execute("SELECT * FROM tests WHERE active = 1 AND launched = 1 ORDER BY test_id DESC").fetchall()
-    available = launched or connection.execute("SELECT * FROM tests WHERE active = 1 ORDER BY test_id DESC").fetchall()
+    launched = connection.execute(
+        "SELECT * FROM tests WHERE active = 1 AND launched = 1 AND mode = 'faculty' ORDER BY test_id DESC"
+    ).fetchall()
+    available = launched or connection.execute(
+        "SELECT * FROM tests WHERE active = 1 AND mode = 'faculty' ORDER BY test_id DESC"
+    ).fetchall()
     return [dict(test) for test in available]
 
 
 def feedback_allowed(test: sqlite3.Row | Dict[str, Any]) -> bool:
-    return not bool(test["launched"])
+    keys = set(test.keys())
+    return ("mode" in keys and test["mode"] == "student_practice") or not bool(test["launched"])
 
 
 def answer_locked(response: sqlite3.Row | Dict[str, Any]) -> bool:
@@ -178,6 +207,170 @@ def answer_locked(response: sqlite3.Row | Dict[str, Any]) -> bool:
 
 def rows(items: List[sqlite3.Row]) -> List[Dict[str, Any]]:
     return [dict(item) for item in items]
+
+
+def question_assets_dir() -> Path:
+    return DATA_DIR / "Question Assets"
+
+
+def normalize_selection_rules(
+    selection_rules: List[SelectionRule] | List[Dict[str, Any]],
+    composition: Optional[Dict[str, int]] = None,
+) -> List[Dict[str, Any]]:
+    """Normalize v2 leaf rules and the legacy category-count mapping."""
+    merged: Dict[tuple[str, str], int] = {}
+    raw_rules: List[Any] = list(selection_rules or [])
+    if not raw_rules and composition:
+        raw_rules = [
+            {"category": category, "chapter": UNCATEGORIZED_CHAPTER, "quantity": quantity}
+            for category, quantity in composition.items()
+        ]
+    for rule in raw_rules:
+        if isinstance(rule, SelectionRule):
+            category, chapter, quantity = rule.category, rule.chapter, rule.quantity
+        elif isinstance(rule, dict):
+            category = rule.get("category", "")
+            chapter = rule.get("chapter", UNCATEGORIZED_CHAPTER)
+            quantity = rule.get("quantity", 0)
+        else:
+            raise HTTPException(400, "Every selection rule must be an object.")
+        category = str(category).strip()
+        chapter = str(chapter or UNCATEGORIZED_CHAPTER).strip() or UNCATEGORIZED_CHAPTER
+        try:
+            quantity = int(quantity)
+        except (TypeError, ValueError) as error:
+            raise HTTPException(400, "Question quantities must be whole numbers.") from error
+        if not category or len(category) > 100 or len(chapter) > 120:
+            raise HTTPException(400, "Every selection rule needs a valid category and chapter.")
+        if quantity < 0:
+            raise HTTPException(400, "Question quantities cannot be negative.")
+        if quantity:
+            merged[(category, chapter)] = merged.get((category, chapter), 0) + quantity
+    return [
+        {"category": category, "chapter": chapter, "quantity": quantity}
+        for (category, chapter), quantity in merged.items()
+    ]
+
+
+def decode_selection_rules(raw: str) -> List[Dict[str, Any]]:
+    try:
+        stored = json.loads(raw or "[]")
+    except json.JSONDecodeError as error:
+        raise HTTPException(500, "The saved test composition is invalid.") from error
+    if isinstance(stored, dict):
+        return normalize_selection_rules([], stored)
+    if isinstance(stored, list):
+        return normalize_selection_rules(stored)
+    raise HTTPException(500, "The saved test composition is invalid.")
+
+
+def question_bank_taxonomy(connection: sqlite3.Connection, bank_id: int) -> Dict[str, Any]:
+    bank = connection.execute(
+        "SELECT bank_id, bank_name FROM question_banks WHERE bank_id = ?", (bank_id,)
+    ).fetchone()
+    if not bank:
+        raise HTTPException(404, "Question bank not found.")
+    grouped = connection.execute(
+        """SELECT category, COALESCE(NULLIF(chapter, ''), ?) AS chapter, COUNT(*) AS count
+           FROM questions WHERE bank_id = ? AND active = 1
+           GROUP BY category, COALESCE(NULLIF(chapter, ''), ?)
+           ORDER BY category, chapter""",
+        (UNCATEGORIZED_CHAPTER, bank_id, UNCATEGORIZED_CHAPTER),
+    ).fetchall()
+    categories: Dict[str, Dict[str, Any]] = {}
+    for item in grouped:
+        category = categories.setdefault(item["category"], {"name": item["category"], "count": 0, "chapters": []})
+        category["count"] += item["count"]
+        category["chapters"].append({"name": item["chapter"], "count": item["count"]})
+    return {
+        "bank_id": bank["bank_id"],
+        "bank_name": bank["bank_name"],
+        "question_count": sum(category["count"] for category in categories.values()),
+        "categories": list(categories.values()),
+    }
+
+
+def validate_selection_rules(
+    connection: sqlite3.Connection,
+    bank_id: int,
+    rules: List[Dict[str, Any]],
+    maximum: int,
+) -> List[Dict[str, Any]]:
+    if not connection.execute("SELECT 1 FROM question_banks WHERE bank_id = ?", (bank_id,)).fetchone():
+        raise HTTPException(404, "Choose an imported question bank.")
+    total = sum(rule["quantity"] for rule in rules)
+    if total <= 0:
+        raise HTTPException(400, "Choose at least one question.")
+    if total > maximum:
+        raise HTTPException(400, f"Choose no more than {maximum} questions.")
+    availability = {
+        (row["category"], row["chapter"]): row["count"]
+        for row in connection.execute(
+            """SELECT category, COALESCE(NULLIF(chapter, ''), ?) AS chapter, COUNT(*) AS count
+               FROM questions WHERE bank_id = ? AND active = 1
+               GROUP BY category, COALESCE(NULLIF(chapter, ''), ?)""",
+            (UNCATEGORIZED_CHAPTER, bank_id, UNCATEGORIZED_CHAPTER),
+        ).fetchall()
+    }
+    shortages = [
+        f"{rule['category']} / {rule['chapter']}: need {rule['quantity']}, have {availability.get((rule['category'], rule['chapter']), 0)}"
+        for rule in rules
+        if rule["quantity"] > availability.get((rule["category"], rule["chapter"]), 0)
+    ]
+    if shortages:
+        raise HTTPException(400, "Not enough active questions — " + "; ".join(shortages) + ".")
+    return rules
+
+
+def sample_questions(
+    connection: sqlite3.Connection,
+    bank_id: int,
+    rules: List[Dict[str, Any]],
+) -> List[sqlite3.Row]:
+    selected: List[sqlite3.Row] = []
+    selected_ids: set[int] = set()
+    for rule in rules:
+        pool = connection.execute(
+            """SELECT question_id, category, COALESCE(NULLIF(chapter, ''), ?) AS chapter, stimulus_id
+               FROM questions
+               WHERE bank_id = ? AND active = 1 AND category = ?
+                 AND COALESCE(NULLIF(chapter, ''), ?) = ?""",
+            (UNCATEGORIZED_CHAPTER, bank_id, rule["category"], UNCATEGORIZED_CHAPTER, rule["chapter"]),
+        ).fetchall()
+        available = [question for question in pool if question["question_id"] not in selected_ids]
+        chosen = random.sample(available, rule["quantity"])
+        selected.extend(chosen)
+        selected_ids.update(question["question_id"] for question in chosen)
+
+    grouped: Dict[str, List[sqlite3.Row]] = {}
+    for question in selected:
+        group_key = f"stimulus:{question['stimulus_id']}" if question["stimulus_id"] else f"question:{question['question_id']}"
+        grouped.setdefault(group_key, []).append(question)
+    question_groups = list(grouped.values())
+    random.shuffle(question_groups)
+    for group in question_groups:
+        random.shuffle(group)
+    return [question for group in question_groups for question in group]
+
+
+def create_attempt_from_questions(
+    connection: sqlite3.Connection,
+    student_id: str,
+    test_id: int,
+    selected: List[sqlite3.Row],
+) -> str:
+    attempt_id = str(uuid.uuid4())
+    connection.execute(
+        "INSERT INTO attempts (attempt_id, student_id, test_id, started_at, total_questions) VALUES (?, ?, ?, ?, ?)",
+        (attempt_id, student_id, test_id, now(), len(selected)),
+    )
+    for index, question in enumerate(selected, start=1):
+        connection.execute(
+            """INSERT INTO responses (attempt_id, question_id, category, chapter, question_order)
+               VALUES (?, ?, ?, ?, ?)""",
+            (attempt_id, question["question_id"], question["category"], question["chapter"], index),
+        )
+    return attempt_id
 
 
 def question_options(question: sqlite3.Row | Dict[str, Any]) -> Dict[str, str]:
@@ -404,9 +597,13 @@ def parse_question_bank(html_source: str, answer_key_source: str) -> tuple[str, 
         key = str(entry.get("key", "")).strip()
         if not key or key in records:
             raise HTTPException(400, "Every answer-key question needs a unique key.")
-        category = entry.get("category")
-        if category not in CATEGORIES:
+        category = str(entry.get("category", "")).strip()
+        chapter = str(entry.get("chapter", UNCATEGORIZED_CHAPTER) or UNCATEGORIZED_CHAPTER).strip()
+        stimulus_id = str(entry.get("stimulus_id", "")).strip() or None
+        if not category or len(category) > 100:
             raise HTTPException(400, f"Question {key!r} has an invalid category.")
+        if not chapter or len(chapter) > 120:
+            raise HTTPException(400, f"Question {key!r} has an invalid chapter.")
         difficulty = entry.get("difficulty", "Medium")
         if difficulty not in {"Easy", "Medium", "Hard"}:
             raise HTTPException(400, f"Question {key!r} has an invalid difficulty.")
@@ -420,7 +617,17 @@ def parse_question_bank(html_source: str, answer_key_source: str) -> tuple[str, 
             raise HTTPException(400, f"Question {key!r} needs a correct_answer matching one of its options.")
         steps = entry.get("solution_steps", [])
         option_explanations = entry.get("option_explanations", {})
-        records[key] = {"category": category, "difficulty": difficulty, "options": options, "correct_answer": correct, "explanation": str(entry.get("explanation", "")).strip(), "solution_steps": steps if isinstance(steps, list) else [], "option_explanations": option_explanations if isinstance(option_explanations, dict) else {}}
+        records[key] = {
+            "category": category,
+            "chapter": chapter,
+            "stimulus_id": stimulus_id,
+            "difficulty": difficulty,
+            "options": options,
+            "correct_answer": correct,
+            "explanation": str(entry.get("explanation", "")).strip(),
+            "solution_steps": steps if isinstance(steps, list) else [],
+            "option_explanations": option_explanations if isinstance(option_explanations, dict) else {},
+        }
     if set(records) != set(parser.fragments):
         missing = sorted(set(parser.fragments) - set(records))
         extra = sorted(set(records) - set(parser.fragments))
@@ -442,6 +649,7 @@ def ensure_schema() -> None:
     DATA_DIR.mkdir(exist_ok=True)
     BACKUP_DIR.mkdir(exist_ok=True)
     QUESTION_BANKS_DIR.mkdir(exist_ok=True)
+    question_assets_dir().mkdir(exist_ok=True)
     with db() as connection:
         connection.executescript(
             """
@@ -455,20 +663,30 @@ def ensure_schema() -> None:
             CREATE TABLE IF NOT EXISTS question_banks (
               bank_id INTEGER PRIMARY KEY AUTOINCREMENT, bank_name TEXT NOT NULL,
               source_html_filename TEXT NOT NULL, answer_key_filename TEXT NOT NULL,
-              imported_at TEXT NOT NULL
+              imported_at TEXT NOT NULL, format_version INTEGER NOT NULL DEFAULT 1
             );
             CREATE TABLE IF NOT EXISTS questions (
               question_id INTEGER PRIMARY KEY AUTOINCREMENT, question_text TEXT NOT NULL,
-              category TEXT NOT NULL, difficulty TEXT NOT NULL, option_a TEXT NOT NULL,
+              source_key TEXT, category TEXT NOT NULL, chapter TEXT NOT NULL DEFAULT 'Uncategorized',
+              difficulty TEXT NOT NULL, option_a TEXT NOT NULL,
               option_b TEXT NOT NULL, option_c TEXT NOT NULL, option_d TEXT NOT NULL,
               options_json TEXT NOT NULL DEFAULT '{}',
               correct_answer TEXT NOT NULL, explanation TEXT DEFAULT '', active INTEGER NOT NULL DEFAULT 1,
-              bank_id INTEGER, question_html TEXT NOT NULL DEFAULT '', solution_steps TEXT NOT NULL DEFAULT '[]', option_explanations TEXT NOT NULL DEFAULT '{}',
+              bank_id INTEGER, stimulus_id TEXT, question_html TEXT NOT NULL DEFAULT '',
+              solution_steps TEXT NOT NULL DEFAULT '[]', option_explanations TEXT NOT NULL DEFAULT '{}',
               created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS stimuli (
+              bank_id INTEGER NOT NULL, stimulus_id TEXT NOT NULL, stimulus_type TEXT NOT NULL,
+              title TEXT NOT NULL DEFAULT '', alt_text TEXT NOT NULL DEFAULT '',
+              asset_filename TEXT, content_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL,
+              PRIMARY KEY(bank_id, stimulus_id),
+              FOREIGN KEY(bank_id) REFERENCES question_banks(bank_id)
             );
             CREATE TABLE IF NOT EXISTS tests (
               test_id INTEGER PRIMARY KEY AUTOINCREMENT, test_name TEXT NOT NULL,
-              composition TEXT NOT NULL, bank_id INTEGER, created_at TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1
+              composition TEXT NOT NULL, bank_id INTEGER, created_at TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1,
+              mode TEXT NOT NULL DEFAULT 'faculty', owner_student_id TEXT
             );
             CREATE TABLE IF NOT EXISTS attempts (
               attempt_id TEXT PRIMARY KEY, student_id TEXT NOT NULL, test_id INTEGER NOT NULL,
@@ -482,7 +700,7 @@ def ensure_schema() -> None:
             CREATE TABLE IF NOT EXISTS responses (
               response_id INTEGER PRIMARY KEY AUTOINCREMENT, attempt_id TEXT NOT NULL,
               question_id INTEGER NOT NULL, selected_answer TEXT, correct INTEGER,
-              category TEXT NOT NULL, question_order INTEGER NOT NULL,
+              category TEXT NOT NULL, chapter TEXT NOT NULL DEFAULT 'Uncategorized', question_order INTEGER NOT NULL,
               FOREIGN KEY(attempt_id) REFERENCES attempts(attempt_id),
               FOREIGN KEY(question_id) REFERENCES questions(question_id),
               UNIQUE(attempt_id, question_id)
@@ -492,14 +710,23 @@ def ensure_schema() -> None:
             """
         )
         ensure_column(connection, "questions", "bank_id INTEGER")
+        ensure_column(connection, "questions", "source_key TEXT")
+        ensure_column(connection, "questions", "chapter TEXT NOT NULL DEFAULT 'Uncategorized'")
+        ensure_column(connection, "questions", "stimulus_id TEXT")
         ensure_column(connection, "questions", "question_html TEXT NOT NULL DEFAULT ''")
         ensure_column(connection, "questions", "solution_steps TEXT NOT NULL DEFAULT '[]'")
         ensure_column(connection, "questions", "option_explanations TEXT NOT NULL DEFAULT '{}'")
         ensure_column(connection, "questions", "options_json TEXT NOT NULL DEFAULT '{}'")
         migrate_question_options(connection)
+        ensure_column(connection, "question_banks", "format_version INTEGER NOT NULL DEFAULT 1")
         ensure_column(connection, "tests", "bank_id INTEGER")
         ensure_column(connection, "tests", "launched INTEGER NOT NULL DEFAULT 0")
+        ensure_column(connection, "tests", "mode TEXT NOT NULL DEFAULT 'faculty'")
+        ensure_column(connection, "tests", "owner_student_id TEXT")
+        ensure_column(connection, "responses", "chapter TEXT NOT NULL DEFAULT 'Uncategorized'")
         connection.execute("CREATE INDEX IF NOT EXISTS idx_questions_bank ON questions(bank_id)")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_questions_taxonomy ON questions(bank_id, category, chapter, active)")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_tests_mode ON tests(mode, active, launched)")
 
 
 def seed_data() -> None:
@@ -597,11 +824,252 @@ def save_question_bank(bank_name: str, questions: List[Dict[str, Any]], html_nam
             options = question["options"]
             connection.execute(
                 """INSERT INTO questions
-                (question_text, question_html, category, difficulty, option_a, option_b, option_c, option_d, options_json, correct_answer, explanation, bank_id, created_at, solution_steps, option_explanations)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (question["question_text"], question["question_html"], question["category"], question["difficulty"], options["A"], options["B"], options["C"], options["D"], json.dumps(options), question["correct_answer"], question["explanation"], bank_id, now(), json.dumps(question["solution_steps"]), json.dumps(question["option_explanations"])),
+                (source_key, question_text, question_html, category, chapter, stimulus_id, difficulty,
+                 option_a, option_b, option_c, option_d, options_json, correct_answer, explanation,
+                 bank_id, created_at, solution_steps, option_explanations)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    question.get("key"), question["question_text"], question["question_html"], question["category"],
+                    question.get("chapter", UNCATEGORIZED_CHAPTER), question.get("stimulus_id"), question["difficulty"],
+                    options["A"], options["B"], options["C"], options["D"], json.dumps(options),
+                    question["correct_answer"], question["explanation"], bank_id, now(),
+                    json.dumps(question["solution_steps"]), json.dumps(question["option_explanations"]),
+                ),
             )
     return {"imported": True, "bank_id": bank_id, "bank_name": bank_name, "question_count": len(questions)}
+
+
+def validate_package_member(name: str) -> str:
+    if not name or "\\" in name:
+        raise HTTPException(400, "Question-bank packages must use safe forward-slash paths.")
+    path = PurePosixPath(name)
+    if path.is_absolute() or ".." in path.parts or any(not part for part in path.parts):
+        raise HTTPException(400, f"Unsafe package path: {name!r}.")
+    return path.as_posix()
+
+
+def validate_svg_asset(content: bytes, filename: str) -> None:
+    try:
+        source = content.decode("utf-8-sig")
+    except UnicodeDecodeError as error:
+        raise HTTPException(400, f"SVG asset {filename!r} must be UTF-8 encoded.") from error
+    blocked = re.compile(
+        r"<\s*(script|foreignObject|iframe|object|embed)\b|\bon[a-z]+\s*=|(?:href|src)\s*=\s*['\"]\s*(?:https?:|data:|javascript:)",
+        re.IGNORECASE,
+    )
+    if blocked.search(source):
+        raise HTTPException(400, f"SVG asset {filename!r} contains executable or external content.")
+
+
+def parse_v2_question(entry: Any, origin: str) -> Dict[str, Any]:
+    if not isinstance(entry, dict):
+        raise HTTPException(400, f"Every question in {origin} must be an object.")
+    key = str(entry.get("key", "")).strip()
+    category = str(entry.get("category", "")).strip()
+    chapter = str(entry.get("chapter", "")).strip()
+    if not key or len(key) > 160:
+        raise HTTPException(400, f"Every question in {origin} needs a valid key.")
+    if not category or not chapter or len(category) > 100 or len(chapter) > 120:
+        raise HTTPException(400, f"Question {key!r} needs a valid category and chapter.")
+    difficulty = str(entry.get("difficulty", "Medium")).strip()
+    if difficulty not in {"Easy", "Medium", "Hard"}:
+        raise HTTPException(400, f"Question {key!r} has an invalid difficulty.")
+    options = entry.get("options")
+    option_keys = set(options) if isinstance(options, dict) else set()
+    if option_keys not in (set(LEGACY_OPTION_KEYS), set(SUPPORTED_OPTION_KEYS)):
+        raise HTTPException(400, f"Question {key!r} needs A-D options, with optional E.")
+    options = {option: str(options[option]).strip() for option in SUPPORTED_OPTION_KEYS if option in options}
+    if not all(options.values()):
+        raise HTTPException(400, f"Question {key!r} has an empty option.")
+    correct = entry.get("correct_answer")
+    if correct not in options:
+        raise HTTPException(400, f"Question {key!r} needs a correct_answer matching one option.")
+    question_html = sanitize_visual_html(str(entry.get("question_html", "")))
+    question_text = str(entry.get("question_text", "")).strip() or question_summary(question_html)
+    if not question_text:
+        raise HTTPException(400, f"Question {key!r} needs question_text or readable question_html.")
+    steps = entry.get("solution_steps", [])
+    option_explanations = entry.get("option_explanations", {})
+    return {
+        "key": key,
+        "question_text": question_text,
+        "question_html": question_html,
+        "category": category,
+        "chapter": chapter,
+        "stimulus_id": str(entry.get("stimulus_id", "")).strip() or None,
+        "difficulty": difficulty,
+        "options": options,
+        "correct_answer": correct,
+        "explanation": str(entry.get("explanation", "")).strip(),
+        "solution_steps": steps if isinstance(steps, list) else [],
+        "option_explanations": option_explanations if isinstance(option_explanations, dict) else {},
+    }
+
+
+def parse_v2_package(package_file: Any) -> tuple[str, List[Dict[str, Any]], List[Dict[str, Any]]]:
+    try:
+        archive = zipfile.ZipFile(package_file)
+    except (zipfile.BadZipFile, OSError) as error:
+        raise HTTPException(400, "The uploaded v2 question bank is not a valid ZIP file.") from error
+    with archive:
+        members = archive.infolist()
+        if len(members) > MAX_PACKAGE_FILES:
+            raise HTTPException(413, f"A package may contain at most {MAX_PACKAGE_FILES} files.")
+        if sum(member.file_size for member in members) > MAX_PACKAGE_UNPACKED_BYTES:
+            raise HTTPException(413, "The unpacked question-bank package is too large.")
+        names = {validate_package_member(member.filename): member for member in members if not member.is_dir()}
+        manifest_info = names.get("manifest.json")
+        if not manifest_info or manifest_info.file_size > 1_000_000:
+            raise HTTPException(400, "A v2 package needs a manifest.json under 1 MB.")
+        try:
+            manifest = json.loads(archive.read(manifest_info).decode("utf-8-sig"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise HTTPException(400, "manifest.json must be valid UTF-8 JSON.") from error
+        if not isinstance(manifest, dict) or manifest.get("format_version") != 2:
+            raise HTTPException(400, "manifest.json must declare format_version 2.")
+        bank_name = str(manifest.get("bank_name", "")).strip()
+        if not bank_name:
+            raise HTTPException(400, "manifest.json needs a non-empty bank_name.")
+        question_files = manifest.get("question_files")
+        if not isinstance(question_files, list) or not question_files:
+            raise HTTPException(400, "manifest.json needs a non-empty question_files list.")
+
+        questions: List[Dict[str, Any]] = []
+        question_keys: set[str] = set()
+        for raw_name in question_files:
+            filename = validate_package_member(str(raw_name))
+            member = names.get(filename)
+            if not member or member.file_size > MAX_LEGACY_FILE_BYTES:
+                raise HTTPException(400, f"Question file {filename!r} is missing or too large.")
+            try:
+                source = archive.read(member).decode("utf-8-sig")
+            except UnicodeDecodeError as error:
+                raise HTTPException(400, f"Question file {filename!r} must be UTF-8 encoded.") from error
+            entries: Any
+            try:
+                if filename.lower().endswith(".jsonl"):
+                    entries = [json.loads(line) for line in source.splitlines() if line.strip()]
+                elif filename.lower().endswith(".json"):
+                    decoded = json.loads(source)
+                    entries = decoded.get("questions") if isinstance(decoded, dict) else decoded
+                else:
+                    raise HTTPException(400, "Question files must use .json or .jsonl.")
+            except json.JSONDecodeError as error:
+                raise HTTPException(400, f"Question file {filename!r} contains invalid JSON.") from error
+            if not isinstance(entries, list):
+                raise HTTPException(400, f"Question file {filename!r} must contain a question list.")
+            for entry in entries:
+                question = parse_v2_question(entry, filename)
+                if question["key"] in question_keys:
+                    raise HTTPException(400, f"Duplicate question key: {question['key']!r}.")
+                question_keys.add(question["key"])
+                questions.append(question)
+        if not questions:
+            raise HTTPException(400, "The package does not contain any questions.")
+
+        stimuli: List[Dict[str, Any]] = []
+        stimulus_ids: set[str] = set()
+        for entry in manifest.get("stimuli", []):
+            if not isinstance(entry, dict):
+                raise HTTPException(400, "Every stimulus must be an object.")
+            stimulus_id = str(entry.get("id", "")).strip()
+            stimulus_type = str(entry.get("type", "image")).strip().lower()
+            if not stimulus_id or stimulus_id in stimulus_ids:
+                raise HTTPException(400, "Every stimulus needs a unique non-empty id.")
+            stimulus_ids.add(stimulus_id)
+            asset_bytes = None
+            extension = None
+            asset_path = entry.get("file")
+            content = entry.get("content", {})
+            if asset_path:
+                filename = validate_package_member(str(asset_path))
+                member = names.get(filename)
+                extension = PurePosixPath(filename).suffix.lower()
+                if not member or extension not in ALLOWED_ASSET_EXTENSIONS or member.file_size > 15_000_000:
+                    raise HTTPException(400, f"Stimulus asset {filename!r} is missing, unsupported, or too large.")
+                asset_bytes = archive.read(member)
+                if extension == ".svg":
+                    validate_svg_asset(asset_bytes, filename)
+                stimulus_type = "image"
+            elif stimulus_type not in {"chart", "table"} or not isinstance(content, dict):
+                raise HTTPException(400, f"Stimulus {stimulus_id!r} needs an image file or structured chart/table content.")
+            stimuli.append({
+                "stimulus_id": stimulus_id,
+                "stimulus_type": stimulus_type,
+                "title": str(entry.get("title", "")).strip(),
+                "alt_text": str(entry.get("alt_text", "")).strip(),
+                "content": content if isinstance(content, dict) else {},
+                "asset_bytes": asset_bytes,
+                "extension": extension,
+            })
+        unknown_stimuli = sorted({question["stimulus_id"] for question in questions if question["stimulus_id"]} - stimulus_ids)
+        if unknown_stimuli:
+            raise HTTPException(400, "Questions reference missing stimuli: " + ", ".join(unknown_stimuli[:20]))
+        return bank_name, questions, stimuli
+
+
+def save_v2_question_bank(
+    bank_name: str,
+    questions: List[Dict[str, Any]],
+    stimuli: List[Dict[str, Any]],
+    package_name: str,
+) -> Dict[str, Any]:
+    bank_asset_dir: Optional[Path] = None
+    try:
+        with db() as connection:
+            if connection.execute("SELECT 1 FROM question_banks WHERE bank_name = ?", (bank_name,)).fetchone():
+                raise HTTPException(409, "A question bank with this name already exists. Use a versioned bank_name.")
+            bank_id = connection.execute(
+                """INSERT INTO question_banks
+                   (bank_name, source_html_filename, answer_key_filename, imported_at, format_version)
+                   VALUES (?, ?, ?, ?, 2)""",
+                (bank_name, package_name, "manifest.json", now()),
+            ).lastrowid
+            bank_asset_dir = question_assets_dir() / str(bank_id)
+            bank_asset_dir.mkdir(parents=True, exist_ok=False)
+            for stimulus in stimuli:
+                asset_filename = None
+                if stimulus["asset_bytes"] is not None:
+                    digest = hashlib.sha256(stimulus["asset_bytes"]).hexdigest()
+                    asset_filename = digest + stimulus["extension"]
+                    (bank_asset_dir / asset_filename).write_bytes(stimulus["asset_bytes"])
+                connection.execute(
+                    """INSERT INTO stimuli
+                       (bank_id, stimulus_id, stimulus_type, title, alt_text, asset_filename, content_json, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        bank_id, stimulus["stimulus_id"], stimulus["stimulus_type"], stimulus["title"],
+                        stimulus["alt_text"], asset_filename, json.dumps(stimulus["content"]), now(),
+                    ),
+                )
+            for question in questions:
+                options = question["options"]
+                connection.execute(
+                    """INSERT INTO questions
+                       (source_key, question_text, question_html, category, chapter, stimulus_id, difficulty,
+                        option_a, option_b, option_c, option_d, options_json, correct_answer, explanation,
+                        bank_id, created_at, solution_steps, option_explanations)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        question["key"], question["question_text"], question["question_html"], question["category"],
+                        question["chapter"], question["stimulus_id"], question["difficulty"], options["A"],
+                        options["B"], options["C"], options["D"], json.dumps(options), question["correct_answer"],
+                        question["explanation"], bank_id, now(), json.dumps(question["solution_steps"]),
+                        json.dumps(question["option_explanations"]),
+                    ),
+                )
+        return {
+            "imported": True,
+            "format_version": 2,
+            "bank_id": bank_id,
+            "bank_name": bank_name,
+            "question_count": len(questions),
+            "stimulus_count": len(stimuli),
+        }
+    except Exception:
+        if bank_asset_dir and bank_asset_dir.is_dir():
+            shutil.rmtree(bank_asset_dir)
+        raise
 
 
 def require_user(request: Request, role: Optional[str] = None) -> Dict[str, str]:
@@ -612,7 +1080,11 @@ def require_user(request: Request, role: Optional[str] = None) -> Dict[str, str]
 
 
 def get_attempt(connection: sqlite3.Connection, attempt_id: str) -> sqlite3.Row:
-    attempt = connection.execute("SELECT a.*, t.launched FROM attempts a JOIN tests t ON t.test_id = a.test_id WHERE a.attempt_id = ?", (attempt_id,)).fetchone()
+    attempt = connection.execute(
+        """SELECT a.*, t.launched, t.mode, t.owner_student_id, t.bank_id
+           FROM attempts a JOIN tests t ON t.test_id = a.test_id WHERE a.attempt_id = ?""",
+        (attempt_id,),
+    ).fetchone()
     if not attempt:
         raise HTTPException(404, "Assessment attempt not found.")
     return attempt
@@ -628,10 +1100,13 @@ def assert_student_attempt(connection: sqlite3.Connection, attempt_id: str, stud
 def serialize_attempt(connection: sqlite3.Connection, attempt: sqlite3.Row, include_answers: bool = False) -> Dict[str, Any]:
     include_answers = include_answers or feedback_allowed(attempt)
     response_rows = connection.execute(
-        """SELECT r.question_order, r.selected_answer, r.category, q.question_id, q.question_text, q.question_html,
+        """SELECT r.question_order, r.selected_answer, r.category, r.chapter,
+                  q.question_id, q.question_text, q.question_html, q.bank_id, q.stimulus_id,
                   q.difficulty, q.option_a, q.option_b, q.option_c, q.option_d, q.options_json,
-                  q.explanation, q.correct_answer, q.solution_steps, q.option_explanations
+                  q.explanation, q.correct_answer, q.solution_steps, q.option_explanations,
+                  s.stimulus_type, s.title AS stimulus_title, s.alt_text, s.asset_filename, s.content_json
            FROM responses r JOIN questions q ON q.question_id = r.question_id
+           LEFT JOIN stimuli s ON s.bank_id = q.bank_id AND s.stimulus_id = q.stimulus_id
            WHERE r.attempt_id = ? ORDER BY r.question_order""",
         (attempt["attempt_id"],),
     ).fetchall()
@@ -639,12 +1114,32 @@ def serialize_attempt(connection: sqlite3.Connection, attempt: sqlite3.Row, incl
     for row in response_rows:
         question = {
             "question_id": row["question_id"], "question_text": row["question_text"], "question_html": row["question_html"],
-            "category": row["category"], "difficulty": row["difficulty"],
+            "category": row["category"], "chapter": row["chapter"], "difficulty": row["difficulty"],
             "options": question_options(row),
             "selected_answer": row["selected_answer"],
         }
+        if row["stimulus_id"] and row["stimulus_type"]:
+            stimulus = {
+                "id": row["stimulus_id"],
+                "type": row["stimulus_type"],
+                "title": row["stimulus_title"],
+                "alt_text": row["alt_text"],
+            }
+            if row["asset_filename"]:
+                stimulus["url"] = f"/api/question-banks/{row['bank_id']}/stimuli/{row['stimulus_id']}"
+            else:
+                stimulus["content"] = json.loads(row["content_json"] or "{}")
+            question["stimulus"] = stimulus
         if include_answers:
             question.update({"correct_answer": row["correct_answer"], "explanation": row["explanation"], "solution_steps": json.loads(row["solution_steps"]), "option_explanations": json.loads(row["option_explanations"])})
+            if row["selected_answer"] is not None and feedback_allowed(attempt):
+                question["feedback"] = {
+                    "correct": row["selected_answer"] == row["correct_answer"],
+                    "correct_answer": row["correct_answer"],
+                    "explanation": row["explanation"],
+                    "solution_steps": json.loads(row["solution_steps"]),
+                    "option_explanations": json.loads(row["option_explanations"]),
+                }
         questions.append(question)
     return {**dict(attempt), "feedback_allowed": feedback_allowed(attempt), "questions": questions}
 
@@ -663,8 +1158,23 @@ def result_for_attempt(connection: sqlite3.Connection, attempt_id: str) -> Dict[
     for row in result_rows:
         total, attempted, correct = row["total"], row["attempted"] or 0, row["correct"] or 0
         categories.append({"category": row["category"], "total": total, "attempted": attempted, "correct": correct, "percentage": round(correct / total * 100, 1) if total else 0})
+    chapter_rows = connection.execute(
+        """SELECT r.category, r.chapter, COUNT(*) AS total, SUM(r.selected_answer IS NOT NULL) AS attempted,
+                  SUM(r.correct = 1) AS correct
+           FROM responses r WHERE r.attempt_id = ?
+           GROUP BY r.category, r.chapter ORDER BY r.category, r.chapter""",
+        (attempt_id,),
+    ).fetchall()
+    chapters = []
+    for row in chapter_rows:
+        total, attempted, correct = row["total"], row["attempted"] or 0, row["correct"] or 0
+        chapters.append({
+            "category": row["category"], "chapter": row["chapter"], "total": total,
+            "attempted": attempted, "correct": correct,
+            "percentage": round(correct / total * 100, 1) if total else 0,
+        })
     return {
-        "attempt": dict(attempt), "categories": categories,
+        "attempt": dict(attempt), "categories": categories, "chapters": chapters,
         "incorrect": attempt["attempted"] - attempt["correct"],
         "unanswered": attempt["total_questions"] - attempt["attempted"],
     }
@@ -733,9 +1243,13 @@ def student_dashboard(request: Request) -> Dict[str, Any]:
     with db() as connection:
         student = connection.execute("SELECT student_id, name, class, section FROM students WHERE student_id = ?", (user["id"],)).fetchone()
         tests = student_available_tests(connection)
-        active = connection.execute("SELECT * FROM attempts WHERE student_id = ? AND status = 'in_progress' ORDER BY started_at DESC LIMIT 1", (user["id"],)).fetchone()
+        active = connection.execute(
+            """SELECT a.*, t.test_name, t.mode FROM attempts a JOIN tests t ON t.test_id = a.test_id
+               WHERE a.student_id = ? AND a.status = 'in_progress' ORDER BY a.started_at DESC LIMIT 1""",
+            (user["id"],),
+        ).fetchone()
         history = connection.execute(
-            """SELECT a.attempt_id, a.score, a.total_questions, a.percentage, a.submitted_at, t.test_name
+            """SELECT a.attempt_id, a.score, a.total_questions, a.percentage, a.submitted_at, t.test_name, t.mode
                FROM attempts a JOIN tests t ON t.test_id = a.test_id
                WHERE a.student_id = ? AND a.status = 'submitted' ORDER BY a.submitted_at DESC""", (user["id"],)
         ).fetchall()
@@ -747,6 +1261,50 @@ def student_dashboard(request: Request) -> Dict[str, Any]:
     return {"student": dict(student), "tests": tests, "test": tests[0] if tests else None, "launched": bool(tests and tests[0]["launched"]), "active_attempt": dict(active) if active else None, "history": rows(history), "category_trend": rows(trend)}
 
 
+@app.get("/api/student/practice/catalog")
+def student_practice_catalog(request: Request) -> Dict[str, Any]:
+    require_user(request, "student")
+    with db() as connection:
+        banks = connection.execute(
+            """SELECT b.bank_id, b.bank_name, COUNT(q.question_id) AS question_count
+               FROM question_banks b JOIN questions q ON q.bank_id = b.bank_id AND q.active = 1
+               GROUP BY b.bank_id ORDER BY b.bank_name"""
+        ).fetchall()
+    return {"banks": rows(banks), "maximum_questions": MAX_PRACTICE_QUESTIONS}
+
+
+@app.post("/api/student/practice/start")
+def start_student_practice(payload: PracticePayload, request: Request) -> Dict[str, Any]:
+    user = require_user(request, "student")
+    rules = normalize_selection_rules(payload.selection_rules)
+    with db() as connection:
+        if connection.execute(
+            "SELECT 1 FROM tests WHERE active = 1 AND launched = 1 AND mode = 'faculty' LIMIT 1"
+        ).fetchone():
+            raise HTTPException(409, "Personal practice is paused while Faculty has a launched assessment.")
+        existing = connection.execute(
+            """SELECT a.attempt_id FROM attempts a JOIN tests t ON t.test_id = a.test_id
+               WHERE a.student_id = ? AND a.status = 'in_progress' AND t.mode = 'student_practice'
+               ORDER BY a.started_at DESC LIMIT 1""",
+            (user["id"],),
+        ).fetchone()
+        if existing:
+            return {"attempt_id": existing["attempt_id"], "resumed": True}
+        rules = validate_selection_rules(connection, payload.bank_id, rules, MAX_PRACTICE_QUESTIONS)
+        bank = connection.execute(
+            "SELECT bank_name FROM question_banks WHERE bank_id = ?", (payload.bank_id,)
+        ).fetchone()
+        test_id = connection.execute(
+            """INSERT INTO tests
+               (test_name, composition, bank_id, created_at, active, launched, mode, owner_student_id)
+               VALUES (?, ?, ?, ?, 0, 0, 'student_practice', ?)""",
+            (f"Practice · {bank['bank_name']}", json.dumps(rules), payload.bank_id, now(), user["id"]),
+        ).lastrowid
+        selected = sample_questions(connection, payload.bank_id, rules)
+        attempt_id = create_attempt_from_questions(connection, user["id"], test_id, selected)
+    return {"attempt_id": attempt_id, "resumed": False}
+
+
 @app.post("/api/tests/{test_id}/start")
 def start_test(test_id: int, request: Request) -> Dict[str, Any]:
     user = require_user(request, "student")
@@ -754,25 +1312,21 @@ def start_test(test_id: int, request: Request) -> Dict[str, Any]:
         existing = connection.execute("SELECT attempt_id FROM attempts WHERE student_id = ? AND test_id = ? AND status = 'in_progress'", (user["id"], test_id)).fetchone()
         if existing:
             return {"attempt_id": existing["attempt_id"], "resumed": True}
-        test = connection.execute("SELECT * FROM tests WHERE test_id = ? AND active = 1", (test_id,)).fetchone()
+        test = connection.execute(
+            "SELECT * FROM tests WHERE test_id = ? AND active = 1 AND mode = 'faculty'", (test_id,)
+        ).fetchone()
         if not test:
             raise HTTPException(404, "This test is not currently available.")
-        launched = connection.execute("SELECT 1 FROM tests WHERE active = 1 AND launched = 1 LIMIT 1").fetchone()
+        launched = connection.execute(
+            "SELECT 1 FROM tests WHERE active = 1 AND launched = 1 AND mode = 'faculty' LIMIT 1"
+        ).fetchone()
         if launched and not test["launched"]:
             raise HTTPException(409, "Faculty has launched another test. Please attempt the launched test.")
-        composition = json.loads(test["composition"])
-        selected: List[sqlite3.Row] = []
-        for category, count in composition.items():
-            pool = connection.execute("SELECT question_id FROM questions WHERE active = 1 AND category = ? AND bank_id = ?", (category, test["bank_id"])).fetchall()
-            if len(pool) < count:
-                raise HTTPException(400, f"Not enough active questions in {category}. Add at least {count} questions.")
-            selected.extend(random.sample(pool, count))
-        random.shuffle(selected)
-        attempt_id = str(uuid.uuid4())
-        connection.execute("INSERT INTO attempts (attempt_id, student_id, test_id, started_at, total_questions) VALUES (?, ?, ?, ?, ?)", (attempt_id, user["id"], test_id, now(), len(selected)))
-        for index, question in enumerate(selected, start=1):
-            category = connection.execute("SELECT category FROM questions WHERE question_id = ?", (question["question_id"],)).fetchone()["category"]
-            connection.execute("INSERT INTO responses (attempt_id, question_id, category, question_order) VALUES (?, ?, ?, ?)", (attempt_id, question["question_id"], category, index))
+        rules = validate_selection_rules(
+            connection, test["bank_id"], decode_selection_rules(test["composition"]), MAX_ASSESSMENT_QUESTIONS
+        )
+        selected = sample_questions(connection, test["bank_id"], rules)
+        attempt_id = create_attempt_from_questions(connection, user["id"], test_id, selected)
     return {"attempt_id": attempt_id, "resumed": False}
 
 
@@ -857,26 +1411,63 @@ def get_result(attempt_id: str, request: Request) -> Dict[str, Any]:
         return result_for_attempt(connection, attempt_id)
 
 
+@app.post("/api/student/practice/{attempt_id}/retry-incorrect")
+def retry_incorrect_practice(attempt_id: str, request: Request) -> Dict[str, Any]:
+    user = require_user(request, "student")
+    with db() as connection:
+        attempt = assert_student_attempt(connection, attempt_id, user["id"])
+        if attempt["mode"] != "student_practice" or attempt["status"] != "submitted":
+            raise HTTPException(400, "Only completed personal practice sessions can be retried.")
+        selected = connection.execute(
+            """SELECT q.question_id, q.category,
+                      COALESCE(NULLIF(q.chapter, ''), ?) AS chapter, q.stimulus_id
+               FROM responses r JOIN questions q ON q.question_id = r.question_id
+               WHERE r.attempt_id = ? AND r.selected_answer IS NOT NULL AND r.correct = 0
+               ORDER BY r.question_order""",
+            (UNCATEGORIZED_CHAPTER, attempt_id),
+        ).fetchall()
+        if not selected:
+            raise HTTPException(400, "There are no incorrect answers to retry.")
+        test_id = connection.execute(
+            """INSERT INTO tests
+               (test_name, composition, bank_id, created_at, active, launched, mode, owner_student_id)
+               VALUES (?, '[]', ?, ?, 0, 0, 'student_practice', ?)""",
+            ("Practice · Retry incorrect", attempt["bank_id"], now(), user["id"]),
+        ).lastrowid
+        new_attempt_id = create_attempt_from_questions(connection, user["id"], test_id, list(selected))
+    return {"attempt_id": new_attempt_id}
+
+
 @app.get("/api/admin/dashboard")
 def admin_dashboard(request: Request) -> Dict[str, Any]:
     require_user(request, "admin")
     with db() as connection:
-        totals = connection.execute("SELECT (SELECT COUNT(*) FROM students) AS students, (SELECT COUNT(*) FROM attempts WHERE status = 'submitted') AS completed, ROUND(COALESCE(AVG(percentage), 0), 1) AS average FROM attempts WHERE status = 'submitted'").fetchone()
-        students = connection.execute(
-            """SELECT s.student_id, s.name, s.class, s.section, COUNT(a.attempt_id) AS tests,
+        totals = connection.execute(
+            """SELECT (SELECT COUNT(*) FROM students) AS students, COUNT(a.attempt_id) AS completed,
                       ROUND(COALESCE(AVG(a.percentage), 0), 1) AS average
+               FROM attempts a JOIN tests t ON t.test_id = a.test_id
+               WHERE a.status = 'submitted' AND t.mode = 'faculty'"""
+        ).fetchone()
+        students = connection.execute(
+            """SELECT s.student_id, s.name, s.class, s.section,
+                      COUNT(CASE WHEN t.mode = 'faculty' THEN a.attempt_id END) AS tests,
+                      ROUND(COALESCE(AVG(CASE WHEN t.mode = 'faculty' THEN a.percentage END), 0), 1) AS average
                FROM students s LEFT JOIN attempts a ON a.student_id = s.student_id AND a.status = 'submitted'
+               LEFT JOIN tests t ON t.test_id = a.test_id
                GROUP BY s.student_id ORDER BY s.name"""
         ).fetchall()
         category = connection.execute(
             """SELECT r.category, ROUND(AVG(r.correct) * 100, 1) AS percentage
                FROM responses r JOIN attempts a ON a.attempt_id = r.attempt_id
-               WHERE a.status = 'submitted' GROUP BY r.category ORDER BY percentage DESC"""
+               JOIN tests t ON t.test_id = a.test_id
+               WHERE a.status = 'submitted' AND t.mode = 'faculty'
+               GROUP BY r.category ORDER BY percentage DESC"""
         ).fetchall()
         recent = connection.execute(
             """SELECT a.attempt_id, s.name, s.student_id, t.test_name, a.score, a.total_questions, a.percentage, a.submitted_at
                FROM attempts a JOIN students s ON s.student_id = a.student_id JOIN tests t ON t.test_id = a.test_id
-               WHERE a.status = 'submitted' ORDER BY a.submitted_at DESC LIMIT 10"""
+               WHERE a.status = 'submitted' AND t.mode = 'faculty'
+               ORDER BY a.submitted_at DESC LIMIT 10"""
         ).fetchall()
     return {"totals": dict(totals), "students": rows(students), "category_performance": rows(category), "recent_attempts": rows(recent)}
 
@@ -913,7 +1504,7 @@ def list_questions(request: Request) -> Dict[str, Any]:
     require_user(request, "admin")
     with db() as connection:
         return {"questions": rows(connection.execute(
-            """SELECT q.question_id, q.question_text, q.category, q.difficulty, q.active,
+            """SELECT q.question_id, q.question_text, q.category, q.chapter, q.difficulty, q.active,
                       q.question_html != '' AS has_visual, b.bank_name
                FROM questions q LEFT JOIN question_banks b ON b.bank_id = q.bank_id
                ORDER BY b.imported_at DESC, q.category, q.question_id"""
@@ -926,8 +1517,10 @@ def list_question_banks(request: Request) -> Dict[str, Any]:
     with db() as connection:
         banks = connection.execute(
             """SELECT b.bank_id, b.bank_name, b.source_html_filename, b.answer_key_filename, b.imported_at,
+                      b.format_version,
                       COUNT(q.question_id) AS question_count,
-                      SUM(q.question_html != '') AS visual_question_count
+                      SUM(q.question_html != '') AS visual_question_count,
+                      (SELECT COUNT(*) FROM stimuli s WHERE s.bank_id = b.bank_id) AS stimulus_count
                FROM question_banks b LEFT JOIN questions q ON q.bank_id = b.bank_id
                GROUP BY b.bank_id ORDER BY b.imported_at DESC"""
         ).fetchall()
@@ -938,6 +1531,32 @@ def list_question_banks(request: Request) -> Dict[str, Any]:
 def question_bank_folder(request: Request) -> Dict[str, str]:
     require_user(request, "admin")
     return {"path": str(QUESTION_BANKS_DIR)}
+
+
+@app.get("/api/question-banks/{bank_id}/taxonomy")
+def get_question_bank_taxonomy(bank_id: int, request: Request) -> Dict[str, Any]:
+    require_user(request)
+    with db() as connection:
+        return question_bank_taxonomy(connection, bank_id)
+
+
+@app.get("/api/question-banks/{bank_id}/stimuli/{stimulus_id}")
+def get_stimulus_asset(bank_id: int, stimulus_id: str, request: Request) -> FileResponse:
+    require_user(request)
+    with db() as connection:
+        stimulus = connection.execute(
+            "SELECT asset_filename FROM stimuli WHERE bank_id = ? AND stimulus_id = ?",
+            (bank_id, stimulus_id),
+        ).fetchone()
+    if not stimulus or not stimulus["asset_filename"]:
+        raise HTTPException(404, "Stimulus asset not found.")
+    filename = Path(stimulus["asset_filename"]).name
+    if filename != stimulus["asset_filename"]:
+        raise HTTPException(404, "Stimulus asset not found.")
+    asset_path = question_assets_dir() / str(bank_id) / filename
+    if not asset_path.is_file():
+        raise HTTPException(404, "Stimulus asset not found.")
+    return FileResponse(asset_path)
 
 
 @app.get("/api/admin/question-banks/staged")
@@ -962,14 +1581,32 @@ async def import_question_bank(
     html_bytes, answer_bytes = await html_file.read(), await answer_key_file.read()
     if not html_bytes or not answer_bytes:
         raise HTTPException(400, "Both the HTML file and the answer-key JSON file are required.")
-    if len(html_bytes) > 2_000_000 or len(answer_bytes) > 1_000_000:
-        raise HTTPException(413, "The HTML file must be under 2 MB and the answer key under 1 MB.")
+    if len(html_bytes) > MAX_LEGACY_FILE_BYTES or len(answer_bytes) > MAX_LEGACY_FILE_BYTES:
+        raise HTTPException(413, "Each legacy question-bank file must be under 25 MB.")
     try:
         html_source, answer_key_source = html_bytes.decode("utf-8-sig"), answer_bytes.decode("utf-8-sig")
     except UnicodeDecodeError:
         raise HTTPException(400, "Use UTF-8 encoded files for the question-bank pair.")
     bank_name, questions = parse_question_bank(html_source, answer_key_source)
     return save_question_bank(bank_name, questions, html_name, answer_name)
+
+
+@app.post("/api/admin/question-banks/import-package")
+async def import_question_bank_package(
+    request: Request,
+    package_file: UploadFile = File(...),
+) -> Dict[str, Any]:
+    require_user(request, "admin")
+    package_name = Path(package_file.filename or "").name
+    if not package_name.lower().endswith(".zip"):
+        raise HTTPException(400, "A v2 question bank must be uploaded as a ZIP file.")
+    package_bytes = await package_file.read(MAX_PACKAGE_BYTES + 1)
+    if not package_bytes:
+        raise HTTPException(400, "Choose a non-empty question-bank package.")
+    if len(package_bytes) > MAX_PACKAGE_BYTES:
+        raise HTTPException(413, "The compressed question-bank package must be under 50 MB.")
+    bank_name, questions, stimuli = parse_v2_package(io.BytesIO(package_bytes))
+    return save_v2_question_bank(bank_name, questions, stimuli, package_name)
 
 
 @app.post("/api/admin/question-banks/import-from-folder")
@@ -1009,10 +1646,11 @@ def list_tests(request: Request) -> Dict[str, Any]:
     with db() as connection:
         tests = rows(connection.execute(
             """SELECT t.*, b.bank_name FROM tests t
-               LEFT JOIN question_banks b ON b.bank_id = t.bank_id ORDER BY t.created_at DESC"""
+               LEFT JOIN question_banks b ON b.bank_id = t.bank_id
+               WHERE t.mode = 'faculty' ORDER BY t.created_at DESC"""
         ).fetchall())
         for test in tests:
-            test["composition"] = json.loads(test["composition"])
+            test["selection_rules"] = decode_selection_rules(test["composition"])
         banks = rows(connection.execute(
             """SELECT b.bank_id, b.bank_name, COUNT(q.question_id) AS question_count
                FROM question_banks b LEFT JOIN questions q ON q.bank_id = b.bank_id AND q.active = 1
@@ -1024,10 +1662,12 @@ def list_tests(request: Request) -> Dict[str, Any]:
 @app.post("/api/admin/tests")
 def create_test(payload: TestPayload, request: Request) -> Dict[str, Any]:
     require_user(request, "admin")
+    rules = normalize_selection_rules(payload.selection_rules, payload.composition)
     clean = {category: int(payload.composition.get(category, 0)) for category in CATEGORIES}
-    if not payload.test_name.strip() or sum(clean.values()) == 0 or any(value < 0 for value in clean.values()):
-        raise HTTPException(400, "Provide a name and at least one question.")
+    if not payload.test_name.strip():
+        raise HTTPException(400, "Provide a test name.")
     with db() as connection:
+        rules = validate_selection_rules(connection, payload.bank_id, rules, MAX_ASSESSMENT_QUESTIONS)
         bank = connection.execute("SELECT bank_name FROM question_banks WHERE bank_id = ?", (payload.bank_id,)).fetchone()
         if not bank:
             raise HTTPException(404, "Choose an imported question bank.")
@@ -1042,7 +1682,7 @@ def create_test(payload: TestPayload, request: Request) -> Dict[str, Any]:
             raise HTTPException(400, "This bank does not have enough active questions — " + "; ".join(shortages) + ".")
         connection.execute(
             "INSERT INTO tests (test_name, composition, bank_id, created_at) VALUES (?, ?, ?, ?)",
-            (payload.test_name.strip(), json.dumps(clean), payload.bank_id, now()),
+            (payload.test_name.strip(), json.dumps(rules), payload.bank_id, now()),
         )
     return {"created": True}
 
@@ -1051,9 +1691,11 @@ def create_test(payload: TestPayload, request: Request) -> Dict[str, Any]:
 def launch_test(test_id: int, request: Request) -> Dict[str, bool]:
     require_user(request, "admin")
     with db() as connection:
-        if not connection.execute("SELECT 1 FROM tests WHERE test_id = ? AND active = 1", (test_id,)).fetchone():
+        if not connection.execute(
+            "SELECT 1 FROM tests WHERE test_id = ? AND active = 1 AND mode = 'faculty'", (test_id,)
+        ).fetchone():
             raise HTTPException(404, "Test not found.")
-        connection.execute("UPDATE tests SET launched = 0")
+        connection.execute("UPDATE tests SET launched = 0 WHERE mode = 'faculty'")
         connection.execute("UPDATE tests SET launched = 1 WHERE test_id = ?", (test_id,))
     return {"launched": True}
 
@@ -1062,7 +1704,7 @@ def launch_test(test_id: int, request: Request) -> Dict[str, bool]:
 def close_test(test_id: int, request: Request) -> Dict[str, bool]:
     require_user(request, "admin")
     with db() as connection:
-        connection.execute("UPDATE tests SET launched = 0 WHERE test_id = ?", (test_id,))
+        connection.execute("UPDATE tests SET launched = 0 WHERE test_id = ? AND mode = 'faculty'", (test_id,))
     return {"closed": True}
 
 
@@ -1078,7 +1720,9 @@ def export_results(request: Request) -> StreamingResponse:
                  ROUND(AVG(CASE WHEN r.category = 'Verbal Ability' THEN r.correct END) * 100, 1) AS verbal,
                  ROUND(AVG(CASE WHEN r.category = 'Coding / Computational Thinking' THEN r.correct END) * 100, 1) AS coding
                FROM attempts a JOIN students s ON s.student_id = a.student_id JOIN tests t ON t.test_id = a.test_id
-               JOIN responses r ON r.attempt_id = a.attempt_id WHERE a.status = 'submitted' GROUP BY a.attempt_id ORDER BY a.submitted_at DESC"""
+               JOIN responses r ON r.attempt_id = a.attempt_id
+               WHERE a.status = 'submitted' AND t.mode = 'faculty'
+               GROUP BY a.attempt_id ORDER BY a.submitted_at DESC"""
         ).fetchall()
     output = io.StringIO()
     writer = csv.DictWriter(output, fieldnames=["Student ID", "Student Name", "Test", "Date", "Overall Score", "Total Questions", "Percentage", "Quantitative", "Logical Reasoning", "Data Interpretation", "Verbal Ability", "Coding"])

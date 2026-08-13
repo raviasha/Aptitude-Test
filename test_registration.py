@@ -1,7 +1,9 @@
+import io
 import json
 import sqlite3
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 import app
@@ -73,6 +75,150 @@ class StudentRegistrationTests(unittest.TestCase):
         self.assertEqual(questions[0]["solution_steps"], ["Start with 2.", "Add 2.", "Get 4."])
         self.assertEqual(questions[0]["option_explanations"]["B"], "Correct.")
         self.assertEqual(list(questions[0]["options"]), ["A", "B", "C", "D"])
+
+    def test_question_bank_preserves_category_chapter_and_stimulus_metadata(self):
+        html = '<section data-question-key="q1"><h3>Read the graph.</h3></section>'
+        answer_key = json.dumps({
+            "bank_name": "Metadata",
+            "questions": [{
+                "key": "q1", "category": "Data Interpretation", "chapter": "Bar Graphs",
+                "stimulus_id": "sales-graph", "difficulty": "Easy",
+                "options": {"A": "1", "B": "2", "C": "3", "D": "4"},
+                "correct_answer": "B",
+            }],
+        })
+
+        _, questions = app.parse_question_bank(html, answer_key)
+
+        self.assertEqual(questions[0]["chapter"], "Bar Graphs")
+        self.assertEqual(questions[0]["stimulus_id"], "sales-graph")
+
+    def test_taxonomy_validation_and_sampling_use_leaf_chapters(self):
+        with app.db() as connection:
+            bank_id = connection.execute(
+                "INSERT INTO question_banks (bank_name, source_html_filename, answer_key_filename, imported_at) VALUES (?, '', '', ?)",
+                ("Chapter bank", app.now()),
+            ).lastrowid
+            for index, (category, chapter, stimulus_id) in enumerate((
+                ("Arithmetical Ability", "Percentages", None),
+                ("Arithmetical Ability", "Percentages", None),
+                ("Data Interpretation", "Bar Graphs", "bar-1"),
+                ("Data Interpretation", "Bar Graphs", "bar-1"),
+            ), start=1):
+                connection.execute(
+                    """INSERT INTO questions
+                       (source_key, question_text, category, chapter, stimulus_id, difficulty,
+                        option_a, option_b, option_c, option_d, correct_answer, created_at, bank_id)
+                       VALUES (?, ?, ?, ?, ?, 'Easy', '1', '2', '3', '4', 'A', ?, ?)""",
+                    (f"q{index}", f"Question {index}", category, chapter, stimulus_id, app.now(), bank_id),
+                )
+            taxonomy = app.question_bank_taxonomy(connection, bank_id)
+            rules = app.normalize_selection_rules([
+                {"category": "Arithmetical Ability", "chapter": "Percentages", "quantity": 2},
+                {"category": "Data Interpretation", "chapter": "Bar Graphs", "quantity": 2},
+            ])
+            app.validate_selection_rules(connection, bank_id, rules, 10)
+            sampled = app.sample_questions(connection, bank_id, rules)
+
+        self.assertEqual(taxonomy["question_count"], 4)
+        self.assertEqual(len(sampled), 4)
+        self.assertEqual({(item["category"], item["chapter"]) for item in sampled}, {
+            ("Arithmetical Ability", "Percentages"), ("Data Interpretation", "Bar Graphs")
+        })
+        bar_positions = [index for index, item in enumerate(sampled) if item["stimulus_id"] == "bar-1"]
+        self.assertEqual(bar_positions, list(range(min(bar_positions), max(bar_positions) + 1)))
+
+    def test_v2_package_imports_shared_graph_asset(self):
+        manifest = {
+            "format_version": 2,
+            "bank_name": "V2 graph bank",
+            "question_files": ["questions/data.jsonl"],
+            "stimuli": [{
+                "id": "bar-1", "type": "image", "file": "assets/bar.svg",
+                "title": "Sales", "alt_text": "Bar graph of sales",
+            }],
+        }
+        question = {
+            "key": "di-1", "question_text": "Which bar is highest?", "category": "Data Interpretation",
+            "chapter": "Bar Graphs", "stimulus_id": "bar-1", "difficulty": "Easy",
+            "options": {"A": "A", "B": "B", "C": "C", "D": "D"}, "correct_answer": "B",
+        }
+        package = io.BytesIO()
+        with zipfile.ZipFile(package, "w", zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("manifest.json", json.dumps(manifest))
+            archive.writestr("questions/data.jsonl", json.dumps(question) + "\n")
+            archive.writestr("assets/bar.svg", '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="5" height="8"/></svg>')
+        package.seek(0)
+
+        bank_name, questions, stimuli = app.parse_v2_package(package)
+        result = app.save_v2_question_bank(bank_name, questions, stimuli, "graph-bank.zip")
+
+        self.assertEqual(result["question_count"], 1)
+        self.assertEqual(result["stimulus_count"], 1)
+        with app.db() as connection:
+            stored = connection.execute(
+                "SELECT chapter, stimulus_id FROM questions WHERE bank_id = ?", (result["bank_id"],)
+            ).fetchone()
+            stimulus = connection.execute(
+                "SELECT asset_filename FROM stimuli WHERE bank_id = ?", (result["bank_id"],)
+            ).fetchone()
+        self.assertEqual(stored["chapter"], "Bar Graphs")
+        self.assertEqual(stored["stimulus_id"], "bar-1")
+        self.assertTrue((app.question_assets_dir() / str(result["bank_id"]) / stimulus["asset_filename"]).is_file())
+
+    def test_v2_package_rejects_executable_svg(self):
+        manifest = {
+            "format_version": 2, "bank_name": "Unsafe", "question_files": ["questions.jsonl"],
+            "stimuli": [{"id": "bad", "file": "bad.svg"}],
+        }
+        question = {
+            "key": "q1", "question_text": "Unsafe?", "category": "Data Interpretation", "chapter": "Charts",
+            "stimulus_id": "bad", "options": {"A": "1", "B": "2", "C": "3", "D": "4"}, "correct_answer": "A",
+        }
+        package = io.BytesIO()
+        with zipfile.ZipFile(package, "w") as archive:
+            archive.writestr("manifest.json", json.dumps(manifest))
+            archive.writestr("questions.jsonl", json.dumps(question))
+            archive.writestr("bad.svg", "<svg><script>alert(1)</script></svg>")
+        package.seek(0)
+
+        with self.assertRaises(app.HTTPException):
+            app.parse_v2_package(package)
+
+    def test_student_can_build_personal_practice_by_chapter(self):
+        app.register_student("P100", "Practice Student", "AI & DS", "A", "secret123")
+        with app.db() as connection:
+            bank_id = connection.execute(
+                "INSERT INTO question_banks (bank_name, source_html_filename, answer_key_filename, imported_at) VALUES (?, '', '', ?)",
+                ("Practice bank", app.now()),
+            ).lastrowid
+            for index in range(3):
+                connection.execute(
+                    """INSERT INTO questions
+                       (question_text, category, chapter, difficulty, option_a, option_b, option_c, option_d,
+                        correct_answer, created_at, bank_id) VALUES (?, 'Arithmetical Ability', 'Percentages',
+                        'Easy', '1', '2', '3', '4', 'A', ?, ?)""",
+                    (f"Practice {index}", app.now(), bank_id),
+                )
+        request = app.Request({
+            "type": "http", "method": "POST", "path": "/", "headers": [],
+            "session": {"user": {"role": "student", "id": "P100", "name": "Practice Student"}},
+        })
+        payload = app.PracticePayload(bank_id=bank_id, selection_rules=[
+            app.SelectionRule(category="Arithmetical Ability", chapter="Percentages", quantity=2)
+        ])
+
+        result = app.start_student_practice(payload, request)
+
+        with app.db() as connection:
+            attempt = app.get_attempt(connection, result["attempt_id"])
+            response_count = connection.execute(
+                "SELECT COUNT(*) AS count FROM responses WHERE attempt_id = ? AND chapter = 'Percentages'",
+                (result["attempt_id"],),
+            ).fetchone()["count"]
+        self.assertEqual(attempt["mode"], "student_practice")
+        self.assertTrue(app.feedback_allowed(attempt))
+        self.assertEqual(response_count, 2)
 
     def test_complete_quantitative_bank_imports_four_and_five_choice_questions(self):
         bank_path = app.SOURCE_ROOT / "question-banks" / "quantitative_aptitude_complete_extended"

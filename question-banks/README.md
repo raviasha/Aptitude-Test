@@ -4,7 +4,8 @@ Files in this folder are published separately on GitHub and are not included in
 `Aptitude-Lab-Setup.exe`. The installer contains only the example pair from the
 repository's `templates` folder.
 
-To add a question bank to an installed server:
+To add a question bank to an installed server, either upload a v2 ZIP directly
+from Faculty → **Question banks**, or use the legacy folder workflow:
 
 1. Download the desired archive or matching `.html` and `.json` files.
 2. Extract the archive when necessary.
@@ -24,8 +25,13 @@ student-facing and should contain only the question text and visual content.
 
 - `quantitative_aptitude_complete_extended.html` and
   `quantitative_aptitude_complete_extended.json` — the complete quantitative
-  aptitude bank; copy both files together. This source bank contains five-choice
-  questions, including answers keyed to option E. Aptitude Lab supports both
-  four-choice A–D and five-choice A–E banks.
+  aptitude bank; copy both files together. Its 5,151 questions are categorized
+  as Arithmetical Ability or Data Interpretation and assigned to 39 chapters.
+  This source bank contains five-choice questions, including answers keyed to
+  option E. Aptitude Lab supports both four-choice A–D and five-choice A–E banks.
+- `quantitative_aptitude_categorized_v2.zip` — the same categorized questions in
+  the smaller split-package format, including 45 shared Data Interpretation
+  visual assets extracted from the supplied R. S. Aggarwal PDF. All 304 DI
+  questions have an associated `stimulus_id`.
 - `assessment-sample-30-questions.zip` — a downloadable copy of the sample bank
   included with the installer.

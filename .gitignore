@@ -5,6 +5,7 @@ _chat.txt
 personas/
 .DS_Store
 __pycache__/
+tmp/
 data/
 build/
 dist/

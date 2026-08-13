@@ -166,6 +166,10 @@ def student_available_tests(connection: sqlite3.Connection) -> List[Dict[str, An
     return [dict(test) for test in available]
 
 
+def feedback_allowed(test: sqlite3.Row | Dict[str, Any]) -> bool:
+    return not bool(test["launched"])
+
+
 def rows(items: List[sqlite3.Row]) -> List[Dict[str, Any]]:
     return [dict(item) for item in items]
 
@@ -560,7 +564,7 @@ def require_user(request: Request, role: Optional[str] = None) -> Dict[str, str]
 
 
 def get_attempt(connection: sqlite3.Connection, attempt_id: str) -> sqlite3.Row:
-    attempt = connection.execute("SELECT * FROM attempts WHERE attempt_id = ?", (attempt_id,)).fetchone()
+    attempt = connection.execute("SELECT a.*, t.launched FROM attempts a JOIN tests t ON t.test_id = a.test_id WHERE a.attempt_id = ?", (attempt_id,)).fetchone()
     if not attempt:
         raise HTTPException(404, "Assessment attempt not found.")
     return attempt
@@ -574,6 +578,7 @@ def assert_student_attempt(connection: sqlite3.Connection, attempt_id: str, stud
 
 
 def serialize_attempt(connection: sqlite3.Connection, attempt: sqlite3.Row, include_answers: bool = False) -> Dict[str, Any]:
+    include_answers = include_answers or feedback_allowed(attempt)
     response_rows = connection.execute(
         """SELECT r.question_order, r.selected_answer, r.category, q.question_id, q.question_text, q.question_html,
                   q.difficulty, q.option_a, q.option_b, q.option_c, q.option_d, q.explanation, q.correct_answer
@@ -592,11 +597,13 @@ def serialize_attempt(connection: sqlite3.Connection, attempt: sqlite3.Row, incl
         if include_answers:
             question.update({"correct_answer": row["correct_answer"], "explanation": row["explanation"]})
         questions.append(question)
-    return {**dict(attempt), "questions": questions}
+    return {**dict(attempt), "feedback_allowed": feedback_allowed(attempt), "questions": questions}
 
 
 def result_for_attempt(connection: sqlite3.Connection, attempt_id: str) -> Dict[str, Any]:
     attempt = get_attempt(connection, attempt_id)
+    if not feedback_allowed(attempt):
+        return {"attempt": {"attempt_id": attempt_id, "status": attempt["status"]}, "feedback_allowed": False}
     result_rows = connection.execute(
         """SELECT r.category, COUNT(*) AS total, SUM(r.selected_answer IS NOT NULL) AS attempted,
                   SUM(r.correct = 1) AS correct
@@ -741,7 +748,11 @@ def save_answer(attempt_id: str, question_id: int, payload: AnswerPayload, reque
         connection.execute("UPDATE responses SET selected_answer = ? WHERE attempt_id = ? AND question_id = ?", (payload.answer, attempt_id, question_id))
         attempted = connection.execute("SELECT COUNT(*) AS count FROM responses WHERE attempt_id = ? AND selected_answer IS NOT NULL", (attempt_id,)).fetchone()["count"]
         connection.execute("UPDATE attempts SET attempted = ? WHERE attempt_id = ?", (attempted, attempt_id))
-    return {"saved": True, "attempted": attempted}
+        feedback = None
+        if feedback_allowed(connection.execute("SELECT t.launched FROM tests t JOIN attempts a ON a.test_id = t.test_id WHERE a.attempt_id = ?", (attempt_id,)).fetchone()):
+            question = connection.execute("SELECT correct_answer, explanation, option_a, option_b, option_c, option_d FROM questions WHERE question_id = ?", (question_id,)).fetchone()
+            feedback = {"correct": payload.answer == question["correct_answer"], "correct_answer": question["correct_answer"], "explanation": question["explanation"], "option_explanations": {key: ("Correct answer." if key == question["correct_answer"] else "This option does not match the question's correct answer.") for key in "ABCD"}}
+    return {"saved": True, "attempted": attempted, "feedback": feedback}
 
 
 @app.post("/api/attempts/{attempt_id}/submit")
@@ -763,6 +774,8 @@ def submit_attempt(attempt_id: str, payload: SubmitPayload, request: Request) ->
         stats = connection.execute("SELECT COUNT(*) AS total, SUM(selected_answer IS NOT NULL) AS attempted, SUM(correct = 1) AS correct FROM responses WHERE attempt_id = ?", (attempt_id,)).fetchone()
         total, attempted, correct = stats["total"], stats["attempted"] or 0, stats["correct"] or 0
         connection.execute("UPDATE attempts SET submitted_at = ?, status = 'submitted', attempted = ?, correct = ?, score = ?, percentage = ? WHERE attempt_id = ?", (now(), attempted, correct, correct, round(correct / total * 100, 1), attempt_id))
+        if not feedback_allowed(attempt):
+            return {"submitted": True, "feedback_allowed": False}
         return result_for_attempt(connection, attempt_id)
 
 
@@ -773,6 +786,8 @@ def get_result(attempt_id: str, request: Request) -> Dict[str, Any]:
         attempt = assert_student_attempt(connection, attempt_id, user["id"])
         if attempt["status"] != "submitted":
             raise HTTPException(400, "Submit the assessment to view results.")
+        if not feedback_allowed(attempt):
+            raise HTTPException(403, "Exam results are held by Faculty.")
         return result_for_attempt(connection, attempt_id)
 
 

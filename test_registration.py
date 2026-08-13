@@ -54,6 +54,15 @@ class StudentRegistrationTests(unittest.TestCase):
 
         self.assertEqual([item["test_name"] for item in selected], ["Launched"])
 
+    def test_feedback_is_available_only_for_practice_attempts(self):
+        with app.db() as connection:
+            connection.execute("INSERT INTO tests (test_name, composition, created_at, active, launched) VALUES (?, ?, ?, ?, ?)", ("Practice", "{}", app.now(), 1, 0))
+            practice = connection.execute("SELECT * FROM tests WHERE test_name = 'Practice'").fetchone()
+            connection.execute("INSERT INTO tests (test_name, composition, created_at, active, launched) VALUES (?, ?, ?, ?, ?)", ("Exam", "{}", app.now(), 1, 1))
+            exam = connection.execute("SELECT * FROM tests WHERE test_name = 'Exam'").fetchone()
+        self.assertTrue(app.feedback_allowed(practice))
+        self.assertFalse(app.feedback_allowed(exam))
+
 
 if __name__ == "__main__":
     unittest.main()

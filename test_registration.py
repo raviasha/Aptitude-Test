@@ -7,6 +7,7 @@ import zipfile
 from pathlib import Path
 
 import app
+from scripts.build_quantitative_bank import clean_math_text
 
 
 class StudentRegistrationTests(unittest.TestCase):
@@ -28,6 +29,10 @@ class StudentRegistrationTests(unittest.TestCase):
         app.BACKUP_DIR = self.original_backup_dir
         app.QUESTION_BANKS_DIR = self.original_question_banks_dir
         self.temp_dir.cleanup()
+
+    def test_private_use_math_fragments_are_not_returned_to_the_browser(self):
+        self.assertEqual(app.clean_display_text("x\uf8eb + y\uf8f6"), "x + y")
+        self.assertEqual(clean_math_text("a\uf8ec = b"), "a = b")
 
     def test_student_can_register_and_duplicate_id_is_rejected(self):
         result = app.register_student(" s123 ", "New Student", "AI & DS", "A", "secret123")

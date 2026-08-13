@@ -1,0 +1,8 @@
+.feedback,
+.feedback li {
+  font-family: "Cambria Math", "STIX Two Math", "Segoe UI Symbol", Inter, Arial, sans-serif;
+}
+
+.feedback li {
+  white-space: pre-wrap;
+}

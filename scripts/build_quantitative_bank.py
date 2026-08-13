@@ -13,6 +13,7 @@ import json
 from pathlib import Path
 import re
 import tempfile
+import unicodedata
 import zipfile
 
 
@@ -70,19 +71,38 @@ def taxonomy_for(number: int) -> tuple[str, str]:
     raise ValueError(f"Question number {number} is outside the mapped source range.")
 
 
+def clean_math_text(value: str) -> str:
+    """Remove private-use glyph fragments emitted by the legacy PDF extractor."""
+    value = unicodedata.normalize("NFKC", value).replace("\u00a0", " ")
+    value = re.sub(r"[\uE000-\uF8FF]", "", value)
+    return re.sub(r"[ \t]+", " ", value).strip()
+
+
+def clean_record(value):
+    if isinstance(value, str):
+        return clean_math_text(value)
+    if isinstance(value, list):
+        return [clean_record(item) for item in value]
+    if isinstance(value, dict):
+        return {key: clean_record(item) for key, item in value.items()}
+    return value
+
+
 def load_and_categorize(source: Path) -> dict:
     document = json.loads(source.read_text(encoding="utf-8"))
     questions = document.get("questions") if isinstance(document, dict) else None
     if not isinstance(questions, list) or len(questions) != 5151:
         raise ValueError("The quantitative source must contain exactly 5,151 questions.")
-    for number, question in enumerate(questions, start=1):
+    for number, raw_question in enumerate(questions, start=1):
         expected_key = f"qa-{number:04d}"
-        if not isinstance(question, dict) or question.get("key") != expected_key:
+        if not isinstance(raw_question, dict) or raw_question.get("key") != expected_key:
             raise ValueError(f"Expected {expected_key!r} at question position {number}.")
+        question = clean_record(raw_question)
+        questions[number - 1] = question
         category, chapter = taxonomy_for(number)
         question["category"] = category
         question["chapter"] = chapter
-    document["bank_name"] = "R. S. Aggarwal Quantitative Aptitude (2017) - Categorized"
+    document["bank_name"] = "R. S. Aggarwal Quantitative Aptitude (2017) - Categorized (Cropped DI Visuals)"
     return document
 
 
@@ -101,6 +121,94 @@ def normalize_for_pdf_match(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", value.lower())
 
 
+def visual_regions(pdf_page) -> list[tuple[float, float, float, float]]:
+    """Find table/chart regions from the vector rules in an exercise page."""
+    table_boxes = []
+    for table in pdf_page.find_tables():
+        x0, top, x1, bottom = map(float, table.bbox)
+        if x1 - x0 >= 75 and bottom - top >= 35:
+            table_boxes.append((x0, top, x1, bottom))
+    rules = []
+    # Curves in this PDF include the outline of individual letters.  Including
+    # them merges headings and question text into a page-sized region; charts
+    # and tables are defined by straight rules and rectangles.
+    for item in [*pdf_page.lines, *pdf_page.rects]:
+        x0, x1 = float(item["x0"]), float(item["x1"])
+        top, bottom = float(item["top"]), float(item["bottom"])
+        if top < 90 or (x1 - x0 < 6 and bottom - top < 6):
+            continue
+        # Decorative chapter rules can be close enough to a graph axis to join
+        # the chart component. They are wide, hairline rules near the heading.
+        if x1 - x0 > 250 and bottom - top < 2 and top < 180:
+            continue
+        # The two-column textbook layout uses a long central divider.  It is
+        # not part of the left-hand graph and would otherwise pull question
+        # text into the crop.
+        if x1 - x0 < 2 and bottom - top > 200 and x0 > pdf_page.width * 0.45:
+            continue
+        rules.append((x0, top, x1, bottom))
+    components: list[list[float]] = []
+    for x0, top, x1, bottom in rules:
+        for box in components:
+            if not (x1 + 28 < box[0] or box[2] + 28 < x0 or bottom + 28 < box[1] or box[3] + 28 < top):
+                box[0], box[1], box[2], box[3] = min(box[0], x0), min(box[1], top), max(box[2], x1), max(box[3], bottom)
+                break
+        else:
+            components.append([x0, top, x1, bottom])
+    # A bar chart's axes and bar groups are sometimes emitted as two nearby
+    # components. Join only boxes that substantially share a vertical span;
+    # this avoids joining unrelated charts stacked on the same page.
+    changed = True
+    while changed:
+        changed = False
+        for index, first in enumerate(components):
+            for second_index in range(index + 1, len(components)):
+                second = components[second_index]
+                overlap = max(0, min(first[3], second[3]) - max(first[1], second[1]))
+                shorter = min(first[3] - first[1], second[3] - second[1])
+                gap = max(first[0], second[0]) - min(first[2], second[2])
+                if shorter and overlap / shorter >= 0.45 and gap <= 120:
+                    first[0], first[1], first[2], first[3] = min(first[0], second[0]), min(first[1], second[1]), max(first[2], second[2]), max(first[3], second[3])
+                    components.pop(second_index)
+                    changed = True
+                    break
+            if changed:
+                break
+    regions = [
+        (max(18, x0 - 10), max(90, top - 10), min(pdf_page.width - 18, x1 + 10), min(pdf_page.height - 20, bottom + 10))
+        for x0, top, x1, bottom in table_boxes
+    ]
+    for x0, top, x1, bottom in components:
+        width, height = x1 - x0, bottom - top
+        if width < 75 or height < 35 or width * height < 5000:
+            continue
+        if any(
+            max(0, min(x1, table[2]) - max(x0, table[0])) * max(0, min(bottom, table[3]) - max(top, table[1]))
+            >= (table[2] - table[0]) * (table[3] - table[1]) * 0.9
+            for table in table_boxes
+        ):
+            continue
+        regions.append((max(18, x0 - 28), max(90, top - 34), min(pdf_page.width - 18, x1 + 28), min(pdf_page.height - 20, bottom + 5)))
+    return sorted(regions, key=lambda box: (box[1], box[0]))
+
+
+def render_visual_crop(rendered, regions: list[tuple[float, float, float, float]], scale: float):
+    from PIL import Image
+
+    crops = [rendered.crop(tuple(round(value * scale) for value in region)) for region in regions]
+    if not crops:
+        raise ValueError("No chart or table region could be detected on a mapped DI source page.")
+    width = max(crop.width for crop in crops)
+    padding, gap = 22, 18
+    height = sum(crop.height for crop in crops) + gap * (len(crops) - 1) + padding * 2
+    composite = Image.new("RGB", (width + padding * 2, height), "white")
+    y = padding
+    for crop in crops:
+        composite.paste(crop, ((composite.width - crop.width) // 2, y))
+        y += crop.height + gap
+    return composite
+
+
 def attach_di_pdf_stimuli(document: dict, source_pdf: Path) -> list[dict]:
     """Render PDF pages containing each DI question and link them as shared stimuli.
 
@@ -111,6 +219,7 @@ def attach_di_pdf_stimuli(document: dict, source_pdf: Path) -> list[dict]:
     try:
         import pypdfium2 as pdfium
         from pypdf import PdfReader
+        import pdfplumber
     except ImportError as error:
         raise RuntimeError(
             "DI PDF rendering needs pypdf and pypdfium2. Use the bundled Codex Python runtime."
@@ -139,23 +248,35 @@ def attach_di_pdf_stimuli(document: dict, source_pdf: Path) -> list[dict]:
         if not matched_page:
             raise ValueError(f"Could not map DI question {question['key']} to a PDF exercise page.")
         page_for_question[position] = matched_page
-        question["stimulus_id"] = f"di-source-page-{matched_page}"
 
     pdf = pdfium.PdfDocument(str(source_pdf))
     stimuli: list[dict] = []
-    for page_number in sorted(set(page_for_question.values())):
-        rendered = pdf[page_number - 1].render(scale=1.6).to_pil().convert("RGB")
-        encoded = BytesIO()
-        rendered.save(encoded, "JPEG", quality=84, optimize=True, progressive=True)
-        stimulus_id = f"di-source-page-{page_number}"
-        stimuli.append({
-            "id": stimulus_id,
-            "type": "image",
-            "title": f"Data Interpretation source visual (PDF page {page_number})",
-            "alt_text": "Source table, bar graph, pie chart, or line graph for this Data Interpretation question set.",
-            "file": f"assets/{stimulus_id}.jpg",
-            "asset_bytes": encoded.getvalue(),
-        })
+    with pdfplumber.open(source_pdf) as visual_pdf:
+        source_pages = sorted(set(page_for_question.values()))
+        regions_for_page = {page_number: visual_regions(visual_pdf.pages[page_number - 1]) for page_number in source_pages}
+        pages_with_visuals = [page_number for page_number in source_pages if regions_for_page[page_number]]
+        if not pages_with_visuals:
+            raise ValueError("No chart or table regions were detected in the DI source pages.")
+        for position, page_number in page_for_question.items():
+            visual_page = max((candidate for candidate in pages_with_visuals if candidate <= page_number), default=None)
+            if visual_page is None:
+                visual_page = min(pages_with_visuals)
+            questions[position - 1]["stimulus_id"] = f"di-source-page-{visual_page}"
+        for page_number in pages_with_visuals:
+            scale = 1.6
+            rendered = pdf[page_number - 1].render(scale=scale).to_pil().convert("RGB")
+            cropped = render_visual_crop(rendered, regions_for_page[page_number], scale)
+            encoded = BytesIO()
+            cropped.save(encoded, "JPEG", quality=84, optimize=True, progressive=True)
+            stimulus_id = f"di-source-page-{page_number}"
+            stimuli.append({
+                "id": stimulus_id,
+                "type": "image",
+                "title": "Data Interpretation chart or table",
+                "alt_text": "Chart or table required for this Data Interpretation question set.",
+                "file": f"assets/{stimulus_id}.jpg",
+                "asset_bytes": encoded.getvalue(),
+            })
     return stimuli
 
 

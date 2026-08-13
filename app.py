@@ -18,6 +18,7 @@ import socket
 import sqlite3
 import sys
 import threading
+import unicodedata
 import uuid
 import webbrowser
 import zipfile
@@ -373,6 +374,22 @@ def create_attempt_from_questions(
     return attempt_id
 
 
+def clean_display_text(value: str) -> str:
+    """Remove unsupported private-use glyphs produced by older PDF extraction."""
+    value = unicodedata.normalize("NFKC", value).replace("\u00a0", " ")
+    return re.sub(r"[\uE000-\uF8FF]", "", value)
+
+
+def clean_display_value(value: Any) -> Any:
+    if isinstance(value, str):
+        return clean_display_text(value)
+    if isinstance(value, list):
+        return [clean_display_value(item) for item in value]
+    if isinstance(value, dict):
+        return {key: clean_display_value(item) for key, item in value.items()}
+    return value
+
+
 def question_options(question: sqlite3.Row | Dict[str, Any]) -> Dict[str, str]:
     """Return JSON-defined choices, falling back to legacy A-D columns."""
     columns = set(question.keys())
@@ -383,8 +400,8 @@ def question_options(question: sqlite3.Row | Dict[str, Any]) -> Dict[str, str]:
         except (TypeError, json.JSONDecodeError):
             options = None
         if isinstance(options, dict) and options and all(isinstance(key, str) and isinstance(value, str) for key, value in options.items()):
-            return options
-    return {key: question[f"option_{key.lower()}"] for key in LEGACY_OPTION_KEYS}
+            return clean_display_value(options)
+    return {key: clean_display_text(question[f"option_{key.lower()}"]) for key in LEGACY_OPTION_KEYS}
 
 
 def migrate_question_options(connection: sqlite3.Connection) -> None:
@@ -1113,7 +1130,7 @@ def serialize_attempt(connection: sqlite3.Connection, attempt: sqlite3.Row, incl
     questions = []
     for row in response_rows:
         question = {
-            "question_id": row["question_id"], "question_text": row["question_text"], "question_html": row["question_html"],
+            "question_id": row["question_id"], "question_text": clean_display_text(row["question_text"]), "question_html": clean_display_text(row["question_html"]),
             "category": row["category"], "chapter": row["chapter"], "difficulty": row["difficulty"],
             "options": question_options(row),
             "selected_answer": row["selected_answer"],
@@ -1131,14 +1148,14 @@ def serialize_attempt(connection: sqlite3.Connection, attempt: sqlite3.Row, incl
                 stimulus["content"] = json.loads(row["content_json"] or "{}")
             question["stimulus"] = stimulus
         if include_answers:
-            question.update({"correct_answer": row["correct_answer"], "explanation": row["explanation"], "solution_steps": json.loads(row["solution_steps"]), "option_explanations": json.loads(row["option_explanations"])})
+            question.update({"correct_answer": row["correct_answer"], "explanation": clean_display_text(row["explanation"]), "solution_steps": clean_display_value(json.loads(row["solution_steps"])), "option_explanations": clean_display_value(json.loads(row["option_explanations"]))})
             if row["selected_answer"] is not None and feedback_allowed(attempt):
                 question["feedback"] = {
                     "correct": row["selected_answer"] == row["correct_answer"],
                     "correct_answer": row["correct_answer"],
-                    "explanation": row["explanation"],
-                    "solution_steps": json.loads(row["solution_steps"]),
-                    "option_explanations": json.loads(row["option_explanations"]),
+                    "explanation": clean_display_text(row["explanation"]),
+                    "solution_steps": clean_display_value(json.loads(row["solution_steps"])),
+                    "option_explanations": clean_display_value(json.loads(row["option_explanations"])),
                 }
         questions.append(question)
     return {**dict(attempt), "feedback_allowed": feedback_allowed(attempt), "questions": questions}
@@ -1371,7 +1388,7 @@ def save_answer(attempt_id: str, question_id: int, payload: AnswerPayload, reque
         feedback = None
         if feedback_allowed(attempt):
             question = connection.execute("SELECT correct_answer, explanation, solution_steps, option_explanations FROM questions WHERE question_id = ?", (question_id,)).fetchone()
-            feedback = {"correct": payload.answer == question["correct_answer"], "correct_answer": question["correct_answer"], "explanation": question["explanation"], "solution_steps": json.loads(question["solution_steps"]), "option_explanations": json.loads(question["option_explanations"])}
+            feedback = {"correct": payload.answer == question["correct_answer"], "correct_answer": question["correct_answer"], "explanation": clean_display_text(question["explanation"]), "solution_steps": clean_display_value(json.loads(question["solution_steps"])), "option_explanations": clean_display_value(json.loads(question["option_explanations"]))}
     return {"saved": True, "attempted": attempted, "feedback": feedback}
 
 

@@ -225,6 +225,41 @@ class StudentRegistrationTests(unittest.TestCase):
         self.assertTrue(app.feedback_allowed(attempt))
         self.assertEqual(response_count, 2)
 
+    def test_new_practice_selection_is_not_replaced_by_an_open_practice_session(self):
+        app.register_student("P101", "New Practice Student", "AI & DS", "A", "secret123")
+        with app.db() as connection:
+            first_bank = connection.execute(
+                "INSERT INTO question_banks (bank_name, source_html_filename, answer_key_filename, imported_at) VALUES (?, '', '', ?)",
+                ("Old practice bank", app.now()),
+            ).lastrowid
+            second_bank = connection.execute(
+                "INSERT INTO question_banks (bank_name, source_html_filename, answer_key_filename, imported_at) VALUES (?, '', '', ?)",
+                ("Selected DI bank", app.now()),
+            ).lastrowid
+            for bank_id, category, chapter in ((first_bank, "Arithmetical Ability", "Percentages"), (second_bank, "Data Interpretation", "Bar Graphs")):
+                connection.execute(
+                    """INSERT INTO questions (question_text, category, chapter, difficulty, option_a, option_b, option_c, option_d,
+                       correct_answer, created_at, bank_id) VALUES (?, ?, ?, 'Easy', '1', '2', '3', '4', 'A', ?, ?)""",
+                    (f"Question for {chapter}", category, chapter, app.now(), bank_id),
+                )
+            old_test = connection.execute(
+                """INSERT INTO tests (test_name, composition, bank_id, created_at, active, launched, mode, owner_student_id)
+                   VALUES ('Older practice', '[]', ?, ?, 0, 0, 'student_practice', 'P101')""",
+                (first_bank, app.now()),
+            ).lastrowid
+            old_question = connection.execute(
+                "SELECT question_id, category, chapter, stimulus_id FROM questions WHERE bank_id = ?", (first_bank,)
+            ).fetchone()
+            app.create_attempt_from_questions(connection, "P101", old_test, [old_question])
+        request = app.Request({"type": "http", "method": "POST", "path": "/", "headers": [], "session": {"user": {"role": "student", "id": "P101", "name": "New Practice Student"}}})
+        result = app.start_student_practice(
+            app.PracticePayload(bank_id=second_bank, selection_rules=[app.SelectionRule(category="Data Interpretation", chapter="Bar Graphs", quantity=1)]), request
+        )
+        with app.db() as connection:
+            attempt = app.get_attempt(connection, result["attempt_id"])
+        self.assertFalse(result["resumed"])
+        self.assertEqual(attempt["bank_id"], second_bank)
+
     def test_complete_quantitative_bank_imports_four_and_five_choice_questions(self):
         bank_path = app.SOURCE_ROOT / "question-banks" / "quantitative_aptitude_complete_extended"
         html_source = bank_path.with_suffix(".html").read_text(encoding="utf-8-sig")

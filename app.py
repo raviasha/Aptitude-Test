@@ -1299,14 +1299,6 @@ def start_student_practice(payload: PracticePayload, request: Request) -> Dict[s
             "SELECT 1 FROM tests WHERE active = 1 AND launched = 1 AND mode = 'faculty' LIMIT 1"
         ).fetchone():
             raise HTTPException(409, "Personal practice is paused while Faculty has a launched assessment.")
-        existing = connection.execute(
-            """SELECT a.attempt_id FROM attempts a JOIN tests t ON t.test_id = a.test_id
-               WHERE a.student_id = ? AND a.status = 'in_progress' AND t.mode = 'student_practice'
-               ORDER BY a.started_at DESC LIMIT 1""",
-            (user["id"],),
-        ).fetchone()
-        if existing:
-            return {"attempt_id": existing["attempt_id"], "resumed": True}
         rules = validate_selection_rules(connection, payload.bank_id, rules, MAX_PRACTICE_QUESTIONS)
         bank = connection.execute(
             "SELECT bank_name FROM question_banks WHERE bank_id = ?", (payload.bank_id,)

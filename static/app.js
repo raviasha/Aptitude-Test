@@ -36,7 +36,7 @@ function layout(title, subtitle, content, nav = '') {
 }
 
 function loginScreen() {
-  app.innerHTML = `<div class="login"><section><a class="brand"><span>A</span>Aptitude <i>Lab</i></a><p class="eyebrow">Local, secure assessment platform</p><h1>Know where<br/>you <em>stand.</em></h1><p>Randomized aptitude tests with server-side scoring and useful progress signals.</p><small>Runs inside your college network. No internet required.</small></section><section class="login-card"><p class="eyebrow">Welcome back</p><h2>Sign in</h2><div class="role"><button class="chosen" data-role="student">Student</button><button data-role="admin">Faculty</button></div><form id="login-form"><label id="login-id-label">Student ID / USN<input id="identifier" required placeholder="1KS23AI042" autocomplete="username" /></label><label>Password<input id="password" type="password" required placeholder="Enter password" autocomplete="current-password" /></label><button class="primary">Sign in →</button></form><p class="demo" id="demo">Student demo: <code>1KS23AI042</code> / <code>student123</code></p></section></div>`;
+  app.innerHTML = `<div class="login"><section><a class="brand"><span>A</span>Aptitude <i>Lab</i></a><p class="eyebrow">Local, secure assessment platform</p><h1>Know where<br/>you <em>stand.</em></h1><p>Randomized aptitude tests with server-side scoring and useful progress signals.</p><small>Runs inside your college network. No internet required.</small></section><section class="login-card"><p class="eyebrow">Welcome back</p><h2>Sign in</h2><div class="role"><button class="chosen" data-role="student">Student</button><button data-role="admin">Faculty</button></div><form id="login-form"><label id="login-id-label">Student ID / USN<input id="identifier" required placeholder="1KS23AI042" autocomplete="username" /></label><label>Password<input id="password" type="password" required placeholder="Enter password" autocomplete="current-password" /></label><button class="primary">Sign in →</button></form><p class="demo" id="demo">Student demo: <code>1KS23AI042</code> / <code>student123</code></p><button class="secondary link" id="register-link">New student? Register here</button></section></div>`;
   let role = 'student';
   document.querySelectorAll('[data-role]').forEach(button => button.addEventListener('click', () => {
     role = button.dataset.role; document.querySelectorAll('[data-role]').forEach(item => item.classList.toggle('chosen', item === button));
@@ -47,6 +47,17 @@ function loginScreen() {
   document.querySelector('#login-form').addEventListener('submit', async event => {
     event.preventDefault();
     try { state.user = (await api('/api/login', {method:'POST', body:{identifier:document.querySelector('#identifier').value,password:document.querySelector('#password').value,role}})).user; home(); }
+    catch (error) { notify(error.message, true); }
+  });
+  document.querySelector('#register-link').addEventListener('click', registerScreen);
+}
+
+function registerScreen() {
+  app.innerHTML = `<div class="login"><section><a class="brand"><span>A</span>Aptitude <i>Lab</i></a><p class="eyebrow">Student registration</p><h1>Ready to<br/><em>begin?</em></h1><p>Create your own student account for this lab.</p><small>Use your official Student ID / USN.</small></section><section class="login-card"><p class="eyebrow">New student</p><h2>Create account</h2><form id="register-form"><label>Student name<input name="name" required autocomplete="name" /></label><label>Student ID / USN<input name="student_id" required /></label><div class="split"><label>Class<input name="student_class" value="AI & DS" required /></label><label>Section<input name="section" value="A" required /></label></div><label>Password<input name="password" type="password" minlength="6" required autocomplete="new-password" /></label><button class="primary">Create account →</button></form><button class="secondary link" id="back-login">Back to sign in</button></section></div>`;
+  document.querySelector('#back-login').addEventListener('click', loginScreen);
+  document.querySelector('#register-form').addEventListener('submit', async event => {
+    event.preventDefault();
+    try { await api('/api/register', {method:'POST', body:Object.fromEntries(new FormData(event.currentTarget))}); notify('Account created. You can now sign in.'); loginScreen(); }
     catch (error) { notify(error.message, true); }
   });
 }

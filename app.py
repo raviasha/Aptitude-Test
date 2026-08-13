@@ -81,6 +81,14 @@ class StudentPayload(BaseModel):
     password: str = "student123"
 
 
+class RegistrationPayload(BaseModel):
+    student_id: str
+    name: str
+    student_class: str = "AI & DS"
+    section: str = "A"
+    password: str
+
+
 class TestPayload(BaseModel):
     test_name: str
     composition: Dict[str, int]
@@ -90,6 +98,10 @@ class TestPayload(BaseModel):
 class FolderImportPayload(BaseModel):
     html_filename: str
     answer_key_filename: str
+
+
+class RegistrationError(Exception):
+    pass
 
 
 def now() -> str:
@@ -114,6 +126,24 @@ def hash_password(password: str) -> str:
 
 def check_password(password: str, password_hash: str) -> bool:
     return bcrypt.checkpw(password.encode(), password_hash.encode())
+
+
+def register_student(student_id: str, name: str, student_class: str, section: str, password: str) -> Dict[str, str]:
+    normalized_id = student_id.strip().upper()
+    normalized_name = name.strip()
+    normalized_class = student_class.strip() or "AI & DS"
+    normalized_section = section.strip() or "A"
+    if not normalized_id or not normalized_name or len(password) < 6:
+        raise RegistrationError("Enter a Student ID, name, and a password of at least 6 characters.")
+    with db() as connection:
+        try:
+            connection.execute(
+                "INSERT INTO students VALUES (?, ?, ?, ?, ?, ?)",
+                (normalized_id, normalized_name, hash_password(password), normalized_class, normalized_section, now()),
+            )
+        except sqlite3.IntegrityError as error:
+            raise RegistrationError("That Student ID is already registered.") from error
+    return {"student_id": normalized_id, "name": normalized_name}
 
 
 def rows(items: List[sqlite3.Row]) -> List[Dict[str, Any]]:
@@ -596,6 +626,15 @@ def login(payload: LoginPayload, request: Request) -> Dict[str, Any]:
             raise HTTPException(401, "Incorrect ID or password.")
         request.session["user"] = {"role": role, "id": account[user_id], "name": account[label]}
     return {"user": request.session["user"]}
+
+
+@app.post("/api/register")
+def register(payload: RegistrationPayload) -> Dict[str, Any]:
+    try:
+        student = register_student(payload.student_id, payload.name, payload.student_class, payload.section, payload.password)
+    except RegistrationError as error:
+        raise HTTPException(400, str(error)) from error
+    return {"registered": True, "student": student}
 
 
 @app.post("/api/logout")

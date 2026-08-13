@@ -160,6 +160,12 @@ def delete_student(student_id: str) -> Dict[str, str]:
     return {"student_id": normalized_id}
 
 
+def student_available_tests(connection: sqlite3.Connection) -> List[Dict[str, Any]]:
+    launched = connection.execute("SELECT * FROM tests WHERE active = 1 AND launched = 1 ORDER BY test_id DESC").fetchall()
+    available = launched or connection.execute("SELECT * FROM tests WHERE active = 1 ORDER BY test_id DESC").fetchall()
+    return [dict(test) for test in available]
+
+
 def rows(items: List[sqlite3.Row]) -> List[Dict[str, Any]]:
     return [dict(item) for item in items]
 
@@ -440,6 +446,7 @@ def ensure_schema() -> None:
         ensure_column(connection, "questions", "bank_id INTEGER")
         ensure_column(connection, "questions", "question_html TEXT NOT NULL DEFAULT ''")
         ensure_column(connection, "tests", "bank_id INTEGER")
+        ensure_column(connection, "tests", "launched INTEGER NOT NULL DEFAULT 0")
         connection.execute("CREATE INDEX IF NOT EXISTS idx_questions_bank ON questions(bank_id)")
 
 
@@ -669,7 +676,7 @@ def student_dashboard(request: Request) -> Dict[str, Any]:
     user = require_user(request, "student")
     with db() as connection:
         student = connection.execute("SELECT student_id, name, class, section FROM students WHERE student_id = ?", (user["id"],)).fetchone()
-        test = connection.execute("SELECT * FROM tests WHERE active = 1 ORDER BY test_id DESC LIMIT 1").fetchone()
+        tests = student_available_tests(connection)
         active = connection.execute("SELECT * FROM attempts WHERE student_id = ? AND status = 'in_progress' ORDER BY started_at DESC LIMIT 1", (user["id"],)).fetchone()
         history = connection.execute(
             """SELECT a.attempt_id, a.score, a.total_questions, a.percentage, a.submitted_at, t.test_name
@@ -681,7 +688,7 @@ def student_dashboard(request: Request) -> Dict[str, Any]:
                FROM responses r JOIN attempts a ON a.attempt_id = r.attempt_id
                WHERE a.student_id = ? AND a.status = 'submitted' GROUP BY r.category""", (user["id"],)
         ).fetchall()
-    return {"student": dict(student), "test": dict(test) if test else None, "active_attempt": dict(active) if active else None, "history": rows(history), "category_trend": rows(trend)}
+    return {"student": dict(student), "tests": tests, "test": tests[0] if tests else None, "launched": bool(tests and tests[0]["launched"]), "active_attempt": dict(active) if active else None, "history": rows(history), "category_trend": rows(trend)}
 
 
 @app.post("/api/tests/{test_id}/start")
@@ -694,6 +701,9 @@ def start_test(test_id: int, request: Request) -> Dict[str, Any]:
         test = connection.execute("SELECT * FROM tests WHERE test_id = ? AND active = 1", (test_id,)).fetchone()
         if not test:
             raise HTTPException(404, "This test is not currently available.")
+        launched = connection.execute("SELECT 1 FROM tests WHERE active = 1 AND launched = 1 LIMIT 1").fetchone()
+        if launched and not test["launched"]:
+            raise HTTPException(409, "Faculty has launched another test. Please attempt the launched test.")
         composition = json.loads(test["composition"])
         selected: List[sqlite3.Row] = []
         for category, count in composition.items():
@@ -954,6 +964,25 @@ def create_test(payload: TestPayload, request: Request) -> Dict[str, Any]:
             (payload.test_name.strip(), json.dumps(clean), payload.bank_id, now()),
         )
     return {"created": True}
+
+
+@app.post("/api/admin/tests/{test_id}/launch")
+def launch_test(test_id: int, request: Request) -> Dict[str, bool]:
+    require_user(request, "admin")
+    with db() as connection:
+        if not connection.execute("SELECT 1 FROM tests WHERE test_id = ? AND active = 1", (test_id,)).fetchone():
+            raise HTTPException(404, "Test not found.")
+        connection.execute("UPDATE tests SET launched = 0")
+        connection.execute("UPDATE tests SET launched = 1 WHERE test_id = ?", (test_id,))
+    return {"launched": True}
+
+
+@app.post("/api/admin/tests/{test_id}/close")
+def close_test(test_id: int, request: Request) -> Dict[str, bool]:
+    require_user(request, "admin")
+    with db() as connection:
+        connection.execute("UPDATE tests SET launched = 0 WHERE test_id = ?", (test_id,))
+    return {"closed": True}
 
 
 @app.get("/api/admin/export")

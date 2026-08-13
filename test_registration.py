@@ -46,6 +46,14 @@ class StudentRegistrationTests(unittest.TestCase):
         with app.db() as connection:
             self.assertIsNone(connection.execute("SELECT 1 FROM students WHERE student_id = ?", ("S456",)).fetchone())
 
+    def test_student_sees_only_launched_test_when_one_exists(self):
+        with app.db() as connection:
+            connection.execute("INSERT INTO tests (test_name, composition, created_at, active, launched) VALUES (?, ?, ?, ?, ?)", ("Available", "{}", app.now(), 1, 0))
+            connection.execute("INSERT INTO tests (test_name, composition, created_at, active, launched) VALUES (?, ?, ?, ?, ?)", ("Launched", "{}", app.now(), 1, 1))
+            selected = app.student_available_tests(connection)
+
+        self.assertEqual([item["test_name"] for item in selected], ["Launched"])
+
 
 if __name__ == "__main__":
     unittest.main()

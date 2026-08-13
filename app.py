@@ -170,6 +170,10 @@ def feedback_allowed(test: sqlite3.Row | Dict[str, Any]) -> bool:
     return not bool(test["launched"])
 
 
+def answer_locked(response: sqlite3.Row | Dict[str, Any]) -> bool:
+    return feedback_allowed(response) and response["selected_answer"] is not None
+
+
 def rows(items: List[sqlite3.Row]) -> List[Dict[str, Any]]:
     return [dict(item) for item in items]
 
@@ -746,14 +750,24 @@ def save_answer(attempt_id: str, question_id: int, payload: AnswerPayload, reque
         attempt = assert_student_attempt(connection, attempt_id, user["id"])
         if attempt["status"] != "in_progress":
             raise HTTPException(400, "Submitted tests cannot be changed.")
-        response = connection.execute("SELECT 1 FROM responses WHERE attempt_id = ? AND question_id = ?", (attempt_id, question_id)).fetchone()
+        response = connection.execute("SELECT selected_answer FROM responses WHERE attempt_id = ? AND question_id = ?", (attempt_id, question_id)).fetchone()
         if not response:
             raise HTTPException(404, "Question is not part of this assessment.")
-        connection.execute("UPDATE responses SET selected_answer = ? WHERE attempt_id = ? AND question_id = ?", (payload.answer, attempt_id, question_id))
+        if answer_locked({"launched": attempt["launched"], "selected_answer": response["selected_answer"]}):
+            raise HTTPException(409, "Practice answers cannot be changed after feedback is shown.")
+        if feedback_allowed(attempt):
+            updated = connection.execute(
+                "UPDATE responses SET selected_answer = ? WHERE attempt_id = ? AND question_id = ? AND selected_answer IS NULL",
+                (payload.answer, attempt_id, question_id),
+            )
+            if updated.rowcount != 1:
+                raise HTTPException(409, "Practice answers cannot be changed after feedback is shown.")
+        else:
+            connection.execute("UPDATE responses SET selected_answer = ? WHERE attempt_id = ? AND question_id = ?", (payload.answer, attempt_id, question_id))
         attempted = connection.execute("SELECT COUNT(*) AS count FROM responses WHERE attempt_id = ? AND selected_answer IS NOT NULL", (attempt_id,)).fetchone()["count"]
         connection.execute("UPDATE attempts SET attempted = ? WHERE attempt_id = ?", (attempted, attempt_id))
         feedback = None
-        if feedback_allowed(connection.execute("SELECT t.launched FROM tests t JOIN attempts a ON a.test_id = t.test_id WHERE a.attempt_id = ?", (attempt_id,)).fetchone()):
+        if feedback_allowed(attempt):
             question = connection.execute("SELECT correct_answer, explanation, solution_steps, option_explanations FROM questions WHERE question_id = ?", (question_id,)).fetchone()
             feedback = {"correct": payload.answer == question["correct_answer"], "correct_answer": question["correct_answer"], "explanation": question["explanation"], "solution_steps": json.loads(question["solution_steps"]), "option_explanations": json.loads(question["option_explanations"])}
     return {"saved": True, "attempted": attempted, "feedback": feedback}

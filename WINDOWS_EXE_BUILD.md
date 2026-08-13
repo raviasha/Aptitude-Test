@@ -43,7 +43,11 @@ http://<SERVER-LAN-IP>:8000
 
 ## 4. Add future assessment files
 
-After installation, copy every new question-bank pair into:
+Only the sample pair in `templates` is packaged with the installer. Additional
+question-bank pairs live in the repository's `question-banks` folder so they
+can be downloaded and copied manually without rebuilding Aptitude Lab.
+
+After installation, copy each desired pair into:
 
 ```text
 C:\ProgramData\Aptitude Lab\Question Banks

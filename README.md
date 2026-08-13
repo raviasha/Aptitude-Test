@@ -22,11 +22,18 @@ placement-set-02.json
 
 Open Faculty → **Question banks**, refresh the folder, and click **Import**. The app stores both the visual question markup and scoring data in SQLite; students never receive correct answers.
 
-The installer copies a visual graph sample pair into the folder on first startup.
+The installer copies one visual graph sample pair into the folder on first startup.
+
+Additional question banks are stored in the repository's
+[`question-banks`](question-banks/) folder and are deliberately excluded from
+the installer. Download the desired bank, extract it if necessary, and manually
+copy its matching HTML and JSON files into the folder above.
 
 ## Build the Windows installer
 
-Run [build-windows.bat](/Users/rampetaravishankar/Documents/New%20project/build-windows.bat) on a Windows computer with Python 3.10+ and Inno Setup 6 installed. It produces:
+Run [`build-windows.bat`](build-windows.bat) on a Windows computer with Python
+3.10+ and Inno Setup 6 installed. The build explicitly packages only the sample
+pair from `templates`; files in `question-banks` remain separate. It produces:
 
 ```text
 release\Aptitude-Lab-Setup.exe

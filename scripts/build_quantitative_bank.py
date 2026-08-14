@@ -63,6 +63,14 @@ CHAPTER_RANGES = (
     (5085, 5151, "Data Interpretation", "Line Graphs"),
 )
 
+SOLUTION_STEP_OVERRIDES = {
+    "qa-5061": [
+        "Groceries, Entertainment and Investments = (23% + 10% + 15%) × ₹45,800 = 48% × ₹45,800 = ₹21,984.",
+        "Commuting = 22% × ₹45,800 = ₹10,076.",
+        "Required percentage = (₹21,984 ÷ ₹10,076) × 100 = 218.18% ≈ 218%. Therefore, option E is correct.",
+    ],
+}
+
 
 def taxonomy_for(number: int) -> tuple[str, str]:
     for start, end, category, chapter in CHAPTER_RANGES:
@@ -73,6 +81,11 @@ def taxonomy_for(number: int) -> tuple[str, str]:
 
 def clean_math_text(value: str) -> str:
     """Remove private-use glyph fragments emitted by the legacy PDF extractor."""
+    if any(marker in value for marker in ("Ã", "Â", "â")):
+        try:
+            value = value.encode("latin-1").decode("utf-8")
+        except UnicodeError:
+            pass
     value = unicodedata.normalize("NFKC", value).replace("\u00a0", " ")
     value = re.sub(r"[\uE000-\uF8FF]", "", value)
     return re.sub(r"[ \t]+", " ", value).strip()
@@ -102,6 +115,8 @@ def load_and_categorize(source: Path) -> dict:
         category, chapter = taxonomy_for(number)
         question["category"] = category
         question["chapter"] = chapter
+        if question["key"] in SOLUTION_STEP_OVERRIDES:
+            question["solution_steps"] = SOLUTION_STEP_OVERRIDES[question["key"]]
     document["bank_name"] = "R. S. Aggarwal Quantitative Aptitude (2017) - Categorized (Cropped DI Visuals)"
     return document
 

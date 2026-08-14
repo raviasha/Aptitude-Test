@@ -68,6 +68,14 @@ MAX_PACKAGE_UNPACKED_BYTES = 150_000_000
 MAX_PACKAGE_FILES = 10_000
 ALLOWED_ASSET_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".svg"}
 
+SOLUTION_STEP_OVERRIDES = {
+    "The total amount spent by the family on Groceries, Entertainment and Investments together forms approximately what percent of the amount spent on Commuting ?": [
+        "Groceries, Entertainment and Investments = (23% + 10% + 15%) × ₹45,800 = 48% × ₹45,800 = ₹21,984.",
+        "Commuting = 22% × ₹45,800 = ₹10,076.",
+        "Required percentage = (₹21,984 ÷ ₹10,076) × 100 = 218.18% ≈ 218%. Therefore, option E is correct.",
+    ],
+}
+
 app = FastAPI(title="Aptitude Lab")
 app.add_middleware(SessionMiddleware, secret_key=os.getenv("SESSION_SECRET", "replace-this-before-production"), https_only=False, same_site="lax")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
@@ -376,6 +384,11 @@ def create_attempt_from_questions(
 
 def clean_display_text(value: str) -> str:
     """Remove unsupported private-use glyphs produced by older PDF extraction."""
+    if any(marker in value for marker in ("Ã", "Â", "â")):
+        try:
+            value = value.encode("latin-1").decode("utf-8")
+        except UnicodeError:
+            pass
     value = unicodedata.normalize("NFKC", value).replace("\u00a0", " ")
     return re.sub(r"[\uE000-\uF8FF]", "", value)
 
@@ -384,10 +397,20 @@ def clean_display_value(value: Any) -> Any:
     if isinstance(value, str):
         return clean_display_text(value)
     if isinstance(value, list):
-        return [clean_display_value(item) for item in value]
+        cleaned = [clean_display_value(item) for item in value]
+        if len(cleaned) == 1 and isinstance(cleaned[0], str) and cleaned[0].startswith("Amount spent on Groceries, Entertainment and Investments"):
+            return next(iter(SOLUTION_STEP_OVERRIDES.values()))
+        return cleaned
     if isinstance(value, dict):
         return {key: clean_display_value(item) for key, item in value.items()}
     return value
+
+
+def display_solution_steps(question_text: str, stored_steps: str) -> List[str]:
+    """Use repaired steps where PDF extraction did not preserve formula order."""
+    if question_text in SOLUTION_STEP_OVERRIDES:
+        return SOLUTION_STEP_OVERRIDES[question_text]
+    return clean_display_value(json.loads(stored_steps))
 
 
 def question_options(question: sqlite3.Row | Dict[str, Any]) -> Dict[str, str]:
@@ -1148,13 +1171,13 @@ def serialize_attempt(connection: sqlite3.Connection, attempt: sqlite3.Row, incl
                 stimulus["content"] = json.loads(row["content_json"] or "{}")
             question["stimulus"] = stimulus
         if include_answers:
-            question.update({"correct_answer": row["correct_answer"], "explanation": clean_display_text(row["explanation"]), "solution_steps": clean_display_value(json.loads(row["solution_steps"])), "option_explanations": clean_display_value(json.loads(row["option_explanations"]))})
+            question.update({"correct_answer": row["correct_answer"], "explanation": clean_display_text(row["explanation"]), "solution_steps": display_solution_steps(row["question_text"], row["solution_steps"]), "option_explanations": clean_display_value(json.loads(row["option_explanations"]))})
             if row["selected_answer"] is not None and feedback_allowed(attempt):
                 question["feedback"] = {
                     "correct": row["selected_answer"] == row["correct_answer"],
                     "correct_answer": row["correct_answer"],
                     "explanation": clean_display_text(row["explanation"]),
-                    "solution_steps": clean_display_value(json.loads(row["solution_steps"])),
+                    "solution_steps": display_solution_steps(row["question_text"], row["solution_steps"]),
                     "option_explanations": clean_display_value(json.loads(row["option_explanations"])),
                 }
         questions.append(question)
@@ -1529,11 +1552,31 @@ def list_question_banks(request: Request) -> Dict[str, Any]:
                       b.format_version,
                       COUNT(q.question_id) AS question_count,
                       SUM(q.question_html != '') AS visual_question_count,
-                      (SELECT COUNT(*) FROM stimuli s WHERE s.bank_id = b.bank_id) AS stimulus_count
+                      (SELECT COUNT(*) FROM stimuli s WHERE s.bank_id = b.bank_id) AS stimulus_count,
+                      (SELECT COUNT(*) FROM tests t WHERE t.bank_id = b.bank_id) AS test_count
                FROM question_banks b LEFT JOIN questions q ON q.bank_id = b.bank_id
                GROUP BY b.bank_id ORDER BY b.imported_at DESC"""
         ).fetchall()
     return {"banks": rows(banks)}
+
+
+@app.delete("/api/admin/question-banks/{bank_id}")
+def delete_question_bank(bank_id: int, request: Request) -> Dict[str, Any]:
+    require_user(request, "admin")
+    with db() as connection:
+        bank = connection.execute("SELECT bank_name FROM question_banks WHERE bank_id = ?", (bank_id,)).fetchone()
+        if not bank:
+            raise HTTPException(404, "Question bank not found.")
+        test_count = connection.execute("SELECT COUNT(*) AS count FROM tests WHERE bank_id = ?", (bank_id,)).fetchone()["count"]
+        if test_count:
+            raise HTTPException(409, "This bank is used by existing tests and cannot be deleted. Delete those tests first to preserve records safely.")
+        connection.execute("DELETE FROM stimuli WHERE bank_id = ?", (bank_id,))
+        connection.execute("DELETE FROM questions WHERE bank_id = ?", (bank_id,))
+        connection.execute("DELETE FROM question_banks WHERE bank_id = ?", (bank_id,))
+    asset_directory = question_assets_dir() / str(bank_id)
+    if asset_directory.exists():
+        shutil.rmtree(asset_directory)
+    return {"deleted": True, "bank_name": bank["bank_name"]}
 
 
 @app.get("/api/admin/question-banks/folder")

@@ -34,6 +34,23 @@ class StudentRegistrationTests(unittest.TestCase):
         self.assertEqual(app.clean_display_text("x\uf8eb + y\uf8f6"), "x + y")
         self.assertEqual(clean_math_text("a\uf8ec = b"), "a = b")
 
+    def test_malformed_di_solution_is_replaced_with_readable_calculation(self):
+        raw_step = "Amount spent on Groceries, Entertainment and Investments = { } (23 10 15) 4845800"
+        self.assertEqual(app.clean_display_value([raw_step]), next(iter(app.SOLUTION_STEP_OVERRIDES.values())))
+
+    def test_admin_can_delete_an_unused_question_bank(self):
+        with app.db() as connection:
+            bank_id = connection.execute(
+                "INSERT INTO question_banks (bank_name, source_html_filename, answer_key_filename, imported_at) VALUES (?, '', '', ?)",
+                ("Discard me", app.now()),
+            ).lastrowid
+        request = app.Request({"type": "http", "method": "DELETE", "path": "/", "headers": [], "session": {"user": {"role": "admin", "id": "admin", "name": "Admin"}}})
+        result = app.delete_question_bank(bank_id, request)
+        with app.db() as connection:
+            remaining = connection.execute("SELECT 1 FROM question_banks WHERE bank_id = ?", (bank_id,)).fetchone()
+        self.assertTrue(result["deleted"])
+        self.assertIsNone(remaining)
+
     def test_student_can_register_and_duplicate_id_is_rejected(self):
         result = app.register_student(" s123 ", "New Student", "AI & DS", "A", "secret123")
 

@@ -74,6 +74,11 @@ SOLUTION_STEP_OVERRIDES = {
         "Commuting = 22% × ₹45,800 = ₹10,076.",
         "Required percentage = (₹21,984 ÷ ₹10,076) × 100 = 218.18% ≈ 218%. Therefore, option E is correct.",
     ],
+    "If the imports in 2008 was ₹ 250 crores and the total exports in the years 2008 and 2009 together was ₹ 500 crores, then the imports in 2009 was": [
+        "The graph shows imports are 125% of exports in 2008. So ₹250 crores = 125% of exports, and exports in 2008 = ₹250 ÷ 1.25 = ₹200 crores.",
+        "Total exports in 2008 and 2009 are ₹500 crores. Therefore, exports in 2009 = ₹500 − ₹200 = ₹300 crores.",
+        "Imports in 2009 are 140% of exports. So imports = 1.40 × ₹300 = ₹420 crores. Therefore, option D is correct.",
+    ],
 }
 
 app = FastAPI(title="Aptitude Lab")
@@ -408,8 +413,9 @@ def clean_display_value(value: Any) -> Any:
 
 def display_solution_steps(question_text: str, stored_steps: str) -> List[str]:
     """Use repaired steps where PDF extraction did not preserve formula order."""
-    if question_text in SOLUTION_STEP_OVERRIDES:
-        return SOLUTION_STEP_OVERRIDES[question_text]
+    normalized_question_text = clean_display_text(question_text)
+    if normalized_question_text in SOLUTION_STEP_OVERRIDES:
+        return SOLUTION_STEP_OVERRIDES[normalized_question_text]
     return clean_display_value(json.loads(stored_steps))
 
 

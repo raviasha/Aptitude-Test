@@ -38,6 +38,11 @@ class StudentRegistrationTests(unittest.TestCase):
         raw_step = "Amount spent on Groceries, Entertainment and Investments = { } (23 10 15) 4845800"
         self.assertEqual(app.clean_display_value([raw_step]), next(iter(app.SOLUTION_STEP_OVERRIDES.values())))
 
+    def test_line_graph_import_solution_is_replaced_with_readable_calculation(self):
+        question = "If the imports in 2008 was ₹ 250 crores and the total exports in the years 2008 and 2009 together was ₹ 500 crores, then the imports in 2009 was"
+        steps = app.display_solution_steps(question, '["garbled formula"]')
+        self.assertEqual(steps[-1], "Imports in 2009 are 140% of exports. So imports = 1.40 × ₹300 = ₹420 crores. Therefore, option D is correct.")
+
     def test_admin_can_delete_an_unused_question_bank(self):
         with app.db() as connection:
             bank_id = connection.execute(

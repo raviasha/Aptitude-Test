@@ -69,6 +69,11 @@ SOLUTION_STEP_OVERRIDES = {
         "Commuting = 22% × ₹45,800 = ₹10,076.",
         "Required percentage = (₹21,984 ÷ ₹10,076) × 100 = 218.18% ≈ 218%. Therefore, option E is correct.",
     ],
+    "qa-5126": [
+        "The graph shows imports are 125% of exports in 2008. So ₹250 crores = 125% of exports, and exports in 2008 = ₹250 ÷ 1.25 = ₹200 crores.",
+        "Total exports in 2008 and 2009 are ₹500 crores. Therefore, exports in 2009 = ₹500 − ₹200 = ₹300 crores.",
+        "Imports in 2009 are 140% of exports. So imports = 1.40 × ₹300 = ₹420 crores. Therefore, option D is correct.",
+    ],
 }
 
 

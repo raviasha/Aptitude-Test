@@ -82,6 +82,34 @@ SOLUTION_STEP_OVERRIDES = {
     ],
 }
 
+# Some source pages contain the last questions for one graph above the next
+# question set's graph.  Position-aware mapping keeps those questions attached
+# to the preceding page; these focused crops also avoid showing an unrelated
+# table that happens to share the same two-column source page.
+SOURCE_VISUAL_CROPS = (
+    {
+        "id": "qa-4063-adjoining-figure",
+        "page_number": 729,
+        "crop_box": (130.0, 232.0, 222.0, 310.0),
+        "question_keys": ("qa-4063",),
+        "title": "Adjoining geometry figure",
+        "alt_text": (
+            "Circle of radius a with a triangle inscribed in its upper semicircle; "
+            "the region between the semicircle and triangle is shaded."
+        ),
+    },
+    {
+        "id": "di-company-profit-2004-2010",
+        "page_number": 947,
+        "crop_box": (322.0, 66.0, 565.0, 365.0),
+        "question_keys": tuple(f"qa-{number:04d}" for number in range(5095, 5103)),
+        "title": "Percent profit earned by Companies A and B (2004-2010)",
+        "alt_text": (
+            "Line graph of percent profit earned by Companies A and B from 2004 through 2010."
+        ),
+    },
+)
+
 
 def taxonomy_for(number: int) -> tuple[str, str]:
     for start, end, category, chapter in CHAPTER_RANGES:
@@ -147,6 +175,63 @@ def write_json_atomic(destination: Path, document: dict) -> None:
 
 def normalize_for_pdf_match(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", value.lower())
+
+
+def normalized_word_index(pdf_page) -> tuple[str, list[tuple[int, int, float]]]:
+    """Return normalized page text plus offsets back to each source word."""
+    normalized_text = ""
+    positions: list[tuple[int, int, float]] = []
+    for word in pdf_page.extract_words():
+        token = normalize_for_pdf_match(str(word.get("text", "")))
+        if not token:
+            continue
+        start = len(normalized_text)
+        normalized_text += token
+        positions.append((start, len(normalized_text), float(word["top"])))
+    return normalized_text, positions
+
+
+def question_top_from_word_index(
+    word_index: tuple[str, list[tuple[int, int, float]]], question_text: str
+) -> float | None:
+    """Locate a question's first word so visuals later on the page are ignored."""
+    page_text, positions = word_index
+    normalized_question = normalize_for_pdf_match(question_text)
+    match_offset = -1
+    for length in (80, 70, 60, 50, 40, 30, 25):
+        probe = normalized_question[:length]
+        if not probe:
+            continue
+        match_offset = page_text.find(probe)
+        if match_offset >= 0:
+            break
+    if match_offset < 0:
+        return None
+    for start, end, top in positions:
+        if start <= match_offset < end:
+            return top
+    return None
+
+
+def select_visual_page(
+    page_number: int,
+    question_top: float | None,
+    pages_with_visuals: list[int],
+    regions_for_page: dict[int, list[tuple[float, float, float, float]]],
+) -> int:
+    """Choose the closest graph that appears before the question in reading order."""
+    current_regions = regions_for_page.get(page_number, [])
+    current_visual_precedes_question = bool(current_regions) and (
+        question_top is None or min(region[1] for region in current_regions) <= question_top
+    )
+    if current_visual_precedes_question:
+        return page_number
+    previous_page = max((candidate for candidate in pages_with_visuals if candidate < page_number), default=None)
+    if previous_page is not None:
+        return previous_page
+    if current_regions:
+        return page_number
+    return min(pages_with_visuals)
 
 
 def visual_regions(pdf_page) -> list[tuple[float, float, float, float]]:
@@ -237,6 +322,36 @@ def render_visual_crop(rendered, regions: list[tuple[float, float, float, float]
     return composite
 
 
+def render_source_visual_crops(document: dict, pdf) -> list[dict]:
+    """Render exact textbook figures that need a dedicated question stimulus."""
+    from PIL import ImageOps
+
+    questions_by_key = {question["key"]: question for question in document["questions"]}
+    stimuli: list[dict] = []
+    scale = 2.2
+    padding = round(10 * scale)
+    for specification in SOURCE_VISUAL_CROPS:
+        missing_keys = [key for key in specification["question_keys"] if key not in questions_by_key]
+        if missing_keys:
+            raise ValueError(f"Source visual references unknown question(s): {', '.join(missing_keys)}")
+        rendered = pdf[specification["page_number"] - 1].render(scale=scale).to_pil().convert("RGB")
+        crop = rendered.crop(tuple(round(value * scale) for value in specification["crop_box"]))
+        crop = ImageOps.expand(crop, border=padding, fill="white")
+        encoded = BytesIO()
+        crop.save(encoded, "PNG", optimize=True)
+        for key in specification["question_keys"]:
+            questions_by_key[key]["stimulus_id"] = specification["id"]
+        stimuli.append({
+            "id": specification["id"],
+            "type": "image",
+            "title": specification["title"],
+            "alt_text": specification["alt_text"],
+            "file": f"assets/{specification['id']}.png",
+            "asset_bytes": encoded.getvalue(),
+        })
+    return stimuli
+
+
 def attach_di_pdf_stimuli(document: dict, source_pdf: Path) -> list[dict]:
     """Render PDF pages containing each DI question and link them as shared stimuli.
 
@@ -285,10 +400,14 @@ def attach_di_pdf_stimuli(document: dict, source_pdf: Path) -> list[dict]:
         pages_with_visuals = [page_number for page_number in source_pages if regions_for_page[page_number]]
         if not pages_with_visuals:
             raise ValueError("No chart or table regions were detected in the DI source pages.")
+        word_indexes = {
+            page_number: normalized_word_index(visual_pdf.pages[page_number - 1])
+            for page_number in source_pages
+        }
         for position, page_number in page_for_question.items():
-            visual_page = max((candidate for candidate in pages_with_visuals if candidate <= page_number), default=None)
-            if visual_page is None:
-                visual_page = min(pages_with_visuals)
+            question = questions[position - 1]
+            question_top = question_top_from_word_index(word_indexes[page_number], question["question_text"])
+            visual_page = select_visual_page(page_number, question_top, pages_with_visuals, regions_for_page)
             questions[position - 1]["stimulus_id"] = f"di-source-page-{visual_page}"
         for page_number in pages_with_visuals:
             scale = 1.6
@@ -305,6 +424,7 @@ def attach_di_pdf_stimuli(document: dict, source_pdf: Path) -> list[dict]:
                 "file": f"assets/{stimulus_id}.jpg",
                 "asset_bytes": encoded.getvalue(),
             })
+        stimuli.extend(render_source_visual_crops(document, pdf))
     return stimuli
 
 
@@ -347,7 +467,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-json", type=Path)
     parser.add_argument("--package", type=Path, default=DEFAULT_PACKAGE)
     parser.add_argument("--write-source", action="store_true")
-    parser.add_argument("--di-pdf", type=Path, help="R. S. Aggarwal PDF used to render DI tables and graphs.")
+    parser.add_argument("--di-pdf", type=Path, help="R. S. Aggarwal PDF used to render source tables, graphs, and figures.")
     parser.add_argument("--audit-report-dir", type=Path, default=DEFAULT_AUDIT_DIR)
     parser.add_argument("--strict-solutions", action="store_true", help="Refuse to build while critical solution issues remain.")
     return parser.parse_args()
@@ -370,7 +490,7 @@ def main() -> None:
         write_json_atomic(args.output_json.resolve(), document)
     build_package(args.package.resolve(), document, stimuli, audit_summary)
     print(f"Categorized {len(document['questions']):,} questions across {len(CHAPTER_RANGES)} chapters.")
-    print(f"Attached {len(stimuli)} shared Data Interpretation visual(s).")
+    print(f"Attached {len(stimuli)} shared question visual(s).")
     print(f"Solution audit: {audit_summary['critical_questions']:,} critical, {audit_summary['review_questions']:,} review.")
     print(f"Built {args.package.resolve()}")
 

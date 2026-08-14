@@ -8,6 +8,7 @@ from pathlib import Path
 
 import app
 from scripts.build_quantitative_bank import clean_math_text
+from scripts.solution_quality import audit_questions
 
 
 class StudentRegistrationTests(unittest.TestCase):
@@ -42,6 +43,19 @@ class StudentRegistrationTests(unittest.TestCase):
         question = "If the imports in 2008 was ₹ 250 crores and the total exports in the years 2008 and 2009 together was ₹ 500 crores, then the imports in 2009 was"
         steps = app.display_solution_steps(question, '["garbled formula"]')
         self.assertEqual(steps[-1], "Imports in 2009 are 140% of exports. So imports = 1.40 × ₹300 = ₹420 crores. Therefore, option D is correct.")
+
+    def test_unverified_malformed_solution_is_hidden_from_students(self):
+        result = app.clean_display_value(["Required %= 250 100250 2501.25 200 == ×="])
+        self.assertEqual(result, app.SOLUTION_REVIEW_NOTICE)
+
+    def test_solution_audit_reports_critical_and_clean_questions(self):
+        records, summary = audit_questions([
+            {"key": "bad", "category": "Data Interpretation", "chapter": "Line Graphs", "solution_steps": ["250 100250 2501.25 200 == ×="]},
+            {"key": "good", "category": "Data Interpretation", "chapter": "Line Graphs", "solution_steps": ["Exports = ₹250 ÷ 1.25 = ₹200 crores."]},
+        ])
+        self.assertEqual(summary["critical_questions"], 1)
+        self.assertEqual(summary["clean_questions"], 1)
+        self.assertEqual(records[0]["key"], "bad")
 
     def test_admin_can_delete_an_unused_question_bank(self):
         with app.db() as connection:

@@ -1,0 +1,456 @@
+{
+  "questions_audited": 5151,
+  "clean_questions": 1848,
+  "flagged_questions": 3303,
+  "critical_questions": 2319,
+  "review_questions": 984,
+  "issue_counts": {
+    "concatenated_formula_numbers": 430,
+    "dense_number_sequence": 393,
+    "detached_digit_array": 58,
+    "empty_layout_braces": 41,
+    "missing_solution_steps": 146,
+    "raw_backslash_separator": 1552,
+    "repeated_operator_fragment": 2108
+  },
+  "chapter_counts": [
+    {
+      "category": "Arithmetical Ability",
+      "chapter": "Alligation or Mixture",
+      "severity": "critical",
+      "count": 11
+    },
+    {
+      "category": "Arithmetical Ability",
+      "chapter": "Alligation or Mixture",
+      "severity": "review",
+      "count": 8
+    },
+    {
+      "category": "Arithmetical Ability",
+      "chapter": "Area",
+      "severity": "critical",
+      "count": 221
+    },
+    {
+      "category": "Arithmetical Ability",
+      "chapter": "Area",
+      "severity": "review",
+      "count": 124
+    },
+    {
+      "category": "Arithmetical Ability",
+      "chapter": "Average",
+      "severity": "critical",
+      "count": 26
+    },
+    {
+      "category": "Arithmetical Ability",
+      "chapter": "Average",
+      "severity": "review",
+      "count": 25
+    },
+    {
+      "category": "Arithmetical Ability",
+      "chapter": "Banker's Discount",
+      "severity": "critical",
+      "count": 13
+    },
+    {
+      "category": "Arithmetical Ability",
+      "chapter": "Boats and Streams",
+      "severity": "critical",
+      "count": 21
+    },
+    {
+      "category": "Arithmetical Ability",
+      "chapter": "Boats and Streams",
+      "severity": "review",
+      "count": 2
+    },
+    {
+      "category": "Arithmetical Ability",
+      "chapter": "Calendar",
+      "severity": "critical",
+      "count": 2
+    },
+    {
+      "category": "Arithmetical Ability",
+      "chapter": "Calendar",
+      "severity": "review",
+      "count": 9
+    },
+    {
+      "category": "Arithmetical Ability",
+      "chapter": "Chain Rule",
+      "severity": "critical",
+      "count": 33
+    },
+    {
+      "category": "Arithmetical Ability",
+      "chapter": "Chain Rule",
+      "severity": "review",
+      "count": 45
+    },
+    {
+      "category": "Arithmetical Ability",
+      "chapter": "Clocks",
+      "severity": "critical",
+      "count": 17
+    },
+    {
+      "category": "Arithmetical Ability",
+      "chapter": "Clocks",
+      "severity": "review",
+      "count": 17
+    },
+    {
+      "category": "Arithmetical Ability",
+      "chapter": "Compound Interest",
+      "severity": "critical",
+      "count": 47
+    },
+    {
+      "category": "Arithmetical Ability",
+      "chapter": "Compound Interest",
+      "severity": "review",
+      "count": 24
+    },
+    {
+      "category": "Arithmetical Ability",
+      "chapter": "Decimal Fractions",
+      "severity": "critical",
+      "count": 111
+    },
+    {
+      "category": "Arithmetical Ability",
+      "chapter": "Decimal Fractions",
+      "severity": "review",
+      "count": 8
+    },
+    {
+      "category": "Arithmetical Ability",
+      "chapter": "HCF and LCM",
+      "severity": "critical",
+      "count": 20
+    },
+    {
+      "category": "Arithmetical Ability",
+      "chapter": "HCF and LCM",
+      "severity": "review",
+      "count": 8
+    },
+    {
+      "category": "Arithmetical Ability",
+      "chapter": "Heights and Distances",
+      "severity": "critical",
+      "count": 11
+    },
+    {
+      "category": "Arithmetical Ability",
+      "chapter": "Logarithms",
+      "severity": "critical",
+      "count": 16
+    },
+    {
+      "category": "Arithmetical Ability",
+      "chapter": "Logarithms",
+      "severity": "review",
+      "count": 24
+    },
+    {
+      "category": "Arithmetical Ability",
+      "chapter": "Number System",
+      "severity": "critical",
+      "count": 62
+    },
+    {
+      "category": "Arithmetical Ability",
+      "chapter": "Number System",
+      "severity": "review",
+      "count": 23
+    },
+    {
+      "category": "Arithmetical Ability",
+      "chapter": "Odd Man Out and Series",
+      "severity": "critical",
+      "count": 3
+    },
+    {
+      "category": "Arithmetical Ability",
+      "chapter": "Odd Man Out and Series",
+      "severity": "review",
+      "count": 13
+    },
+    {
+      "category": "Arithmetical Ability",
+      "chapter": "Partnership",
+      "severity": "critical",
+      "count": 28
+    },
+    {
+      "category": "Arithmetical Ability",
+      "chapter": "Partnership",
+      "severity": "review",
+      "count": 21
+    },
+    {
+      "category": "Arithmetical Ability",
+      "chapter": "Percentage",
+      "severity": "critical",
+      "count": 251
+    },
+    {
+      "category": "Arithmetical Ability",
+      "chapter": "Percentage",
+      "severity": "review",
+      "count": 71
+    },
+    {
+      "category": "Arithmetical Ability",
+      "chapter": "Permutation and Combination",
+      "severity": "critical",
+      "count": 29
+    },
+    {
+      "category": "Arithmetical Ability",
+      "chapter": "Pipes and Cisterns",
+      "severity": "critical",
+      "count": 5
+    },
+    {
+      "category": "Arithmetical Ability",
+      "chapter": "Pipes and Cisterns",
+      "severity": "review",
+      "count": 6
+    },
+    {
+      "category": "Arithmetical Ability",
+      "chapter": "Probability",
+      "severity": "critical",
+      "count": 33
+    },
+    {
+      "category": "Arithmetical Ability",
+      "chapter": "Probability",
+      "severity": "review",
+      "count": 15
+    },
+    {
+      "category": "Arithmetical Ability",
+      "chapter": "Problems on Ages",
+      "severity": "critical",
+      "count": 14
+    },
+    {
+      "category": "Arithmetical Ability",
+      "chapter": "Problems on Ages",
+      "severity": "review",
+      "count": 3
+    },
+    {
+      "category": "Arithmetical Ability",
+      "chapter": "Problems on Numbers",
+      "severity": "critical",
+      "count": 25
+    },
+    {
+      "category": "Arithmetical Ability",
+      "chapter": "Problems on Numbers",
+      "severity": "review",
+      "count": 49
+    },
+    {
+      "category": "Arithmetical Ability",
+      "chapter": "Problems on Trains",
+      "severity": "critical",
+      "count": 39
+    },
+    {
+      "category": "Arithmetical Ability",
+      "chapter": "Problems on Trains",
+      "severity": "review",
+      "count": 36
+    },
+    {
+      "category": "Arithmetical Ability",
+      "chapter": "Profit and Loss",
+      "severity": "critical",
+      "count": 197
+    },
+    {
+      "category": "Arithmetical Ability",
+      "chapter": "Profit and Loss",
+      "severity": "review",
+      "count": 67
+    },
+    {
+      "category": "Arithmetical Ability",
+      "chapter": "Races and Games",
+      "severity": "critical",
+      "count": 19
+    },
+    {
+      "category": "Arithmetical Ability",
+      "chapter": "Ratio and Proportion",
+      "severity": "critical",
+      "count": 110
+    },
+    {
+      "category": "Arithmetical Ability",
+      "chapter": "Ratio and Proportion",
+      "severity": "review",
+      "count": 77
+    },
+    {
+      "category": "Arithmetical Ability",
+      "chapter": "Simple Interest",
+      "severity": "critical",
+      "count": 72
+    },
+    {
+      "category": "Arithmetical Ability",
+      "chapter": "Simple Interest",
+      "severity": "review",
+      "count": 4
+    },
+    {
+      "category": "Arithmetical Ability",
+      "chapter": "Simplification",
+      "severity": "critical",
+      "count": 218
+    },
+    {
+      "category": "Arithmetical Ability",
+      "chapter": "Simplification",
+      "severity": "review",
+      "count": 117
+    },
+    {
+      "category": "Arithmetical Ability",
+      "chapter": "Square Roots and Cube Roots",
+      "severity": "critical",
+      "count": 106
+    },
+    {
+      "category": "Arithmetical Ability",
+      "chapter": "Square Roots and Cube Roots",
+      "severity": "review",
+      "count": 19
+    },
+    {
+      "category": "Arithmetical Ability",
+      "chapter": "Stocks and Shares",
+      "severity": "critical",
+      "count": 11
+    },
+    {
+      "category": "Arithmetical Ability",
+      "chapter": "Stocks and Shares",
+      "severity": "review",
+      "count": 16
+    },
+    {
+      "category": "Arithmetical Ability",
+      "chapter": "Surds and Indices",
+      "severity": "critical",
+      "count": 70
+    },
+    {
+      "category": "Arithmetical Ability",
+      "chapter": "Surds and Indices",
+      "severity": "review",
+      "count": 1
+    },
+    {
+      "category": "Arithmetical Ability",
+      "chapter": "Time and Distance",
+      "severity": "critical",
+      "count": 50
+    },
+    {
+      "category": "Arithmetical Ability",
+      "chapter": "Time and Distance",
+      "severity": "review",
+      "count": 72
+    },
+    {
+      "category": "Arithmetical Ability",
+      "chapter": "Time and Work",
+      "severity": "critical",
+      "count": 96
+    },
+    {
+      "category": "Arithmetical Ability",
+      "chapter": "Time and Work",
+      "severity": "review",
+      "count": 27
+    },
+    {
+      "category": "Arithmetical Ability",
+      "chapter": "True Discount",
+      "severity": "critical",
+      "count": 13
+    },
+    {
+      "category": "Arithmetical Ability",
+      "chapter": "Volume and Surface Area",
+      "severity": "critical",
+      "count": 158
+    },
+    {
+      "category": "Arithmetical Ability",
+      "chapter": "Volume and Surface Area",
+      "severity": "review",
+      "count": 23
+    },
+    {
+      "category": "Data Interpretation",
+      "chapter": "Bar Graphs",
+      "severity": "critical",
+      "count": 29
+    },
+    {
+      "category": "Data Interpretation",
+      "chapter": "Bar Graphs",
+      "severity": "review",
+      "count": 10
+    },
+    {
+      "category": "Data Interpretation",
+      "chapter": "Line Graphs",
+      "severity": "critical",
+      "count": 29
+    },
+    {
+      "category": "Data Interpretation",
+      "chapter": "Line Graphs",
+      "severity": "review",
+      "count": 10
+    },
+    {
+      "category": "Data Interpretation",
+      "chapter": "Pie Charts",
+      "severity": "critical",
+      "count": 37
+    },
+    {
+      "category": "Data Interpretation",
+      "chapter": "Pie Charts",
+      "severity": "review",
+      "count": 5
+    },
+    {
+      "category": "Data Interpretation",
+      "chapter": "Tabulation",
+      "severity": "critical",
+      "count": 66
+    },
+    {
+      "category": "Data Interpretation",
+      "chapter": "Tabulation",
+      "severity": "review",
+      "count": 5
+    }
+  ]
+}

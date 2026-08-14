@@ -16,10 +16,16 @@ import tempfile
 import unicodedata
 import zipfile
 
+try:
+    from .solution_quality import audit_questions, write_audit_reports
+except ImportError:
+    from solution_quality import audit_questions, write_audit_reports
+
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SOURCE = ROOT / "question-banks" / "quantitative_aptitude_complete_extended.json"
 DEFAULT_PACKAGE = ROOT / "question-banks" / "quantitative_aptitude_categorized_v2.zip"
+DEFAULT_AUDIT_DIR = ROOT / "question-banks" / "solution-audit"
 
 CHAPTER_RANGES = (
     (1, 378, "Arithmetical Ability", "Number System"),
@@ -86,11 +92,13 @@ def taxonomy_for(number: int) -> tuple[str, str]:
 
 def clean_math_text(value: str) -> str:
     """Remove private-use glyph fragments emitted by the legacy PDF extractor."""
-    if any(marker in value for marker in ("Ã", "Â", "â")):
+    for _ in range(2):
+        if not any(marker in value for marker in ("\u00c3", "\u00c2", "\u00e2")):
+            break
         try:
             value = value.encode("latin-1").decode("utf-8")
         except UnicodeError:
-            pass
+            break
     value = unicodedata.normalize("NFKC", value).replace("\u00a0", " ")
     value = re.sub(r"[\uE000-\uF8FF]", "", value)
     return re.sub(r"[ \t]+", " ", value).strip()
@@ -300,7 +308,7 @@ def attach_di_pdf_stimuli(document: dict, source_pdf: Path) -> list[dict]:
     return stimuli
 
 
-def build_package(destination: Path, document: dict, stimuli: list[dict], chunk_size: int = 500) -> None:
+def build_package(destination: Path, document: dict, stimuli: list[dict], audit_summary: dict | None = None, chunk_size: int = 500) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     questions = document["questions"]
     question_files = [
@@ -312,6 +320,7 @@ def build_package(destination: Path, document: dict, stimuli: list[dict], chunk_
         "bank_name": document["bank_name"],
         "question_files": question_files,
         "stimuli": [{key: value for key, value in stimulus.items() if key != "asset_bytes"} for stimulus in stimuli],
+        "solution_audit": audit_summary or {},
         "notes": "Taxonomy migrated from the source chapter headings.",
     }
     with tempfile.NamedTemporaryFile(delete=False, dir=destination.parent, suffix=".tmp") as handle:
@@ -339,6 +348,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--package", type=Path, default=DEFAULT_PACKAGE)
     parser.add_argument("--write-source", action="store_true")
     parser.add_argument("--di-pdf", type=Path, help="R. S. Aggarwal PDF used to render DI tables and graphs.")
+    parser.add_argument("--audit-report-dir", type=Path, default=DEFAULT_AUDIT_DIR)
+    parser.add_argument("--strict-solutions", action="store_true", help="Refuse to build while critical solution issues remain.")
     return parser.parse_args()
 
 
@@ -347,15 +358,20 @@ def main() -> None:
     source = args.source.resolve()
     document = load_and_categorize(source)
     stimuli = attach_di_pdf_stimuli(document, args.di_pdf.resolve()) if args.di_pdf else []
+    audit_records, audit_summary = audit_questions(document["questions"])
+    write_audit_reports(args.audit_report_dir.resolve(), audit_records, audit_summary)
+    if args.strict_solutions and audit_summary["critical_questions"]:
+        raise ValueError(f"Solution audit found {audit_summary['critical_questions']:,} critical question(s).")
     if args.write_source and args.output_json:
         raise ValueError("Choose either --write-source or --output-json, not both.")
     if args.write_source:
         write_json_atomic(source, document)
     elif args.output_json:
         write_json_atomic(args.output_json.resolve(), document)
-    build_package(args.package.resolve(), document, stimuli)
+    build_package(args.package.resolve(), document, stimuli, audit_summary)
     print(f"Categorized {len(document['questions']):,} questions across {len(CHAPTER_RANGES)} chapters.")
     print(f"Attached {len(stimuli)} shared Data Interpretation visual(s).")
+    print(f"Solution audit: {audit_summary['critical_questions']:,} critical, {audit_summary['review_questions']:,} review.")
     print(f"Built {args.package.resolve()}")
 
 

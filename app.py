@@ -81,6 +81,10 @@ SOLUTION_STEP_OVERRIDES = {
     ],
 }
 
+SOLUTION_REVIEW_NOTICE = [
+    "This source calculation could not be displayed reliably because its PDF formula layout was damaged during import. The correct answer is shown above; the detailed solution is awaiting faculty verification."
+]
+
 app = FastAPI(title="Aptitude Lab")
 app.add_middleware(SessionMiddleware, secret_key=os.getenv("SESSION_SECRET", "replace-this-before-production"), https_only=False, same_site="lax")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
@@ -389,13 +393,29 @@ def create_attempt_from_questions(
 
 def clean_display_text(value: str) -> str:
     """Remove unsupported private-use glyphs produced by older PDF extraction."""
-    if any(marker in value for marker in ("Ã", "Â", "â")):
+    for _ in range(2):
+        if not any(marker in value for marker in ("\u00c3", "\u00c2", "\u00e2")):
+            break
         try:
             value = value.encode("latin-1").decode("utf-8")
         except UnicodeError:
-            pass
+            break
     value = unicodedata.normalize("NFKC", value).replace("\u00a0", " ")
     return re.sub(r"[\uE000-\uF8FF]", "", value)
+
+
+def has_critical_solution_artifacts(steps: List[str]) -> bool:
+    text = "\n".join(steps)
+    markers = ("×=", "=×", "==", "%%", "% %", "× ×", "{}", "{ }")
+    return (
+        any("\uE000" <= char <= "\uF8FF" for char in text)
+        or any(marker in text for marker in ("\u00c3", "\u00c2", "\u00e2"))
+        or bool(re.search(r"(?<![\u0400-\u04FF])[\u0432\u0412](?![\u0400-\u04FF])", text))
+        or any(marker in text for marker in markers)
+        or bool(re.search(r"×\s+×", text))
+        or bool(re.search(r"(?:\b\d\s+){5,}\d\b", text))
+        or bool(re.search(r"\b\d{4,}\s+\d{4,}\b", text))
+    )
 
 
 def clean_display_value(value: Any) -> Any:
@@ -405,6 +425,10 @@ def clean_display_value(value: Any) -> Any:
         cleaned = [clean_display_value(item) for item in value]
         if len(cleaned) == 1 and isinstance(cleaned[0], str) and cleaned[0].startswith("Amount spent on Groceries, Entertainment and Investments"):
             return next(iter(SOLUTION_STEP_OVERRIDES.values()))
+        if cleaned and isinstance(cleaned[0], str) and cleaned[0].startswith("Let the value of export in 2008"):
+            return list(SOLUTION_STEP_OVERRIDES.values())[1]
+        if all(isinstance(item, str) for item in cleaned) and has_critical_solution_artifacts(cleaned):
+            return SOLUTION_REVIEW_NOTICE
         return cleaned
     if isinstance(value, dict):
         return {key: clean_display_value(item) for key, item in value.items()}

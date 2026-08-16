@@ -1,0 +1,111 @@
+{
+  "format_version": 2,
+  "bank_name": "R. S. Aggarwal - Chapter 36: Tabulation",
+  "chapter": 36,
+  "chapter_name": "Tabulation",
+  "section": "Data Interpretation",
+  "extraction_method": "Claude Vision API (Session-based Extraction)",
+  "extraction_date": "2025",
+  "source_pages": [
+    896,
+    897,
+    898,
+    899,
+    900,
+    901,
+    902,
+    903,
+    904,
+    905,
+    906
+  ],
+  "total_pages_processed": 11,
+  "total_questions": 65,
+  "question_files": [
+    "questions/chapter-036.jsonl"
+  ],
+  "stimuli": [
+    {
+      "id": "di-table-candidates-zones",
+      "type": "table",
+      "title": "Candidates Appeared & Qualified by Zone (Bank P.O., 2011)",
+      "description": "6-year (2005-2010) data for 5 zones (P, Q, R, S, T)"
+    },
+    {
+      "id": "di-table-semester-fees",
+      "type": "table",
+      "title": "Semester Fees by Course (Bank P.O., 2011)",
+      "description": "6-year fees for 5 courses"
+    },
+    {
+      "id": "di-table-entrance-exam",
+      "type": "table",
+      "title": "Entrance Exam Candidates by State (Bank P.O., 2010)",
+      "description": "6-year data for 6 states (A-F)"
+    },
+    {
+      "id": "di-table-cities-exam",
+      "type": "table",
+      "title": "City-wise Exam Candidates (Bank P.O., 2010)",
+      "description": "Passing/failing ratios for 6 cities"
+    },
+    {
+      "id": "di-table-employees",
+      "type": "table",
+      "title": "Employees by Department & Gender (Bank P.O., 2009)",
+      "description": "6 departments with gender percentages"
+    },
+    {
+      "id": "di-table-schools",
+      "type": "table",
+      "title": "School Students by Gender (Bank P.O., 2011)",
+      "description": "6-year data for 5 schools"
+    },
+    {
+      "id": "di-graph-production-sales",
+      "type": "line graph",
+      "title": "Production & Sales Graph (Bank P.O., 2012)",
+      "description": "6-year production and sales for Companies A & B with ratios"
+    },
+    {
+      "id": "di-table-sports-athletes",
+      "type": "table",
+      "title": "Sports Athletes by Country & Gender (Bank P.O., 2011)",
+      "description": "6-year data for 5 countries"
+    },
+    {
+      "id": "di-table-company-expenditure",
+      "type": "table",
+      "title": "Company Expenditure by Item (Bank P.O., 2012)",
+      "description": "5-year expenditure data (salary, fuel, bonus, interest, taxes)"
+    },
+    {
+      "id": "di-table-candidates-exam",
+      "type": "table",
+      "title": "Exam Candidates by State (Bank P.O., 2012)",
+      "description": "5-year appeared/qualified/selected data for 5 states"
+    },
+    {
+      "id": "di-table-student-marks",
+      "type": "table",
+      "title": "Student Marks by Subject (Bank P.O., 2003)",
+      "description": "7 students, 6 subjects with max marks"
+    },
+    {
+      "id": "di-table-population-poverty",
+      "type": "table",
+      "title": "Population & Poverty Distribution by State (Bank P.O., 2003)",
+      "description": "5 states with poverty % and gender ratios"
+    }
+  ],
+  "notes": "Complete chapter extraction with 7 exercise sets. All questions include full solutions and explanations.",
+  "exercises": {
+    "1": 25,
+    "2": 15,
+    "3": 5,
+    "4": 5,
+    "5": 6,
+    "6": 5,
+    "7": 4
+  }
+}

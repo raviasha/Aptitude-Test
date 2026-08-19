@@ -70,6 +70,70 @@ class StudentRegistrationTests(unittest.TestCase):
         self.assertTrue(result["deleted"])
         self.assertIsNone(remaining)
 
+    def test_admin_can_delete_a_question_bank_and_all_dependent_history(self):
+        with app.db() as connection:
+            connection.execute(
+                "INSERT INTO students VALUES (?, ?, ?, ?, ?, ?)",
+                ("S-DELETE", "Delete History", "hash", "AI & DS", "A", app.now()),
+            )
+            bank_id = connection.execute(
+                "INSERT INTO question_banks (bank_name, source_html_filename, answer_key_filename, imported_at) VALUES (?, '', '', ?)",
+                ("Used bank", app.now()),
+            ).lastrowid
+            question_id = connection.execute(
+                """INSERT INTO questions
+                   (question_text, source_key, category, chapter, difficulty,
+                    option_a, option_b, option_c, option_d, correct_answer,
+                    bank_id, stimulus_id, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    "Read the chart.", "used-q1", "Data Interpretation", "Bar Graphs", "Easy",
+                    "1", "2", "3", "4", "A", bank_id, "chart-1", app.now(),
+                ),
+            ).lastrowid
+            connection.execute(
+                """INSERT INTO stimuli
+                   (bank_id, stimulus_id, stimulus_type, title, alt_text, asset_filename, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (bank_id, "chart-1", "image", "Chart", "A chart", "chart.png", app.now()),
+            )
+            test_id = connection.execute(
+                "INSERT INTO tests (test_name, composition, bank_id, created_at) VALUES (?, ?, ?, ?)",
+                ("Dependent test", "{}", bank_id, app.now()),
+            ).lastrowid
+            connection.execute(
+                """INSERT INTO attempts
+                   (attempt_id, student_id, test_id, started_at, status, total_questions)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                ("attempt-delete", "S-DELETE", test_id, app.now(), "submitted", 1),
+            )
+            connection.execute(
+                """INSERT INTO responses
+                   (attempt_id, question_id, selected_answer, correct, category, chapter, question_order)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                ("attempt-delete", question_id, "A", 1, "Data Interpretation", "Bar Graphs", 1),
+            )
+
+        asset_directory = app.question_assets_dir() / str(bank_id)
+        asset_directory.mkdir(parents=True)
+        (asset_directory / "chart.png").write_bytes(b"test image")
+        request = app.Request({"type": "http", "method": "DELETE", "path": "/", "headers": [], "session": {"user": {"role": "admin", "id": "admin", "name": "Admin"}}})
+
+        result = app.delete_question_bank(bank_id, request)
+
+        with app.db() as connection:
+            remaining = {
+                "question_banks": connection.execute("SELECT COUNT(*) FROM question_banks WHERE bank_id = ?", (bank_id,)).fetchone()[0],
+                "questions": connection.execute("SELECT COUNT(*) FROM questions WHERE bank_id = ?", (bank_id,)).fetchone()[0],
+                "stimuli": connection.execute("SELECT COUNT(*) FROM stimuli WHERE bank_id = ?", (bank_id,)).fetchone()[0],
+                "tests": connection.execute("SELECT COUNT(*) FROM tests WHERE bank_id = ?", (bank_id,)).fetchone()[0],
+                "attempts": connection.execute("SELECT COUNT(*) FROM attempts WHERE attempt_id = ?", ("attempt-delete",)).fetchone()[0],
+                "responses": connection.execute("SELECT COUNT(*) FROM responses WHERE question_id = ?", (question_id,)).fetchone()[0],
+            }
+        self.assertEqual(result["deleted_counts"], {"tests": 1, "attempts": 1, "responses": 1, "questions": 1, "stimuli": 1})
+        self.assertEqual(remaining, {key: 0 for key in remaining})
+        self.assertFalse(asset_directory.exists())
+
     def test_student_can_register_and_duplicate_id_is_rejected(self):
         result = app.register_student(" s123 ", "New Student", "AI & DS", "A", "secret123")
 

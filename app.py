@@ -1597,16 +1597,56 @@ def delete_question_bank(bank_id: int, request: Request) -> Dict[str, Any]:
         bank = connection.execute("SELECT bank_name FROM question_banks WHERE bank_id = ?", (bank_id,)).fetchone()
         if not bank:
             raise HTTPException(404, "Question bank not found.")
-        test_count = connection.execute("SELECT COUNT(*) AS count FROM tests WHERE bank_id = ?", (bank_id,)).fetchone()["count"]
-        if test_count:
-            raise HTTPException(409, "This bank is used by existing tests and cannot be deleted. Delete those tests first to preserve records safely.")
+
+        deleted_counts = {
+            "tests": connection.execute(
+                "SELECT COUNT(*) AS count FROM tests WHERE bank_id = ?", (bank_id,)
+            ).fetchone()["count"],
+            "attempts": connection.execute(
+                """SELECT COUNT(*) AS count FROM attempts
+                   WHERE test_id IN (SELECT test_id FROM tests WHERE bank_id = ?)""",
+                (bank_id,),
+            ).fetchone()["count"],
+            "responses": connection.execute(
+                """SELECT COUNT(*) AS count FROM responses
+                   WHERE attempt_id IN (
+                     SELECT a.attempt_id FROM attempts a
+                     JOIN tests t ON t.test_id = a.test_id
+                     WHERE t.bank_id = ?
+                   )
+                   OR question_id IN (SELECT question_id FROM questions WHERE bank_id = ?)""",
+                (bank_id, bank_id),
+            ).fetchone()["count"],
+            "questions": connection.execute(
+                "SELECT COUNT(*) AS count FROM questions WHERE bank_id = ?", (bank_id,)
+            ).fetchone()["count"],
+            "stimuli": connection.execute(
+                "SELECT COUNT(*) AS count FROM stimuli WHERE bank_id = ?", (bank_id,)
+            ).fetchone()["count"],
+        }
+
+        connection.execute(
+            """DELETE FROM responses
+               WHERE attempt_id IN (
+                 SELECT a.attempt_id FROM attempts a
+                 JOIN tests t ON t.test_id = a.test_id
+                 WHERE t.bank_id = ?
+               )
+               OR question_id IN (SELECT question_id FROM questions WHERE bank_id = ?)""",
+            (bank_id, bank_id),
+        )
+        connection.execute(
+            "DELETE FROM attempts WHERE test_id IN (SELECT test_id FROM tests WHERE bank_id = ?)",
+            (bank_id,),
+        )
+        connection.execute("DELETE FROM tests WHERE bank_id = ?", (bank_id,))
         connection.execute("DELETE FROM stimuli WHERE bank_id = ?", (bank_id,))
         connection.execute("DELETE FROM questions WHERE bank_id = ?", (bank_id,))
         connection.execute("DELETE FROM question_banks WHERE bank_id = ?", (bank_id,))
     asset_directory = question_assets_dir() / str(bank_id)
     if asset_directory.exists():
         shutil.rmtree(asset_directory)
-    return {"deleted": True, "bank_name": bank["bank_name"]}
+    return {"deleted": True, "bank_name": bank["bank_name"], "deleted_counts": deleted_counts}
 
 
 @app.get("/api/admin/question-banks/folder")

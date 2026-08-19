@@ -526,6 +526,130 @@ class StudentRegistrationTests(unittest.TestCase):
         self.assertEqual(practice_answer, "B")
         self.assertEqual(exam_answer, "B")
 
+    def test_launched_exam_has_one_minute_per_question_one_attempt_and_visible_score(self):
+        app.register_student("EXAM1", "Exam Student", "AI & DS", "A", "secret123")
+        with app.db() as connection:
+            bank_id = connection.execute(
+                "INSERT INTO question_banks (bank_name, source_html_filename, answer_key_filename, imported_at) VALUES (?, '', '', ?)",
+                ("Timed bank", app.now()),
+            ).lastrowid
+            connection.execute(
+                """INSERT INTO questions
+                   (question_text, source_key, category, chapter, difficulty, option_a, option_b,
+                    option_c, option_d, correct_answer, bank_id, created_at)
+                   VALUES ('2 + 2?', 'timed-1', 'Quantitative Aptitude', 'Arithmetic', 'Easy',
+                           '3', '4', '5', '6', 'B', ?, ?)""",
+                (bank_id, app.now()),
+            )
+            test_id = connection.execute(
+                """INSERT INTO tests
+                   (test_name, composition, bank_id, created_at, active, launched, mode, difficulties)
+                   VALUES (?, ?, ?, ?, 1, 1, 'faculty', ?)""",
+                ("Timed test", json.dumps([{"category": "Quantitative Aptitude", "chapter": "Arithmetic", "quantity": 1}]), bank_id, app.now(), json.dumps(["Easy"])),
+            ).lastrowid
+        request = app.Request({"type": "http", "method": "POST", "path": "/", "headers": [], "session": {"user": {"role": "student", "id": "EXAM1", "name": "Exam Student"}}})
+
+        started = app.start_test(test_id, request)
+        with app.db() as connection:
+            attempt = app.get_attempt(connection, started["attempt_id"])
+            self.assertGreater(app.seconds_remaining(attempt), 0)
+            self.assertLessEqual(app.seconds_remaining(attempt), app.SECONDS_PER_FACULTY_QUESTION)
+            connection.execute("UPDATE tests SET launched = 0 WHERE test_id = ?", (test_id,))
+            self.assertFalse(app.serialize_attempt(connection, app.get_attempt(connection, started["attempt_id"]))["feedback_allowed"])
+            question_id = connection.execute(
+                "SELECT question_id FROM responses WHERE attempt_id = ?", (started["attempt_id"],)
+            ).fetchone()["question_id"]
+        app.save_answer(started["attempt_id"], question_id, app.AnswerPayload(answer="B"), request)
+        app.record_exam_violation(started["attempt_id"], app.ExamViolationPayload(violation_type="focus_lost"), request)
+        result = app.submit_attempt(started["attempt_id"], app.SubmitPayload(confirmed=True), request)
+
+        self.assertEqual(result["attempt"]["score"], 1)
+        self.assertFalse(result["feedback_allowed"])
+        self.assertTrue(result["violation_flag"])
+        self.assertEqual(result["violations"][0]["label"], "Changed tab, window, or minimized the exam")
+        with self.assertRaises(app.HTTPException) as repeated:
+            app.start_test(test_id, request)
+        self.assertEqual(repeated.exception.status_code, 409)
+
+    def test_expired_faculty_attempt_is_automatically_submitted(self):
+        app.register_student("EXPIRE1", "Expired Student", "AI & DS", "A", "secret123")
+        with app.db() as connection:
+            test_id = connection.execute(
+                "INSERT INTO tests (test_name, composition, created_at, active, launched) VALUES ('Expired', '[]', ?, 1, 1)",
+                (app.now(),),
+            ).lastrowid
+            connection.execute(
+                """INSERT INTO attempts
+                   (attempt_id, student_id, test_id, started_at, total_questions, expires_at)
+                   VALUES ('expired-attempt', 'EXPIRE1', ?, ?, 0, ?)""",
+                (test_id, app.now(), "2000-01-01T00:00:00+00:00"),
+            )
+            serialized = app.serialize_attempt(connection, app.get_attempt(connection, "expired-attempt"))
+        self.assertEqual(serialized["status"], "submitted")
+        self.assertEqual(serialized["remaining_seconds"], 0)
+
+    def test_difficulty_filter_limits_validation_and_sampling(self):
+        with app.db() as connection:
+            bank_id = connection.execute(
+                "INSERT INTO question_banks (bank_name, source_html_filename, answer_key_filename, imported_at) VALUES ('Difficulty bank', '', '', ?)",
+                (app.now(),),
+            ).lastrowid
+            for difficulty in ("Easy", "Hard"):
+                connection.execute(
+                    """INSERT INTO questions
+                       (question_text, source_key, category, chapter, difficulty, option_a, option_b,
+                        option_c, option_d, correct_answer, bank_id, created_at)
+                       VALUES (?, ?, 'Logical Reasoning', 'Series', ?, '1', '2', '3', '4', 'A', ?, ?)""",
+                    (f"{difficulty} question", f"difficulty-{difficulty}", difficulty, bank_id, app.now()),
+                )
+            rules = [{"category": "Logical Reasoning", "chapter": "Series", "quantity": 1}]
+            app.validate_selection_rules(connection, bank_id, rules, 10, ["Hard"])
+            selected = app.sample_questions(connection, bank_id, rules, ["Hard"])
+            chosen = connection.execute(
+                "SELECT difficulty FROM questions WHERE question_id = ?", (selected[0]["question_id"],)
+            ).fetchone()["difficulty"]
+            taxonomy = app.question_bank_taxonomy(connection, bank_id)
+        self.assertEqual(chosen, "Hard")
+        self.assertEqual(taxonomy["categories"][0]["chapters"][0]["difficulties"], {"Easy": 1, "Medium": 0, "Hard": 1})
+
+    def test_only_one_active_login_is_allowed_per_usn(self):
+        app.register_student("LOGIN1", "Login Student", "AI & DS", "A", "secret123")
+        first = app.Request({"type": "http", "method": "POST", "path": "/", "headers": [], "session": {}})
+        second = app.Request({"type": "http", "method": "POST", "path": "/", "headers": [], "session": {}})
+        payload = app.LoginPayload(identifier="LOGIN1", password="secret123", role="student")
+
+        app.login(payload, first)
+        with self.assertRaises(app.HTTPException) as duplicate:
+            app.login(payload, second)
+        self.assertEqual(duplicate.exception.status_code, 409)
+        app.logout(first)
+        self.assertEqual(app.login(payload, second)["user"]["id"], "LOGIN1")
+
+    def test_faculty_can_delete_an_assessment_and_its_history(self):
+        app.register_student("DELETE1", "Delete Test Student", "AI & DS", "A", "secret123")
+        with app.db() as connection:
+            test_id = connection.execute(
+                "INSERT INTO tests (test_name, composition, created_at) VALUES ('Past assessment', '[]', ?)",
+                (app.now(),),
+            ).lastrowid
+            connection.execute(
+                "INSERT INTO attempts (attempt_id, student_id, test_id, started_at, total_questions) VALUES ('delete-test-attempt', 'DELETE1', ?, ?, 0)",
+                (test_id, app.now()),
+            )
+            connection.execute(
+                "INSERT INTO exam_violations (attempt_id, violation_type, occurred_at) VALUES ('delete-test-attempt', 'copy', ?)",
+                (app.now(),),
+            )
+        request = app.Request({"type": "http", "method": "DELETE", "path": "/", "headers": [], "session": {"user": {"role": "admin", "id": "faculty", "name": "Faculty"}}})
+
+        result = app.delete_test(test_id, request)
+        with app.db() as connection:
+            remaining = connection.execute("SELECT COUNT(*) FROM tests WHERE test_id = ?", (test_id,)).fetchone()[0]
+            attempts = connection.execute("SELECT COUNT(*) FROM attempts WHERE attempt_id = 'delete-test-attempt'").fetchone()[0]
+            violations = connection.execute("SELECT COUNT(*) FROM exam_violations WHERE attempt_id = 'delete-test-attempt'").fetchone()[0]
+        self.assertEqual(result["attempts_deleted"], 1)
+        self.assertEqual((remaining, attempts, violations), (0, 0, 0))
+
 
 if __name__ == "__main__":
     unittest.main()

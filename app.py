@@ -10,6 +10,7 @@ import hashlib
 import html
 import io
 import json
+import math
 import os
 import random
 import re
@@ -23,7 +24,7 @@ import uuid
 import webbrowser
 import zipfile
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
 from pathlib import Path, PurePosixPath
 from typing import Any, Dict, List, Optional
@@ -62,6 +63,16 @@ SUPPORTED_OPTION_KEYS = (*LEGACY_OPTION_KEYS, "E")
 UNCATEGORIZED_CHAPTER = "Uncategorized"
 MAX_ASSESSMENT_QUESTIONS = 500
 MAX_PRACTICE_QUESTIONS = 100
+QUESTION_DIFFICULTIES = ("Easy", "Medium", "Hard")
+SECONDS_PER_FACULTY_QUESTION = 60
+EXAM_VIOLATION_LABELS = {
+    "fullscreen_exit": "Exited full-screen mode",
+    "focus_lost": "Changed tab, window, or minimized the exam",
+    "copy": "Attempted to copy exam content",
+    "cut": "Attempted to cut exam content",
+    "paste": "Attempted to paste into the exam",
+    "context_menu": "Attempted to open the browser context menu",
+}
 MAX_LEGACY_FILE_BYTES = 25_000_000
 MAX_PACKAGE_BYTES = 50_000_000
 MAX_PACKAGE_UNPACKED_BYTES = 150_000_000
@@ -131,11 +142,17 @@ class TestPayload(BaseModel):
     bank_id: int
     selection_rules: List[SelectionRule] = Field(default_factory=list)
     composition: Dict[str, int] = Field(default_factory=dict)
+    difficulties: List[str] = Field(default_factory=lambda: list(QUESTION_DIFFICULTIES))
 
 
 class PracticePayload(BaseModel):
     bank_id: int
     selection_rules: List[SelectionRule]
+    difficulties: List[str] = Field(default_factory=lambda: list(QUESTION_DIFFICULTIES))
+
+
+class ExamViolationPayload(BaseModel):
+    violation_type: str
 
 
 class FolderImportPayload(BaseModel):
@@ -197,26 +214,42 @@ def delete_student(student_id: str) -> Dict[str, str]:
         attempt_ids = [row["attempt_id"] for row in connection.execute("SELECT attempt_id FROM attempts WHERE student_id = ?", (normalized_id,)).fetchall()]
         if attempt_ids:
             placeholders = ",".join("?" for _ in attempt_ids)
+            connection.execute(f"DELETE FROM exam_violations WHERE attempt_id IN ({placeholders})", attempt_ids)
             connection.execute(f"DELETE FROM responses WHERE attempt_id IN ({placeholders})", attempt_ids)
             connection.execute(f"DELETE FROM attempts WHERE attempt_id IN ({placeholders})", attempt_ids)
         connection.execute("DELETE FROM tests WHERE owner_student_id = ?", (normalized_id,))
+        connection.execute("DELETE FROM student_sessions WHERE student_id = ?", (normalized_id,))
         connection.execute("DELETE FROM students WHERE student_id = ?", (normalized_id,))
     return {"student_id": normalized_id}
 
 
-def student_available_tests(connection: sqlite3.Connection) -> List[Dict[str, Any]]:
+def student_available_tests(connection: sqlite3.Connection, student_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    exclusion = ""
+    parameters: List[Any] = []
+    if student_id:
+        exclusion = """AND NOT EXISTS (
+            SELECT 1 FROM attempts a
+            WHERE a.test_id = tests.test_id AND a.student_id = ? AND a.status = 'submitted'
+        )"""
+        parameters.append(student_id)
     launched = connection.execute(
-        "SELECT * FROM tests WHERE active = 1 AND launched = 1 AND mode = 'faculty' ORDER BY test_id DESC"
+        f"SELECT * FROM tests WHERE active = 1 AND launched = 1 AND mode = 'faculty' {exclusion} ORDER BY test_id DESC",
+        parameters,
     ).fetchall()
     available = launched or connection.execute(
-        "SELECT * FROM tests WHERE active = 1 AND mode = 'faculty' ORDER BY test_id DESC"
+        f"SELECT * FROM tests WHERE active = 1 AND mode = 'faculty' {exclusion} ORDER BY test_id DESC",
+        parameters,
     ).fetchall()
     return [dict(test) for test in available]
 
 
 def feedback_allowed(test: sqlite3.Row | Dict[str, Any]) -> bool:
     keys = set(test.keys())
-    return ("mode" in keys and test["mode"] == "student_practice") or not bool(test["launched"])
+    if "mode" in keys and test["mode"] == "student_practice":
+        return True
+    if "expires_at" in keys and test["expires_at"]:
+        return False
+    return not bool(test["launched"])
 
 
 def answer_locked(response: sqlite3.Row | Dict[str, Any]) -> bool:
@@ -225,6 +258,30 @@ def answer_locked(response: sqlite3.Row | Dict[str, Any]) -> bool:
 
 def rows(items: List[sqlite3.Row]) -> List[Dict[str, Any]]:
     return [dict(item) for item in items]
+
+
+def normalize_difficulties(values: Optional[List[str]]) -> List[str]:
+    requested = values or list(QUESTION_DIFFICULTIES)
+    normalized: List[str] = []
+    for value in requested:
+        difficulty = str(value).strip().title()
+        if difficulty not in QUESTION_DIFFICULTIES:
+            raise HTTPException(400, f"Difficulty must be one of: {', '.join(QUESTION_DIFFICULTIES)}.")
+        if difficulty not in normalized:
+            normalized.append(difficulty)
+    if not normalized:
+        raise HTTPException(400, "Choose at least one difficulty level.")
+    return normalized
+
+
+def decode_difficulties(raw: Optional[str]) -> List[str]:
+    try:
+        stored = json.loads(raw or "[]")
+    except json.JSONDecodeError as error:
+        raise HTTPException(500, "The saved difficulty filter is invalid.") from error
+    if not isinstance(stored, list):
+        raise HTTPException(500, "The saved difficulty filter is invalid.")
+    return normalize_difficulties(stored)
 
 
 def question_assets_dir() -> Path:
@@ -289,17 +346,22 @@ def question_bank_taxonomy(connection: sqlite3.Connection, bank_id: int) -> Dict
     if not bank:
         raise HTTPException(404, "Question bank not found.")
     grouped = connection.execute(
-        """SELECT category, COALESCE(NULLIF(chapter, ''), ?) AS chapter, COUNT(*) AS count
+        """SELECT category, COALESCE(NULLIF(chapter, ''), ?) AS chapter, difficulty, COUNT(*) AS count
            FROM questions WHERE bank_id = ? AND active = 1
-           GROUP BY category, COALESCE(NULLIF(chapter, ''), ?)
-           ORDER BY category, chapter""",
+           GROUP BY category, COALESCE(NULLIF(chapter, ''), ?), difficulty
+           ORDER BY category, chapter, difficulty""",
         (UNCATEGORIZED_CHAPTER, bank_id, UNCATEGORIZED_CHAPTER),
     ).fetchall()
     categories: Dict[str, Dict[str, Any]] = {}
     for item in grouped:
         category = categories.setdefault(item["category"], {"name": item["category"], "count": 0, "chapters": []})
         category["count"] += item["count"]
-        category["chapters"].append({"name": item["chapter"], "count": item["count"]})
+        chapter = next((entry for entry in category["chapters"] if entry["name"] == item["chapter"]), None)
+        if chapter is None:
+            chapter = {"name": item["chapter"], "count": 0, "difficulties": {difficulty: 0 for difficulty in QUESTION_DIFFICULTIES}}
+            category["chapters"].append(chapter)
+        chapter["count"] += item["count"]
+        chapter["difficulties"][item["difficulty"]] = item["count"]
     return {
         "bank_id": bank["bank_id"],
         "bank_name": bank["bank_name"],
@@ -313,6 +375,7 @@ def validate_selection_rules(
     bank_id: int,
     rules: List[Dict[str, Any]],
     maximum: int,
+    difficulties: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
     if not connection.execute("SELECT 1 FROM question_banks WHERE bank_id = ?", (bank_id,)).fetchone():
         raise HTTPException(404, "Choose an imported question bank.")
@@ -321,13 +384,15 @@ def validate_selection_rules(
         raise HTTPException(400, "Choose at least one question.")
     if total > maximum:
         raise HTTPException(400, f"Choose no more than {maximum} questions.")
+    selected_difficulties = normalize_difficulties(difficulties)
+    placeholders = ",".join("?" for _ in selected_difficulties)
     availability = {
         (row["category"], row["chapter"]): row["count"]
         for row in connection.execute(
-            """SELECT category, COALESCE(NULLIF(chapter, ''), ?) AS chapter, COUNT(*) AS count
-               FROM questions WHERE bank_id = ? AND active = 1
+            f"""SELECT category, COALESCE(NULLIF(chapter, ''), ?) AS chapter, COUNT(*) AS count
+               FROM questions WHERE bank_id = ? AND active = 1 AND difficulty IN ({placeholders})
                GROUP BY category, COALESCE(NULLIF(chapter, ''), ?)""",
-            (UNCATEGORIZED_CHAPTER, bank_id, UNCATEGORIZED_CHAPTER),
+            (UNCATEGORIZED_CHAPTER, bank_id, *selected_difficulties, UNCATEGORIZED_CHAPTER),
         ).fetchall()
     }
     shortages = [
@@ -344,16 +409,19 @@ def sample_questions(
     connection: sqlite3.Connection,
     bank_id: int,
     rules: List[Dict[str, Any]],
+    difficulties: Optional[List[str]] = None,
 ) -> List[sqlite3.Row]:
+    selected_difficulties = normalize_difficulties(difficulties)
+    placeholders = ",".join("?" for _ in selected_difficulties)
     selected: List[sqlite3.Row] = []
     selected_ids: set[int] = set()
     for rule in rules:
         pool = connection.execute(
-            """SELECT question_id, category, COALESCE(NULLIF(chapter, ''), ?) AS chapter, stimulus_id
+            f"""SELECT question_id, category, COALESCE(NULLIF(chapter, ''), ?) AS chapter, stimulus_id
                FROM questions
-               WHERE bank_id = ? AND active = 1 AND category = ?
-                 AND COALESCE(NULLIF(chapter, ''), ?) = ?""",
-            (UNCATEGORIZED_CHAPTER, bank_id, rule["category"], UNCATEGORIZED_CHAPTER, rule["chapter"]),
+               WHERE bank_id = ? AND active = 1 AND category = ? AND difficulty IN ({placeholders})
+                  AND COALESCE(NULLIF(chapter, ''), ?) = ?""",
+            (UNCATEGORIZED_CHAPTER, bank_id, rule["category"], *selected_difficulties, UNCATEGORIZED_CHAPTER, rule["chapter"]),
         ).fetchall()
         available = [question for question in pool if question["question_id"] not in selected_ids]
         chosen = random.sample(available, rule["quantity"])
@@ -376,11 +444,19 @@ def create_attempt_from_questions(
     student_id: str,
     test_id: int,
     selected: List[sqlite3.Row],
+    time_limit_seconds: Optional[int] = None,
 ) -> str:
     attempt_id = str(uuid.uuid4())
+    started_at = now()
+    expires_at = (
+        (datetime.now(timezone.utc) + timedelta(seconds=time_limit_seconds)).isoformat(timespec="seconds")
+        if time_limit_seconds else None
+    )
     connection.execute(
-        "INSERT INTO attempts (attempt_id, student_id, test_id, started_at, total_questions) VALUES (?, ?, ?, ?, ?)",
-        (attempt_id, student_id, test_id, now(), len(selected)),
+        """INSERT INTO attempts
+           (attempt_id, student_id, test_id, started_at, total_questions, expires_at)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (attempt_id, student_id, test_id, started_at, len(selected), expires_at),
     )
     for index, question in enumerate(selected, start=1):
         connection.execute(
@@ -735,6 +811,10 @@ def ensure_schema() -> None:
               source_html_filename TEXT NOT NULL, answer_key_filename TEXT NOT NULL,
               imported_at TEXT NOT NULL, format_version INTEGER NOT NULL DEFAULT 1
             );
+            CREATE TABLE IF NOT EXISTS student_sessions (
+              student_id TEXT PRIMARY KEY, session_token TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL,
+              FOREIGN KEY(student_id) REFERENCES students(student_id)
+            );
             CREATE TABLE IF NOT EXISTS questions (
               question_id INTEGER PRIMARY KEY AUTOINCREMENT, question_text TEXT NOT NULL,
               source_key TEXT, category TEXT NOT NULL, chapter TEXT NOT NULL DEFAULT 'Uncategorized',
@@ -775,6 +855,11 @@ def ensure_schema() -> None:
               FOREIGN KEY(question_id) REFERENCES questions(question_id),
               UNIQUE(attempt_id, question_id)
             );
+            CREATE TABLE IF NOT EXISTS exam_violations (
+              violation_id INTEGER PRIMARY KEY AUTOINCREMENT, attempt_id TEXT NOT NULL,
+              violation_type TEXT NOT NULL, occurred_at TEXT NOT NULL,
+              FOREIGN KEY(attempt_id) REFERENCES attempts(attempt_id)
+            );
             CREATE INDEX IF NOT EXISTS idx_attempts_student ON attempts(student_id);
             CREATE INDEX IF NOT EXISTS idx_responses_attempt ON responses(attempt_id);
             """
@@ -793,10 +878,13 @@ def ensure_schema() -> None:
         ensure_column(connection, "tests", "launched INTEGER NOT NULL DEFAULT 0")
         ensure_column(connection, "tests", "mode TEXT NOT NULL DEFAULT 'faculty'")
         ensure_column(connection, "tests", "owner_student_id TEXT")
+        ensure_column(connection, "tests", "difficulties TEXT NOT NULL DEFAULT '[\"Easy\",\"Medium\",\"Hard\"]'")
+        ensure_column(connection, "attempts", "expires_at TEXT")
         ensure_column(connection, "responses", "chapter TEXT NOT NULL DEFAULT 'Uncategorized'")
         connection.execute("CREATE INDEX IF NOT EXISTS idx_questions_bank ON questions(bank_id)")
         connection.execute("CREATE INDEX IF NOT EXISTS idx_questions_taxonomy ON questions(bank_id, category, chapter, active)")
         connection.execute("CREATE INDEX IF NOT EXISTS idx_tests_mode ON tests(mode, active, launched)")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_exam_violations_attempt ON exam_violations(attempt_id)")
 
 
 def seed_data() -> None:
@@ -1146,6 +1234,14 @@ def require_user(request: Request, role: Optional[str] = None) -> Dict[str, str]
     user = request.session.get("user")
     if not user or (role and user["role"] != role):
         raise HTTPException(401, "Please sign in to continue.")
+    if user["role"] == "student" and user.get("login_token"):
+        with db() as connection:
+            active = connection.execute(
+                "SELECT session_token FROM student_sessions WHERE student_id = ?", (user["id"],)
+            ).fetchone()
+        if not active or active["session_token"] != user["login_token"]:
+            request.session.clear()
+            raise HTTPException(401, "This student login is no longer active. Ask Faculty to remove the account if you need to register again.")
     return user
 
 
@@ -1160,6 +1256,63 @@ def get_attempt(connection: sqlite3.Connection, attempt_id: str) -> sqlite3.Row:
     return attempt
 
 
+def parse_timestamp(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def seconds_remaining(attempt: sqlite3.Row | Dict[str, Any]) -> Optional[int]:
+    expires_at = parse_timestamp(attempt["expires_at"] if "expires_at" in attempt.keys() else None)
+    if not expires_at:
+        return None
+    return max(0, math.ceil((expires_at - datetime.now(timezone.utc)).total_seconds()))
+
+
+def finalize_attempt(connection: sqlite3.Connection, attempt_id: str) -> sqlite3.Row:
+    attempt = get_attempt(connection, attempt_id)
+    if attempt["status"] == "submitted":
+        return attempt
+    connection.execute(
+        """UPDATE responses SET correct = CASE
+           WHEN selected_answer IS NULL THEN 0
+           WHEN selected_answer = (SELECT correct_answer FROM questions WHERE questions.question_id = responses.question_id) THEN 1
+           ELSE 0 END WHERE attempt_id = ?""",
+        (attempt_id,),
+    )
+    stats = connection.execute(
+        """SELECT COUNT(*) AS total, SUM(selected_answer IS NOT NULL) AS attempted,
+                  SUM(correct = 1) AS correct FROM responses WHERE attempt_id = ?""",
+        (attempt_id,),
+    ).fetchone()
+    total, attempted, correct = stats["total"], stats["attempted"] or 0, stats["correct"] or 0
+    percentage = round(correct / total * 100, 1) if total else 0
+    connection.execute(
+        """UPDATE attempts SET submitted_at = ?, status = 'submitted', attempted = ?,
+                  correct = ?, score = ?, percentage = ? WHERE attempt_id = ?""",
+        (now(), attempted, correct, correct, percentage, attempt_id),
+    )
+    return get_attempt(connection, attempt_id)
+
+
+def expire_attempt_if_needed(connection: sqlite3.Connection, attempt: sqlite3.Row) -> sqlite3.Row:
+    if attempt["status"] == "in_progress" and seconds_remaining(attempt) == 0:
+        return finalize_attempt(connection, attempt["attempt_id"])
+    return attempt
+
+
+def finalize_expired_attempts(connection: sqlite3.Connection) -> int:
+    expired = connection.execute(
+        """SELECT attempt_id FROM attempts
+           WHERE status = 'in_progress' AND expires_at IS NOT NULL AND expires_at <= ?""",
+        (now(),),
+    ).fetchall()
+    for attempt in expired:
+        finalize_attempt(connection, attempt["attempt_id"])
+    return len(expired)
+
+
 def assert_student_attempt(connection: sqlite3.Connection, attempt_id: str, student_id: str) -> sqlite3.Row:
     attempt = get_attempt(connection, attempt_id)
     if attempt["student_id"] != student_id:
@@ -1168,6 +1321,7 @@ def assert_student_attempt(connection: sqlite3.Connection, attempt_id: str, stud
 
 
 def serialize_attempt(connection: sqlite3.Connection, attempt: sqlite3.Row, include_answers: bool = False) -> Dict[str, Any]:
+    attempt = expire_attempt_if_needed(connection, attempt)
     include_answers = include_answers or feedback_allowed(attempt)
     response_rows = connection.execute(
         """SELECT r.question_order, r.selected_answer, r.category, r.chapter,
@@ -1211,13 +1365,18 @@ def serialize_attempt(connection: sqlite3.Connection, attempt: sqlite3.Row, incl
                     "option_explanations": clean_display_value(json.loads(row["option_explanations"])),
                 }
         questions.append(question)
-    return {**dict(attempt), "feedback_allowed": feedback_allowed(attempt), "questions": questions}
+    return {
+        **dict(attempt),
+        "feedback_allowed": feedback_allowed(attempt),
+        "proctored": attempt["mode"] == "faculty" and bool(attempt["expires_at"]),
+        "remaining_seconds": seconds_remaining(attempt),
+        "server_time": now(),
+        "questions": questions,
+    }
 
 
 def result_for_attempt(connection: sqlite3.Connection, attempt_id: str) -> Dict[str, Any]:
     attempt = get_attempt(connection, attempt_id)
-    if not feedback_allowed(attempt):
-        return {"attempt": {"attempt_id": attempt_id, "status": attempt["status"]}, "feedback_allowed": False}
     result_rows = connection.execute(
         """SELECT r.category, COUNT(*) AS total, SUM(r.selected_answer IS NOT NULL) AS attempted,
                   SUM(r.correct = 1) AS correct
@@ -1243,10 +1402,26 @@ def result_for_attempt(connection: sqlite3.Connection, attempt_id: str) -> Dict[
             "attempted": attempted, "correct": correct,
             "percentage": round(correct / total * 100, 1) if total else 0,
         })
+    violation_rows = connection.execute(
+        """SELECT violation_type, occurred_at FROM exam_violations
+           WHERE attempt_id = ? ORDER BY occurred_at, violation_id""",
+        (attempt_id,),
+    ).fetchall()
+    violations = [
+        {
+            "type": row["violation_type"],
+            "label": EXAM_VIOLATION_LABELS.get(row["violation_type"], row["violation_type"]),
+            "occurred_at": row["occurred_at"],
+        }
+        for row in violation_rows
+    ]
     return {
         "attempt": dict(attempt), "categories": categories, "chapters": chapters,
         "incorrect": attempt["attempted"] - attempt["correct"],
         "unanswered": attempt["total_questions"] - attempt["attempted"],
+        "feedback_allowed": feedback_allowed(attempt),
+        "violation_flag": bool(violations),
+        "violations": violations,
     }
 
 
@@ -1281,7 +1456,21 @@ def login(payload: LoginPayload, request: Request) -> Dict[str, Any]:
             user_id, label = "username", "name"
         if not account or not check_password(payload.password, account["password_hash"]):
             raise HTTPException(401, "Incorrect ID or password.")
-        request.session["user"] = {"role": role, "id": account[user_id], "name": account[label]}
+        user = {"role": role, "id": account[user_id], "name": account[label]}
+        if role == "student":
+            login_token = str(uuid.uuid4())
+            try:
+                connection.execute(
+                    "INSERT INTO student_sessions (student_id, session_token, created_at) VALUES (?, ?, ?)",
+                    (account[user_id], login_token, now()),
+                )
+            except sqlite3.IntegrityError as error:
+                raise HTTPException(
+                    409,
+                    "This USN is already signed in on another browser. Sign out there, or ask Faculty to delete the student account so it can be registered again.",
+                ) from error
+            user["login_token"] = login_token
+        request.session["user"] = user
     return {"user": request.session["user"]}
 
 
@@ -1296,6 +1485,13 @@ def register(payload: RegistrationPayload) -> Dict[str, Any]:
 
 @app.post("/api/logout")
 def logout(request: Request) -> Dict[str, bool]:
+    user = request.session.get("user")
+    if user and user.get("role") == "student" and user.get("login_token"):
+        with db() as connection:
+            connection.execute(
+                "DELETE FROM student_sessions WHERE student_id = ? AND session_token = ?",
+                (user["id"], user["login_token"]),
+            )
     request.session.clear()
     return {"ok": True}
 
@@ -1312,12 +1508,19 @@ def student_dashboard(request: Request) -> Dict[str, Any]:
     user = require_user(request, "student")
     with db() as connection:
         student = connection.execute("SELECT student_id, name, class, section FROM students WHERE student_id = ?", (user["id"],)).fetchone()
-        tests = student_available_tests(connection)
+        tests = student_available_tests(connection, user["id"])
+        launched_test = connection.execute(
+            "SELECT test_id FROM tests WHERE active = 1 AND launched = 1 AND mode = 'faculty' LIMIT 1"
+        ).fetchone()
         active = connection.execute(
             """SELECT a.*, t.test_name, t.mode FROM attempts a JOIN tests t ON t.test_id = a.test_id
                WHERE a.student_id = ? AND a.status = 'in_progress' ORDER BY a.started_at DESC LIMIT 1""",
             (user["id"],),
         ).fetchone()
+        if active:
+            active = expire_attempt_if_needed(connection, get_attempt(connection, active["attempt_id"]))
+            if active["status"] == "submitted":
+                active = None
         history = connection.execute(
             """SELECT a.attempt_id, a.score, a.total_questions, a.percentage, a.submitted_at, t.test_name, t.mode
                FROM attempts a JOIN tests t ON t.test_id = a.test_id
@@ -1328,7 +1531,7 @@ def student_dashboard(request: Request) -> Dict[str, Any]:
                FROM responses r JOIN attempts a ON a.attempt_id = r.attempt_id
                WHERE a.student_id = ? AND a.status = 'submitted' GROUP BY r.category""", (user["id"],)
         ).fetchall()
-    return {"student": dict(student), "tests": tests, "test": tests[0] if tests else None, "launched": bool(tests and tests[0]["launched"]), "active_attempt": dict(active) if active else None, "history": rows(history), "category_trend": rows(trend)}
+    return {"student": dict(student), "tests": tests, "test": tests[0] if tests else None, "launched": bool(launched_test), "active_attempt": dict(active) if active else None, "history": rows(history), "category_trend": rows(trend)}
 
 
 @app.get("/api/student/practice/catalog")
@@ -1347,22 +1550,23 @@ def student_practice_catalog(request: Request) -> Dict[str, Any]:
 def start_student_practice(payload: PracticePayload, request: Request) -> Dict[str, Any]:
     user = require_user(request, "student")
     rules = normalize_selection_rules(payload.selection_rules)
+    difficulties = normalize_difficulties(payload.difficulties)
     with db() as connection:
         if connection.execute(
             "SELECT 1 FROM tests WHERE active = 1 AND launched = 1 AND mode = 'faculty' LIMIT 1"
         ).fetchone():
             raise HTTPException(409, "Personal practice is paused while Faculty has a launched assessment.")
-        rules = validate_selection_rules(connection, payload.bank_id, rules, MAX_PRACTICE_QUESTIONS)
+        rules = validate_selection_rules(connection, payload.bank_id, rules, MAX_PRACTICE_QUESTIONS, difficulties)
         bank = connection.execute(
             "SELECT bank_name FROM question_banks WHERE bank_id = ?", (payload.bank_id,)
         ).fetchone()
         test_id = connection.execute(
             """INSERT INTO tests
-               (test_name, composition, bank_id, created_at, active, launched, mode, owner_student_id)
-               VALUES (?, ?, ?, ?, 0, 0, 'student_practice', ?)""",
-            (f"Practice · {bank['bank_name']}", json.dumps(rules), payload.bank_id, now(), user["id"]),
+               (test_name, composition, bank_id, created_at, active, launched, mode, owner_student_id, difficulties)
+               VALUES (?, ?, ?, ?, 0, 0, 'student_practice', ?, ?)""",
+            (f"Practice · {bank['bank_name']}", json.dumps(rules), payload.bank_id, now(), user["id"], json.dumps(difficulties)),
         ).lastrowid
-        selected = sample_questions(connection, payload.bank_id, rules)
+        selected = sample_questions(connection, payload.bank_id, rules, difficulties)
         attempt_id = create_attempt_from_questions(connection, user["id"], test_id, selected)
     return {"attempt_id": attempt_id, "resumed": False}
 
@@ -1371,9 +1575,14 @@ def start_student_practice(payload: PracticePayload, request: Request) -> Dict[s
 def start_test(test_id: int, request: Request) -> Dict[str, Any]:
     user = require_user(request, "student")
     with db() as connection:
-        existing = connection.execute("SELECT attempt_id FROM attempts WHERE student_id = ? AND test_id = ? AND status = 'in_progress'", (user["id"], test_id)).fetchone()
+        existing = connection.execute(
+            "SELECT attempt_id, status FROM attempts WHERE student_id = ? AND test_id = ? ORDER BY started_at DESC LIMIT 1",
+            (user["id"], test_id),
+        ).fetchone()
         if existing:
-            return {"attempt_id": existing["attempt_id"], "resumed": True}
+            if existing["status"] == "in_progress":
+                return {"attempt_id": existing["attempt_id"], "resumed": True}
+            raise HTTPException(409, "You have already completed this Faculty assessment. Each student may take it only once.")
         test = connection.execute(
             "SELECT * FROM tests WHERE test_id = ? AND active = 1 AND mode = 'faculty'", (test_id,)
         ).fetchone()
@@ -1384,11 +1593,13 @@ def start_test(test_id: int, request: Request) -> Dict[str, Any]:
         ).fetchone()
         if launched and not test["launched"]:
             raise HTTPException(409, "Faculty has launched another test. Please attempt the launched test.")
+        difficulties = decode_difficulties(test["difficulties"])
         rules = validate_selection_rules(
-            connection, test["bank_id"], decode_selection_rules(test["composition"]), MAX_ASSESSMENT_QUESTIONS
+            connection, test["bank_id"], decode_selection_rules(test["composition"]), MAX_ASSESSMENT_QUESTIONS, difficulties
         )
-        selected = sample_questions(connection, test["bank_id"], rules)
-        attempt_id = create_attempt_from_questions(connection, user["id"], test_id, selected)
+        selected = sample_questions(connection, test["bank_id"], rules, difficulties)
+        time_limit = len(selected) * SECONDS_PER_FACULTY_QUESTION if test["launched"] else None
+        attempt_id = create_attempt_from_questions(connection, user["id"], test_id, selected, time_limit)
     return {"attempt_id": attempt_id, "resumed": False}
 
 
@@ -1405,8 +1616,9 @@ def save_answer(attempt_id: str, question_id: int, payload: AnswerPayload, reque
     user = require_user(request, "student")
     with db() as connection:
         attempt = assert_student_attempt(connection, attempt_id, user["id"])
+        attempt = expire_attempt_if_needed(connection, attempt)
         if attempt["status"] != "in_progress":
-            raise HTTPException(400, "Submitted tests cannot be changed.")
+            raise HTTPException(400, "This assessment has already been submitted or its timer has ended.")
         response = connection.execute(
             """SELECT r.selected_answer, q.option_a, q.option_b, q.option_c, q.option_d, q.options_json
                FROM responses r JOIN questions q ON q.question_id = r.question_id
@@ -1417,7 +1629,7 @@ def save_answer(attempt_id: str, question_id: int, payload: AnswerPayload, reque
             raise HTTPException(404, "Question is not part of this assessment.")
         if payload.answer is not None and payload.answer not in question_options(response):
             raise HTTPException(400, "The selected answer is not an option for this question.")
-        if answer_locked({"launched": attempt["launched"], "selected_answer": response["selected_answer"]}):
+        if answer_locked({**dict(attempt), "selected_answer": response["selected_answer"]}):
             raise HTTPException(409, "Practice answers cannot be changed after feedback is shown.")
         if feedback_allowed(attempt):
             updated = connection.execute(
@@ -1437,27 +1649,50 @@ def save_answer(attempt_id: str, question_id: int, payload: AnswerPayload, reque
     return {"saved": True, "attempted": attempted, "feedback": feedback}
 
 
+@app.post("/api/attempts/{attempt_id}/violations")
+def record_exam_violation(attempt_id: str, payload: ExamViolationPayload, request: Request) -> Dict[str, Any]:
+    user = require_user(request, "student")
+    if payload.violation_type not in EXAM_VIOLATION_LABELS:
+        raise HTTPException(400, "Unknown exam violation type.")
+    with db() as connection:
+        attempt = expire_attempt_if_needed(connection, assert_student_attempt(connection, attempt_id, user["id"]))
+        if attempt["status"] != "in_progress" or attempt["mode"] != "faculty" or not attempt["expires_at"]:
+            raise HTTPException(400, "Violations can only be recorded during a live proctored assessment.")
+        occurred_at = now()
+        latest = connection.execute(
+            """SELECT violation_type, occurred_at FROM exam_violations
+               WHERE attempt_id = ? ORDER BY violation_id DESC LIMIT 1""",
+            (attempt_id,),
+        ).fetchone()
+        if latest and latest["violation_type"] == payload.violation_type:
+            elapsed = datetime.now(timezone.utc) - parse_timestamp(latest["occurred_at"])
+            if elapsed.total_seconds() < 2:
+                count = connection.execute(
+                    "SELECT COUNT(*) AS count FROM exam_violations WHERE attempt_id = ?", (attempt_id,)
+                ).fetchone()["count"]
+                return {"recorded": False, "violation_count": count}
+        connection.execute(
+            "INSERT INTO exam_violations (attempt_id, violation_type, occurred_at) VALUES (?, ?, ?)",
+            (attempt_id, payload.violation_type, occurred_at),
+        )
+        count = connection.execute(
+            "SELECT COUNT(*) AS count FROM exam_violations WHERE attempt_id = ?", (attempt_id,)
+        ).fetchone()["count"]
+    return {"recorded": True, "violation_count": count}
+
+
 @app.post("/api/attempts/{attempt_id}/submit")
 def submit_attempt(attempt_id: str, payload: SubmitPayload, request: Request) -> Dict[str, Any]:
     user = require_user(request, "student")
     with db() as connection:
         attempt = assert_student_attempt(connection, attempt_id, user["id"])
+        attempt = expire_attempt_if_needed(connection, attempt)
         if attempt["status"] == "submitted":
             return result_for_attempt(connection, attempt_id)
         unanswered = connection.execute("SELECT COUNT(*) AS count FROM responses WHERE attempt_id = ? AND selected_answer IS NULL", (attempt_id,)).fetchone()["count"]
         if unanswered and not payload.confirmed:
             return {"requires_confirmation": True, "unanswered": unanswered, "attempted": attempt["total_questions"] - unanswered}
-        connection.execute(
-            """UPDATE responses SET correct = CASE
-               WHEN selected_answer IS NULL THEN 0
-               WHEN selected_answer = (SELECT correct_answer FROM questions WHERE questions.question_id = responses.question_id) THEN 1
-               ELSE 0 END WHERE attempt_id = ?""", (attempt_id,)
-        )
-        stats = connection.execute("SELECT COUNT(*) AS total, SUM(selected_answer IS NOT NULL) AS attempted, SUM(correct = 1) AS correct FROM responses WHERE attempt_id = ?", (attempt_id,)).fetchone()
-        total, attempted, correct = stats["total"], stats["attempted"] or 0, stats["correct"] or 0
-        connection.execute("UPDATE attempts SET submitted_at = ?, status = 'submitted', attempted = ?, correct = ?, score = ?, percentage = ? WHERE attempt_id = ?", (now(), attempted, correct, correct, round(correct / total * 100, 1), attempt_id))
-        if not feedback_allowed(attempt):
-            return {"submitted": True, "feedback_allowed": False}
+        finalize_attempt(connection, attempt_id)
         return result_for_attempt(connection, attempt_id)
 
 
@@ -1465,11 +1700,9 @@ def submit_attempt(attempt_id: str, payload: SubmitPayload, request: Request) ->
 def get_result(attempt_id: str, request: Request) -> Dict[str, Any]:
     user = require_user(request, "student")
     with db() as connection:
-        attempt = assert_student_attempt(connection, attempt_id, user["id"])
+        attempt = expire_attempt_if_needed(connection, assert_student_attempt(connection, attempt_id, user["id"]))
         if attempt["status"] != "submitted":
             raise HTTPException(400, "Submit the assessment to view results.")
-        if not feedback_allowed(attempt):
-            raise HTTPException(403, "Exam results are held by Faculty.")
         return result_for_attempt(connection, attempt_id)
 
 
@@ -1477,7 +1710,7 @@ def get_result(attempt_id: str, request: Request) -> Dict[str, Any]:
 def retry_incorrect_practice(attempt_id: str, request: Request) -> Dict[str, Any]:
     user = require_user(request, "student")
     with db() as connection:
-        attempt = assert_student_attempt(connection, attempt_id, user["id"])
+        attempt = expire_attempt_if_needed(connection, assert_student_attempt(connection, attempt_id, user["id"]))
         if attempt["mode"] != "student_practice" or attempt["status"] != "submitted":
             raise HTTPException(400, "Only completed personal practice sessions can be retried.")
         selected = connection.execute(
@@ -1504,6 +1737,7 @@ def retry_incorrect_practice(attempt_id: str, request: Request) -> Dict[str, Any
 def admin_dashboard(request: Request) -> Dict[str, Any]:
     require_user(request, "admin")
     with db() as connection:
+        finalize_expired_attempts(connection)
         totals = connection.execute(
             """SELECT (SELECT COUNT(*) FROM students) AS students, COUNT(a.attempt_id) AS completed,
                       ROUND(COALESCE(AVG(a.percentage), 0), 1) AS average
@@ -1526,12 +1760,18 @@ def admin_dashboard(request: Request) -> Dict[str, Any]:
                GROUP BY r.category ORDER BY percentage DESC"""
         ).fetchall()
         recent = connection.execute(
-            """SELECT a.attempt_id, s.name, s.student_id, t.test_name, a.score, a.total_questions, a.percentage, a.submitted_at
+            """SELECT a.attempt_id, s.name, s.student_id, t.test_name, a.score, a.total_questions, a.percentage, a.submitted_at,
+                      (SELECT COUNT(*) FROM exam_violations ev WHERE ev.attempt_id = a.attempt_id) AS violation_count,
+                      (SELECT GROUP_CONCAT(DISTINCT ev.violation_type) FROM exam_violations ev WHERE ev.attempt_id = a.attempt_id) AS violation_types
                FROM attempts a JOIN students s ON s.student_id = a.student_id JOIN tests t ON t.test_id = a.test_id
                WHERE a.status = 'submitted' AND t.mode = 'faculty'
-               ORDER BY a.submitted_at DESC LIMIT 10"""
+               ORDER BY a.submitted_at DESC"""
         ).fetchall()
-    return {"totals": dict(totals), "students": rows(students), "category_performance": rows(category), "recent_attempts": rows(recent)}
+    recent_attempts = rows(recent)
+    for attempt in recent_attempts:
+        types = [item for item in (attempt.pop("violation_types") or "").split(",") if item]
+        attempt["violations"] = [EXAM_VIOLATION_LABELS.get(item, item) for item in types]
+    return {"totals": dict(totals), "students": rows(students), "category_performance": rows(category), "recent_attempts": recent_attempts}
 
 
 @app.get("/api/admin/students")
@@ -1625,6 +1865,15 @@ def delete_question_bank(bank_id: int, request: Request) -> Dict[str, Any]:
             ).fetchone()["count"],
         }
 
+        connection.execute(
+            """DELETE FROM exam_violations
+               WHERE attempt_id IN (
+                 SELECT a.attempt_id FROM attempts a
+                 JOIN tests t ON t.test_id = a.test_id
+                 WHERE t.bank_id = ?
+               )""",
+            (bank_id,),
+        )
         connection.execute(
             """DELETE FROM responses
                WHERE attempt_id IN (
@@ -1767,12 +2016,15 @@ def list_tests(request: Request) -> Dict[str, Any]:
     require_user(request, "admin")
     with db() as connection:
         tests = rows(connection.execute(
-            """SELECT t.*, b.bank_name FROM tests t
+            """SELECT t.*, b.bank_name,
+                      (SELECT COUNT(*) FROM attempts a WHERE a.test_id = t.test_id) AS attempt_count
+               FROM tests t
                LEFT JOIN question_banks b ON b.bank_id = t.bank_id
                WHERE t.mode = 'faculty' ORDER BY t.created_at DESC"""
         ).fetchall())
         for test in tests:
             test["selection_rules"] = decode_selection_rules(test["composition"])
+            test["difficulty_levels"] = decode_difficulties(test["difficulties"])
         banks = rows(connection.execute(
             """SELECT b.bank_id, b.bank_name, COUNT(q.question_id) AS question_count
                FROM question_banks b LEFT JOIN questions q ON q.bank_id = b.bank_id AND q.active = 1
@@ -1785,28 +2037,41 @@ def list_tests(request: Request) -> Dict[str, Any]:
 def create_test(payload: TestPayload, request: Request) -> Dict[str, Any]:
     require_user(request, "admin")
     rules = normalize_selection_rules(payload.selection_rules, payload.composition)
-    clean = {category: int(payload.composition.get(category, 0)) for category in CATEGORIES}
+    difficulties = normalize_difficulties(payload.difficulties)
     if not payload.test_name.strip():
         raise HTTPException(400, "Provide a test name.")
     with db() as connection:
-        rules = validate_selection_rules(connection, payload.bank_id, rules, MAX_ASSESSMENT_QUESTIONS)
+        rules = validate_selection_rules(connection, payload.bank_id, rules, MAX_ASSESSMENT_QUESTIONS, difficulties)
         bank = connection.execute("SELECT bank_name FROM question_banks WHERE bank_id = ?", (payload.bank_id,)).fetchone()
         if not bank:
             raise HTTPException(404, "Choose an imported question bank.")
-        availability = {
-            row["category"]: row["count"]
-            for row in connection.execute(
-                "SELECT category, COUNT(*) AS count FROM questions WHERE bank_id = ? AND active = 1 GROUP BY category", (payload.bank_id,)
-            ).fetchall()
-        }
-        shortages = [f"{category}: need {count}, have {availability.get(category, 0)}" for category, count in clean.items() if count > availability.get(category, 0)]
-        if shortages:
-            raise HTTPException(400, "This bank does not have enough active questions — " + "; ".join(shortages) + ".")
         connection.execute(
-            "INSERT INTO tests (test_name, composition, bank_id, created_at) VALUES (?, ?, ?, ?)",
-            (payload.test_name.strip(), json.dumps(rules), payload.bank_id, now()),
+            "INSERT INTO tests (test_name, composition, bank_id, created_at, difficulties) VALUES (?, ?, ?, ?, ?)",
+            (payload.test_name.strip(), json.dumps(rules), payload.bank_id, now(), json.dumps(difficulties)),
         )
     return {"created": True}
+
+
+@app.delete("/api/admin/tests/{test_id}")
+def delete_test(test_id: int, request: Request) -> Dict[str, Any]:
+    require_user(request, "admin")
+    with db() as connection:
+        test = connection.execute(
+            "SELECT test_name FROM tests WHERE test_id = ? AND mode = 'faculty'", (test_id,)
+        ).fetchone()
+        if not test:
+            raise HTTPException(404, "Faculty assessment not found.")
+        attempt_ids = [
+            row["attempt_id"]
+            for row in connection.execute("SELECT attempt_id FROM attempts WHERE test_id = ?", (test_id,)).fetchall()
+        ]
+        if attempt_ids:
+            placeholders = ",".join("?" for _ in attempt_ids)
+            connection.execute(f"DELETE FROM exam_violations WHERE attempt_id IN ({placeholders})", attempt_ids)
+            connection.execute(f"DELETE FROM responses WHERE attempt_id IN ({placeholders})", attempt_ids)
+            connection.execute(f"DELETE FROM attempts WHERE attempt_id IN ({placeholders})", attempt_ids)
+        connection.execute("DELETE FROM tests WHERE test_id = ?", (test_id,))
+    return {"deleted": True, "test_name": test["test_name"], "attempts_deleted": len(attempt_ids)}
 
 
 @app.post("/api/admin/tests/{test_id}/launch")

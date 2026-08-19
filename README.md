@@ -59,6 +59,22 @@ Students get the same category/chapter selector under **Practice**, with immedia
 feedback, chapter-level results, practice history, and a retry-incorrect action.
 Faculty-launched assessments remain exclusive while they are live.
 
+Faculty and students can filter new assessment/practice sets by difficulty. A
+Faculty-launched assessment is timed at one minute per question, can be taken
+only once per student, and shows its final score immediately after submission.
+The Faculty dashboard lists submitted results and exam-integrity violations in
+addition to the CSV export.
+
+Launched assessments use a guarded full-screen browser mode. The app blocks and
+records copy, cut, paste, context-menu, full-screen exit, and tab/window focus
+loss events, then displays them with the student result and Faculty dashboard.
+These controls are browser-enforced; a web application cannot physically stop
+operating-system shortcuts or another application from minimizing a window.
+
+Only one active browser login is allowed for a student USN. Signing out releases
+the login. Faculty can delete a student account (including its records and login
+lock), after which the student can register that USN again.
+
 ## Build the Windows installer
 
 Run [`build-windows.bat`](build-windows.bat) on a Windows computer with Python

@@ -1,0 +1,174 @@
+{
+  "schema_version": 1,
+  "policy": "question-first-textbook-verified",
+  "chapter": 2,
+  "chapter_name": "H.C.F. and L.C.M. of Numbers",
+  "source_chapter_name": "HCF and LCM",
+  "section": "Arithmetical Ability",
+  "printed_question_count": 130,
+  "question_pages": [64, 70],
+  "answer_pages": [71],
+  "solution_pages": [71, 77],
+  "vision_reviewed_question_pages": [64, 65, 66, 67, 68, 69, 70],
+  "source_only_question_numbers": [],
+  "allowed_missing_solution_markers": [],
+  "solution_marker_overrides": {},
+  "minimum_solution_page_token_coverage": 0.7,
+  "expected_published_questions": 130,
+  "expected_rejected_questions": 0,
+  "rejections": {},
+  "questions": {
+    "6": {
+      "question_text": "Reduce 1095/1168 to its simplest form.",
+      "options": {"A": "13/16", "B": "15/16", "C": "17/26", "D": "25/26"},
+      "solution_steps": ["The H.C.F. of 1095 and 1168 is 73.", "Dividing numerator and denominator by 73 gives 15/16."],
+      "question_review": "codex-vision-page-64",
+      "solution_review": "codex-vision-page-71",
+      "solution_pages": [71]
+    },
+    "7": {
+      "question_text": "Reduce 128352/238368 to its lowest terms.",
+      "options": {"A": "3/4", "B": "5/13", "C": "7/13", "D": "9/13"},
+      "solution_steps": ["The H.C.F. of 128352 and 238368 is 18336.", "Dividing numerator and denominator by 18336 gives 7/13."],
+      "question_review": "codex-vision-page-65",
+      "solution_review": "codex-vision-page-71",
+      "solution_pages": [71]
+    },
+    "8": {
+      "question_text": "Reduce 116,690,151 ÷ 427,863,887 to its lowest terms.",
+      "options": {"A": "3/11", "B": "7/11", "C": "11/3", "D": "None of these"},
+      "solution_steps": ["The H.C.F. of 116,690,151 and 427,863,887 is 38,896,717.", "Dividing numerator and denominator by 38,896,717 gives 3/11."],
+      "question_review": "codex-vision-page-65",
+      "solution_review": "codex-vision-pages-71-72",
+      "solution_pages": [71, 72]
+    },
+    "19": {
+      "question_text": "Find the L.C.M. of 2³ × 3² × 5 × 11, 2⁴ × 3⁴ × 5² × 7, and 2⁵ × 3³ × 5³ × 7² × 11.",
+      "options": {"A": "2³ × 3² × 5", "B": "2⁵ × 3⁴ × 5³", "C": "2³ × 3² × 5 × 7 × 11", "D": "2⁵ × 3⁴ × 5³ × 7² × 11"},
+      "solution_steps": ["The L.C.M. is the product of the highest powers of all prime factors.", "Therefore, the L.C.M. is 2⁵ × 3⁴ × 5³ × 7² × 11."],
+      "question_review": "codex-vision-page-65",
+      "solution_review": "codex-vision-page-72",
+      "solution_pages": [72]
+    },
+    "23": {
+      "question_text": "What is the H.C.F. of a/b, c/d, and e/f?",
+      "options": {"A": "L.C.M.(a, c, e) / H.C.F.(b, d, f)", "B": "H.C.F.(a, c, e) / L.C.M.(b, d, f)", "C": "H.C.F.(a, c, e) / H.C.F.(b, d, f)", "D": "ace/bdf"},
+      "solution_steps": ["H.C.F. of fractions = H.C.F. of numerators ÷ L.C.M. of denominators.", "Thus the result is H.C.F.(a, c, e) / L.C.M.(b, d, f)."],
+      "question_review": "codex-vision-page-65",
+      "solution_review": "codex-vision-page-72",
+      "solution_pages": [72]
+    },
+    "24": {
+      "question_text": "Find the H.C.F. of 2/3, 8/9, 64/81, and 10/27.",
+      "options": {"A": "2/3", "B": "2/81", "C": "160/3", "D": "160/81"},
+      "solution_steps": ["H.C.F. of the numerators 2, 8, 64, and 10 is 2.", "L.C.M. of the denominators 3, 9, 81, and 27 is 81.", "Therefore, the required H.C.F. is 2/81."],
+      "question_review": "codex-vision-page-65",
+      "solution_review": "codex-vision-page-72",
+      "solution_pages": [72]
+    },
+    "25": {
+      "question_text": "Find the H.C.F. of 9/10, 12/25, 18/35, and 21/40.",
+      "options": {"A": "3/5", "B": "252/5", "C": "3/1400", "D": "63/700"},
+      "solution_steps": ["H.C.F. of the numerators 9, 12, 18, and 21 is 3.", "L.C.M. of the denominators 10, 25, 35, and 40 is 1400.", "Therefore, the required H.C.F. is 3/1400."],
+      "question_review": "codex-vision-page-65",
+      "solution_review": "codex-vision-page-72",
+      "solution_pages": [72]
+    },
+    "26": {
+      "question_text": "Find the L.C.M. of 1/3, 5/6, 2/9, and 4/27.",
+      "options": {"A": "1/54", "B": "10/27", "C": "20/3", "D": "None of these"},
+      "solution_steps": ["L.C.M. of the numerators 1, 5, 2, and 4 is 20.", "H.C.F. of the denominators 3, 6, 9, and 27 is 3.", "Therefore, the required L.C.M. is 20/3."],
+      "question_review": "codex-vision-page-65",
+      "solution_review": "codex-vision-page-72",
+      "solution_pages": [72]
+    },
+    "27": {
+      "question_text": "Find the L.C.M. of 2/3, 3/5, 4/7, and 9/13.",
+      "options": {"A": "36", "B": "1/36", "C": "1/1365", "D": "12/455"},
+      "solution_steps": ["L.C.M. of the numerators 2, 3, 4, and 9 is 36.", "H.C.F. of the denominators 3, 5, 7, and 13 is 1.", "Therefore, the required L.C.M. is 36."],
+      "question_review": "codex-vision-page-65",
+      "solution_review": "codex-vision-page-72",
+      "solution_pages": [72]
+    },
+    "28": {
+      "question_text": "Find the L.C.M. of 3/4, 6/7, and 9/8.",
+      "options": {"A": "3", "B": "6", "C": "9", "D": "18"},
+      "solution_steps": ["L.C.M. of the numerators 3, 6, and 9 is 18.", "H.C.F. of the denominators 4, 7, and 8 is 1.", "Therefore, the required L.C.M. is 18."],
+      "question_review": "codex-vision-page-66",
+      "solution_review": "codex-vision-page-72",
+      "solution_pages": [72]
+    },
+    "54": {
+      "options": {"A": "2/35", "B": "3/35", "C": "4/35", "D": "None of these"},
+      "solution_steps": ["Let the numbers be a and b. Then a + b = 36 and ab = H.C.F. × L.C.M. = 3 × 105 = 315.", "1/a + 1/b = (a + b)/ab = 36/315 = 4/35."],
+      "question_review": "codex-vision-page-67-options-restored",
+      "solution_review": "codex-vision-page-73",
+      "solution_pages": [73]
+    },
+    "64": {
+      "solution_steps": ["The product of the two numbers is 21 × 4641 = 97,461.", "Let the numbers be 21a and 21b. Then ab = 221.", "The co-prime factor pairs of 221 are (1, 221) and (13, 17), giving pairs (21, 4641) and (273, 357).", "Since one number lies between 200 and 300, the numbers are 273 and 357."],
+      "solution_review": "codex-vision-page-74",
+      "solution_pages": [74]
+    },
+    "74": {
+      "solution_steps": ["Convert the dimensions to centimetres: 3.78 m = 378 cm and 5.25 m = 525 cm.", "The largest square-tile side is H.C.F.(378, 525) = 21 cm."],
+      "solution_review": "codex-vision-page-74",
+      "solution_pages": [74]
+    },
+    "81": {
+      "solution_steps": ["The required volume is H.C.F. of (129 − 57), (177 − 129), and (177 − 57) litres.", "This is H.C.F.(72, 48, 120) = 24 litres."],
+      "solution_review": "codex-vision-page-74",
+      "solution_pages": [74]
+    },
+    "85": {
+      "options": {"A": "7/8", "B": "13/16", "C": "31/40", "D": "63/80"},
+      "solution_steps": ["Use a common denominator of 80: 7/8 = 70/80, 13/16 = 65/80, 31/40 = 62/80, and 63/80 remains 63/80.", "Since 70/80 is the largest, 7/8 is the largest fraction."],
+      "question_review": "codex-vision-page-68-options-restored",
+      "solution_review": "codex-vision-page-75",
+      "solution_pages": [75]
+    },
+    "89": {
+      "question_text": "Find the smallest fraction that is exactly divisible by each of 6/7, 5/14, and 10/21.",
+      "options": {"A": "30/7", "B": "30/98", "C": "60/147", "D": "50/294"},
+      "solution_steps": ["L.C.M. of the numerators 6, 5, and 10 is 30.", "H.C.F. of the denominators 7, 14, and 21 is 7.", "Therefore, the required fraction is 30/7."],
+      "question_review": "codex-vision-page-68",
+      "solution_review": "codex-vision-page-75",
+      "solution_pages": [75]
+    },
+    "91": {
+      "solution_steps": ["The greatest four-digit number is 9999.", "L.C.M.(15, 25, 40, 75) = 600.", "Dividing 9999 by 600 leaves remainder 399.", "Therefore, the greatest divisible four-digit number is 9999 − 399 = 9600."],
+      "solution_review": "codex-vision-page-75",
+      "solution_pages": [75]
+    },
+    "119": {
+      "question_text": "Three people complete a lap in 15 1/6 seconds, 16 1/4 seconds, and 18 2/3 seconds. After one hour, how many additional seconds pass before they are together at the starting point again?",
+      "solution_steps": ["The times are 91/6, 65/4, and 56/3 seconds.", "Their L.C.M. is L.C.M.(91, 65, 56) ÷ H.C.F.(6, 4, 3) = 3640 seconds.", "Thus they return together after 1 hour 40 seconds, so the additional time is 40 seconds."],
+      "question_review": "codex-vision-page-70",
+      "solution_review": "codex-vision-page-76",
+      "solution_pages": [76]
+    },
+    "121": {
+      "options": {"A": "7 1/2 seconds", "B": "18 seconds", "C": "7 1/2 minutes", "D": "18 minutes"},
+      "solution_steps": ["One revolution takes 60/40, 60/24, and 60/16 seconds, or 3/2, 5/2, and 15/4 seconds.", "Their L.C.M. is L.C.M.(3, 5, 15) ÷ H.C.F.(2, 2, 4) = 15/2 seconds.", "Therefore, all three red spots touch the ground together again after 7 1/2 seconds."],
+      "question_review": "codex-vision-page-70-options-restored",
+      "solution_review": "codex-vision-page-76",
+      "solution_pages": [76]
+    },
+    "124": {
+      "options": {"A": "70a", "B": "65a", "C": "75a", "D": "70a³"},
+      "question_review": "codex-vision-page-70-options-restored"
+    },
+    "128": {
+      "question_text": "The ratio of two numbers is 3:4 and their L.C.M. is 120. What is their sum?",
+      "solution_steps": ["Let the numbers be 3x and 4x, so their H.C.F. is x.", "H.C.F. × L.C.M. = product of the numbers, so x × 120 = 3x × 4x.", "Thus x = 10, the numbers are 30 and 40, and their sum is 70."],
+      "question_review": "codex-vision-page-70-text-restored",
+      "solution_review": "codex-vision-page-77",
+      "solution_pages": [77]
+    },
+    "130": {
+      "solution_steps": ["L.C.M.(45, 75, 90) = 450 seconds.", "The lights therefore change together after 7 minutes 30 seconds.", "Starting from 7:20:15, the next simultaneous change is at 7:27:45."],
+      "solution_review": "codex-vision-page-77",
+      "solution_pages": [77]
+    }
+  }
+}

@@ -30,6 +30,14 @@ This produces `question-banks/ch01_number_system_complete.zip`. The source PDF
 path is an input only; packages store its SHA-256 checksum rather than a local
 machine path.
 
+Chapter 2 uses the same builder with its own review ledger:
+
+```powershell
+& $python data-engineering\textbook_chapters\build.py --source-pdf $pdf `
+  --review data-engineering\textbook_chapters\reviews\chapter-002.json `
+  --output question-banks\ch02_hcf_lcm_complete.zip
+```
+
 ## Validate
 
 ```powershell

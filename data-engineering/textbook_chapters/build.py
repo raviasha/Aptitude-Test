@@ -245,8 +245,9 @@ def build_package(
 
     chapter_number = int(review["chapter"])
     chapter_name = str(review["chapter_name"])
+    source_chapter_name = str(review.get("source_chapter_name", chapter_name))
     total = int(review["printed_question_count"])
-    raw_records = source_questions(source_bank_path, chapter_name)
+    raw_records = source_questions(source_bank_path, source_chapter_name)
     source_only_numbers = {int(number) for number in review.get("source_only_question_numbers", [])}
     aligned = align_raw_records(raw_records, total, source_only_numbers)
     questions = question_markers(pdf_path, review)

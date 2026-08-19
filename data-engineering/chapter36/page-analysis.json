@@ -1,0 +1,184 @@
+{
+  "schema_version": 1,
+  "chapter": 36,
+  "chapter_name": "Tabulation",
+  "source_image_size": [1700, 2200],
+  "policy": {
+    "association": "question-first-page-local",
+    "cross_page_visual": "include-reviewed-association",
+    "unmatched_question": "reject-question",
+    "exclude_question_text_from_crop": true
+  },
+  "source_files": {
+    "896": "page_896_tabulation.png",
+    "897": "page_897.png",
+    "898": "page_898.png",
+    "899": "page_899.png",
+    "900": "page_900.png",
+    "901": "page_901.png",
+    "902": "page_902.png",
+    "903": "page_903.png",
+    "904": "page_904.png",
+    "905": "page_905.png",
+    "906": "page_906.png"
+  },
+  "visuals": [
+    {
+      "id": "ch36-ex1-q001-005",
+      "source_page": 896,
+      "source_file": "page_896_tabulation.png",
+      "exercise": "I",
+      "question_numbers": [1, 2, 3, 4, 5],
+      "crop_box": [105, 820, 1595, 1460],
+      "question_content_starts_at_y": 1465,
+      "title": "Candidates appeared and qualified by zone",
+      "alt_text": "Table of candidates who appeared and qualified in five zones from 2005 through 2010."
+    },
+    {
+      "id": "ch36-ex1-q006-010",
+      "source_page": 897,
+      "source_file": "page_897.png",
+      "exercise": "I",
+      "question_numbers": [6, 7, 8, 9, 10],
+      "crop_box": [105, 190, 1595, 650],
+      "question_content_starts_at_y": 665,
+      "title": "Semester fees by course",
+      "alt_text": "Table of semester fees in thousands of rupees for five courses from 2005 through 2010."
+    },
+    {
+      "id": "ch36-ex1-q011-015",
+      "source_page": 897,
+      "source_file": "page_897.png",
+      "exercise": "I",
+      "question_numbers": [11, 12, 13, 14, 15],
+      "crop_box": [105, 1160, 1595, 1675],
+      "question_content_starts_at_y": 1680,
+      "title": "Entrance-examination candidates by state",
+      "alt_text": "Table of candidates appearing and percentage clearing from six states from 2004 through 2009."
+    },
+    {
+      "id": "ch36-ex1-q016-020",
+      "source_page": 898,
+      "source_file": "page_898.png",
+      "exercise": "I",
+      "question_numbers": [16, 17, 18, 19, 20],
+      "crop_box": [105, 340, 1595, 925],
+      "question_content_starts_at_y": 930,
+      "title": "Entrance-examination candidates by city",
+      "alt_text": "Tables of candidates appearing and ratios of passing to failing for six cities."
+    },
+    {
+      "id": "ch36-ex1-q021-025",
+      "source_page": 898,
+      "source_file": "page_898.png",
+      "exercise": "I",
+      "question_numbers": [21, 22, 23, 24, 25],
+      "crop_box": [105, 1415, 1595, 1925],
+      "question_content_starts_at_y": 1930,
+      "title": "Employees by department and gender",
+      "alt_text": "Table of total employees and female and male percentages in six departments."
+    },
+    {
+      "id": "ch36-ex2-q001-005",
+      "source_page": 901,
+      "source_file": "page_901.png",
+      "exercise": "II",
+      "question_numbers": [1, 2, 3, 4, 5],
+      "crop_box": [105, 205, 1595, 685],
+      "question_content_starts_at_y": 690,
+      "title": "Boys and girls in five schools",
+      "alt_text": "Table of boys and girls in five schools from 2005 through 2010."
+    },
+    {
+      "id": "ch36-ex2-q006-010",
+      "exercise": "II",
+      "question_numbers": [6, 7, 8, 9, 10],
+      "source_regions": [
+        {
+          "source_page": 901,
+          "source_file": "page_901.png",
+          "crop_box": [105, 1190, 1595, 2050],
+          "question_content_starts_at_y": 2055
+        },
+        {
+          "source_page": 902,
+          "source_file": "page_902.png",
+          "crop_box": [105, 195, 1595, 570],
+          "question_content_starts_at_y": 575
+        }
+      ],
+      "title": "Production and sales of Companies A and B",
+      "alt_text": "Production and sales graph for Company A plus the production and sales ratio table for Companies A and B from 2006 through 2011."
+    },
+    {
+      "id": "ch36-ex2-q011-015",
+      "source_page": 902,
+      "source_file": "page_902.png",
+      "exercise": "II",
+      "question_numbers": [11, 12, 13, 14, 15],
+      "crop_box": [105, 1100, 1595, 1640],
+      "question_content_starts_at_y": 1645,
+      "title": "Athletes by country and gender",
+      "alt_text": "Table of male and female athletes from five countries from 2005 through 2010."
+    },
+    {
+      "id": "ch36-ex2-q016-020",
+      "source_page": 903,
+      "source_file": "page_903.png",
+      "exercise": "II",
+      "question_numbers": [16, 17, 18, 19, 20],
+      "crop_box": [105, 305, 1595, 790],
+      "question_content_starts_at_y": 795,
+      "title": "Company expenditure by item",
+      "alt_text": "Table of annual company expenditure on salary, transport, bonus, interest, and taxes from 2007 through 2011."
+    },
+    {
+      "id": "ch36-ex2-q021-026",
+      "source_page": 903,
+      "source_file": "page_903.png",
+      "exercise": "II",
+      "question_numbers": [21, 22, 23, 24, 25, 26],
+      "crop_box": [105, 1330, 1595, 1960],
+      "question_content_starts_at_y": 1965,
+      "title": "Competitive-examination candidates by state",
+      "alt_text": "Table of candidates who appeared, qualified, and were selected in five states from 2007 through 2011."
+    },
+    {
+      "id": "ch36-ex2-q027-031",
+      "source_page": 904,
+      "source_file": "page_904.png",
+      "exercise": "II",
+      "question_numbers": [27, 28, 29, 30, 31],
+      "crop_box": [105, 675, 1595, 1205],
+      "question_content_starts_at_y": 1210,
+      "title": "Student marks by subject",
+      "alt_text": "Table of percentage marks for seven students in six subjects, including maximum marks."
+    },
+    {
+      "id": "ch36-ex2-q032-035",
+      "source_page": 904,
+      "source_file": "page_904.png",
+      "exercise": "II",
+      "question_numbers": [32, 33, 34, 35],
+      "crop_box": [105, 1615, 1595, 2085],
+      "question_content_starts_at_y": 2090,
+      "title": "Population by poverty line and gender",
+      "alt_text": "Table of population below the poverty line and male-to-female ratios above and below the poverty line in five states."
+    }
+  ],
+  "cross_page_groups": [
+    {"exercise": "I", "question_numbers": [15], "question_page": 898, "visual_pages": [897]},
+    {"exercise": "I", "question_numbers": [22, 23, 24, 25], "question_page": 899, "visual_pages": [898]},
+    {"exercise": "II", "question_numbers": [6, 7, 8, 9, 10], "question_page": 902, "visual_pages": [901, 902]},
+    {"exercise": "II", "question_numbers": [15], "question_page": 903, "visual_pages": [902]},
+    {"exercise": "II", "question_numbers": [22, 23, 24, 25, 26], "question_page": 904, "visual_pages": [903]},
+    {"exercise": "II", "question_numbers": [32, 33, 34, 35], "question_page": 905, "visual_pages": [904]}
+  ],
+  "hallucinated_input_keys": [
+    "ch36-ex2-q0006",
+    "ch36-ex2-q0007",
+    "ch36-ex2-q0008",
+    "ch36-ex2-q0009",
+    "ch36-ex2-q0010"
+  ]
+}

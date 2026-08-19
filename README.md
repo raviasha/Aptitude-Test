@@ -44,6 +44,14 @@ Additional question banks are stored in the repository's
 the installer. Download the desired bank, extract it if necessary, and manually
 copy its matching HTML and JSON files into the folder above.
 
+## Data-engineering boundary
+
+Source-page analysis, vision-model contracts, crop generation, lineage checks,
+and question-bank builds live under [`data-engineering`](data-engineering/).
+They are development-time pipelines and are not imported by `app.py`, included
+in the application requirements, or bundled into the Windows installer. The
+application consumes only the generated version 2 ZIP package contract.
+
 ## Faculty tests and student practice
 
 Faculty create an assessment by entering the desired count beside each chapter.

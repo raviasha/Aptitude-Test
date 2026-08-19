@@ -1,0 +1,132 @@
+plugins {
+    id "com.android.application"
+    id "org.jetbrains.kotlin.android"
+    id "com.chaquo.python"
+}
+
+import java.nio.charset.StandardCharsets
+
+def repositoryRoot = rootProject.projectDir.parentFile
+def mobileProperties = new Properties()
+def mobilePropertiesFile = rootProject.file("mobile-config.properties")
+if (mobilePropertiesFile.isFile()) {
+    mobilePropertiesFile.withInputStream { mobileProperties.load(it) }
+}
+def configuredFolderUrl = (findProperty("drive.folderUrl") ?: mobileProperties.getProperty("drive.folderUrl", "")).toString()
+def escapedFolderUrl = configuredFolderUrl.replace("\\", "\\\\").replace('"', '\\"')
+def generatedPythonDir = layout.buildDirectory.dir("generated/mobile/python")
+def generatedAssetsDir = layout.buildDirectory.dir("generated/mobile/assets")
+
+android {
+    namespace "com.aptitudelab.mobile"
+    compileSdk 35
+
+    defaultConfig {
+        applicationId "com.aptitudelab.mobile"
+        minSdk 24
+        targetSdk 35
+        versionCode 1
+        versionName "1.0.0"
+        buildConfigField "String", "DRIVE_FOLDER_URL", "\"${escapedFolderUrl}\""
+        ndk {
+            abiFilters "arm64-v8a", "x86_64"
+        }
+    }
+
+    buildFeatures {
+        buildConfig true
+    }
+
+    buildTypes {
+        debug {
+            applicationIdSuffix ".debug"
+            versionNameSuffix "-debug"
+        }
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    kotlinOptions {
+        jvmTarget = "17"
+    }
+
+    sourceSets {
+        main {
+            assets.srcDir(generatedAssetsDir)
+        }
+    }
+
+    packaging {
+        resources {
+            excludes += ["META-INF/DEPENDENCIES", "META-INF/LICENSE*", "META-INF/NOTICE*"]
+        }
+    }
+}
+
+chaquopy {
+    defaultConfig {
+        version = "3.12"
+        def pythonExecutable = (findProperty("chaquopy.python") ?: System.getenv("CHAQUOPY_PYTHON"))
+        if (pythonExecutable) {
+            buildPython(pythonExecutable.toString())
+        }
+        pip {
+            install "-r", "../requirements-android.txt"
+        }
+        pyc {
+            src = true
+            pip = true
+        }
+    }
+    sourceSets {
+        main {
+            srcDir(generatedPythonDir)
+        }
+    }
+}
+
+def prepareMobilePython = tasks.register("prepareMobilePython") {
+    def sourceFile = new File(repositoryRoot, "app.py")
+    def outputFile = generatedPythonDir.map { it.file("app.py") }
+    inputs.file(sourceFile)
+    outputs.file(outputFile)
+    doLast {
+        def source = sourceFile.getText(StandardCharsets.UTF_8.name())
+        def seedPattern = ~/(?s)\r?\nQUESTION_SEEDS = \[.*?\r?\n\]\r?\n\r?\n\r?\ndef server_is_already_running/
+        def mobileSource = source.replaceFirst(seedPattern, "\nQUESTION_SEEDS = []\n\n\ndef server_is_already_running")
+        if (mobileSource == source) {
+            throw new GradleException("Unable to remove desktop QUESTION_SEEDS from the Android source bundle.")
+        }
+        def target = outputFile.get().asFile
+        target.parentFile.mkdirs()
+        target.setText(mobileSource, StandardCharsets.UTF_8.name())
+    }
+}
+
+def prepareMobileWebAssets = tasks.register("prepareMobileWebAssets", Sync) {
+    from(new File(repositoryRoot, "static"))
+    into(generatedAssetsDir.map { it.dir("web") })
+}
+
+tasks.named("preBuild").configure {
+    dependsOn(prepareMobilePython, prepareMobileWebAssets)
+}
+
+tasks.matching { it.name.matches("merge.*PythonSources") }.configureEach {
+    dependsOn(prepareMobilePython)
+}
+tasks.matching { it.name.matches("merge.*Assets") }.configureEach {
+    dependsOn(prepareMobileWebAssets)
+}
+
+dependencies {
+    implementation "androidx.activity:activity-ktx:1.10.1"
+    implementation "androidx.webkit:webkit:1.13.0"
+    implementation "com.google.android.gms:play-services-auth:21.6.0"
+}

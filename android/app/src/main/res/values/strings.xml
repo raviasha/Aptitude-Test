@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Aptitude Mobile</string>
+    <string name="startup_status">Starting Aptitude Mobile&#8230;</string>
+</resources>

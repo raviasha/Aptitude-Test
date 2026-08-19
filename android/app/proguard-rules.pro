@@ -1,0 +1,2 @@
+-keep class com.chaquo.python.** { *; }
+-keep class com.google.android.gms.auth.api.identity.** { *; }

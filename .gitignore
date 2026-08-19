@@ -11,5 +11,9 @@ build/
 dist/
 release/
 .build-venv/
+android/.gradle/
+android/local.properties
+android/mobile-config.properties
+android/app/build/
 *-dataless-backup/
 *-dataless-backup.md

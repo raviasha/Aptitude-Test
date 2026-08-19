@@ -1,0 +1,3 @@
+# Copy this file to mobile-config.properties before building, or pass
+# -Pdrive.folderUrl=https://drive.google.com/drive/folders/YOUR_FOLDER_ID
+drive.folderUrl=

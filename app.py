@@ -38,14 +38,17 @@ from starlette.middleware.sessions import SessionMiddleware
 
 SOURCE_ROOT = Path(__file__).resolve().parent
 BUNDLE_DIR = Path(getattr(sys, "_MEIPASS", SOURCE_ROOT))
-if getattr(sys, "frozen", False):
+MOBILE_MODE = os.getenv("APTITUDE_MOBILE_MODE", "").strip().lower() in {"1", "true", "yes"}
+if MOBILE_MODE:
+    DATA_DIR = Path(os.environ["APTITUDE_DATA_DIR"])
+elif getattr(sys, "frozen", False):
     DATA_DIR = Path(os.getenv("PROGRAMDATA", r"C:\ProgramData")) / "Aptitude Lab"
 else:
     DATA_DIR = SOURCE_ROOT / "data"
 DB_PATH = DATA_DIR / "aptitude.db"
 BACKUP_DIR = DATA_DIR / "backups"
 QUESTION_BANKS_DIR = DATA_DIR / "Question Banks"
-STATIC_DIR = BUNDLE_DIR / "static"
+STATIC_DIR = Path(os.getenv("APTITUDE_STATIC_DIR", str(BUNDLE_DIR / "static")))
 TEMPLATE_DIR = BUNDLE_DIR / "templates"
 SERVER_URL = "http://127.0.0.1:8000"
 
@@ -1428,8 +1431,9 @@ def result_for_attempt(connection: sqlite3.Connection, attempt_id: str) -> Dict[
 @app.on_event("startup")
 def startup() -> None:
     ensure_schema()
-    seed_data()
-    copy_starter_question_files()
+    if not MOBILE_MODE:
+        seed_data()
+        copy_starter_question_files()
 
 
 @app.get("/")

@@ -1,6 +1,6 @@
 const app = document.querySelector('#app');
 const toast = document.querySelector('#toast');
-let state = { user: null, attempt: null, questionIndex: 0 };
+let state = { user: null, attempt: null, questionIndex: 0, mobile: false, mobileToken: null, driveConnected: false };
 let examGuard = {active:false, deadlineMs:null, timerId:null, submitting:false, lastViolation:null, needsResume:false};
 
 const categories = ['Quantitative Aptitude', 'Logical Reasoning', 'Data Interpretation', 'Verbal Ability', 'Coding / Computational Thinking'];
@@ -82,6 +82,7 @@ const date = value => value ? new Intl.DateTimeFormat('en-IN', {day:'2-digit',mo
 async function api(path, options = {}) {
   const form = options.body instanceof FormData;
   const headers = {...(options.headers || {})};
+  if (state.mobileToken) headers['X-Aptitude-Mobile'] = state.mobileToken;
   if (options.body && !form && !headers['Content-Type']) headers['Content-Type'] = 'application/json';
   const config = {...options, headers};
   if (config.body && !form && typeof config.body !== 'string') config.body = JSON.stringify(config.body);
@@ -96,6 +97,120 @@ async function api(path, options = {}) {
 function notify(message, bad = false) {
   toast.textContent = message; toast.className = bad ? 'bad show' : 'show';
   setTimeout(() => { toast.className = ''; }, 3500);
+}
+
+const bytes = value => {
+  const amount = Number(value || 0);
+  if (!amount) return 'Size unavailable';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  const power = Math.min(units.length - 1, Math.floor(Math.log(amount) / Math.log(1024)));
+  return `${(amount / (1024 ** power)).toFixed(power ? 1 : 0)} ${units[power]}`;
+};
+
+function mobileLayout(title, subtitle, content) {
+  if (examGuard.active || examGuard.timerId) cleanupExamGuard();
+  app.innerHTML = `<header class="top mobile-top"><a class="brand" href="#" data-mobile-home><span>A</span>Aptitude <i>Mobile</i></a><nav><button class="ghost" data-mobile-settings>Repository settings</button></nav></header><main class="mobile-main"><div class="heading"><div><p class="eyebrow">Private, on-device practice</p><h1>${title}</h1><p>${subtitle || ''}</p></div></div>${content}</main>`;
+  document.querySelector('[data-mobile-home]')?.addEventListener('click', event => { event.preventDefault(); mobileHome(); });
+  document.querySelector('[data-mobile-settings]')?.addEventListener('click', mobileSettings);
+}
+
+async function mobileHome() {
+  const data = await api('/api/mobile/overview');
+  const localBanks = data.banks.length ? data.banks.map(bank => `<article class="card mobile-bank"><div><p class="eyebrow">${bank.storage_mode === 'temporary' ? 'Temporary cache' : 'Available offline'}</p><h2>${esc(bank.bank_name)}</h2><p>${bank.question_count} questions · ${bytes(bank.remote_size)}</p></div><div class="mobile-bank-actions"><button class="primary" data-mobile-practice="${bank.bank_id}" data-bank-name="${esc(bank.bank_name)}">Start practice →</button><button class="secondary" data-mobile-delete="${bank.bank_id}" data-bank-name="${esc(bank.bank_name)}">Delete</button></div></article>`).join('') : '<article class="card empty-mobile"><p class="eyebrow">No downloads yet</p><h2>Bring your first bank onto this phone</h2><p>Connect the Google account which has access to the configured repository, then download a bank for reliable offline practice.</p></article>';
+  const history = data.history.length ? `<div class="table-scroll"><table><thead><tr><th>Practice session</th><th>Date</th><th>Score</th></tr></thead><tbody>${data.history.map(item => `<tr><td>${esc(item.test_name)}</td><td>${date(item.submitted_at)}</td><td><button class="result-link" data-${item.snapshot ? 'mobile-snapshot' : 'mobile-result'}="${item.attempt_id}">${item.score}/${item.total_questions} · ${pct(item.percentage)}</button></td></tr>`).join('')}</tbody></table></div>` : '<p class="muted">Completed practice sessions will remain here, even after a bank is deleted.</p>';
+  mobileLayout(`Practice that goes <em>where you go.</em>`, 'Downloaded banks and results stay on this phone. Remote content is fetched only when you request it.', `<section class="mobile-actions"><article class="hero"><div><p class="eyebrow">Google Drive catalogue</p><h2>Get more question banks</h2><p>Connect only when you want to browse or download. Your Google password is never entered into Aptitude Mobile.</p></div><button class="primary" data-mobile-catalog>Open catalogue →</button></article></section><section><div class="section-title"><div><p class="eyebrow">On this device</p><h2>Downloaded / available offline</h2></div></div><div class="grid two">${localBanks}</div></section><section class="card mobile-history"><p class="eyebrow">Local results</p><h2>Practice history</h2>${history}</section>`);
+  document.querySelector('[data-mobile-catalog]').addEventListener('click', connectOrOpenCatalog);
+  document.querySelectorAll('[data-mobile-practice]').forEach(button => button.addEventListener('click', () => mobilePractice(Number(button.dataset.mobilePractice), button.dataset.bankName)));
+  document.querySelectorAll('[data-mobile-delete]').forEach(button => button.addEventListener('click', async () => {
+    if (!confirm(`Delete “${button.dataset.bankName}” from this phone? Saved result history will remain.`)) return;
+    try { await api(`/api/mobile/banks/${button.dataset.mobileDelete}`, {method:'DELETE'}); notify('Question bank deleted. Result history was preserved.'); mobileHome(); }
+    catch (error) { notify(error.message, true); }
+  }));
+  document.querySelectorAll('[data-mobile-result]').forEach(button => button.addEventListener('click', () => resultScreen(button.dataset.mobileResult)));
+  document.querySelectorAll('[data-mobile-snapshot]').forEach(button => button.addEventListener('click', () => mobileSavedResult(button.dataset.mobileSnapshot)));
+}
+
+async function mobileSettings() {
+  const config = await api('/api/mobile/config');
+  mobileLayout('Repository <em>settings.</em>', 'Set the shared Google Drive folder which contains version 2 question-bank ZIP packages.', `<section class="grid two"><article class="card"><p class="eyebrow">Question-bank source</p><h2>Google Drive folder</h2><form id="mobile-folder-form"><label>Drive folder link or ID<input name="folder_url" value="${esc(config.drive_folder_url)}" placeholder="https://drive.google.com/drive/folders/…" /></label><button class="primary">Save repository →</button></form><p class="muted">This value is stored only on this phone. A default can also be supplied in <code>android/mobile-config.properties</code> before building.</p></article><article class="card"><p class="eyebrow">Google account</p><h2>Connection controls</h2><p>Authorization uses Google Play services and read-only Drive access. Tokens are held in memory and are not written to the results database.</p><p><button class="secondary" data-switch-account>Choose another account</button> <button class="secondary" data-disconnect-account>Disconnect</button></p></article></section>`);
+  document.querySelector('#mobile-folder-form').addEventListener('submit', async event => {
+    event.preventDefault();
+    try { const result = await api('/api/mobile/settings/drive-folder', {method:'PUT', body:Object.fromEntries(new FormData(event.currentTarget))}); notify(result.drive_configured ? 'Drive repository saved.' : 'Drive repository cleared.'); mobileSettings(); }
+    catch (error) { notify(error.message, true); }
+  });
+  document.querySelector('[data-switch-account]').addEventListener('click', () => requestDriveAuthorization(true));
+  document.querySelector('[data-disconnect-account]').addEventListener('click', async () => {
+    await api('/api/mobile/drive/session', {method:'DELETE'}).catch(() => {});
+    state.driveConnected = false;
+    window.AndroidBridge?.disconnectDrive?.();
+    notify('Google account disconnected from this app session.');
+  });
+}
+
+async function connectOrOpenCatalog() {
+  const config = await api('/api/mobile/config');
+  if (!config.drive_configured) { notify('Set the Google Drive folder first.', true); return mobileSettings(); }
+  if (!state.driveConnected) return requestDriveAuthorization(false);
+  return openRemoteCatalog();
+}
+
+function requestDriveAuthorization(forceAccountPicker) {
+  if (!window.AndroidBridge?.authorizeDrive) return notify('Google authorization is available only in the Android APK.', true);
+  window.AndroidBridge.authorizeDrive(Boolean(forceAccountPicker));
+}
+
+window.aptitudeMobileDriveAuthorized = async payload => {
+  try {
+    await api('/api/mobile/drive/session', {method:'POST', body:{access_token:payload.accessToken,email:payload.email || '',name:payload.name || ''}});
+    state.driveConnected = true;
+    notify(`Connected${payload.email ? ` as ${payload.email}` : ''}.`);
+    await openRemoteCatalog();
+  } catch (error) { notify(error.message, true); }
+};
+
+window.aptitudeMobileDriveAuthorizationFailed = message => notify(message || 'Google authorization failed.', true);
+
+async function openRemoteCatalog() {
+  try {
+    const data = await api('/api/mobile/catalog');
+    const cards = data.banks.length ? data.banks.map(bank => `<article class="card mobile-bank"><div><p class="eyebrow">${bank.update_available ? 'Update available' : (bank.downloaded ? 'Downloaded' : 'Remote bank')}</p><h2>${esc(bank.name.replace(/\.zip$/i, ''))}</h2><p>${bytes(bank.size)}${bank.modified_time ? ` · Updated ${date(bank.modified_time)}` : ''}</p></div><div class="mobile-bank-actions">${bank.update_available || !bank.downloaded ? `<button class="primary" data-download-bank="${bank.file_id}">${bank.update_available ? 'Update' : 'Download'} for offline use</button>` : '<span class="ok">Available offline</span>'}<button class="secondary" data-use-bank="${bank.file_id}">Use now</button></div></article>`).join('') : '<article class="card"><h2>No ZIP banks found</h2><p>The configured folder is accessible, but it contains no version 2 question-bank ZIP packages.</p></article>';
+    mobileLayout('Remote question <em>banks.</em>', 'Download is recommended. “Use now” keeps only a temporary local cache and removes it on a later app start.', `<section class="grid two">${cards}</section><p><button class="secondary" data-refresh-catalog>Refresh catalogue</button> <button class="ghost" data-change-account>Switch Google account</button></p>`);
+    document.querySelector('[data-refresh-catalog]').addEventListener('click', openRemoteCatalog);
+    document.querySelector('[data-change-account]').addEventListener('click', () => requestDriveAuthorization(true));
+    document.querySelectorAll('[data-download-bank]').forEach(button => button.addEventListener('click', () => acquireRemoteBank(button.dataset.downloadBank, 'download')));
+    document.querySelectorAll('[data-use-bank]').forEach(button => button.addEventListener('click', () => acquireRemoteBank(button.dataset.useBank, 'use-now')));
+  } catch (error) {
+    if (/connect a google account|authorization expired/i.test(error.message)) state.driveConnected = false;
+    notify(error.message, true);
+  }
+}
+
+async function acquireRemoteBank(fileId, action) {
+  try {
+    notify(action === 'download' ? 'Downloading and validating question bank…' : 'Preparing temporary question bank…');
+    const result = await api(`/api/mobile/catalog/${encodeURIComponent(fileId)}/${action}`, {method:'POST'});
+    notify(`${result.bank_name} is ready.`);
+    mobileHome();
+  } catch (error) { notify(error.message, true); }
+}
+
+async function mobilePractice(bankId, bankName) {
+  const taxonomy = await api(`/api/question-banks/${bankId}/taxonomy`);
+  mobileLayout(`Build a <em>practice set.</em>`, esc(bankName), `<section class="card practice-builder"><form id="mobile-practice-form"><label>Difficulty<select id="mobile-practice-difficulty"><option value="all">All difficulty levels</option>${difficulties.map(level => `<option value="${level}">${level}</option>`).join('')}</select></label><div id="mobile-practice-composition" class="taxonomy"></div><p class="composition-total">Selected: <strong id="mobile-practice-total">0</strong> / 100</p><button class="primary">Start random practice →</button></form></section>`);
+  const difficulty = document.querySelector('#mobile-practice-difficulty'), composition = document.querySelector('#mobile-practice-composition'), total = document.querySelector('#mobile-practice-total');
+  const paint = () => { total.textContent = '0'; composition.innerHTML = taxonomyMarkup(taxonomy, 'mobile-practice', selectedDifficulties(difficulty)); composition.querySelectorAll('input').forEach(input => input.addEventListener('input', () => updateCompositionTotal(composition, total, 100))); };
+  difficulty.addEventListener('change', paint); paint();
+  document.querySelector('#mobile-practice-form').addEventListener('submit', async event => {
+    event.preventDefault();
+    try { const result = await api('/api/student/practice/start', {method:'POST', body:{bank_id:bankId,selection_rules:selectedRules(composition),difficulties:selectedDifficulties(difficulty)}}); loadAttempt(result.attempt_id); }
+    catch (error) { notify(error.message, true); }
+  });
+}
+
+async function mobileSavedResult(id) {
+  const data = await api(`/api/mobile/results/${id}`), a = data.attempt;
+  mobileLayout('Saved practice <em>result.</em>', `${a.score} / ${a.total_questions} · ${pct(a.percentage)}`, `<section class="result mobile-saved-result"><div class="score-stats"><span><b>${a.correct}</b> Correct</span><span><b>${data.incorrect}</b> Incorrect</span><span><b>${data.unanswered}</b> Unanswered</span></div><article class="card"><p class="eyebrow">Chapter performance</p>${data.chapters.map(item => `<div class="bar"><div><span>${esc(item.category)} · ${esc(item.chapter)}</span><b>${item.correct}/${item.total} · ${pct(item.percentage)}</b></div><i><em style="width:${item.percentage}%"></em></i></div>`).join('')}</article><button class="primary" data-mobile-result-home>Back to mobile home →</button></section>`);
+  document.querySelector('[data-mobile-result-home]').addEventListener('click', mobileHome);
 }
 
 const violationMessages = {
@@ -240,6 +355,7 @@ async function studentDashboardLegacy() {
 }
 
 async function studentDashboard() {
+  if (state.mobile) return mobileHome();
   const [data, catalog] = await Promise.all([api('/api/student/dashboard'), api('/api/student/practice/catalog')]);
   const test = data.test, active = data.active_attempt, practiceLocked = data.launched;
   const heroSession = active || test;
@@ -378,5 +494,22 @@ async function tests() {
 
 async function students() { const data = await api('/api/admin/students'); layout('Manage <em>students.</em>', 'Select one or more students to permanently remove their accounts and practice records.', `<section class="card"><div class="heading"><div><p class="eyebrow">Enrolled students</p><h2>${data.students.length} students</h2></div><button class="primary" id="delete-selected">Delete selected</button></div><table><thead><tr><th><input type="checkbox" id="select-all-students" /></th><th>Name</th><th>USN</th><th>Class</th></tr></thead><tbody>${data.students.map(student => `<tr><td><input type="checkbox" class="student-choice" value="${esc(student.student_id)}" /></td><td>${esc(student.name)}</td><td><code>${esc(student.student_id)}</code></td><td>${esc(student.class)}-${esc(student.section)}</td></tr>`).join('')}</tbody></table></section>`, adminNav('students')); document.querySelector('#select-all-students').addEventListener('change', event => document.querySelectorAll('.student-choice').forEach(choice => { choice.checked = event.target.checked; })); document.querySelector('#delete-selected').addEventListener('click', async () => { const selected = [...document.querySelectorAll('.student-choice:checked')].map(choice => choice.value); if (!selected.length) { notify('Select at least one student.', true); return; } if (!confirm(`Delete ${selected.length} selected student(s) and all practice records? This cannot be undone.`)) return; try { for (const studentId of selected) await api(`/api/admin/students/${encodeURIComponent(studentId)}`, {method:'DELETE'}); notify('Selected students deleted.'); students(); } catch(error) { notify(error.message,true); } }); }
 
-async function boot() { try { state.user = (await api('/api/me')).user; state.user ? home() : loginScreen(); } catch { loginScreen(); } }
+async function boot() {
+  const mobileToken = new URLSearchParams(window.location.search).get('mobileToken');
+  if (mobileToken) {
+    state.mobile = true;
+    state.mobileToken = mobileToken;
+    try {
+      const config = await api('/api/mobile/config');
+      if (!config.mobile) throw new Error('The embedded server is not in mobile mode.');
+      state.user = (await api('/api/mobile/bootstrap', {method:'POST'})).user;
+      return mobileHome();
+    } catch (error) {
+      app.innerHTML = `<main class="result"><h1>Unable to start Aptitude Mobile</h1><p>${esc(error.message)}</p></main>`;
+      return;
+    }
+  }
+  try { state.user = (await api('/api/me')).user; state.user ? home() : loginScreen(); }
+  catch { loginScreen(); }
+}
 boot();

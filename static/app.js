@@ -107,6 +107,23 @@ const bytes = value => {
   return `${(amount / (1024 ** power)).toFixed(power ? 1 : 0)} ${units[power]}`;
 };
 
+const localDay = () => {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+};
+
+function mobileMotivationMarkup(motivation) {
+  const next = motivation.next_badge
+    ? `<p class="mobile-next-goal"><strong>Next badge: ${esc(motivation.next_badge.name)}</strong><span>${motivation.next_badge.progress} / ${motivation.next_badge.goal} ${esc(motivation.next_badge.unit)}</span></p>`
+    : '<p class="mobile-next-goal"><strong>All starter badges earned</strong><span>Keep building your rhythm.</span></p>';
+  const week = motivation.week.map(item => {
+    const label = new Intl.DateTimeFormat('en-IN', {weekday:'short'}).format(new Date(`${item.date}T12:00:00`));
+    return `<span class="mobile-day ${item.practiced ? 'practiced' : ''}" aria-label="${esc(label)}, ${item.stars} stars"><b>${esc(label.slice(0, 1))}</b><i>${item.practiced ? '&#9733;' : ''}</i></span>`;
+  }).join('');
+  const badges = motivation.badges.filter(item => item.earned).map(item => `<span class="mobile-badge">&#9733; ${esc(item.name)}</span>`).join('');
+  return `<section class="mobile-motivation"><article class="mobile-motivation-hero"><div><p class="eyebrow">Effort momentum</p><h2>${motivation.current_streak} day${motivation.current_streak === 1 ? '' : 's'} strong</h2><p>${esc(motivation.message)}</p></div><div class="mobile-star-total"><b>${motivation.total_stars}</b><span>&#9733; effort stars</span></div></article><div class="mobile-effort-metrics"><article><b>${motivation.current_streak}</b><span>Current streak</span></article><article><b>${motivation.longest_streak}</b><span>Best streak</span></article><article><b>${motivation.session_count}</b><span>Sessions finished</span></article></div><article class="card mobile-week"><div><p class="eyebrow">Last seven days</p><div class="mobile-week-days">${week}</div></div>${next}</article>${badges ? `<div class="mobile-badges">${badges}</div>` : ''}</section>`;
+}
+
 function mobileLayout(title, subtitle, content) {
   if (examGuard.active || examGuard.timerId) cleanupExamGuard();
   app.innerHTML = `<header class="top mobile-top"><a class="brand" href="#" data-mobile-home><span>A</span>Aptitude <i>Mobile</i></a><nav><button class="ghost" data-mobile-settings>Repository settings</button></nav></header><main class="mobile-main"><div class="heading"><div><p class="eyebrow">Private, on-device practice</p><h1>${title}</h1><p>${subtitle || ''}</p></div></div>${content}</main>`;
@@ -115,10 +132,10 @@ function mobileLayout(title, subtitle, content) {
 }
 
 async function mobileHome() {
-  const data = await api('/api/mobile/overview');
+  const data = await api(`/api/mobile/overview?local_day=${encodeURIComponent(localDay())}`);
   const localBanks = data.banks.length ? data.banks.map(bank => `<article class="card mobile-bank"><div><p class="eyebrow">${bank.storage_mode === 'temporary' ? 'Temporary cache' : 'Available offline'}</p><h2>${esc(bank.bank_name)}</h2><p>${bank.question_count} questions · ${bytes(bank.remote_size)}</p></div><div class="mobile-bank-actions"><button class="primary" data-mobile-practice="${bank.bank_id}" data-bank-name="${esc(bank.bank_name)}">Start practice →</button><button class="secondary" data-mobile-delete="${bank.bank_id}" data-bank-name="${esc(bank.bank_name)}">Delete</button></div></article>`).join('') : '<article class="card empty-mobile"><p class="eyebrow">No downloads yet</p><h2>Bring your first bank onto this phone</h2><p>Connect the Google account which has access to the configured repository, then download a bank for reliable offline practice.</p></article>';
-  const history = data.history.length ? `<div class="table-scroll"><table><thead><tr><th>Practice session</th><th>Date</th><th>Score</th></tr></thead><tbody>${data.history.map(item => `<tr><td>${esc(item.test_name)}</td><td>${date(item.submitted_at)}</td><td><button class="result-link" data-${item.snapshot ? 'mobile-snapshot' : 'mobile-result'}="${item.attempt_id}">${item.score}/${item.total_questions} · ${pct(item.percentage)}</button></td></tr>`).join('')}</tbody></table></div>` : '<p class="muted">Completed practice sessions will remain here, even after a bank is deleted.</p>';
-  mobileLayout(`Practice that goes <em>where you go.</em>`, 'Downloaded banks and results stay on this phone. Remote content is fetched only when you request it.', `<section class="mobile-actions"><article class="hero"><div><p class="eyebrow">Google Drive catalogue</p><h2>Get more question banks</h2><p>Connect only when you want to browse or download. Your Google password is never entered into Aptitude Mobile.</p></div><button class="primary" data-mobile-catalog>Open catalogue →</button></article></section><section><div class="section-title"><div><p class="eyebrow">On this device</p><h2>Downloaded / available offline</h2></div></div><div class="grid two">${localBanks}</div></section><section class="card mobile-history"><p class="eyebrow">Local results</p><h2>Practice history</h2>${history}</section>`);
+  const history = data.history.length ? `<div class="table-scroll"><table><thead><tr><th>Practice session</th><th>Date</th><th>Effort earned</th></tr></thead><tbody>${data.history.map(item => `<tr><td>${esc(item.test_name)}</td><td>${date(item.submitted_at)}</td><td><button class="result-link" data-${item.snapshot ? 'mobile-snapshot' : 'mobile-result'}="${item.attempt_id}">&#9733; ${item.effort_stars || 0} · View reflection</button></td></tr>`).join('')}</tbody></table></div>` : '<p class="muted">Completed practice sessions will remain here, even after a bank is deleted.</p>';
+  mobileLayout(`Keep showing up, <em>one set at a time.</em>`, 'Stars celebrate effort and consistency. Marks remain available as a learning reflection, never as the main reward.', `${mobileMotivationMarkup(data.motivation)}<section class="mobile-actions"><article class="hero"><div><p class="eyebrow">Google Drive catalogue</p><h2>Get more question banks</h2><p>Connect only when you want to browse or download. Your Google password is never entered into Aptitude Mobile.</p></div><button class="primary" data-mobile-catalog>Open catalogue →</button></article></section><section><div class="section-title"><div><p class="eyebrow">On this device</p><h2>Downloaded / available offline</h2></div></div><div class="grid two">${localBanks}</div></section><section class="card mobile-history"><p class="eyebrow">Effort journal</p><h2>Practice history</h2>${history}</section>`);
   document.querySelector('[data-mobile-catalog]').addEventListener('click', connectOrOpenCatalog);
   document.querySelectorAll('[data-mobile-practice]').forEach(button => button.addEventListener('click', () => mobilePractice(Number(button.dataset.mobilePractice), button.dataset.bankName)));
   document.querySelectorAll('[data-mobile-delete]').forEach(button => button.addEventListener('click', async () => {
@@ -207,10 +224,25 @@ async function mobilePractice(bankId, bankName) {
   });
 }
 
-async function mobileSavedResult(id) {
-  const data = await api(`/api/mobile/results/${id}`), a = data.attempt;
-  mobileLayout('Saved practice <em>result.</em>', `${a.score} / ${a.total_questions} · ${pct(a.percentage)}`, `<section class="result mobile-saved-result"><div class="score-stats"><span><b>${a.correct}</b> Correct</span><span><b>${data.incorrect}</b> Incorrect</span><span><b>${data.unanswered}</b> Unanswered</span></div><article class="card"><p class="eyebrow">Chapter performance</p>${data.chapters.map(item => `<div class="bar"><div><span>${esc(item.category)} · ${esc(item.chapter)}</span><b>${item.correct}/${item.total} · ${pct(item.percentage)}</b></div><i><em style="width:${item.percentage}%"></em></i></div>`).join('')}</article><button class="primary" data-mobile-result-home>Back to mobile home →</button></section>`);
+function mobileEffortResult(data, allowRetry = false) {
+  const a = data.attempt;
+  const reward = data.effort_reward || {stars:0,reasons:[]};
+  const motivation = data.motivation || {current_streak:0};
+  const reasons = reward.reasons.map(reason => `<li><span>&#9733;</span>${esc(reason)}</li>`).join('');
+  const retry = allowRetry && data.incorrect ? '<button class="secondary" data-mobile-retry>Retry incorrect questions</button>' : '';
+  mobileLayout('Your effort <em>counts.</em>', 'This celebration is based on showing up, staying with the set, and building consistency — not on your marks.', `<section class="mobile-result-celebration"><article><p class="eyebrow">Practice complete</p><div class="mobile-stars-earned">+${reward.stars} <span>&#9733;</span></div><h2>effort stars earned</h2><ul>${reasons}</ul><p class="mobile-result-streak"><b>${motivation.current_streak}</b> day${motivation.current_streak === 1 ? '' : 's'} in your current rhythm</p></article></section><section class="card mobile-learning-reflection"><p class="eyebrow">Learning reflection</p><h2>${a.score} / ${a.total_questions}</h2><p class="muted">${pct(a.percentage)} correct — use this only to choose what to practise next.</p><div class="score-stats"><span><b>${a.correct}</b> Correct</span><span><b>${data.incorrect}</b> Try again</span><span><b>${data.unanswered}</b> Unanswered</span></div><div class="mobile-chapter-reflection">${data.chapters.map(item => `<div class="bar"><div><span>${esc(item.category)} · ${esc(item.chapter)}</span><b>${item.correct}/${item.total} · ${pct(item.percentage)}</b></div><i><em style="width:${item.percentage}%"></em></i></div>`).join('')}</div></section><p class="mobile-result-actions">${retry}<button class="primary" data-mobile-result-home>Back to practice home →</button></p>`);
   document.querySelector('[data-mobile-result-home]').addEventListener('click', mobileHome);
+  document.querySelector('[data-mobile-retry]')?.addEventListener('click', async () => {
+    try {
+      const result = await api(`/api/student/practice/${a.attempt_id}/retry-incorrect`, {method:'POST'});
+      loadAttempt(result.attempt_id);
+    } catch (error) { notify(error.message, true); }
+  });
+}
+
+async function mobileSavedResult(id) {
+  const data = await api(`/api/mobile/results/${id}?local_day=${encodeURIComponent(localDay())}`);
+  mobileEffortResult(data, false);
 }
 
 const violationMessages = {
@@ -404,9 +436,16 @@ async function loadAttempt(id) {
 function renderAttempt() {
   const attempt = state.attempt, q = attempt.questions[state.questionIndex], answered = attempt.questions.filter(item => item.selected_answer).length;
   const proctored = Boolean(attempt.proctored);
-  const feedback = attempt.feedback_allowed && q.feedback ? `<article class="card feedback"><h3>${q.feedback.correct ? 'Correct' : 'Not quite'}</h3><p><strong>Correct answer:</strong> ${q.feedback.correct_answer}</p>${q.feedback.solution_steps?.length ? `<h4>Solution steps</h4><ol>${q.feedback.solution_steps.map(step => `<li>${esc(step)}</li>`).join('')}</ol>` : ''}</article>` : '';
+  const mobilePracticeView = state.mobile && !proctored;
+  const feedbackTitle = q.feedback?.correct
+    ? (mobilePracticeView ? 'Nice — keep the rhythm' : 'Correct')
+    : (mobilePracticeView ? 'Good attempt — learn and continue' : 'Not quite');
+  const feedback = attempt.feedback_allowed && q.feedback ? `<article class="card feedback"><h3>${feedbackTitle}</h3><p><strong>Correct answer:</strong> ${q.feedback.correct_answer}</p>${q.feedback.solution_steps?.length ? `<h4>Solution steps</h4><ol>${q.feedback.solution_steps.map(step => `<li>${esc(step)}</li>`).join('')}</ol>` : ''}</article>` : '';
   const questionContent = `${stimulusMarkup(q.stimulus)}${q.question_html ? `<div class="visual-question">${q.question_html}</div>` : `<h1>${esc(q.question_text)}</h1>`}`;
-  app.innerHTML = `<header class="top exam-top"><a class="brand"><span>A</span>Aptitude <i>Lab</i></a>${proctored ? '<div class="exam-timer"><span>Time remaining</span><strong data-exam-timer>00:00</strong></div>' : '<div class="save">✓ Answer saved automatically</div><button class="ghost" data-exit>Save and exit</button>'}</header><main class="assessment ${proctored?'proctored-assessment':''}"><aside><p class="eyebrow">Questions launched</p><strong>${attempt.questions.length}</strong><p>${answered} answered · ${attempt.questions.length-answered} unanswered</p>${proctored ? '<div class="legend-key"><span><i class="answered"></i>Answered</span><span><i class="unanswered"></i>Unanswered</span></div>' : ''}<div class="numbers">${attempt.questions.map((item,index) => `<button class="${index===state.questionIndex?'current':''} ${item.selected_answer?'answered':'unanswered'}" data-index="${index}" aria-label="Question ${index+1}, ${item.selected_answer?'answered':'unanswered'}">${index+1}</button>`).join('')}</div></aside><section class="question"><div class="question-meta"><span>${esc(short(q.category))} · ${esc(q.chapter)} · ${esc(q.difficulty)}</span><span>Question ${state.questionIndex+1} of ${attempt.questions.length}</span></div>${questionContent}<div class="answers">${optionEntries(q).map(([key,value]) => `<button class="${q.selected_answer===key?'selected':''}" data-answer="${key}" ${attempt.feedback_allowed && q.selected_answer ? 'disabled' : ''}><i>${key}</i>${esc(value)}<b>${q.selected_answer===key?'✓':''}</b></button>`).join('')}</div>${feedback}<footer><button class="secondary" data-prev ${state.questionIndex===0?'disabled':''}>← Previous</button>${state.questionIndex===attempt.questions.length-1 ? '<button class="primary" data-submit>Review & submit →</button>' : '<button class="primary" data-next>Next question →</button>'}</footer></section></main>`;
+  const brand = mobilePracticeView ? 'Aptitude <i>Mobile</i>' : 'Aptitude <i>Lab</i>';
+  const sessionLabel = mobilePracticeView ? 'Random practice set' : 'Questions launched';
+  const exitLabel = mobilePracticeView ? 'Take a break' : 'Save and exit';
+  app.innerHTML = `<header class="top exam-top"><a class="brand"><span>A</span>${brand}</a>${proctored ? '<div class="exam-timer"><span>Time remaining</span><strong data-exam-timer>00:00</strong></div>' : `<div class="save">✓ Answer saved automatically</div><button class="ghost" data-exit>${exitLabel}</button>`}</header><main class="assessment ${proctored?'proctored-assessment':''}"><aside><p class="eyebrow">${sessionLabel}</p><strong>${attempt.questions.length}</strong><p>${answered} answered · ${attempt.questions.length-answered} unanswered</p>${proctored ? '<div class="legend-key"><span><i class="answered"></i>Answered</span><span><i class="unanswered"></i>Unanswered</span></div>' : ''}<div class="numbers">${attempt.questions.map((item,index) => `<button class="${index===state.questionIndex?'current':''} ${item.selected_answer?'answered':'unanswered'}" data-index="${index}" aria-label="Question ${index+1}, ${item.selected_answer?'answered':'unanswered'}">${index+1}</button>`).join('')}</div></aside><section class="question"><div class="question-meta"><span>${esc(short(q.category))} · ${esc(q.chapter)} · ${esc(q.difficulty)}</span><span>Question ${state.questionIndex+1} of ${attempt.questions.length}</span></div>${questionContent}<div class="answers">${optionEntries(q).map(([key,value]) => `<button class="${q.selected_answer===key?'selected':''}" data-answer="${key}" ${attempt.feedback_allowed && q.selected_answer ? 'disabled' : ''}><i>${key}</i>${esc(value)}<b>${q.selected_answer===key?'✓':''}</b></button>`).join('')}</div>${feedback}<footer><button class="secondary" data-prev ${state.questionIndex===0?'disabled':''}>← Previous</button>${state.questionIndex===attempt.questions.length-1 ? '<button class="primary" data-submit>Review & submit →</button>' : '<button class="primary" data-next>Next question →</button>'}</footer></section></main>`;
   if (proctored) startExamTimer();
   document.querySelectorAll('[data-index]').forEach(button => button.addEventListener('click', () => { state.questionIndex = Number(button.dataset.index); renderAttempt(); }));
   document.querySelectorAll('[data-answer]').forEach(button => button.addEventListener('click', () => saveAnswer(q.question_id, button.dataset.answer)));
@@ -434,6 +473,12 @@ async function resultScreenLegacy(id, confirmSubmit = false) { const data = conf
 async function resultScreen(id, confirmSubmit = false) {
   cleanupExamGuard();
   const data = confirmSubmit ? await api(`/api/attempts/${id}/submit`, {method:'POST',body:{confirmed:true}}) : await api(`/api/attempts/${id}/result`), a = data.attempt;
+  if (state.mobile && a.mode === 'student_practice') {
+    const effort = await api(`/api/mobile/motivation/attempt/${id}`, {method:'POST',body:{local_day:localDay()}});
+    data.effort_reward = effort.reward;
+    data.motivation = effort.motivation;
+    return mobileEffortResult(data, true);
+  }
   const violationMarkup = data.violation_flag ? `<article class="card violation-result"><p class="eyebrow">⚠ Violation flag</p><h2>${data.violations.length} exam violation${data.violations.length===1?'':'s'} recorded</h2><ul>${data.violations.map(item => `<li><strong>${esc(item.label)}</strong><small>${new Date(item.occurred_at).toLocaleString('en-IN')}</small></li>`).join('')}</ul></article>` : (a.mode === 'faculty' ? '<p class="clean-result">✓ No exam violations recorded</p>' : '');
   app.innerHTML = `<main class="result"><a class="brand"><span>A</span>Aptitude <i>Lab</i></a><p class="eyebrow">${a.mode === 'student_practice' ? 'Practice complete' : 'Assessment complete'}</p><h1>${a.score} / ${a.total_questions}</h1><p class="big">${pct(a.percentage)} overall score</p><div class="score-stats"><span><b>${a.correct}</b> Correct</span><span><b>${data.incorrect}</b> Incorrect</span><span><b>${data.unanswered}</b> Unanswered</span></div>${violationMarkup}<article class="card"><p class="eyebrow">Chapter performance</p>${data.chapters.map(item => `<div class="bar"><div><span>${esc(item.category)} · ${esc(item.chapter)}</span><b>${item.correct}/${item.total} · ${pct(item.percentage)}</b></div><i><em style="width:${item.percentage}%"></em></i></div>`).join('')}</article><p>${a.mode === 'student_practice' && data.incorrect ? '<button class="secondary" data-retry>Retry incorrect questions</button> ' : ''}<button class="primary" data-dashboard>Back to dashboard →</button></p></main>`;
   document.querySelector('[data-dashboard]').addEventListener('click', studentDashboard);

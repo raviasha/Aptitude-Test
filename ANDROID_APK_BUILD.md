@@ -54,6 +54,12 @@ requires an owner-controlled signing keystore and the matching OAuth client.
 
 ## Mobile behavior
 
+- The Android surface is student-only: it supports random self-practice and
+  does not expose faculty sign-in, assessment launch, or faculty dashboards.
+- Effort stars reward completing a session, attempting at least 80% of its
+  questions, practising on a new day, and completing a set of 10 or more.
+  Current/best streaks, badges, and the reward ledger are stored locally and
+  do not depend on the student's score.
 - No demo accounts, starter questions, templates, or question-bank ZIPs are
   included in the generated Android Python bundle.
 - Permanent downloads are checked against available device storage before the
@@ -62,6 +68,7 @@ requires an owner-controlled signing keystore and the matching OAuth client.
 - **Use now** imports a temporary cache compatible with the existing loader;
   it is cleaned on a later app start after active practice has finished.
 - Deleting a bank snapshots completed result details before removing the bank's
-  questions and assets, so local practice history remains available offline.
+  questions and assets, so local practice history and effort rewards remain
+  available offline.
 - The Drive provider is behind a small content-provider interface; a future
   REST provider can replace it without changing the test/scoring engine.

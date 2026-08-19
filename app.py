@@ -31,7 +31,7 @@ from typing import Any, Dict, List, Optional
 
 import bcrypt
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.middleware.sessions import SessionMiddleware
@@ -102,6 +102,20 @@ SOLUTION_REVIEW_NOTICE = [
 app = FastAPI(title="Aptitude Lab")
 app.add_middleware(SessionMiddleware, secret_key=os.getenv("SESSION_SECRET", "replace-this-before-production"), https_only=False, same_site="lax")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+
+@app.middleware("http")
+async def mobile_surface_guard(request: Request, call_next):
+    """Keep faculty and coordinated-assessment controls outside the Android surface."""
+    path = request.url.path
+    blocked = path in {"/api/login", "/api/register", "/api/student/dashboard"}
+    blocked = blocked or path.startswith("/api/admin") or path.startswith("/api/tests/")
+    if MOBILE_MODE and blocked:
+        return JSONResponse(
+            status_code=404,
+            content={"detail": "This feature is not available in the student practice app."},
+        )
+    return await call_next(request)
 
 
 class LoginPayload(BaseModel):
@@ -1556,7 +1570,7 @@ def start_student_practice(payload: PracticePayload, request: Request) -> Dict[s
     rules = normalize_selection_rules(payload.selection_rules)
     difficulties = normalize_difficulties(payload.difficulties)
     with db() as connection:
-        if connection.execute(
+        if not MOBILE_MODE and connection.execute(
             "SELECT 1 FROM tests WHERE active = 1 AND launched = 1 AND mode = 'faculty' LIMIT 1"
         ).fetchone():
             raise HTTPException(409, "Personal practice is paused while Faculty has a launched assessment.")

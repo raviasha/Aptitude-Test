@@ -12,6 +12,7 @@ import urllib.parse
 import urllib.request
 import uuid
 from abc import ABC, abstractmethod
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -37,6 +38,10 @@ class DriveSessionPayload(BaseModel):
 
 class DriveFolderPayload(BaseModel):
     folder_url: str = ""
+
+
+class MotivationPayload(BaseModel):
+    local_day: str = ""
 
 
 class ContentProvider(ABC):
@@ -184,9 +189,23 @@ def ensure_mobile_schema() -> None:
             CREATE TABLE IF NOT EXISTS mobile_result_snapshots (
               attempt_id TEXT PRIMARY KEY, student_id TEXT NOT NULL, bank_name TEXT NOT NULL,
               test_name TEXT NOT NULL, submitted_at TEXT NOT NULL, score INTEGER NOT NULL,
-              total_questions INTEGER NOT NULL, percentage REAL NOT NULL, result_json TEXT NOT NULL
+              total_questions INTEGER NOT NULL, percentage REAL NOT NULL,
+              result_json TEXT NOT NULL, mode TEXT NOT NULL DEFAULT 'student_practice'
             );
+            CREATE TABLE IF NOT EXISTS mobile_effort_rewards (
+              attempt_id TEXT PRIMARY KEY, student_id TEXT NOT NULL,
+              practice_day TEXT NOT NULL, awarded_at TEXT NOT NULL,
+              stars INTEGER NOT NULL, attempted_questions INTEGER NOT NULL,
+              total_questions INTEGER NOT NULL, reasons_json TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_mobile_effort_student_day
+              ON mobile_effort_rewards(student_id, practice_day);
             """
+        )
+        core.ensure_column(
+            connection,
+            "mobile_result_snapshots",
+            "mode TEXT NOT NULL DEFAULT 'student_practice'",
         )
         if DEFAULT_DRIVE_FOLDER_URL:
             connection.execute(
@@ -209,10 +228,203 @@ def provider() -> GoogleDriveContentProvider:
     return GoogleDriveContentProvider(_drive_access_token, drive_folder_url())
 
 
+def normalize_practice_day(value: str = "", fallback: str = "") -> str:
+    candidate = (value or "").strip() or (fallback or "")[:10]
+    try:
+        return date.fromisoformat(candidate).isoformat()
+    except (TypeError, ValueError):
+        return date.today().isoformat()
+
+
+def reward_payload(row: sqlite3.Row) -> Dict[str, Any]:
+    return {
+        "attempt_id": row["attempt_id"],
+        "practice_day": row["practice_day"],
+        "stars": row["stars"],
+        "attempted_questions": row["attempted_questions"],
+        "total_questions": row["total_questions"],
+        "reasons": json.loads(row["reasons_json"]),
+    }
+
+
+def create_effort_reward(
+    connection: sqlite3.Connection,
+    attempt_id: str,
+    student_id: str,
+    submitted_at: str,
+    attempted: int,
+    total_questions: int,
+    practice_day: str = "",
+) -> Dict[str, Any]:
+    existing = connection.execute(
+        "SELECT * FROM mobile_effort_rewards WHERE attempt_id = ?", (attempt_id,)
+    ).fetchone()
+    if existing:
+        return reward_payload(existing)
+
+    day = normalize_practice_day(practice_day, submitted_at)
+    first_on_day = not connection.execute(
+        "SELECT 1 FROM mobile_effort_rewards WHERE student_id = ? AND practice_day = ?",
+        (student_id, day),
+    ).fetchone()
+    attempted = max(0, int(attempted or 0))
+    total_questions = max(0, int(total_questions or 0))
+    reasons = ["Showed up and completed a practice session"]
+    if total_questions and attempted * 5 >= total_questions * 4:
+        reasons.append("Stayed with at least 80% of the questions")
+    if first_on_day:
+        reasons.append("Built daily momentum")
+    if total_questions >= 10:
+        reasons.append("Completed a deep-practice set of 10+ questions")
+    connection.execute(
+        """INSERT INTO mobile_effort_rewards
+           (attempt_id, student_id, practice_day, awarded_at, stars,
+            attempted_questions, total_questions, reasons_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            attempt_id, student_id, day, core.now(), len(reasons), attempted,
+            total_questions, json.dumps(reasons),
+        ),
+    )
+    return reward_payload(
+        connection.execute(
+            "SELECT * FROM mobile_effort_rewards WHERE attempt_id = ?", (attempt_id,)
+        ).fetchone()
+    )
+
+
+def ensure_historical_effort_rewards(
+    connection: sqlite3.Connection,
+    student_id: str,
+    preferred_attempt_id: str = "",
+    preferred_day: str = "",
+) -> None:
+    live = connection.execute(
+        """SELECT a.attempt_id, a.student_id, a.submitted_at, a.attempted,
+                  a.total_questions
+             FROM attempts a JOIN tests t ON t.test_id = a.test_id
+            WHERE a.student_id = ? AND a.status = 'submitted'
+              AND t.mode = 'student_practice'
+            ORDER BY a.submitted_at, a.attempt_id""",
+        (student_id,),
+    ).fetchall()
+    for attempt in live:
+        create_effort_reward(
+            connection,
+            attempt["attempt_id"],
+            attempt["student_id"],
+            attempt["submitted_at"],
+            attempt["attempted"],
+            attempt["total_questions"],
+            preferred_day if attempt["attempt_id"] == preferred_attempt_id else "",
+        )
+
+    snapshots = connection.execute(
+        """SELECT attempt_id, student_id, submitted_at, total_questions, result_json
+             FROM mobile_result_snapshots
+            WHERE student_id = ? AND mode = 'student_practice'
+            ORDER BY submitted_at, attempt_id""",
+        (student_id,),
+    ).fetchall()
+    for snapshot in snapshots:
+        result = json.loads(snapshot["result_json"])
+        attempted = result.get("attempt", {}).get(
+            "attempted",
+            snapshot["total_questions"] - int(result.get("unanswered", 0)),
+        )
+        create_effort_reward(
+            connection,
+            snapshot["attempt_id"],
+            snapshot["student_id"],
+            snapshot["submitted_at"],
+            attempted,
+            snapshot["total_questions"],
+            preferred_day if snapshot["attempt_id"] == preferred_attempt_id else "",
+        )
+
+
+def motivation_summary(
+    connection: sqlite3.Connection, student_id: str, local_day: str = ""
+) -> Dict[str, Any]:
+    today = date.fromisoformat(normalize_practice_day(local_day))
+    rows = connection.execute(
+        """SELECT practice_day, SUM(stars) AS stars, COUNT(*) AS sessions
+             FROM mobile_effort_rewards WHERE student_id = ?
+            GROUP BY practice_day ORDER BY practice_day""",
+        (student_id,),
+    ).fetchall()
+    totals = connection.execute(
+        """SELECT COALESCE(SUM(stars), 0) AS stars, COUNT(*) AS sessions
+             FROM mobile_effort_rewards WHERE student_id = ?""",
+        (student_id,),
+    ).fetchone()
+    day_totals = {date.fromisoformat(row["practice_day"]): dict(row) for row in rows}
+    practiced_days = sorted(day_totals)
+
+    longest_streak = 0
+    running = 0
+    previous: Optional[date] = None
+    for practiced_day in practiced_days:
+        running = running + 1 if previous and practiced_day == previous + timedelta(days=1) else 1
+        longest_streak = max(longest_streak, running)
+        previous = practiced_day
+
+    eligible_days = [practiced_day for practiced_day in practiced_days if practiced_day <= today]
+    current_streak = 0
+    if eligible_days and eligible_days[-1] in {today, today - timedelta(days=1)}:
+        cursor = eligible_days[-1]
+        practiced = set(eligible_days)
+        while cursor in practiced:
+            current_streak += 1
+            cursor -= timedelta(days=1)
+
+    total_stars = int(totals["stars"] or 0)
+    session_count = int(totals["sessions"] or 0)
+    badges = [
+        {"name": "First step", "earned": session_count >= 1, "progress": min(session_count, 1), "goal": 1, "unit": "session"},
+        {"name": "Practice builder", "earned": session_count >= 5, "progress": min(session_count, 5), "goal": 5, "unit": "sessions"},
+        {"name": "Three-day rhythm", "earned": longest_streak >= 3, "progress": min(longest_streak, 3), "goal": 3, "unit": "days"},
+        {"name": "Star collector", "earned": total_stars >= 25, "progress": min(total_stars, 25), "goal": 25, "unit": "stars"},
+    ]
+    next_badge = next((badge for badge in badges if not badge["earned"]), None)
+    practiced_today = today in day_totals
+    if practiced_today:
+        message = "You showed up today. Every practice session keeps the rhythm alive."
+    elif today - timedelta(days=1) in day_totals:
+        message = "Your streak is ready for today. One practice set keeps it going."
+    elif session_count:
+        message = "A fresh streak can start today. Effort counts from the first question."
+    else:
+        message = "Start with one practice set. Stars reward consistency and effort, not marks."
+    week = []
+    for offset in range(6, -1, -1):
+        practice_day = today - timedelta(days=offset)
+        aggregate = day_totals.get(practice_day, {})
+        week.append(
+            {
+                "date": practice_day.isoformat(),
+                "practiced": practice_day in day_totals,
+                "stars": int(aggregate.get("stars", 0)),
+                "sessions": int(aggregate.get("sessions", 0)),
+            }
+        )
+    return {
+        "current_streak": current_streak,
+        "longest_streak": longest_streak,
+        "total_stars": total_stars,
+        "session_count": session_count,
+        "practiced_today": practiced_today,
+        "week": week,
+        "badges": badges,
+        "next_badge": next_badge,
+        "message": message,
+    }
+
+
 def snapshot_attempts(connection: sqlite3.Connection, bank_id: int) -> None:
     attempts = connection.execute(
-        """SELECT a.attempt_id, a.student_id, a.submitted_at, a.score, a.total_questions,
-                  a.percentage, t.test_name, b.bank_name
+        """SELECT a.attempt_id, a.student_id, a.submitted_at, a.score, a.attempted,
+                  a.total_questions, a.percentage, t.test_name, t.mode, b.bank_name
              FROM attempts a
              JOIN tests t ON t.test_id = a.test_id
              JOIN question_banks b ON b.bank_id = t.bank_id
@@ -221,15 +433,25 @@ def snapshot_attempts(connection: sqlite3.Connection, bank_id: int) -> None:
     ).fetchall()
     for attempt in attempts:
         result = core.result_for_attempt(connection, attempt["attempt_id"])
+        if attempt["mode"] == "student_practice":
+            result["effort_reward"] = create_effort_reward(
+                connection,
+                attempt["attempt_id"],
+                attempt["student_id"],
+                attempt["submitted_at"],
+                attempt["attempted"],
+                attempt["total_questions"],
+            )
         connection.execute(
             """INSERT OR REPLACE INTO mobile_result_snapshots
                (attempt_id, student_id, bank_name, test_name, submitted_at, score,
-                total_questions, percentage, result_json)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                total_questions, percentage, result_json, mode)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 attempt["attempt_id"], attempt["student_id"], attempt["bank_name"],
                 attempt["test_name"], attempt["submitted_at"], attempt["score"],
                 attempt["total_questions"], attempt["percentage"], json.dumps(result),
+                attempt["mode"],
             ),
         )
 
@@ -467,9 +689,10 @@ def use_remote_bank(file_id: str, request: Request) -> Dict[str, Any]:
 
 
 @core.app.get("/api/mobile/overview")
-def mobile_overview(request: Request) -> Dict[str, Any]:
+def mobile_overview(request: Request, local_day: str = "") -> Dict[str, Any]:
     user = require_mobile(request)
     with core.db() as connection:
+        ensure_historical_effort_rewards(connection, user["id"])
         banks = connection.execute(
             """SELECT b.bank_id, b.bank_name, b.imported_at, b.format_version,
                       m.storage_mode, m.remote_size, m.remote_modified_time,
@@ -483,22 +706,59 @@ def mobile_overview(request: Request) -> Dict[str, Any]:
             {**dict(row), "snapshot": False}
             for row in connection.execute(
                 """SELECT a.attempt_id, t.test_name, a.submitted_at, a.score,
-                          a.total_questions, a.percentage
+                          a.total_questions, a.percentage, r.stars AS effort_stars
                      FROM attempts a JOIN tests t ON t.test_id = a.test_id
-                    WHERE a.student_id = ? AND a.status = 'submitted'""",
+                     LEFT JOIN mobile_effort_rewards r ON r.attempt_id = a.attempt_id
+                    WHERE a.student_id = ? AND a.status = 'submitted'
+                      AND t.mode = 'student_practice'""",
                 (user["id"],),
             ).fetchall()
         ]
         snapshots = [
             {**dict(row), "snapshot": True}
             for row in connection.execute(
-                """SELECT attempt_id, test_name, submitted_at, score, total_questions, percentage
-                     FROM mobile_result_snapshots WHERE student_id = ?""",
+                """SELECT s.attempt_id, s.test_name, s.submitted_at, s.score,
+                          s.total_questions, s.percentage, r.stars AS effort_stars
+                     FROM mobile_result_snapshots s
+                     LEFT JOIN mobile_effort_rewards r ON r.attempt_id = s.attempt_id
+                    WHERE s.student_id = ? AND s.mode = 'student_practice'""",
                 (user["id"],),
             ).fetchall()
         ]
+        motivation = motivation_summary(connection, user["id"], local_day)
     history = sorted(live_history + snapshots, key=lambda item: item["submitted_at"], reverse=True)
-    return {"banks": core.rows(banks), "history": history, "student": user}
+    return {
+        "banks": core.rows(banks),
+        "history": history,
+        "student": user,
+        "motivation": motivation,
+    }
+
+
+@core.app.post("/api/mobile/motivation/attempt/{attempt_id}")
+def award_mobile_effort(
+    attempt_id: str, payload: MotivationPayload, request: Request
+) -> Dict[str, Any]:
+    user = require_mobile(request)
+    with core.db() as connection:
+        owned = connection.execute(
+            """SELECT 1 FROM attempts a JOIN tests t ON t.test_id = a.test_id
+                WHERE a.attempt_id = ? AND a.student_id = ?
+                  AND a.status = 'submitted' AND t.mode = 'student_practice'""",
+            (attempt_id, user["id"]),
+        ).fetchone()
+        if not owned:
+            raise HTTPException(404, "Completed practice session not found.")
+        ensure_historical_effort_rewards(
+            connection, user["id"], attempt_id, payload.local_day
+        )
+        reward = connection.execute(
+            "SELECT * FROM mobile_effort_rewards WHERE attempt_id = ?", (attempt_id,)
+        ).fetchone()
+        return {
+            "reward": reward_payload(reward),
+            "motivation": motivation_summary(connection, user["id"], payload.local_day),
+        }
 
 
 @core.app.delete("/api/mobile/banks/{bank_id}")
@@ -514,13 +774,23 @@ def delete_mobile_bank(bank_id: int, request: Request) -> Dict[str, Any]:
 
 
 @core.app.get("/api/mobile/results/{attempt_id}")
-def mobile_result(attempt_id: str, request: Request) -> Dict[str, Any]:
+def mobile_result(attempt_id: str, request: Request, local_day: str = "") -> Dict[str, Any]:
     user = require_mobile(request)
     with core.db() as connection:
         snapshot = connection.execute(
-            "SELECT result_json FROM mobile_result_snapshots WHERE attempt_id = ? AND student_id = ?",
+            """SELECT result_json FROM mobile_result_snapshots
+                WHERE attempt_id = ? AND student_id = ? AND mode = 'student_practice'""",
             (attempt_id, user["id"]),
         ).fetchone()
-    if not snapshot:
-        raise HTTPException(404, "Saved result not found.")
-    return json.loads(snapshot["result_json"])
+        if not snapshot:
+            raise HTTPException(404, "Saved result not found.")
+        ensure_historical_effort_rewards(
+            connection, user["id"], attempt_id, local_day
+        )
+        reward = connection.execute(
+            "SELECT * FROM mobile_effort_rewards WHERE attempt_id = ?", (attempt_id,)
+        ).fetchone()
+        result = json.loads(snapshot["result_json"])
+        result["effort_reward"] = reward_payload(reward)
+        result["motivation"] = motivation_summary(connection, user["id"], local_day)
+        return result

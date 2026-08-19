@@ -1,3 +1,4 @@
+import asyncio
 import importlib
 import json
 import os
@@ -6,6 +7,8 @@ import sys
 from pathlib import Path
 
 import app as core
+from starlette.requests import Request
+from starlette.responses import Response
 
 
 os.environ.setdefault("APTITUDE_MOBILE_APP_SECRET", "test-mobile-secret")
@@ -113,3 +116,110 @@ def test_deleting_mobile_bank_preserves_result_snapshot(monkeypatch, tmp_path):
     saved = json.loads(snapshot["result_json"])
     assert saved["attempt"]["score"] == 1
     assert saved["chapters"][0]["chapter"] == "Numbers"
+    assert saved["effort_reward"]["stars"] == 3
+    with core.db() as connection:
+        reward = connection.execute(
+            "SELECT stars FROM mobile_effort_rewards WHERE attempt_id = 'mobile-attempt-1'"
+        ).fetchone()
+    assert reward["stars"] == 3
+
+
+def test_effort_rewards_ignore_score_and_build_streaks(monkeypatch, tmp_path):
+    use_temporary_database(monkeypatch, tmp_path)
+    with core.db() as connection:
+        connection.execute(
+            "INSERT INTO students VALUES (?, ?, ?, ?, ?, ?)",
+            (mobile_api.MOBILE_STUDENT_ID, "Student", "google-managed", "Mobile", "", core.now()),
+        )
+        bank_id = connection.execute(
+            """INSERT INTO question_banks
+               (bank_name, source_html_filename, answer_key_filename, imported_at, format_version)
+               VALUES ('Rewards', 'rewards.zip', 'package.json', ?, 2)""",
+            (core.now(),),
+        ).lastrowid
+        test_id = connection.execute(
+            """INSERT INTO tests
+               (test_name, composition, bank_id, created_at, active, launched, mode,
+                owner_student_id, difficulties)
+               VALUES ('Effort practice', '{}', ?, ?, 1, 0, 'student_practice', ?, '["Easy"]')""",
+            (bank_id, core.now(), mobile_api.MOBILE_STUDENT_ID),
+        ).lastrowid
+        attempts = [
+            ("effort-1", "2026-08-18T08:00:00+00:00", 10, 8, 0),
+            ("effort-2", "2026-08-18T10:00:00+00:00", 5, 5, 0),
+            ("effort-3", "2026-08-19T08:00:00+00:00", 1, 1, 0),
+        ]
+        for attempt_id, submitted_at, total, attempted, correct in attempts:
+            connection.execute(
+                """INSERT INTO attempts
+                   (attempt_id, student_id, test_id, started_at, submitted_at, status,
+                    total_questions, attempted, correct, score, percentage)
+                   VALUES (?, ?, ?, ?, ?, 'submitted', ?, ?, ?, ?, 0)""",
+                (
+                    attempt_id, mobile_api.MOBILE_STUDENT_ID, test_id, submitted_at,
+                    submitted_at, total, attempted, correct, correct,
+                ),
+            )
+        mobile_api.ensure_historical_effort_rewards(connection, mobile_api.MOBILE_STUDENT_ID)
+        rewards = connection.execute(
+            "SELECT attempt_id, stars FROM mobile_effort_rewards ORDER BY attempt_id"
+        ).fetchall()
+        summary = mobile_api.motivation_summary(
+            connection, mobile_api.MOBILE_STUDENT_ID, "2026-08-19"
+        )
+
+    assert [(row["attempt_id"], row["stars"]) for row in rewards] == [
+        ("effort-1", 4),
+        ("effort-2", 2),
+        ("effort-3", 3),
+    ]
+    assert summary["total_stars"] == 9
+    assert summary["session_count"] == 3
+    assert summary["current_streak"] == 2
+    assert summary["longest_streak"] == 2
+    assert summary["practiced_today"] is True
+
+
+def test_mobile_surface_is_student_only(monkeypatch, tmp_path):
+    use_temporary_database(monkeypatch, tmp_path)
+    monkeypatch.setattr(core, "MOBILE_MODE", True)
+    def request(path, method="GET"):
+        return Request(
+            {
+                "type": "http",
+                "method": method,
+                "path": path,
+                "headers": [(b"x-aptitude-mobile", b"test-mobile-secret")],
+                "query_string": b"",
+                "session": {},
+            }
+        )
+
+    bootstrap = mobile_api.mobile_bootstrap(request("/api/mobile/bootstrap", "POST"))
+    assert bootstrap["user"]["role"] == "student"
+    assert bootstrap["user"]["id"] == mobile_api.MOBILE_STUDENT_ID
+
+    async def available(_request):
+        return Response("available", status_code=200)
+
+    for method, path in [
+        ("POST", "/api/login"),
+        ("GET", "/api/student/dashboard"),
+        ("GET", "/api/admin/dashboard"),
+        ("POST", "/api/tests/1/start"),
+    ]:
+        response = asyncio.run(core.mobile_surface_guard(request(path, method), available))
+        assert response.status_code == 404
+        assert json.loads(response.body)["detail"] == (
+            "This feature is not available in the student practice app."
+        )
+
+
+def test_mobile_home_copy_has_no_faculty_controls():
+    source = (Path(__file__).parent / "static" / "app.js").read_text(encoding="utf-8")
+    mobile_home = source.split("async function mobileHome()", 1)[1].split(
+        "async function mobileSettings()", 1
+    )[0]
+    assert "Faculty" not in mobile_home
+    assert "assessment launch" not in mobile_home.lower()
+    assert "Effort earned" in mobile_home

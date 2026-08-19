@@ -18,3 +18,8 @@ Boundary rules:
 
 Chapter-specific instructions live beside each pipeline. For Chapter 36, see
 `chapter36/README.md`.
+
+The generalized, fail-closed workflow for the other textbook chapters lives in
+`textbook_chapters/`. It reuses the Chapter 36 rules while keeping each
+chapter's reviewed corrections and rejection ledger separate from shared build
+logic.

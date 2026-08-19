@@ -17,7 +17,7 @@ foreach ($requiredPath in @($AndroidSdk, $JavaHomePath, $PythonExecutable, $grad
 }
 
 if ($DriveFolderUrl) {
-    Set-Content -LiteralPath (Join-Path $androidRoot "mobile-config.properties") -Encoding UTF8 -Value (
+    Set-Content -LiteralPath (Join-Path $androidRoot "mobile-config.properties") -Encoding ASCII -Value (
         "drive.folderUrl=" + $DriveFolderUrl.Replace("\\", "\\\\").Replace(":", "\:")
     )
 }

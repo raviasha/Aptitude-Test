@@ -124,6 +124,9 @@ tasks.matching { it.name.matches("merge.*PythonSources") }.configureEach {
 tasks.matching { it.name.matches("merge.*Assets") }.configureEach {
     dependsOn(prepareMobileWebAssets)
 }
+tasks.matching { it.name.matches("generate.*BuildConfig") }.configureEach {
+    inputs.property("driveFolderUrl", configuredFolderUrl)
+}
 
 dependencies {
     implementation "androidx.activity:activity-ktx:1.10.1"

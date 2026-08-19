@@ -37,3 +37,23 @@ Return JSON compatible with `page-analysis.json`. Every visual must contain:
 Never infer association from nearest-page distance, reading-order proximity,
 or a generic `image_reference` string. Page identity plus question identity is
 the join key, and every cross-page join requires explicit continuation evidence.
+
+## Answer and solution extraction contract
+
+The candidate record's answer, explanation, solution steps, and option
+explanations are untrusted. Do not calculate a replacement or choose an answer
+from the visual.
+
+1. Read the textbook's printed `ANSWERS` panel for the same exercise and record
+   the letter for the exact printed question number.
+2. Read the matching numbered entry under the textbook's printed `SOLUTIONS`
+   heading. Preserve its values, operations, units, approximation, and result.
+3. Record the answer-key source page and every solution source page. If a
+   solution continues on the next page, include both pages.
+4. Reject a question when either the printed answer or the complete printed
+   solution cannot be found. Never fill the gap with model reasoning.
+5. Do not publish model-generated option explanations. The textbook answer key
+   and numbered solution are the only accepted answer/solution sources.
+
+Return records compatible with `textbook-solutions.json`. Exercise plus printed
+question number is the join key; page proximity is never sufficient.

@@ -27,6 +27,7 @@ class Chapter36BuildTests(unittest.TestCase):
             source_dir=BUILD.DEFAULT_SOURCE_DIR,
             questions_path=BUILD.DEFAULT_QUESTIONS,
             analysis_path=BUILD.DEFAULT_ANALYSIS,
+            solutions_path=BUILD.DEFAULT_TEXTBOOK_SOLUTIONS,
             output_path=cls.output,
         )
         cls.package_bytes = cls.output.read_bytes()
@@ -70,6 +71,56 @@ class Chapter36BuildTests(unittest.TestCase):
             ]
         reasons = [record["reason"] for record in rejected]
         self.assertEqual(reasons.count("source_question_not_found"), 5)
+
+    def test_every_answer_and_solution_has_textbook_provenance(self) -> None:
+        source_document = BUILD.load_json(BUILD.DEFAULT_TEXTBOOK_SOLUTIONS)
+        source_records = {
+            (record["exercise"], record["question_number"]): record
+            for record in source_document["records"]
+        }
+        with zipfile.ZipFile(io.BytesIO(self.package_bytes)) as archive:
+            questions = [
+                json.loads(line)
+                for line in archive.read("questions/chapter-036.jsonl").decode("utf-8").splitlines()
+                if line.strip()
+            ]
+
+        self.assertEqual(len(source_records), 60)
+        for question in questions:
+            identity = (question["source_exercise"], question["source_question_number"])
+            source = source_records[identity]
+            self.assertEqual(question["correct_answer"], source["correct_answer"])
+            self.assertEqual(question["solution_steps"], source["solution_steps"])
+            self.assertEqual(question["explanation"], source["solution_steps"][-1])
+            self.assertEqual(question["option_explanations"], {})
+            self.assertEqual(question["answer_source"]["source_page"], source["answer_key_page"])
+            self.assertEqual(question["solution_source"]["source_pages"], source["solution_pages"])
+
+        self.assertEqual(
+            "".join(source_records[("I", number)]["correct_answer"] for number in range(1, 26)),
+            "BEDAECBDEBACDBDCBADECABDE",
+        )
+        self.assertEqual(
+            "".join(source_records[("II", number)]["correct_answer"] for number in range(1, 36)),
+            "AECCDDBCECECBBEBAECCDDBDADECBBBBDDB",
+        )
+
+    def test_reported_company_a_question_matches_the_textbook(self) -> None:
+        with zipfile.ZipFile(io.BytesIO(self.package_bytes)) as archive:
+            questions = {
+                record["key"]: record
+                for record in (
+                    json.loads(line)
+                    for line in archive.read("questions/chapter-036.jsonl").decode("utf-8").splitlines()
+                    if line.strip()
+                )
+            }
+        question = questions["ch36-ex2-q0006"]
+        self.assertEqual(question["correct_answer"], "D")
+        self.assertEqual(question["answer_source"]["source_page"], 905)
+        self.assertEqual(question["solution_source"]["source_pages"], [905])
+        self.assertIn("Production of Company A in 2009 = 550 tonnes", question["solution_steps"][0])
+        self.assertIn("approximately 27%", question["solution_steps"][-1])
 
     def test_crop_boxes_stop_before_question_content(self) -> None:
         analysis = BUILD.load_json(BUILD.DEFAULT_ANALYSIS)

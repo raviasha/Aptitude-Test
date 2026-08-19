@@ -17,9 +17,11 @@
     903,
     904,
     905,
-    906
+    906,
+    907,
+    908
   ],
-  "total_pages_processed": 11,
+  "total_pages_processed": 13,
   "total_questions": 65,
   "question_files": [
     "questions/chapter-036.jsonl"
@@ -98,7 +100,7 @@
       "description": "5 states with poverty % and gender ratios"
     }
   ],
-  "notes": "Complete chapter extraction with 7 exercise sets. All questions include full solutions and explanations.",
+  "notes": "Raw vision extraction. Answers and explanations are untrusted; the separate Chapter 36 pipeline replaces them with textbook answer-key and solution records from pages 899-900 and 905-908.",
   "exercises": {
     "1": 25,
     "2": 15,

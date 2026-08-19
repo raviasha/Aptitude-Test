@@ -15,11 +15,17 @@ The workflow is question-first and page-local:
    or solutions.
 5. It tags cross-page questions with every visual source page and creates a
    composite stimulus when the required visual spans more than one page.
-6. It validates the ZIP contract without importing pipeline code into the app.
+6. It replaces every raw answer and explanation with the reviewed textbook
+   answer key and printed solution from `textbook-solutions.json`.
+7. It records the answer-key page and every solution page on each published
+   question, and rejects the build if any question lacks textbook provenance.
+8. It validates the ZIP contract without importing pipeline code into the app.
 
 The checked-in `page-analysis.json` is the reviewed output of that analysis for
-pages 896-906. `VISION_PROMPT.md` defines the provider-neutral contract a vision
-model must follow when producing or revising this file.
+pages 896-908. `VISION_PROMPT.md` defines the provider-neutral contract a vision
+model must follow when producing or revising this file. Answer and solution
+provenance extends through pages 907-908; raw vision-generated answers,
+explanations, and calculations are explicitly untrusted and are never published.
 
 Build from the repository root:
 

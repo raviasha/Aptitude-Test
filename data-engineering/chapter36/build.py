@@ -16,6 +16,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_SOURCE_DIR = PROJECT_ROOT / "question-banks" / "extraction-ch36-session"
 DEFAULT_QUESTIONS = DEFAULT_SOURCE_DIR / "questions" / "chapter-036.jsonl"
 DEFAULT_ANALYSIS = Path(__file__).with_name("page-analysis.json")
+DEFAULT_TEXTBOOK_SOLUTIONS = Path(__file__).with_name("textbook-solutions.json")
 DEFAULT_OUTPUT = PROJECT_ROOT / "question-banks" / "ch36_tabulation_complete.zip"
 EXPECTED_SOURCE_SIZE = (1700, 2200)
 
@@ -206,10 +207,67 @@ def normalized_questions(
     return normalized, rejected
 
 
+def textbook_solution_records(
+    document: dict[str, Any],
+    normalized: dict[tuple[str, int], dict[str, Any]],
+    analysis: dict[str, Any],
+    source_dir: Path,
+) -> dict[tuple[str, int], dict[str, Any]]:
+    if document.get("schema_version") != 1:
+        raise ValueError("Unsupported textbook-solution schema version.")
+    if document.get("policy") != "textbook-answer-and-solution-only":
+        raise ValueError("The textbook-only answer and solution policy is required.")
+
+    source_files = {int(page): str(filename) for page, filename in analysis["source_files"].items()}
+    records: dict[tuple[str, int], dict[str, Any]] = {}
+    for source in document.get("records", []):
+        identity = (str(source["exercise"]), int(source["question_number"]))
+        if identity in records:
+            raise ValueError(f"Duplicate textbook solution for Exercise {identity[0]} question {identity[1]}.")
+        if identity not in normalized:
+            raise ValueError(f"Unexpected textbook solution for Exercise {identity[0]} question {identity[1]}.")
+
+        answer = str(source.get("correct_answer", "")).upper()
+        if answer not in normalized[identity]["options"]:
+            raise ValueError(f"Textbook answer {answer!r} is not an option for Exercise {identity[0]} question {identity[1]}.")
+        expected_answer_page = 899 if identity[0] == "I" else 905
+        answer_page = int(source["answer_key_page"])
+        if answer_page != expected_answer_page:
+            raise ValueError(
+                f"Exercise {identity[0]} question {identity[1]} must use textbook answer page {expected_answer_page}."
+            )
+
+        solution_pages = [int(page) for page in source.get("solution_pages", [])]
+        steps = source.get("solution_steps", [])
+        if not solution_pages or not isinstance(steps, list) or not steps or not all(
+            isinstance(step, str) and step.strip() for step in steps
+        ):
+            raise ValueError(f"Exercise {identity[0]} question {identity[1]} needs textbook solution pages and steps.")
+        for page in {answer_page, *solution_pages}:
+            source_filename = source_files.get(page)
+            if source_filename is None or not (source_dir / source_filename).is_file():
+                raise FileNotFoundError(
+                    f"Textbook provenance page {page} is missing for Exercise {identity[0]} question {identity[1]}."
+                )
+        records[identity] = {
+            "correct_answer": answer,
+            "answer_key_page": answer_page,
+            "solution_pages": solution_pages,
+            "solution_steps": [step.strip() for step in steps],
+        }
+
+    if set(records) != set(normalized):
+        missing = sorted(set(normalized) - set(records))
+        extra = sorted(set(records) - set(normalized))
+        raise ValueError(f"Textbook solution coverage mismatch. Missing={missing}; extra={extra}")
+    return records
+
+
 def build_records(
     normalized: dict[tuple[str, int], dict[str, Any]],
     analysis: dict[str, Any],
     visual_for_question: dict[tuple[str, int], dict[str, Any]],
+    textbook_solutions: dict[tuple[str, int], dict[str, Any]],
     rejected: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     cross_page = expand_cross_page_groups(analysis)
@@ -226,6 +284,7 @@ def build_records(
         group = cross_page.get(identity)
         visual_pages = [int(region["source_page"]) for region in source_regions(visual)]
         association_status = "cross_page_verified" if group is not None else "same_page_verified"
+        textbook = textbook_solutions[identity]
 
         record = deepcopy(raw)
         record["key"] = output_key(exercise, number)
@@ -235,6 +294,24 @@ def build_records(
         record["source_exercise"] = exercise
         record["source_question_number"] = number
         record["stimulus_id"] = visual["id"]
+        record["correct_answer"] = textbook["correct_answer"]
+        record["explanation"] = textbook["solution_steps"][-1]
+        record["solution_steps"] = textbook["solution_steps"]
+        record["option_explanations"] = {}
+        record["answer_source"] = {
+            "policy": "textbook-answer-key-only",
+            "source_page": textbook["answer_key_page"],
+            "source_page_id": f"ch36-page-{textbook['answer_key_page']}",
+            "source_exercise": exercise,
+            "source_question_number": number,
+        }
+        record["solution_source"] = {
+            "policy": "textbook-solution-only",
+            "source_pages": textbook["solution_pages"],
+            "source_page_ids": [f"ch36-page-{page}" for page in textbook["solution_pages"]],
+            "source_exercise": exercise,
+            "source_question_number": number,
+        }
         record["image_association"] = {
             "policy": "question-first-page-aware",
             "question_page": source_page,
@@ -340,14 +417,17 @@ def build_package(
     source_dir: Path,
     questions_path: Path,
     analysis_path: Path,
+    solutions_path: Path,
     output_path: Path,
     qa_dir: Path | None = None,
 ) -> dict[str, int]:
     analysis = load_json(analysis_path)
     raw_questions = load_jsonl(questions_path)
+    solution_document = load_json(solutions_path)
     visual_for_question = validate_analysis(analysis, source_dir)
     normalized, rejected = normalized_questions(raw_questions, analysis)
-    published, rejected = build_records(normalized, analysis, visual_for_question, rejected)
+    solutions = textbook_solution_records(solution_document, normalized, analysis, source_dir)
+    published, rejected = build_records(normalized, analysis, visual_for_question, solutions, rejected)
     stimuli, assets = create_stimuli(analysis, source_dir, published, qa_dir)
 
     if len(raw_questions) != 65 or len(published) != 60 or len(rejected) != 5 or len(stimuli) != 12:
@@ -370,6 +450,8 @@ def build_package(
                 "stimulus_id": question["stimulus_id"],
                 "association_status": question["image_association"]["status"],
                 "visual_source_pages": question["image_association"]["visual_source_pages"],
+                "answer_key_page": question["answer_source"]["source_page"],
+                "solution_pages": question["solution_source"]["source_pages"],
             }
             for question in published
         ],
@@ -386,12 +468,13 @@ def build_package(
     }
     manifest = {
         "format_version": 2,
-        "pipeline_version": 1,
-        "bank_name": "R. S. Aggarwal - Chapter 36: Tabulation (page-aware v3)",
+        "pipeline_version": 2,
+        "bank_name": "R. S. Aggarwal - Chapter 36: Tabulation (textbook-verified v4)",
         "chapter": 36,
         "chapter_name": "Tabulation",
         "section": "Data Interpretation",
         "association_policy": "question-first-page-aware",
+        "answer_solution_policy": "textbook-answer-and-solution-only",
         "question_files": ["questions/chapter-036.jsonl"],
         "stimuli": stimuli,
         "source_pages_audited": lineage["source_pages_audited"],
@@ -423,6 +506,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--source-dir", type=Path, default=DEFAULT_SOURCE_DIR)
     parser.add_argument("--questions", type=Path, default=DEFAULT_QUESTIONS)
     parser.add_argument("--analysis", type=Path, default=DEFAULT_ANALYSIS)
+    parser.add_argument("--solutions", type=Path, default=DEFAULT_TEXTBOOK_SOLUTIONS)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--qa-dir", type=Path)
     return parser.parse_args()
@@ -434,6 +518,7 @@ def main() -> None:
         source_dir=arguments.source_dir.resolve(),
         questions_path=arguments.questions.resolve(),
         analysis_path=arguments.analysis.resolve(),
+        solutions_path=arguments.solutions.resolve(),
         output_path=arguments.output.resolve(),
         qa_dir=arguments.qa_dir.resolve() if arguments.qa_dir else None,
     )

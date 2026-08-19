@@ -1,0 +1,685 @@
+{
+  "schema_version": 1,
+  "source": "R. S. Aggarwal, Quantitative Aptitude for Competitive Examinations, 2017 reprint, Chapter 36: Tabulation",
+  "policy": "textbook-answer-and-solution-only",
+  "records": [
+    {
+      "exercise": "I",
+      "question_number": 1,
+      "correct_answer": "B",
+      "answer_key_page": 899,
+      "solution_pages": [899],
+      "solution_steps": [
+        "For zone S, appeared minus qualified is 1.8 in 2005, 4.1 in 2006, 2.7 in 2007, 2.9 in 2008, 6.2 in 2009, and 2.8 in 2010.",
+        "The lowest difference is in 2005 and the second lowest is in 2007."
+      ]
+    },
+    {
+      "exercise": "I",
+      "question_number": 2,
+      "correct_answer": "E",
+      "answer_key_page": 899,
+      "solution_pages": [899],
+      "solution_steps": [
+        "Required percentage = (7.4 / 5.4) x 100.",
+        "This equals 137%."
+      ]
+    },
+    {
+      "exercise": "I",
+      "question_number": 3,
+      "correct_answer": "D",
+      "answer_key_page": 899,
+      "solution_pages": [899],
+      "solution_steps": [
+        "Total candidates appeared from zone T = (6.2 + 6.2 + 6.4 + 7.8 + 9.9 + 11.8) x 100 = 4830.",
+        "Average = 4830 / 6 = 805."
+      ]
+    },
+    {
+      "exercise": "I",
+      "question_number": 4,
+      "correct_answer": "A",
+      "answer_key_page": 899,
+      "solution_pages": [899],
+      "solution_steps": [
+        "Required ratio = 3.2 : 5.6.",
+        "3.2 : 5.6 = 32 : 56 = 4 : 7."
+      ]
+    },
+    {
+      "exercise": "I",
+      "question_number": 5,
+      "correct_answer": "E",
+      "answer_key_page": 899,
+      "solution_pages": [899],
+      "solution_steps": [
+        "Candidates qualified in 2009 and 2010 together are P = 10.4, Q = 11.6, R = 14.2, S = 16.6, and T = 16.3.",
+        "Zone S is highest and zone T is second highest."
+      ]
+    },
+    {
+      "exercise": "I",
+      "question_number": 6,
+      "correct_answer": "C",
+      "answer_key_page": 899,
+      "solution_pages": [899],
+      "solution_steps": [
+        "Increase in B.Ed semester fees from 2006 to 2007 = 13.9 - 11.6 = 2.3.",
+        "Percentage increase = (2.3 / 11.6) x 100 = 19.8%, approximately 20%."
+      ]
+    },
+    {
+      "exercise": "I",
+      "question_number": 7,
+      "correct_answer": "B",
+      "answer_key_page": 899,
+      "solution_pages": [899],
+      "solution_steps": [
+        "Average M.Sc. semester fee = ((5.8 + 6.4 + 10.2 + 14.6 + 17.7 + 20.9) x 1000) / 6.",
+        "Average = 75600 / 6 = Rs. 12600."
+      ]
+    },
+    {
+      "exercise": "I",
+      "question_number": 8,
+      "correct_answer": "D",
+      "answer_key_page": 899,
+      "solution_pages": [899],
+      "solution_steps": [
+        "Total Diploma fees = (1.8 + 3.2 + 4.8 + 5.6 + 12.5 + 14.9) x 1000 = Rs. 42800.",
+        "Difference from the 2009 B.Tech fee = Rs. 42800 - Rs. 35800 = Rs. 7000."
+      ]
+    },
+    {
+      "exercise": "I",
+      "question_number": 9,
+      "correct_answer": "E",
+      "answer_key_page": 899,
+      "solution_pages": [899],
+      "solution_steps": [
+        "Required percentage = (12.7 / 17.7) x 100.",
+        "This equals 71.75%, approximately 72%."
+      ]
+    },
+    {
+      "exercise": "I",
+      "question_number": 10,
+      "correct_answer": "B",
+      "answer_key_page": 899,
+      "solution_pages": [899],
+      "solution_steps": [
+        "Total semester fees in 2006 = (14.5 + 6.4 + 11.6 + 5.8 + 3.2) x 1000.",
+        "Total = 41.5 x 1000 = Rs. 41500."
+      ]
+    },
+    {
+      "exercise": "I",
+      "question_number": 11,
+      "correct_answer": "A",
+      "answer_key_page": 899,
+      "solution_pages": [899],
+      "solution_steps": [
+        "Required ratio = (1.04 lakhs x 51%) : (1.11 lakhs x 32%).",
+        "The ratio simplifies to 221 : 148."
+      ]
+    },
+    {
+      "exercise": "I",
+      "question_number": 12,
+      "correct_answer": "C",
+      "answer_key_page": 899,
+      "solution_pages": [899, 900],
+      "solution_steps": [
+        "Candidates clearing from State D in 2008 = 1.83 lakhs x 60% = 1.098 lakhs.",
+        "Candidates clearing from State D in 2009 = 2.01 lakhs x 56% = 1.1256 lakhs.",
+        "The values for the remaining years are lower, so the maximum occurs in 2009."
+      ]
+    },
+    {
+      "exercise": "I",
+      "question_number": 13,
+      "correct_answer": "D",
+      "answer_key_page": 899,
+      "solution_pages": [900],
+      "solution_steps": [
+        "Candidates not clearing from State A in 2007 = 1.98 lakhs x (100 - 41)%.",
+        "This equals 1.1682 lakhs = 116820 candidates."
+      ]
+    },
+    {
+      "exercise": "I",
+      "question_number": 14,
+      "correct_answer": "B",
+      "answer_key_page": 899,
+      "solution_pages": [900],
+      "solution_steps": [
+        "State E clearing in 2006 = 1.42 lakhs x 49%; State F clearing in 2006 = 1.58 lakhs x 26%.",
+        "Together = (69.58 + 41.08) / 100 lakhs = 110660 candidates."
+      ]
+    },
+    {
+      "exercise": "I",
+      "question_number": 15,
+      "correct_answer": "D",
+      "answer_key_page": 899,
+      "solution_pages": [900],
+      "solution_steps": [
+        "Average candidates appearing from State D in 2007, 2008, and 2009 = (1.88 + 1.83 + 2.01) / 3 lakhs.",
+        "Average = 572000 / 3 = 190666 2/3 candidates."
+      ]
+    },
+    {
+      "exercise": "I",
+      "question_number": 16,
+      "correct_answer": "C",
+      "answer_key_page": 899,
+      "solution_pages": [900],
+      "solution_steps": [
+        "Candidates failing from City D = (3 / 4) x 2.27 x 100000.",
+        "Candidates failing from City A = (3 / 10) x 1.25 x 100000.",
+        "Required ratio = 227 : 50."
+      ]
+    },
+    {
+      "exercise": "I",
+      "question_number": 17,
+      "correct_answer": "B",
+      "answer_key_page": 899,
+      "solution_pages": [900],
+      "solution_steps": [
+        "Candidates from City C = 1.08 x 100000 = 108000; candidates from City B = 3.14 x 100000 = 314000.",
+        "Required percentage = (108000 / 314000) x 100 = 34.39%, approximately 34%."
+      ]
+    },
+    {
+      "exercise": "I",
+      "question_number": 18,
+      "correct_answer": "A",
+      "answer_key_page": 899,
+      "solution_pages": [900],
+      "solution_steps": [
+        "Total candidates from all six cities = (1.25 + 3.14 + 1.08 + 2.27 + 1.85 + 2.73) x 100000 = 1232000.",
+        "Candidates passing from City F = (7 / 12) x 2.73 x 100000 = 159250.",
+        "Required percentage = (159250 / 1232000) x 100 = 12.93%."
+      ]
+    },
+    {
+      "exercise": "I",
+      "question_number": 19,
+      "correct_answer": "D",
+      "answer_key_page": 899,
+      "solution_pages": [900],
+      "solution_steps": [
+        "Failures are A = 37500, B = 117750, C = 60000, D = 170250, E = 74000, and F = 113750.",
+        "The maximum number of failures is from City D."
+      ]
+    },
+    {
+      "exercise": "I",
+      "question_number": 20,
+      "correct_answer": "E",
+      "answer_key_page": 899,
+      "solution_pages": [900],
+      "solution_steps": [
+        "Candidates passing from City E = (3 / 5) x 1.85 x 100000.",
+        "This equals 111000, which is not among the listed numeric choices."
+      ]
+    },
+    {
+      "exercise": "I",
+      "question_number": 21,
+      "correct_answer": "C",
+      "answer_key_page": 899,
+      "solution_pages": [900],
+      "solution_steps": [
+        "Females in Production = 900 x 23% = 207; females in Marketing = 450 x 44% = 198.",
+        "Required ratio = 207 : 198 = 23 : 22."
+      ]
+    },
+    {
+      "exercise": "I",
+      "question_number": 22,
+      "correct_answer": "A",
+      "answer_key_page": 899,
+      "solution_pages": [900],
+      "solution_steps": [
+        "Females in HR and Accounts = (65% x 360) + (35% x 220) = 234 + 77 = 311.",
+        "Males in HR and Accounts = (35% x 360) + (65% x 220) = 126 + 143 = 269.",
+        "Required ratio = 311 : 269."
+      ]
+    },
+    {
+      "exercise": "I",
+      "question_number": 23,
+      "correct_answer": "B",
+      "answer_key_page": 899,
+      "solution_pages": [900],
+      "solution_steps": [
+        "Total employees = 840 + 220 + 900 + 360 + 450 + 540.",
+        "Total = 3310."
+      ]
+    },
+    {
+      "exercise": "I",
+      "question_number": 24,
+      "correct_answer": "D",
+      "answer_key_page": 899,
+      "solution_pages": [900],
+      "solution_steps": [
+        "Required percentage = (360 / 220) x 100.",
+        "This equals 163.6%, approximately 164%."
+      ]
+    },
+    {
+      "exercise": "I",
+      "question_number": 25,
+      "correct_answer": "E",
+      "answer_key_page": 899,
+      "solution_pages": [900],
+      "solution_steps": [
+        "Males in IT and Customer Service = (55% x 840) + (60% x 540).",
+        "Total = 462 + 324 = 786, which is not among the listed numeric choices."
+      ]
+    },
+    {
+      "exercise": "II",
+      "question_number": 1,
+      "correct_answer": "A",
+      "answer_key_page": 905,
+      "solution_pages": [905],
+      "solution_steps": [
+        "Boys in School D: 2007 = 6.4 x 100 = 640; 2008 = 5.3 x 100 = 530.",
+        "Decrease = 110, so percentage decrease = (110 / 640) x 100 = 17.1%, approximately 17%."
+      ]
+    },
+    {
+      "exercise": "II",
+      "question_number": 2,
+      "correct_answer": "E",
+      "answer_key_page": 905,
+      "solution_pages": [905],
+      "solution_steps": [
+        "Girls in School B in 2009 = 5.9 x 100 = 590.",
+        "Students in School E in 2006 = (5.5 + 3.6) x 100 = 910.",
+        "Required percentage = (590 / 910) x 100 = 64.8%, approximately 65%."
+      ]
+    },
+    {
+      "exercise": "II",
+      "question_number": 3,
+      "correct_answer": "C",
+      "answer_key_page": 905,
+      "solution_pages": [905],
+      "solution_steps": [
+        "Average girls in School A = ((3.6 + 4.2 + 6.9 + 9.6 + 12.9 + 14.4) x 100) / 6.",
+        "Average = 5160 / 6 = 860."
+      ]
+    },
+    {
+      "exercise": "II",
+      "question_number": 4,
+      "correct_answer": "C",
+      "answer_key_page": 905,
+      "solution_pages": [905],
+      "solution_steps": [
+        "Boys in School C in 2009 = 8.7 x 100 = 870; girls in School A in 2009 = 12.9 x 100 = 1290.",
+        "Required ratio = 870 : 1290 = 29 : 43."
+      ]
+    },
+    {
+      "exercise": "II",
+      "question_number": 5,
+      "correct_answer": "D",
+      "answer_key_page": 905,
+      "solution_pages": [905],
+      "solution_steps": [
+        "School E totals are 1310 in 2005, 910 in 2006, 510 in 2007, 1110 in 2008, 1330 in 2009, and 2350 in 2010.",
+        "2010 is highest, 2009 is second highest, and 2005 is third highest."
+      ]
+    },
+    {
+      "exercise": "II",
+      "question_number": 6,
+      "correct_answer": "D",
+      "answer_key_page": 905,
+      "solution_pages": [905],
+      "solution_steps": [
+        "Production of Company A in 2009 = 550 tonnes; production in 2010 = 700 tonnes.",
+        "Increase = 700 - 550 = 150 tonnes.",
+        "Percentage increase = (150 / 550) x 100 = 27.2%, approximately 27%."
+      ]
+    },
+    {
+      "exercise": "II",
+      "question_number": 7,
+      "correct_answer": "B",
+      "answer_key_page": 905,
+      "solution_pages": [905],
+      "solution_steps": [
+        "Sales of Company A in 2009 = 400 tonnes; production in 2009 = 550 tonnes.",
+        "Required percentage = (400 / 550) x 100 = 72.7%, approximately 73%."
+      ]
+    },
+    {
+      "exercise": "II",
+      "question_number": 8,
+      "correct_answer": "C",
+      "answer_key_page": 905,
+      "solution_pages": [905],
+      "solution_steps": [
+        "Company B production from 2006 through 2011 is 600 + 700 + 800 + 600 + 650 + 700 = 4050 tonnes.",
+        "Average production = 4050 / 6 = 675 tonnes."
+      ]
+    },
+    {
+      "exercise": "II",
+      "question_number": 9,
+      "correct_answer": "E",
+      "answer_key_page": 905,
+      "solution_pages": [905],
+      "solution_steps": [
+        "Total production of Company A = 750 + 800 + 600 + 550 + 700 + 650 = 4050.",
+        "Total sales of Company A = 300 + 550 + 450 + 400 + 500 + 550 = 2750.",
+        "Required ratio = 4050 : 2750 = 81 : 55."
+      ]
+    },
+    {
+      "exercise": "II",
+      "question_number": 10,
+      "correct_answer": "C",
+      "answer_key_page": 905,
+      "solution_pages": [905, 906],
+      "solution_steps": [
+        "Company B production in 2006 = 750 x (4 / 5) = 600 tonnes.",
+        "Company B production in 2008 = 600 x (4 / 3) = 800 tonnes.",
+        "Required ratio = 600 : 800 = 3 : 4."
+      ]
+    },
+    {
+      "exercise": "II",
+      "question_number": 11,
+      "correct_answer": "E",
+      "answer_key_page": 905,
+      "solution_pages": [906],
+      "solution_steps": [
+        "Country C participant totals are 760 in 2005, 1020 in 2006, 760 in 2007, 1080 in 2008, 1420 in 2009, and 1770 in 2010.",
+        "The second highest total is in 2009, which is not one of the four listed years."
+      ]
+    },
+    {
+      "exercise": "II",
+      "question_number": 12,
+      "correct_answer": "C",
+      "answer_key_page": 905,
+      "solution_pages": [906],
+      "solution_steps": [
+        "Female athletes from Country B total (4.2 + 6.2 + 4.8 + 8.4 + 5.2 + 7.2) x 100 = 3600.",
+        "Average = 3600 / 6 = 600."
+      ]
+    },
+    {
+      "exercise": "II",
+      "question_number": 13,
+      "correct_answer": "B",
+      "answer_key_page": 905,
+      "solution_pages": [906],
+      "solution_steps": [
+        "Male athletes from Country C: 2006 = 6.9 x 100 = 690; 2007 = 4.8 x 100 = 480.",
+        "Percentage decrease = ((690 - 480) / 690) x 100 = 30.4%, approximately 30%."
+      ]
+    },
+    {
+      "exercise": "II",
+      "question_number": 14,
+      "correct_answer": "B",
+      "answer_key_page": 905,
+      "solution_pages": [906],
+      "solution_steps": [
+        "Female athletes from Country E in 2009 = 9.2 x 100 = 920.",
+        "Total athletes from Country B in 2008 = (11.4 + 8.4) x 100 = 1980.",
+        "Required percentage = (920 / 1980) x 100 = 46.46%, approximately 46%."
+      ]
+    },
+    {
+      "exercise": "II",
+      "question_number": 15,
+      "correct_answer": "E",
+      "answer_key_page": 905,
+      "solution_pages": [906],
+      "solution_steps": [
+        "Male-female differences in 2006 are A = 240, B = 220, C = 360, D = 210, and E = 260.",
+        "The second highest difference is for Country E."
+      ]
+    },
+    {
+      "exercise": "II",
+      "question_number": 16,
+      "correct_answer": "B",
+      "answer_key_page": 905,
+      "solution_pages": [906],
+      "solution_steps": [
+        "Total taxes = 83 + 108 + 74 + 88 + 98 = Rs. 451 lakh.",
+        "Total fuel and transport = 98 + 112 + 101 + 133 + 142 = Rs. 586 lakh.",
+        "Required ratio = 451 : 586, approximately 10 : 13."
+      ]
+    },
+    {
+      "exercise": "II",
+      "question_number": 17,
+      "correct_answer": "A",
+      "answer_key_page": 905,
+      "solution_pages": [906],
+      "solution_steps": [
+        "Total expenditure in 2009 = 324 + 101 + 3.84 + 41.6 + 74.",
+        "Total = Rs. 544.44 lakh."
+      ]
+    },
+    {
+      "exercise": "II",
+      "question_number": 18,
+      "correct_answer": "E",
+      "answer_key_page": 905,
+      "solution_pages": [906],
+      "solution_steps": [
+        "Total interest = 23.4 + 32.5 + 41.6 + 36.4 + 49.4 = Rs. 183.3 lakh.",
+        "Average interest per year = 183.3 / 5 = Rs. 36.66 lakh."
+      ]
+    },
+    {
+      "exercise": "II",
+      "question_number": 19,
+      "correct_answer": "C",
+      "answer_key_page": 905,
+      "solution_pages": [906],
+      "solution_steps": [
+        "Total expenditure in 2007 = 288 + 98 + 3.00 + 23.4 + 83 = Rs. 495.4 lakh.",
+        "Total expenditure in 2011 = 420 + 142 + 3.96 + 49.4 + 98 = Rs. 713.36 lakh.",
+        "Required percentage = (495.4 / 713.36) x 100 = 69.4%, approximately 69%."
+      ]
+    },
+    {
+      "exercise": "II",
+      "question_number": 20,
+      "correct_answer": "C",
+      "answer_key_page": 905,
+      "solution_pages": [906],
+      "solution_steps": [
+        "Total bonus = 3 + 2.52 + 3.84 + 3.68 + 3.96 = Rs. 17 lakh.",
+        "Total salary = 288 + 342 + 324 + 336 + 420 = Rs. 1710 lakh.",
+        "Required percentage = (17 / 1710) x 100 = 0.99%, approximately 1%."
+      ]
+    },
+    {
+      "exercise": "II",
+      "question_number": 21,
+      "correct_answer": "D",
+      "answer_key_page": 905,
+      "solution_pages": [906],
+      "solution_steps": [
+        "Selected-to-appeared percentages in 2007 are Delhi = 1.175%, H.P. = 1.051%, U.P. = 1.040%, Punjab = 1.037%, and Haryana = 1.172%.",
+        "The lowest percentage is for Punjab."
+      ]
+    },
+    {
+      "exercise": "II",
+      "question_number": 22,
+      "correct_answer": "D",
+      "answer_key_page": 905,
+      "solution_pages": [906, 907],
+      "solution_steps": [
+        "Punjab qualified-to-appeared percentages are 8.29% in 2007, 8.82% in 2008, 8.08% in 2009, 9.23% in 2010, and 8.50% in 2011.",
+        "The maximum percentage is in 2010."
+      ]
+    },
+    {
+      "exercise": "II",
+      "question_number": 23,
+      "correct_answer": "B",
+      "answer_key_page": 905,
+      "solution_pages": [907],
+      "solution_steps": [
+        "U.P. selected-to-qualified percentages are 10.83% in 2007, 13.71% in 2008, 12% in 2009, 10.77% in 2010, and 8.42% in 2011.",
+        "The highest percentage is in 2008."
+      ]
+    },
+    {
+      "exercise": "II",
+      "question_number": 24,
+      "correct_answer": "D",
+      "answer_key_page": 905,
+      "solution_pages": [907],
+      "solution_steps": [
+        "Candidates selected from Haryana total 75 + 75 + 55 + 60 + 75 = 340.",
+        "Candidates selected from Delhi total 94 + 48 + 82 + 90 + 70 = 384.",
+        "Required percentage = (340 / 384) x 100 = 88.5%."
+      ]
+    },
+    {
+      "exercise": "II",
+      "question_number": 25,
+      "correct_answer": "A",
+      "answer_key_page": 905,
+      "solution_pages": [907],
+      "solution_steps": [
+        "Average selected candidates are Delhi = 76.8, H.P. = 75.6, U.P. = 72.2, Punjab = 72.8, and Haryana = 68.",
+        "The maximum average is for Delhi."
+      ]
+    },
+    {
+      "exercise": "II",
+      "question_number": 26,
+      "correct_answer": "D",
+      "answer_key_page": 905,
+      "solution_pages": [907],
+      "solution_steps": [
+        "Total selected in 2009 = 82 + 70 + 48 + 65 + 55 = 320.",
+        "Total qualified in 2009 = 640 + 560 + 400 + 525 + 350 = 2475.",
+        "Required percentage = (320 / 2475) x 100 = 12.92%, approximately 13%."
+      ]
+    },
+    {
+      "exercise": "II",
+      "question_number": 27,
+      "correct_answer": "E",
+      "answer_key_page": 905,
+      "solution_pages": [907],
+      "solution_steps": [
+        "Sajal's marks are 90% of 150, 60% of 130, 70% of 120, 70% of 100, 90% of 60, and 70% of 40.",
+        "Aggregate = 135 + 78 + 84 + 70 + 54 + 28 = 449."
+      ]
+    },
+    {
+      "exercise": "II",
+      "question_number": 28,
+      "correct_answer": "C",
+      "answer_key_page": 905,
+      "solution_pages": [907],
+      "solution_steps": [
+        "Tarun's aggregate = 65% of 150 + 35% of 130 + 50% of 120 + 77% of 100 + 80% of 60 + 80% of 40 = 360.",
+        "Total maximum marks = 600, so overall percentage = (360 / 600) x 100 = 60%."
+      ]
+    },
+    {
+      "exercise": "II",
+      "question_number": 29,
+      "correct_answer": "B",
+      "answer_key_page": 905,
+      "solution_pages": [907],
+      "solution_steps": [
+        "Physics marks total = 108 + 96 + 84 + 96 + 102 + 78 + 60 = 624.",
+        "Average Physics marks = 624 / 7 = 89.14."
+      ]
+    },
+    {
+      "exercise": "II",
+      "question_number": 30,
+      "correct_answer": "B",
+      "answer_key_page": 905,
+      "solution_pages": [907],
+      "solution_steps": [
+        "From the table, Sajal and Rohit obtained 60% or more in each of the six subjects.",
+        "Therefore, the number of students is 2."
+      ]
+    },
+    {
+      "exercise": "II",
+      "question_number": 31,
+      "correct_answer": "B",
+      "answer_key_page": 905,
+      "solution_pages": [907],
+      "solution_steps": [
+        "Overall percentages are Maths = 82.14%, Chemistry = 61.43%, Physics = 74.29%, Geography = 72.43%, History = 67.14%, and Computer Science = 72.86%.",
+        "The highest overall percentage is in Maths."
+      ]
+    },
+    {
+      "exercise": "II",
+      "question_number": 32,
+      "correct_answer": "B",
+      "answer_key_page": 905,
+      "solution_pages": [907, 908],
+      "solution_steps": [
+        "Population above the poverty line in State S = (100 - 19)% of 7 million = 5.67 million.",
+        "Females are 3 / 7 of the population above the poverty line.",
+        "Females above the poverty line = (3 / 7) x 5.67 = 2.43 million."
+      ]
+    },
+    {
+      "exercise": "II",
+      "question_number": 33,
+      "correct_answer": "D",
+      "answer_key_page": 905,
+      "solution_pages": [908],
+      "solution_steps": [
+        "Let the total population of State R be x million; 76% is above the poverty line.",
+        "Males are 2 / 5 of the population above the poverty line, so (2 / 5) x (76 / 100) x x = 1.9.",
+        "Solving gives x = 6.25 million."
+      ]
+    },
+    {
+      "exercise": "II",
+      "question_number": 34,
+      "correct_answer": "D",
+      "answer_key_page": 905,
+      "solution_pages": [908],
+      "solution_steps": [
+        "For State P, female population below the poverty line is 2.1 million and the male-to-female ratio is 5 : 6, so males below = 1.75 million.",
+        "Total below = 3.85 million. Since below-to-above population is 35 : 65, population above = 7.15 million.",
+        "Males are 6 / 13 of the population above, so male population above = (6 / 13) x 7.15 = 3.3 million."
+      ]
+    },
+    {
+      "exercise": "II",
+      "question_number": 35,
+      "correct_answer": "B",
+      "answer_key_page": 905,
+      "solution_pages": [908],
+      "solution_steps": [
+        "For State Q, males below = 2.4 million and the ratio is 3 : 5, so females below = 4 million and total population = 6.4 / 25% = 25.6 million.",
+        "For State T, males below = 6 million and the ratio is 5 : 3, so females below = 3.6 million and total population = 9.6 / 15% = 64 million.",
+        "Required ratio = 25.6 : 64 = 2 : 5."
+      ]
+    }
+  ]
+}

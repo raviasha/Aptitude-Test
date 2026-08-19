@@ -7,7 +7,9 @@
     "association": "question-first-page-local",
     "cross_page_visual": "include-reviewed-association",
     "unmatched_question": "reject-question",
-    "exclude_question_text_from_crop": true
+    "exclude_question_text_from_crop": true,
+    "answer_source": "textbook-answer-key-only",
+    "solution_source": "textbook-solution-only"
   },
   "source_files": {
     "896": "page_896_tabulation.png",
@@ -20,7 +22,9 @@
     "903": "page_903.png",
     "904": "page_904.png",
     "905": "page_905.png",
-    "906": "page_906.png"
+    "906": "page_906.png",
+    "907": "page_907.png",
+    "908": "page_908.png"
   },
   "visuals": [
     {

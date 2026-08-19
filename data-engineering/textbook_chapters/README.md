@@ -46,6 +46,15 @@ Chapter 3 follows the same workflow:
   --output question-banks\ch03_decimal_fractions_complete.zip
 ```
 
+Chapter 4 uses the same question-first workflow, including reviewed shared
+directions and solution boundaries:
+
+```powershell
+& $python data-engineering\textbook_chapters\build.py --source-pdf $pdf `
+  --review data-engineering\textbook_chapters\reviews\chapter-004.json `
+  --output question-banks\ch04_simplification_complete.zip
+```
+
 ## Validate
 
 ```powershell

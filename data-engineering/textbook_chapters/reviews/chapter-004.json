@@ -1,0 +1,413 @@
+{
+  "schema_version": 1,
+  "policy": "question-first-textbook-verified",
+  "chapter": 4,
+  "chapter_name": "Simplification",
+  "section": "Arithmetical Ability",
+  "printed_question_count": 545,
+  "question_pages": [116, 152],
+  "answer_pages": [152, 153],
+  "answer_key_overrides": {"11": "B", "545": "D"},
+  "solution_pages": [153, 188],
+  "vision_reviewed_question_pages": [116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152],
+  "question_marker_overrides": {
+    "544": {"page": 152, "x0": 45.36, "top": 123.54},
+    "545": {"page": 152, "x0": 313.2, "top": 86.37}
+  },
+  "source_only_question_numbers": [94, 544, 545],
+  "allowed_missing_solution_markers": [],
+  "solution_marker_overrides": {},
+  "minimum_solution_page_token_coverage": 0.7,
+  "expected_published_questions": 545,
+  "expected_rejected_questions": 0,
+  "rejections": {},
+  "questions": {
+    "94": {
+      "question_text": "Which among the following is the correct value of (x + a)(x + b)?",
+      "options": {"A": "x^2 + abx + ab", "B": "x^2 - (a + b)x + ab", "C": "x^2 + (a + b)x + ab", "D": "x^2 + (a - b)x + ab"},
+      "solution_steps": ["(x + a)(x + b) = x^2 + ax + bx + ab = x^2 + (a + b)x + ab."],
+      "question_review": "codex-vision-page-121-source-omission-restored",
+      "solution_review": "codex-vision-page-157",
+      "solution_pages": [157]
+    },
+    "137": {
+      "solution_steps": [
+        "Let the cost of one pen be Rs. x. Since one-third of the cost of one pen equals the cost of one pencil, one pencil costs Rs. x/3.",
+        "Then 6x + 3(x/3) = 84, so 7x = 84 and x = 12.",
+        "Therefore, the total cost of 4 pens and 5 pencils is 4x + 5(x/3) = 48 + 20 = Rs. 68."
+      ],
+      "solution_review": "codex-vision-page-160-next-solution-spill-removed",
+      "solution_pages": [160]
+    },
+    "138": {
+      "solution_steps": ["The amount received by each person is Rs. 436,563 / 69 = Rs. 6,327."],
+      "solution_review": "codex-vision-page-160",
+      "solution_pages": [160]
+    },
+    "143": {
+      "question_text": "The sum of the weights of A and B is 80 kg. Half the weight of A equals 5/6 of the weight of B. Find the weight of B.",
+      "solution_steps": ["(1/2)A = (5/6)B, so A = (5/3)B.", "Since A + B = 80, (5/3)B + B = 80, so (8/3)B = 80.", "Therefore, B = 80 x 3 / 8 = 30 kg."],
+      "question_review": "codex-vision-page-124-fractions-restored",
+      "solution_review": "codex-vision-page-160-spill-removed",
+      "solution_pages": [160]
+    },
+    "144": {
+      "question_text": "a is greater than b by 2, and b is greater than c by 10. If a + b + c = 130, what is (b + c) - a?",
+      "solution_steps": ["a = b + 2, so b = a - 2. Also, b = c + 10, so c = a - 12.", "Then a + (a - 2) + (a - 12) = 130, which gives 3a = 144 and a = 48.", "Therefore, (b + c) - a = (a - 2 + a - 12) - a = a - 14 = 34."],
+      "question_review": "codex-vision-page-124-text-restored",
+      "solution_review": "codex-vision-page-160",
+      "solution_pages": [160]
+    },
+    "226": {
+      "solution_steps": ["Among the given numbers, only 60489 is a multiple of 423."],
+      "solution_review": "codex-vision-page-165-next-solution-spill-removed",
+      "solution_pages": [165]
+    },
+    "227": {
+      "question_text": "A candidate was asked to find 7/8 of a positive number, but found 7/18 of it by mistake. If his answer was 770 less than the correct one, what was the original number?",
+      "solution_steps": ["Let the original number be x. Then (7/8)x - (7/18)x = 770.", "Thus, (63x - 28x)/72 = 770, so 35x/72 = 770.", "Therefore, x = 770 x 72 / 35 = 1584."],
+      "question_review": "codex-vision-fractions-restored",
+      "solution_review": "codex-vision-page-165",
+      "solution_pages": [165]
+    },
+    "253": {
+      "question_text": "If a fraction is multiplied by itself and the product is divided by its reciprocal, the result is 512/27. What is the original fraction?",
+      "options": {"A": "8/27", "B": "11/3", "C": "2 2/3", "D": "None of these"},
+      "solution_steps": ["Let the fraction be a/b. Then (a/b x a/b) / (b/a) = 512/27.", "Thus, (a/b)^3 = (8/3)^3, so a/b = 8/3 = 2 2/3."],
+      "question_review": "codex-vision-fractions-restored",
+      "solution_review": "codex-vision-page-167-spill-removed",
+      "solution_pages": [167]
+    },
+    "254": {
+      "solution_steps": ["The maximum internal-assessment score is (47/50) x 10 = 9.4.", "The minimum internal-assessment score is (14/50) x 10 = 2.8.", "Therefore, the required difference is 9.4 - 2.8 = 6.6."],
+      "solution_review": "codex-vision-page-167",
+      "solution_pages": [167]
+    },
+    "311": {
+      "question_text": "Apply these textbook steps to 6: Step I: multiply the number by 3 and add the square of the number. Step II: divide the Step I result by 5 and add 6. Step III: divide the Step II result by 3 and square the resulting number.",
+      "question_review": "codex-vision-page-136-shared-directions-restored",
+      "solution_pages": [171]
+    },
+    "312": {
+      "question_text": "Apply these textbook steps to 2.5: Step I: multiply the number by 3 and add the square of the number. Step II: divide the Step I result by 5 and add 6. Step III: divide the Step II result by 3 and square the resulting number.",
+      "question_review": "codex-vision-page-136-shared-directions-restored",
+      "solution_pages": [171]
+    },
+    "313": {
+      "question_text": "Apply these textbook steps to 5: Step I: multiply the number by 3 and add the square of the number. Step II: divide the Step I result by 5 and add 6. Step III: divide the Step II result by 3 and square the resulting number.",
+      "question_review": "codex-vision-page-136-shared-directions-restored",
+      "solution_pages": [171]
+    },
+    "422": {
+      "solution_steps": ["336/x = 192/400.", "Therefore, x = 336 x 400 / 192 = 700."],
+      "solution_review": "codex-vision-page-177-spill-removed",
+      "solution_pages": [177]
+    },
+    "423": {
+      "solution_steps": ["The maximum internal-assessment score is (47/50) x 10 = 9.4.", "The minimum internal-assessment score is (14/50) x 10 = 2.8.", "Therefore, the required difference is 9.4 - 2.8 = 6.6."],
+      "solution_review": "codex-vision-page-178",
+      "solution_pages": [178]
+    },
+    "450": {
+      "solution_steps": [
+        "The minimum required starting set is one 2-rupee coin, two 50-paise coins and two 25-paise coins, worth Rs. (2 + 2 x 0.50 + 2 x 0.25) = Rs. 3.50.",
+        "The remaining amount is Rs. 25 - Rs. 3.50 = Rs. 21.50.",
+        "To minimize the number of additional coins, use ten 2-rupee coins and three 50-paise coins, which are 13 more coins.",
+        "Therefore, the minimum number of coins is (1 + 2 + 2) + 13 = 18."
+      ],
+      "solution_review": "codex-vision-page-179-following-group-setup-removed",
+      "solution_pages": [179]
+    },
+    "451": {
+      "question_text": "Based on the following textbook information: 85 children went to an amusement park with merry-go-round, roller coaster and Ferris wheel rides. Of them, 20 took all three rides and 55 took at least two rides. Each ride cost Re. 1, and the total receipt was Rs. 145. How many children took exactly one ride?",
+      "solution_steps": [
+        "Let a + b + c be the number of children who took exactly one ride, and let x + y + z be the number who took exactly two rides. The number who took all three rides is 20.",
+        "Since 55 children took at least two rides, x + y + z + 20 = 55, so x + y + z = 35.",
+        "The total receipt gives (a + b + c) + 2(x + y + z) + 3 x 20 = 145.",
+        "Thus, a + b + c + 2 x 35 + 60 = 145, so a + b + c = 15. Therefore, 15 children took exactly one ride."
+      ],
+      "question_review": "codex-vision-page-144-shared-directions-restored",
+      "solution_review": "codex-vision-page-179-shared-setup-attached",
+      "solution_pages": [179]
+    },
+    "452": {
+      "question_text": "Based on the following textbook information: 85 children went to an amusement park with merry-go-round, roller coaster and Ferris wheel rides. Of them, 20 took all three rides and 55 took at least two rides. Each ride cost Re. 1, and the total receipt was Rs. 145. How many children did not try any of the rides?",
+      "solution_steps": [
+        "Let a + b + c be the number of children who took exactly one ride, and let x + y + z be the number who took exactly two rides. The number who took all three rides is 20.",
+        "Since 55 children took at least two rides, x + y + z + 20 = 55, so x + y + z = 35.",
+        "The receipt equation is (a + b + c) + 2(x + y + z) + 3 x 20 = 145, which gives a + b + c = 15.",
+        "Therefore, the number who did not try any ride is 85 - (15 + 35 + 20) = 15."
+      ],
+      "question_review": "codex-vision-page-144-shared-directions-restored",
+      "solution_review": "codex-vision-page-179-shared-setup-attached",
+      "solution_pages": [179]
+    },
+    "461": {
+      "solution_steps": [
+        "Let a, b and c represent aliens having only two noses, only three legs and only four ears; d, e and f the pairwise overlaps; and g all three features.",
+        "From the textbook Venn equations: a + d + e + g = 40, b + d + f + g = 30, c + e + f + g = 20, d + g = 10, f + g = 12, e + g = 5, and g = 3.",
+        "Hence d = 7, e = 2, f = 9, c = 6, b = 11 and a = 28.",
+        "The number with one or more unusual features is 28 + 11 + 6 + 7 + 2 + 9 + 3 = 66.",
+        "Therefore, the number without any unusual feature is 100 - 66 = 34."
+      ],
+      "solution_review": "codex-vision-pages-180-181-following-group-setup-removed",
+      "solution_pages": [180, 181]
+    },
+    "462": {
+      "question_text": "Based on the following textbook information: children in a class play one, two or all three of badminton, football and cricket. Only cricket: 5; only football: 8; only badminton: 7; badminton and football only: 3; cricket and football only: 4; badminton and cricket only: 4; all three: 2. How many children play football as well as cricket?",
+      "solution_steps": [
+        "In the textbook Venn regions, football-and-cricket only is 4 and all three games is 2.",
+        "Therefore, the required number is 4 + 2 = 6."
+      ],
+      "question_review": "codex-vision-page-145-shared-directions-restored",
+      "solution_review": "codex-vision-page-181-shared-setup-attached",
+      "solution_pages": [181]
+    },
+    "463": {
+      "question_text": "Based on the following textbook information: children in a class play one, two or all three of badminton, football and cricket. Only cricket: 5; only football: 8; only badminton: 7; badminton and football only: 3; cricket and football only: 4; badminton and cricket only: 4; all three: 2. In all, how many children play badminton?",
+      "solution_steps": [
+        "The badminton regions are: only badminton 7, badminton-and-football only 3, badminton-and-cricket only 4, and all three 2.",
+        "Therefore, the required number is 7 + 3 + 4 + 2 = 16."
+      ],
+      "question_review": "codex-vision-page-145-shared-directions-restored",
+      "solution_review": "codex-vision-page-181-shared-setup-attached",
+      "solution_pages": [181]
+    },
+    "464": {
+      "question_text": "Based on the following textbook information: children in a class play one, two or all three of badminton, football and cricket. Only cricket: 5; only football: 8; only badminton: 7; badminton and football only: 3; cricket and football only: 4; badminton and cricket only: 4; all three: 2. In all, how many children play football?",
+      "solution_steps": [
+        "The football regions are: only football 8, badminton-and-football only 3, cricket-and-football only 4, and all three 2.",
+        "Therefore, the required number is 8 + 3 + 4 + 2 = 17."
+      ],
+      "question_review": "codex-vision-page-145-shared-directions-restored",
+      "solution_review": "codex-vision-page-181-shared-setup-attached",
+      "solution_pages": [181]
+    },
+    "465": {
+      "question_text": "Based on the following textbook information: children in a class play one, two or all three of badminton, football and cricket. Only cricket: 5; only football: 8; only badminton: 7; badminton and football only: 3; cricket and football only: 4; badminton and cricket only: 4; all three: 2. How many children play badminton as well as cricket?",
+      "solution_steps": [
+        "In the textbook Venn regions, badminton-and-cricket only is 4 and all three games is 2.",
+        "Therefore, the required number is 4 + 2 = 6."
+      ],
+      "question_review": "codex-vision-page-145-shared-directions-restored",
+      "solution_review": "codex-vision-page-181-shared-setup-attached",
+      "solution_pages": [181]
+    },
+    "466": {
+      "question_text": "Based on the following textbook information: children in a class play one, two or all three of badminton, football and cricket. Only cricket: 5; only football: 8; only badminton: 7; badminton and football only: 3; cricket and football only: 4; badminton and cricket only: 4; all three: 2. How many children are there in the class?",
+      "solution_steps": [
+        "Add all seven disjoint textbook Venn regions: 7 + 8 + 5 + 3 + 4 + 4 + 2.",
+        "Therefore, the total number of children is 33."
+      ],
+      "question_review": "codex-vision-page-145-shared-directions-restored",
+      "solution_review": "codex-vision-page-181-shared-setup-attached",
+      "solution_pages": [181]
+    },
+    "470": {
+      "solution_steps": [
+        "Using the textbook Venn regions, a + b + c + d + e = 18, a + d = 10, b + d + e = 8, c + e = 6, and d = 5.",
+        "Adding a + d = 10 and c + e = 6 and subtracting from the total gives b = 18 - 16 = 2.",
+        "Then b + d + e = 8 gives e = 8 - (2 + 5) = 1.",
+        "Therefore, 1 member takes both tea and coffee."
+      ],
+      "solution_review": "codex-vision-page-181-following-group-setup-removed",
+      "solution_pages": [181]
+    },
+    "471": {
+      "question_text": "Based on the following textbook information: a teachers' colony has 2800 members. Only English: 650; only Hindi: 550; only Marathi: 450; all three newspapers: 100; Hindi and English: 200; Hindi and Marathi: 400; English and Marathi: 300. Find the number of members reading Hindi newspaper.",
+      "solution_steps": [
+        "In the textbook Venn setup, only Hindi is 550 and all three is 100. Hindi-and-English only is 200 - 100 = 100, and Hindi-and-Marathi only is 400 - 100 = 300.",
+        "Therefore, the number reading Hindi is 550 + 100 + 300 + 100 = 1050."
+      ],
+      "question_review": "codex-vision-page-146-shared-directions-restored",
+      "solution_review": "codex-vision-pages-181-182-shared-setup-attached",
+      "solution_pages": [181, 182]
+    },
+    "472": {
+      "question_text": "Based on the following textbook information: a teachers' colony has 2800 members. Only English: 650; only Hindi: 550; only Marathi: 450; all three newspapers: 100; Hindi and English: 200; Hindi and Marathi: 400; English and Marathi: 300. How many members read only one newspaper?",
+      "solution_steps": ["The members reading only one newspaper total 650 + 550 + 450 = 1650."],
+      "question_review": "codex-vision-page-146-shared-directions-restored",
+      "solution_review": "codex-vision-page-182-shared-setup-attached",
+      "solution_pages": [182]
+    },
+    "473": {
+      "question_text": "Based on the following textbook information: a teachers' colony has 2800 members. Only English: 650; only Hindi: 550; only Marathi: 450; all three newspapers: 100; Hindi and English: 200; Hindi and Marathi: 400; English and Marathi: 300. Find the number of members reading no newspaper.",
+      "solution_steps": [
+        "The pairwise-only textbook Venn regions are 200 - 100 = 100, 400 - 100 = 300, and 300 - 100 = 200.",
+        "The number reading at least one newspaper is 650 + 550 + 450 + 100 + 200 + 300 + 100 = 2350.",
+        "Therefore, the number reading no newspaper is 2800 - 2350 = 450."
+      ],
+      "question_review": "codex-vision-page-146-shared-directions-restored",
+      "solution_review": "codex-vision-page-182-shared-setup-attached",
+      "solution_pages": [182]
+    },
+    "474": {
+      "question_text": "Based on the following textbook information: a teachers' colony has 2800 members. Only English: 650; only Hindi: 550; only Marathi: 450; all three newspapers: 100; Hindi and English: 200; Hindi and Marathi: 400; English and Marathi: 300. How many members read at least two newspapers?",
+      "solution_steps": [
+        "The pairwise-only textbook Venn regions are 200 - 100 = 100, 400 - 100 = 300, and 300 - 100 = 200; the all-three region is 100.",
+        "Therefore, the number reading at least two newspapers is 100 + 300 + 200 + 100 = 700."
+      ],
+      "question_review": "codex-vision-page-146-shared-directions-restored",
+      "solution_review": "codex-vision-page-182-shared-setup-attached",
+      "solution_pages": [182]
+    },
+    "475": {
+      "question_text": "Based on the following textbook information: a teachers' colony has 2800 members. Only English: 650; only Hindi: 550; only Marathi: 450; all three newspapers: 100; Hindi and English: 200; Hindi and Marathi: 400; English and Marathi: 300. Find the difference between members reading English and Marathi and members reading English and Hindi.",
+      "solution_steps": ["The required difference is 300 - 200 = 100."],
+      "question_review": "codex-vision-page-146-shared-directions-restored",
+      "solution_review": "codex-vision-page-182-shared-setup-attached",
+      "solution_pages": [182]
+    },
+    "504": {
+      "solution_steps": [
+        "Let g be the initial grass, r the daily grass growth, and c the amount one cow eats per day.",
+        "Then g + 24r = 70 x 24c = 1680c and g + 60r = 30 x 60c = 1800c.",
+        "Subtracting gives 36r = 120c, so r = 10c/3. Substitution gives g = 1600c.",
+        "For x cows to finish in 96 days, g + 96r = 96xc.",
+        "Thus 1600c + 96(10c/3) = 96xc, so 1920c = 96xc and x = 20."
+      ],
+      "solution_review": "codex-vision-page-184-following-group-setup-removed",
+      "solution_pages": [184]
+    },
+    "505": {
+      "question_text": "Based on the following textbook information: a holy city has 10 shrines and an unknown number of lakes. Each shrine was visited by exactly 4 pilgrims and each lake by exactly 6 pilgrims. Each pilgrim visited exactly 5 shrines and 3 lakes. What is the number of lakes?",
+      "solution_steps": [
+        "Let the number of pilgrims be x. Total shrine visits are 10 x 4 = 40, and each pilgrim made 5 shrine visits, so 5x = 40 and x = 8.",
+        "Let the number of lakes be n. Total lake visits are 6n, while 8 pilgrims made 3 lake visits each, so 6n = 8 x 3 = 24.",
+        "Therefore, n = 4 lakes."
+      ],
+      "question_review": "codex-vision-page-149-shared-directions-restored",
+      "solution_review": "codex-vision-page-184-shared-setup-attached",
+      "solution_pages": [184]
+    },
+    "506": {
+      "question_text": "Based on the following textbook information: a holy city has 10 shrines and an unknown number of lakes. Each shrine was visited by exactly 4 pilgrims and each lake by exactly 6 pilgrims. Each pilgrim visited exactly 5 shrines and 3 lakes. What is the number of pilgrims?",
+      "solution_steps": [
+        "Let the number of pilgrims be x. Total shrine visits are 10 x 4 = 40.",
+        "Each pilgrim made 5 shrine visits, so 5x = 40 and x = 8.",
+        "Therefore, there were 8 pilgrims."
+      ],
+      "question_review": "codex-vision-page-149-shared-directions-restored",
+      "solution_review": "codex-vision-page-184-shared-setup-attached",
+      "solution_pages": [184]
+    },
+    "510": {
+      "solution_steps": [
+        "Let x be the number of gel pens and y the number of fountain pens. Then 300x + 400y = 3600, so 3x + 4y = 36.",
+        "Swapping the quantities would save Rs. 150 or Rs. 200, so y - x = 1.5 or y - x = 2. The first case does not give integral values.",
+        "Using y - x = 2 with 3x + 4y = 36 gives x = 4 and y = 6.",
+        "Therefore, the total number of pens bought is 4 + 6 = 10."
+      ],
+      "solution_review": "codex-vision-page-185-following-group-setup-removed",
+      "solution_pages": [185]
+    },
+    "511": {
+      "question_text": "Based on the following textbook information: Roopa starts with x flowers and visits four places of worship. Before each visit she dips the remaining flowers in a river, doubling them, and then offers y flowers. After the fourth offering she has no flowers left. If x = 30, how many flowers does she offer to each deity?",
+      "solution_steps": [
+        "The flowers left after the four places are successively 2x - y, 4x - 3y, 8x - 7y, and 16x - 15y.",
+        "Since none remain, 16x - 15y = 0, so 16x = 15y.",
+        "For x = 30, y = 16 x 30 / 15 = 32."
+      ],
+      "question_review": "codex-vision-page-149-shared-directions-restored",
+      "solution_review": "codex-vision-page-185-shared-setup-attached",
+      "solution_pages": [185]
+    },
+    "512": {
+      "question_text": "Based on the following textbook information: Roopa starts with x flowers and visits four places of worship. Before each visit she dips the remaining flowers in a river, doubling them, and then offers y flowers. After the fourth offering she has no flowers left. What is the minimum number of flowers that could be offered to each deity?",
+      "solution_steps": [
+        "The flowers left after the four places are successively 2x - y, 4x - 3y, 8x - 7y, and 16x - 15y.",
+        "Since none remain, 16x = 15y.",
+        "For the minimum positive integral values, use LCM(16, 15) = 240, giving x = 15 and y = 16.",
+        "Therefore, the minimum number offered to each deity is 16."
+      ],
+      "question_review": "codex-vision-page-149-shared-directions-restored",
+      "solution_review": "codex-vision-page-185-shared-setup-attached",
+      "solution_pages": [185]
+    },
+    "513": {
+      "question_text": "Based on the following textbook information: Roopa starts with x flowers and visits four places of worship. Before each visit she dips the remaining flowers in a river, doubling them, and then offers y flowers. After the fourth offering she has no flowers left. What is the minimum number of flowers with which she could leave home?",
+      "solution_steps": [
+        "The flowers left after the four places are successively 2x - y, 4x - 3y, 8x - 7y, and 16x - 15y.",
+        "Since none remain, 16x = 15y.",
+        "The minimum positive integral solution is obtained from LCM(16, 15) = 240, giving x = 15 and y = 16.",
+        "Therefore, the minimum starting number of flowers is 15."
+      ],
+      "question_review": "codex-vision-page-149-shared-directions-restored",
+      "solution_review": "codex-vision-page-185-shared-setup-attached",
+      "solution_pages": [185]
+    },
+    "518": {
+      "solution_steps": [
+        "Let there be n rows in the equilateral triangle. The initial number of balls is n(n + 1)/2.",
+        "In the square, each side has n - 8 balls, so n(n + 1)/2 + 669 = (n - 8)^2.",
+        "This gives n^2 - 33n - 1210 = 0 = (n - 55)(n + 22), hence n = 55.",
+        "Therefore, the initial number of balls is 55 x 56 / 2 = 1540."
+      ],
+      "solution_review": "codex-vision-pages-185-186-following-group-setup-removed",
+      "solution_pages": [185, 186]
+    },
+    "519": {
+      "question_text": "Based on the following textbook information: a group of men shifted 545 crates in 5 days. Each day after the first, 6 more men worked than on the previous day, while each man shifted 5 fewer crates than on the previous day. How many crates were shifted on the third day?",
+      "solution_steps": [
+        "Let m be the initial number of men and c the crates shifted by each man on the first day.",
+        "The five-day total is mc + (m + 6)(c - 5) + (m + 12)(c - 10) + (m + 18)(c - 15) + (m + 24)(c - 20) = 545.",
+        "This simplifies to m(c - 10) = 289 - 12c, so m = (289 - 12c)/(c - 10). Since c > 20 and m is a positive integer, the textbook checks c = 21, 22 and 23, giving c = 23 and m = 1.",
+        "The third-day total is (m + 12)(c - 10) = (1 + 12)(23 - 10) = 13 x 13 = 169."
+      ],
+      "question_review": "codex-vision-page-150-shared-directions-restored",
+      "solution_review": "codex-vision-pages-185-186-shared-setup-attached",
+      "solution_pages": [185, 186]
+    },
+    "520": {
+      "question_text": "Based on the following textbook information: a group of men shifted 545 crates in 5 days. Each day after the first, 6 more men worked than on the previous day, while each man shifted 5 fewer crates than on the previous day. How many men worked on the fifth day?",
+      "solution_steps": [
+        "Let m be the initial number of men and c the crates shifted by each man on the first day.",
+        "The five-day total simplifies to m(c - 10) = 289 - 12c. Requiring c > 20 and m to be a positive integer gives c = 23 and m = 1.",
+        "Therefore, the number of men on the fifth day is m + 24 = 25, so the listed answer is None of these."
+      ],
+      "question_review": "codex-vision-page-150-shared-directions-restored",
+      "solution_review": "codex-vision-pages-185-186-shared-setup-attached",
+      "solution_pages": [185, 186]
+    },
+    "528": {
+      "question_text": "Find the approximate value replacing ?: 1559.95 - 7.99 x 24.96 - ?^2 = 1154. The textbook states that an exact calculation is not expected.",
+      "question_review": "codex-vision-pages-150-151-direction-restored",
+      "solution_pages": [186, 187]
+    },
+    "532": {
+      "question_text": "Find the approximate value replacing ? in 421 / 35 x 299.97 / 25.05 = ?^2. The textbook states that an exact calculation is not expected.",
+      "question_review": "codex-vision-page-151-shared-directions-restored",
+      "solution_pages": [187]
+    },
+    "533": {
+      "question_text": "Find the approximate value replacing ? in 19.99 x 15.98 + 224.98 + 125.02. The textbook states that an exact calculation is not expected.",
+      "question_review": "codex-vision-page-151-shared-directions-restored",
+      "solution_pages": [187]
+    },
+    "543": {
+      "question_text": "What is the remainder when 4^96 is divided by 6?",
+      "solution_steps": ["The textbook notes the repeating terminal pattern of powers of 4 and writes 4^96 = (4^2)^48.", "Using the corresponding value 16, division by 6 leaves a remainder of 4."],
+      "question_review": "codex-vision-page-151-exponent-restored",
+      "solution_review": "codex-vision-page-188",
+      "solution_pages": [188]
+    },
+    "544": {
+      "question_text": "If + is changed to /, - to x, / to -, and x to +, solve 67 x 119 + 17 - 27 / 259.",
+      "options": {"A": "-13", "B": "-3", "C": "4", "D": "7"},
+      "solution_steps": ["After applying the stated symbol changes, the expression becomes 67 + 119 / 17 x 27 - 259.", "This is 67 + 7 x 27 - 259 = 256 - 259 = -3."],
+      "question_review": "codex-vision-page-152-source-omission-restored",
+      "solution_review": "codex-vision-page-188",
+      "solution_pages": [188]
+    },
+    "545": {
+      "question_text": "Solve [(0.73)^3 + (0.27)^3] / [(0.73)^2 + (0.27)^2 - 0.73 x 0.27].",
+      "options": {"A": "0.27", "B": "0.4087", "C": "0.73", "D": "1"},
+      "solution_steps": ["Let a = 0.73 and b = 0.27.", "Using a^3 + b^3 = (a + b)(a^2 + b^2 - ab), the expression reduces to a + b.", "Therefore, 0.73 + 0.27 = 1."],
+      "answer_review": "printed-key-says-A-but-numbered-textbook-solution-page-188-evaluates-to-option-D",
+      "answer_source_pages": [153, 188],
+      "question_review": "codex-vision-page-152-source-omission-restored",
+      "solution_review": "codex-vision-page-188",
+      "solution_pages": [188]
+    }
+  }
+}

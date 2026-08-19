@@ -47,7 +47,11 @@ def _marker_candidates(
     with pdfplumber.open(pdf_path) as document:
         for page_number in pages:
             words = document.pages[page_number - 1].extract_words(extra_attrs=["size"])
-            answer_tops = [float(word["top"]) for word in words if word["text"].upper() == "ANSWERS"]
+            answer_tops = [
+                float(word["top"])
+                for word in words
+                if word["text"].upper() == "ANSWERS" and float(word["size"]) >= 11.5
+            ]
             cutoff = min(answer_tops) if stop_at_answers and answer_tops else float("inf")
             page_candidates: list[tuple[int, int, float, float]] = []
             for word in words:
@@ -101,7 +105,11 @@ def question_markers(pdf_path: Path, review: dict[str, Any]) -> dict[int, tuple[
         maximum_size=11.5,
         stop_at_answers=True,
     )
-    return _select_markers(candidates, int(review["printed_question_count"]))
+    overrides = {
+        int(number): (int(value["page"]), float(value["x0"]), float(value["top"]))
+        for number, value in review.get("question_marker_overrides", {}).items()
+    }
+    return _select_markers(candidates, int(review["printed_question_count"]), overrides=overrides)
 
 
 def solution_markers(pdf_path: Path, review: dict[str, Any]) -> dict[int, tuple[int, float, float]]:
@@ -126,13 +134,19 @@ def solution_markers(pdf_path: Path, review: dict[str, Any]) -> dict[int, tuple[
     )
 
 
-def parse_answer_key(pdf_path: Path, answer_pages: list[int], total: int) -> dict[int, str]:
+def parse_answer_key(
+    pdf_path: Path,
+    answer_pages: list[int],
+    total: int,
+    overrides: dict[int, str] | None = None,
+) -> dict[int, str]:
     reader = PdfReader(str(pdf_path))
     text = "\n".join(reader.pages[page - 1].extract_text() or "" for page in answer_pages)
     answers = {
         int(number): answer.upper()
         for number, answer in re.findall(r"(?<!\d)(\d+)\.\s*\(\s*([a-eA-E])\s*\)", text)
     }
+    answers.update({int(number): str(answer).upper() for number, answer in (overrides or {}).items()})
     expected = set(range(1, total + 1))
     if set(answers) != expected:
         raise ValueError(
@@ -252,7 +266,12 @@ def build_package(
     aligned = align_raw_records(raw_records, total, source_only_numbers)
     questions = question_markers(pdf_path, review)
     solutions = solution_markers(pdf_path, review)
-    answers = parse_answer_key(pdf_path, [int(page) for page in review["answer_pages"]], total)
+    answers = parse_answer_key(
+        pdf_path,
+        [int(page) for page in review["answer_pages"]],
+        total,
+        overrides={int(number): str(answer) for number, answer in review.get("answer_key_overrides", {}).items()},
+    )
     rejected_config = {int(number): value for number, value in review.get("rejections", {}).items()}
     reviewed_entries = {int(number): value for number, value in review.get("questions", {}).items()}
     reader = PdfReader(str(pdf_path))
@@ -302,6 +321,7 @@ def build_package(
 
         key = f"ch{chapter_number:02d}-q{number:04d}"
         steps = [step.strip() for step in steps]
+        answer_review = entry.get("answer_review")
         record.update({
             "key": key,
             "chapter": chapter_name,
@@ -314,9 +334,17 @@ def build_package(
             "source_page_id": f"textbook-page-{question_page}",
             "source_question_number": number,
             "answer_source": {
-                "policy": "textbook-answer-key-only",
-                "source_pages": [int(page) for page in review["answer_pages"]],
+                "policy": (
+                    "textbook-numbered-solution-reviewed-override"
+                    if answer_review
+                    else "textbook-answer-key-only"
+                ),
+                "source_pages": [
+                    int(page)
+                    for page in entry.get("answer_source_pages", review["answer_pages"])
+                ],
                 "source_question_number": number,
+                **({"review": answer_review} if answer_review else {}),
             },
             "solution_source": {
                 "policy": "textbook-numbered-solution-only",

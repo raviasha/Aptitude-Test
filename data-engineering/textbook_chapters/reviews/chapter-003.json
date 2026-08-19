@@ -1,0 +1,125 @@
+{
+  "schema_version": 1,
+  "policy": "question-first-textbook-verified",
+  "chapter": 3,
+  "chapter_name": "Decimal Fractions",
+  "section": "Arithmetical Ability",
+  "printed_question_count": 206,
+  "question_pages": [83, 93],
+  "answer_pages": [94],
+  "solution_pages": [94, 103],
+  "vision_reviewed_question_pages": [83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93],
+  "source_only_question_numbers": [],
+  "allowed_missing_solution_markers": [],
+  "solution_marker_overrides": {
+    "28": {"page": 96, "x0": 138.8, "top": 287.8},
+    "29": {"page": 96, "x0": 230.8, "top": 287.8},
+    "31": {"page": 96, "x0": 139.0, "top": 359.0},
+    "32": {"page": 96, "x0": 231.0, "top": 359.0},
+    "34": {"page": 96, "x0": 231.0, "top": 435.3}
+  },
+  "minimum_solution_page_token_coverage": 0.7,
+  "expected_published_questions": 206,
+  "expected_rejected_questions": 0,
+  "rejections": {},
+  "questions": {
+    "8": {
+      "solution_steps": ["0.1 = 10 x 0.01, so 0.1 is 10 times 0.01."],
+      "solution_review": "codex-vision-page-95-spill-removed",
+      "solution_pages": [95]
+    },
+    "27": {
+      "solution_steps": ["0.3 + 3 + 3.33 + 3.3 + 3.03 + 333 = 345.96.", "Since 345.96 is not listed, the answer is None of these."],
+      "solution_review": "codex-vision-page-96-spill-removed",
+      "solution_pages": [96]
+    },
+    "28": {
+      "solution_steps": ["636.66 + 366.36 + 363.33 = 1366.35."],
+      "solution_review": "codex-vision-page-96",
+      "solution_pages": [96]
+    },
+    "29": {
+      "solution_steps": ["24.424 + 5.656 + 1.131 + 0.089 = 31.300, which is 31.3."],
+      "solution_review": "codex-vision-page-96",
+      "solution_pages": [96]
+    },
+    "31": {
+      "solution_steps": ["4 + 4.44 + 0.4 + 44.04 + 444 = 496.88."],
+      "solution_review": "codex-vision-page-96",
+      "solution_pages": [96]
+    },
+    "32": {
+      "solution_steps": ["999.99 + 99.99 + 9.99 = 1109.97.", "Since 1109.97 is not among the listed values, the answer is None of these."],
+      "solution_review": "codex-vision-page-96",
+      "solution_pages": [96]
+    },
+    "34": {
+      "solution_steps": ["48.95 - 32.006 = 16.944."],
+      "solution_review": "codex-vision-page-96",
+      "solution_pages": [96]
+    },
+    "67": {
+      "solution_steps": ["4.4 x 5.8 x 11.5 - 141.27 = 293.48 - 141.27 = 152.21."],
+      "solution_review": "codex-vision-page-97-spill-removed",
+      "solution_pages": [97]
+    },
+    "68": {
+      "question_text": "Consider the following quotients: 1. 368.39 divided by 17; 2. 170.50 divided by 62; 3. 875.65 divided by 83. Their correct sequence in decreasing order is:",
+      "solution_steps": [
+        "36839 / 17 = 2167. Since the dividend contains 2 decimal places, 368.39 / 17 = 21.67.",
+        "17050 / 62 = 275. Since the dividend contains 2 decimal places, 170.50 / 62 = 2.75.",
+        "87565 / 83 = 1055. Since the dividend contains 2 decimal places, 875.65 / 83 = 10.55.",
+        "Since 21.67 > 10.55 > 2.75, the decreasing order is 1, 3, 2."
+      ],
+      "question_review": "codex-vision-page-87-text-restored",
+      "solution_review": "codex-vision-page-97",
+      "solution_pages": [97]
+    },
+    "194": {
+      "question_text": "Solve 1576 / 45.02 + 23.99 x sqrt(255).",
+      "solution_steps": ["Using the textbook approximations, 1576 / 45.02 + 23.99 x sqrt(255) is approximately 1575 / 45 + 24 x sqrt(256).", "This is 35 + 24 x 16 = 419, whose closest listed value is 420."],
+      "question_review": "codex-vision-page-93-root-restored",
+      "solution_review": "codex-vision-page-102-closest-option-clarified",
+      "solution_pages": [102]
+    },
+    "200": {
+      "question_text": "Which of the following fractions is the largest: 3/2, 7/3, 5/4, or 7/2?",
+      "options": {"A": "7/3", "B": "5/4", "C": "7/2", "D": "3/2"},
+      "question_review": "codex-vision-page-93-fractions-restored"
+    },
+    "201": {
+      "question_text": "Solve ?/529 = 329/?.",
+      "question_review": "codex-vision-page-93-equation-restored"
+    },
+    "202": {
+      "question_text": "The numerator of a fraction is decreased by 25% and the denominator is increased by 250%. If the resultant fraction is 6/5, what is the original fraction?",
+      "options": {"A": "22/5", "B": "24/5", "C": "27/6", "D": "28/5", "E": "30/11"},
+      "question_review": "codex-vision-page-93-fractions-restored"
+    },
+    "204": {
+      "question_text": "Solve (18/4)^2 x (455/19) / (61/799).",
+      "question_review": "codex-vision-page-93-equation-restored"
+    },
+    "205": {
+      "question_text": "5/9 of a first number equals 25% of a second number. The second number is 1/4 of a third number, and the third number is 2960. What is 30% of the first number?",
+      "solution_steps": ["The second number is 1/4 x 2960 = 740.", "5/9 of the first number is 25% of 740, which is 185.", "Therefore, the first number is 185 x 9/5 = 333.", "Thus, 30% of 333 = 99.9."],
+      "question_review": "codex-vision-page-93-fractions-restored",
+      "solution_review": "codex-vision-page-103-decimal-restored",
+      "solution_pages": [103]
+    },
+    "206": {
+      "question_text": "Solve 7 1/2 - [2 1/4 / {1 1/4 - 1/2(1 1/2 - 1/3 - 1/6)}].",
+      "options": {"A": "2/9", "B": "4 1/2", "C": "9 1/2", "D": "1 77/228"},
+      "solution_steps": [
+        "Rewrite the expression as 15/2 - [9/4 / {5/4 - 1/2(3/2 - 1/3 - 1/6)}].",
+        "Inside the parentheses, 3/2 - 1/3 - 1/6 = (9 - 2 - 1)/6 = 1.",
+        "The braces therefore equal 5/4 - 1/2 = 3/4.",
+        "The square bracket equals 9/4 / (3/4) = 3.",
+        "Therefore, 15/2 - 3 = 9/2 = 4 1/2."
+      ],
+      "question_review": "codex-vision-page-93-text-and-options-restored",
+      "solution_review": "codex-vision-page-103-spill-removed",
+      "solution_pages": [103]
+    }
+  }
+}

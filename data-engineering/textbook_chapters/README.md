@@ -38,6 +38,14 @@ Chapter 2 uses the same builder with its own review ledger:
   --output question-banks\ch02_hcf_lcm_complete.zip
 ```
 
+Chapter 3 follows the same workflow:
+
+```powershell
+& $python data-engineering\textbook_chapters\build.py --source-pdf $pdf `
+  --review data-engineering\textbook_chapters\reviews\chapter-003.json `
+  --output question-banks\ch03_decimal_fractions_complete.zip
+```
+
 ## Validate
 
 ```powershell

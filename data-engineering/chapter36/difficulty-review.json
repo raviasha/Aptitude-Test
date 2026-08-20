@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "policy": "reasoning-load-reviewed-v1",
+  "rubric": {
+    "Easy": "Direct lookup or a short calculation with no chained inference.",
+    "Medium": "Several comparisons, aggregations, or linked calculation steps.",
+    "Hard": "Multi-condition reasoning or long chained reverse calculations."
+  },
+  "overrides": {
+    "ch36-q0002": "Easy",
+    "ch36-q0005": "Medium",
+    "ch36-q0009": "Easy",
+    "ch36-q0015": "Easy",
+    "ch36-q0019": "Medium",
+    "ch36-ex2-q0002": "Easy",
+    "ch36-ex2-q0008": "Easy",
+    "ch36-ex2-q0011": "Easy",
+    "ch36-ex2-q0012": "Easy",
+    "ch36-ex2-q0013": "Medium",
+    "ch36-ex3-q0011": "Medium",
+    "ch36-ex3-q0013": "Easy",
+    "ch36-ex5-q0021": "Medium",
+    "ch36-ex5-q0025": "Medium",
+    "ch36-ex6-q0029": "Easy",
+    "ch36-ex6-q0030": "Hard",
+    "ch36-ex6-q0031": "Hard",
+    "ch36-ex7-q0034": "Hard",
+    "ch36-ex7-q0035": "Hard"
+  }
+}

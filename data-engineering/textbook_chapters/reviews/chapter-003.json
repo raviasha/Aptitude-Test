@@ -19,8 +19,8 @@
     "34": {"page": 96, "x0": 231.0, "top": 435.3}
   },
   "minimum_solution_page_token_coverage": 0.7,
-  "expected_published_questions": 206,
-  "expected_rejected_questions": 0,
+  "expected_published_questions": 90,
+  "expected_rejected_questions": 116,
   "rejections": {},
   "questions": {
     "8": {

@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import re
+import unicodedata
 import zipfile
 from copy import deepcopy
 from pathlib import Path
@@ -17,6 +18,102 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_SOURCE_BANK = PROJECT_ROOT / "question-banks" / "quantitative_aptitude_complete_extended.json"
 DEFAULT_REVIEW = Path(__file__).with_name("reviews") / "chapter-001.json"
 DEFAULT_OUTPUT = PROJECT_ROOT / "question-banks" / "ch01_number_system_complete.zip"
+
+DIFFICULTY_RUBRIC_VERSION = "reasoning-complexity-v1"
+
+SOLUTION_CRITICAL_RULES = {
+    "replacement_character": re.compile(r"\uFFFD"),
+    "empty_layout_braces": re.compile(r"\{\s*\}"),
+    "repeated_operator_fragment": re.compile(r"(?:\u00D7=|=\u00D7|==|%%|%\s+%|\u00D7\s+\u00D7)"),
+    "detached_digit_array": re.compile(r"(?:\b\d\s+){5,}\d\b"),
+    "concatenated_formula_numbers": re.compile(r"\b\d{4,}\s+\d{4,}\b"),
+}
+
+QUESTION_CRITICAL_RULES = {
+    "replacement_character": re.compile(r"\uFFFD"),
+    "operator_run": re.compile(r"(?:[+\-*/=]\s*){4,}"),
+    "broken_formula_word_order": re.compile(
+        r"then\s+the\s+value\s+of\s+is|value\s+of\s+is\w",
+        re.IGNORECASE,
+    ),
+    "detached_math_array": re.compile(r"(?:\b\d{1,3}\s+){5,}\d{1,3}\b"),
+    "duplicated_variable_artifact": re.compile(r"\bxx\b|\bisxx\b", re.IGNORECASE),
+}
+
+
+def normalize_extracted_text(value: str) -> str:
+    """Repair common UTF-8-as-Windows-1252 extraction artifacts."""
+    for _ in range(2):
+        if not any(marker in value for marker in ("\u00c3", "\u00c2", "\u00e2", "\u00cf")):
+            break
+        repaired = None
+        for encoding in ("cp1252", "latin-1"):
+            try:
+                repaired = value.encode(encoding).decode("utf-8")
+                break
+            except UnicodeError:
+                continue
+        if repaired is None:
+            break
+        value = repaired
+    value = unicodedata.normalize("NFKC", value).replace("\u00a0", " ")
+    value = re.sub(r"[\uE000-\uF8FF]", "", value)
+    return re.sub(r"[ \t]+", " ", value).strip()
+
+
+def normalize_record_text(value: Any) -> Any:
+    if isinstance(value, str):
+        return normalize_extracted_text(value)
+    if isinstance(value, list):
+        return [normalize_record_text(item) for item in value]
+    if isinstance(value, dict):
+        return {key: normalize_record_text(item) for key, item in value.items()}
+    return value
+
+
+def unresolved_layout_issues(record: dict[str, Any]) -> list[str]:
+    """Return deterministic reasons a PDF-derived record is unsafe to publish."""
+    question_material = "\n".join(
+        [str(record.get("question_text", ""))]
+        + [str(value) for value in (record.get("options") or {}).values()]
+    )
+    solution_material = "\n".join(str(step) for step in (record.get("solution_steps") or []))
+    issues = [
+        f"question:{name}"
+        for name, pattern in QUESTION_CRITICAL_RULES.items()
+        if pattern.search(question_material)
+    ]
+    issues.extend(
+        f"solution:{name}"
+        for name, pattern in SOLUTION_CRITICAL_RULES.items()
+        if pattern.search(solution_material)
+    )
+    return issues
+
+
+def derived_difficulty(record: dict[str, Any]) -> str:
+    """Grade reasoning load consistently when the textbook supplies no label."""
+    question = str(record.get("question_text", ""))
+    steps = [str(step) for step in (record.get("solution_steps") or [])]
+    solution = " ".join(steps)
+    word_count = len(re.findall(r"[A-Za-z0-9]+", solution))
+    operator_count = len(re.findall(r"[+\-*/=\u00D7\u00F7%]", solution))
+    score = 0
+    score += 3 if len(steps) >= 5 else 2 if len(steps) >= 3 else 1 if len(steps) == 2 else 0
+    score += 3 if word_count >= 120 else 2 if word_count >= 70 else 1 if word_count >= 35 else 0
+    score += 3 if operator_count >= 18 else 2 if operator_count >= 10 else 1 if operator_count >= 5 else 0
+    if re.search(r"statement\s+[iv]|data sufficien|which.*statements|all three|neither.*nor", question, re.I):
+        score += 2
+    conditional_count = len(
+        re.findall(r"\b(if|then|case|condition|possible|least|greatest|maximum|minimum)\b", question + " " + solution, re.I)
+    )
+    if conditional_count >= 3:
+        score += 1
+    if score <= 2:
+        return "Easy"
+    if score <= 6:
+        return "Medium"
+    return "Hard"
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -295,6 +392,18 @@ def build_package(
 
         entry = reviewed_entries.get(number, {})
         record = source_only_record(number, entry, chapter_name) if raw is None else apply_review(raw, entry)
+        record = normalize_record_text(record)
+        quality_issues = unresolved_layout_issues(record)
+        if quality_issues:
+            rejected.append({
+                "input_key": raw.get("key") if raw else record.get("key"),
+                "source_question_number": number,
+                "source_page": question_page,
+                "reason": "unresolved_pdf_layout_artifact",
+                "detail": "The question or solution still contains unsafe flattened PDF formula layout: "
+                + ", ".join(quality_issues),
+            })
+            continue
         steps = record.get("solution_steps")
         if not isinstance(steps, list) or not steps or not all(isinstance(step, str) and step.strip() for step in steps):
             raise ValueError(f"Question {number} has no complete textbook solution steps.")
@@ -322,9 +431,15 @@ def build_package(
         key = f"ch{chapter_number:02d}-q{number:04d}"
         steps = [step.strip() for step in steps]
         answer_review = entry.get("answer_review")
+        reviewed_difficulty = entry.get("difficulty")
+        difficulty = str(reviewed_difficulty) if reviewed_difficulty else derived_difficulty(record)
+        if difficulty not in {"Easy", "Medium", "Hard"}:
+            raise ValueError(f"Question {number} has invalid difficulty {difficulty!r}.")
         record.update({
             "key": key,
             "chapter": chapter_name,
+            "difficulty": difficulty,
+            "difficulty_source": "reviewed" if reviewed_difficulty else DIFFICULTY_RUBRIC_VERSION,
             "correct_answer": answer,
             "explanation": steps[-1],
             "solution_steps": steps,
@@ -403,6 +518,7 @@ def build_package(
         "association_policy": "question-first-page-aware",
         "answer_solution_policy": "textbook-answer-and-solution-only",
         "question_text_policy": "page-text-validated-with-vision-reviewed-corrections",
+        "difficulty_policy": DIFFICULTY_RUBRIC_VERSION,
         "question_files": [question_file],
         "stimuli": [],
         "source_pages_audited": lineage["source_pages_audited"],

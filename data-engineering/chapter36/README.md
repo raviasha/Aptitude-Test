@@ -20,6 +20,8 @@ The workflow is question-first and page-local:
 7. It records the answer-key page and every solution page on each published
    question, and rejects the build if any question lacks textbook provenance.
 8. It validates the ZIP contract without importing pipeline code into the app.
+9. It applies the reviewed Easy/Medium/Hard labels from
+   `difficulty-review.json` and records the difficulty policy in the manifest.
 
 The checked-in `page-analysis.json` is the reviewed output of that analysis for
 pages 896-908. `VISION_PROMPT.md` defines the provider-neutral contract a vision

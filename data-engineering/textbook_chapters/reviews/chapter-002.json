@@ -14,8 +14,8 @@
   "allowed_missing_solution_markers": [],
   "solution_marker_overrides": {},
   "minimum_solution_page_token_coverage": 0.7,
-  "expected_published_questions": 130,
-  "expected_rejected_questions": 0,
+  "expected_published_questions": 119,
+  "expected_rejected_questions": 11,
   "rejections": {},
   "questions": {
     "6": {

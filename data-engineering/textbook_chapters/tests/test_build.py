@@ -4,6 +4,7 @@ import importlib.util
 import io
 import json
 import os
+from collections import Counter
 import tempfile
 import unittest
 import zipfile
@@ -57,7 +58,7 @@ class Chapter01BuildTests(unittest.TestCase):
     def test_audited_totals(self) -> None:
         self.assertEqual(
             self.summary,
-            {"source_records": 380, "published_questions": 361, "rejected_questions": 19, "stimuli": 0},
+            {"source_records": 380, "published_questions": 312, "rejected_questions": 68, "stimuli": 0},
         )
 
     def test_every_answer_matches_the_textbook_key(self) -> None:
@@ -107,6 +108,20 @@ class Chapter01BuildTests(unittest.TestCase):
             self.assertEqual(rejected_by_number[number]["reason"], "textbook_solution_mismatch")
         self.assertEqual(rejected_by_number[365]["reason"], "textbook_solution_missing")
         self.assertEqual(rejected_by_number[366]["reason"], "textbook_solution_incomplete")
+        self.assertEqual(
+            sum(record["reason"] == "unresolved_pdf_layout_artifact" for record in rejected),
+            49,
+        )
+
+    def test_every_published_record_is_readable_and_graded(self) -> None:
+        manifest, questions, _, _ = self.package_records()
+        self.assertEqual(manifest["difficulty_policy"], BUILD.DIFFICULTY_RUBRIC_VERSION)
+        self.assertFalse(any(BUILD.unresolved_layout_issues(question) for question in questions))
+        self.assertEqual(
+            Counter(question["difficulty"] for question in questions),
+            {"Easy": 169, "Medium": 129, "Hard": 14},
+        )
+        self.assertTrue(all(question["difficulty_source"] for question in questions))
 
     def test_question_first_image_review_is_recorded(self) -> None:
         manifest, questions, _, lineage = self.package_records()
@@ -120,7 +135,7 @@ class Chapter01BuildTests(unittest.TestCase):
         manifest, questions, _, _ = self.package_records()
         self.assertEqual(manifest["format_version"], 2)
         self.assertTrue(manifest["bank_name"])
-        self.assertEqual(len(questions), 361)
+        self.assertEqual(len(questions), 312)
         self.assertEqual(manifest["total_questions"], len(questions))
 
     def test_pipeline_is_not_an_application_dependency(self) -> None:

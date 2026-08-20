@@ -17,6 +17,7 @@ DEFAULT_SOURCE_DIR = PROJECT_ROOT / "question-banks" / "extraction-ch36-session"
 DEFAULT_QUESTIONS = DEFAULT_SOURCE_DIR / "questions" / "chapter-036.jsonl"
 DEFAULT_ANALYSIS = Path(__file__).with_name("page-analysis.json")
 DEFAULT_TEXTBOOK_SOLUTIONS = Path(__file__).with_name("textbook-solutions.json")
+DEFAULT_DIFFICULTY_REVIEW = Path(__file__).with_name("difficulty-review.json")
 DEFAULT_OUTPUT = PROJECT_ROOT / "question-banks" / "ch36_tabulation_complete.zip"
 EXPECTED_SOURCE_SIZE = (1700, 2200)
 
@@ -40,6 +41,26 @@ def load_jsonl(path: Path) -> list[dict[str, Any]]:
                 raise ValueError(f"Expected an object on line {line_number} of {path}.")
             records.append(value)
     return records
+
+
+def apply_difficulty_review(raw_questions: list[dict[str, Any]], review: dict[str, Any]) -> None:
+    if review.get("schema_version") != 1 or review.get("policy") != "reasoning-load-reviewed-v1":
+        raise ValueError("Unsupported Chapter 36 difficulty-review policy.")
+    overrides = review.get("overrides")
+    if not isinstance(overrides, dict):
+        raise ValueError("Chapter 36 difficulty review needs an overrides object.")
+    by_key = {str(question.get("key", "")): question for question in raw_questions}
+    unknown = sorted(set(overrides) - set(by_key))
+    if unknown:
+        raise ValueError(f"Difficulty review references unknown question keys: {unknown}")
+    for key, difficulty in overrides.items():
+        if difficulty not in {"Easy", "Medium", "Hard"}:
+            raise ValueError(f"Difficulty review has invalid value {difficulty!r} for {key}.")
+        by_key[key]["difficulty"] = difficulty
+    for question in raw_questions:
+        if question.get("difficulty") not in {"Easy", "Medium", "Hard"}:
+            raise ValueError(f"Question {question.get('key')!r} has no valid difficulty.")
+        question["difficulty_source"] = review["policy"]
 
 
 def source_identity(input_key: str, hallucinated_keys: set[str]) -> tuple[str, int] | None:
@@ -420,9 +441,12 @@ def build_package(
     solutions_path: Path,
     output_path: Path,
     qa_dir: Path | None = None,
+    difficulty_review_path: Path = DEFAULT_DIFFICULTY_REVIEW,
 ) -> dict[str, int]:
     analysis = load_json(analysis_path)
     raw_questions = load_jsonl(questions_path)
+    difficulty_review = load_json(difficulty_review_path)
+    apply_difficulty_review(raw_questions, difficulty_review)
     solution_document = load_json(solutions_path)
     visual_for_question = validate_analysis(analysis, source_dir)
     normalized, rejected = normalized_questions(raw_questions, analysis)
@@ -475,6 +499,7 @@ def build_package(
         "section": "Data Interpretation",
         "association_policy": "question-first-page-aware",
         "answer_solution_policy": "textbook-answer-and-solution-only",
+        "difficulty_policy": difficulty_review["policy"],
         "question_files": ["questions/chapter-036.jsonl"],
         "stimuli": stimuli,
         "source_pages_audited": lineage["source_pages_audited"],
@@ -507,6 +532,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--questions", type=Path, default=DEFAULT_QUESTIONS)
     parser.add_argument("--analysis", type=Path, default=DEFAULT_ANALYSIS)
     parser.add_argument("--solutions", type=Path, default=DEFAULT_TEXTBOOK_SOLUTIONS)
+    parser.add_argument("--difficulty-review", type=Path, default=DEFAULT_DIFFICULTY_REVIEW)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--qa-dir", type=Path)
     return parser.parse_args()
@@ -521,6 +547,7 @@ def main() -> None:
         solutions_path=arguments.solutions.resolve(),
         output_path=arguments.output.resolve(),
         qa_dir=arguments.qa_dir.resolve() if arguments.qa_dir else None,
+        difficulty_review_path=arguments.difficulty_review.resolve(),
     )
     print(json.dumps(summary, indent=2))
 

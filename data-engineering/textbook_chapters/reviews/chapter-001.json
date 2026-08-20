@@ -15,8 +15,8 @@
     "197": {"page": 49, "x0": 48.2, "top": 530.0}
   },
   "minimum_solution_page_token_coverage": 0.7,
-  "expected_published_questions": 361,
-  "expected_rejected_questions": 19,
+  "expected_published_questions": 312,
+  "expected_rejected_questions": 68,
   "rejections": {
     "47": {"reason": "question_layout_unresolved", "detail": "The displayed fractional expression is not recoverable as reliable linear text without a reviewed equation crop."},
     "53": {"reason": "question_layout_unresolved", "detail": "The displayed fractional expression is not recoverable as reliable linear text without a reviewed equation crop."},

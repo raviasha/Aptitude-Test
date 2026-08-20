@@ -11,12 +11,16 @@ The builder deliberately fails closed. A question is publishable only when:
 - its answer is read from the textbook answer key;
 - its non-empty solution is tied to the matching numbered textbook solution;
 - any truncated directions or damaged notation have an explicit reviewed fix;
+- no question, option, or solution contains a known flattened-formula artifact;
 - any required visual has a question-first association; and
 - the chapter's audited totals remain unchanged.
 
 Textbook records with missing, incomplete, or mismatched printed solutions are
 listed in `metadata/rejected-questions.jsonl`; the pipeline never invents a
-replacement solution.
+replacement solution. Unresolved PDF formula layouts are rejected with the
+reason `unresolved_pdf_layout_artifact`. Every published question is graded by
+the deterministic `reasoning-complexity-v1` rubric unless its review ledger
+contains an explicit difficulty override.
 
 ## Build Chapter 1
 

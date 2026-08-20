@@ -4,6 +4,7 @@ import importlib.util
 import io
 import json
 import os
+from collections import Counter
 import tempfile
 import unittest
 import zipfile
@@ -58,7 +59,7 @@ class Chapter03BuildTests(unittest.TestCase):
     def test_audited_totals(self) -> None:
         self.assertEqual(
             self.summary,
-            {"source_records": 206, "published_questions": 206, "rejected_questions": 0, "stimuli": 0},
+            {"source_records": 206, "published_questions": 90, "rejected_questions": 116, "stimuli": 0},
         )
 
     def test_every_answer_matches_the_textbook_key(self) -> None:
@@ -91,7 +92,8 @@ class Chapter03BuildTests(unittest.TestCase):
     def test_all_question_pages_have_question_first_vision_review(self) -> None:
         manifest, questions, rejected, lineage = self.package_records()
         self.assertEqual(manifest["stimuli"], [])
-        self.assertEqual(rejected, [])
+        self.assertEqual(len(rejected), 116)
+        self.assertTrue(all(record["reason"] == "unresolved_pdf_layout_artifact" for record in rejected))
         self.assertEqual(lineage["vision_reviewed_question_pages"], list(range(83, 94)))
         self.assertTrue(
             all(question["image_association"]["status"] == "no_standalone_visual" for question in questions)
@@ -101,8 +103,17 @@ class Chapter03BuildTests(unittest.TestCase):
         manifest, questions, _, _ = self.package_records()
         self.assertEqual(manifest["format_version"], 2)
         self.assertEqual(manifest["chapter"], 3)
-        self.assertEqual(len(questions), 206)
+        self.assertEqual(len(questions), 90)
         self.assertEqual(manifest["total_questions"], len(questions))
+
+    def test_every_published_record_is_readable_and_graded(self) -> None:
+        manifest, questions, _, _ = self.package_records()
+        self.assertEqual(manifest["difficulty_policy"], BUILD.DIFFICULTY_RUBRIC_VERSION)
+        self.assertFalse(any(BUILD.unresolved_layout_issues(question) for question in questions))
+        self.assertEqual(
+            Counter(question["difficulty"] for question in questions),
+            {"Easy": 79, "Medium": 10, "Hard": 1},
+        )
 
 
 if __name__ == "__main__":

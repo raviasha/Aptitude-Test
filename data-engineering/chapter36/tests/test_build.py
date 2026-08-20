@@ -6,6 +6,7 @@ import json
 import tempfile
 import unittest
 import zipfile
+from collections import Counter
 from pathlib import Path
 
 
@@ -144,6 +145,21 @@ class Chapter36BuildTests(unittest.TestCase):
         self.assertEqual(len(stimulus_ids), 12)
         self.assertTrue(all(stimulus["file"] in names for stimulus in manifest["stimuli"]))
         self.assertTrue(all(question["stimulus_id"] in stimulus_ids for question in questions))
+
+    def test_reviewed_difficulty_metadata_is_published(self) -> None:
+        with zipfile.ZipFile(io.BytesIO(self.package_bytes)) as archive:
+            manifest = json.loads(archive.read("manifest.json"))
+            questions = [
+                json.loads(line)
+                for line in archive.read("questions/chapter-036.jsonl").decode("utf-8").splitlines()
+                if line.strip()
+            ]
+        self.assertEqual(manifest["difficulty_policy"], "reasoning-load-reviewed-v1")
+        self.assertEqual(
+            Counter(question["difficulty"] for question in questions),
+            {"Easy": 29, "Medium": 27, "Hard": 4},
+        )
+        self.assertTrue(all(question["difficulty_source"] == "reasoning-load-reviewed-v1" for question in questions))
 
     def test_pipeline_is_not_an_application_dependency(self) -> None:
         app_source = (PROJECT_ROOT / "app.py").read_text(encoding="utf-8")

@@ -2047,6 +2047,8 @@ def list_tests(request: Request) -> Dict[str, Any]:
         for test in tests:
             test["selection_rules"] = decode_selection_rules(test["composition"])
             test["difficulty_levels"] = decode_difficulties(test["difficulties"])
+            live = connection.execute("SELECT expires_at FROM attempts WHERE test_id = ? AND status = 'in_progress' AND expires_at IS NOT NULL ORDER BY expires_at LIMIT 1", (test["test_id"],)).fetchone()
+            test["remaining_seconds"] = max(0, int((parse_timestamp(live["expires_at"]) - datetime.now()) .total_seconds())) if live and parse_timestamp(live["expires_at"]) else None
         banks = rows(connection.execute(
             """SELECT b.bank_id, b.bank_name, COUNT(q.question_id) AS question_count
                FROM question_banks b LEFT JOIN questions q ON q.bank_id = b.bank_id AND q.active = 1

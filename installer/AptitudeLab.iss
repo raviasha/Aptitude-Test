@@ -1,5 +1,5 @@
 #define AppName "KSAT"
-#define AppVersion "1.2.2"
+#define AppVersion "1.3.0"
 #define AppPublisher "College Assessment Lab"
 #define AppExeName "KSATServer.exe"
 
@@ -12,7 +12,7 @@ DefaultDirName={autopf}\KSAT
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
 OutputDir=..\release
-OutputBaseFilename=KSAT-Setup-1.2.2
+OutputBaseFilename=KSAT-Setup-1.3.0
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern

@@ -1,10 +1,11 @@
 const app = document.querySelector('#app');
 const toast = document.querySelector('#toast');
-const BUILD_VERSION = '1.2.2';
+const BUILD_VERSION = '1.3.0';
 let state = { user: null, attempt: null, questionIndex: 0 };
 let examGuard = {active:false, deadlineMs:null, timerId:null, syncTimerId:null, submitting:false, lastViolation:null, needsResume:false};
 let facultyTimerId = null;
 let facultySyncTimerId = null;
+let sessionHeartbeatId = null;
 
 const categories = ['Quantitative Aptitude', 'Logical Reasoning', 'Data Interpretation', 'Verbal Ability', 'Coding / Computational Thinking'];
 const difficulties = ['Easy', 'Medium', 'Hard'];
@@ -215,13 +216,21 @@ function startExamTimer() {
 }
 
 function logoutButton() { return `${state.user?.role === 'admin' ? '<button class="ghost" data-stop-server>Stop server</button>' : ''}<button class="ghost" data-logout>Sign out</button>`; }
+function startSessionHeartbeat() {
+  if (sessionHeartbeatId) clearInterval(sessionHeartbeatId);
+  sessionHeartbeatId = null;
+  if (state.user?.role !== 'student') return;
+  const beat = () => api('/api/session/heartbeat', {method:'POST'}).catch(() => {});
+  beat();
+  sessionHeartbeatId = setInterval(beat, 15000);
+}
 function layout(title, subtitle, content, nav = '') {
   if (examGuard.active || examGuard.timerId) cleanupExamGuard();
   if (facultyTimerId) clearInterval(facultyTimerId);
   if (facultySyncTimerId) clearInterval(facultySyncTimerId);
   facultyTimerId = facultySyncTimerId = null;
   app.innerHTML = `<header class="top"><a class="brand" href="#" data-home><span>K</span>KSAT</a><nav>${nav}</nav>${logoutButton()}</header><main><div class="heading"><div><p class="eyebrow">College LAN assessment server</p><h1>${title}</h1><p>${subtitle || ''}</p></div></div>${content}</main>`;
-  document.querySelector('[data-logout]')?.addEventListener('click', async () => { await api('/api/logout', {method:'POST'}); state = {user:null,attempt:null,questionIndex:0}; loginScreen(); });
+  document.querySelector('[data-logout]')?.addEventListener('click', async () => { await api('/api/logout', {method:'POST'}); if (sessionHeartbeatId) clearInterval(sessionHeartbeatId); sessionHeartbeatId = null; state = {user:null,attempt:null,questionIndex:0}; loginScreen(); });
   document.querySelector('[data-stop-server]')?.addEventListener('click', async () => { if (!confirm('Stop the KSAT server? All connected users will be disconnected.')) return; await api('/api/admin/shutdown', {method:'POST'}); app.innerHTML = '<div class="login-card"><h2>Server stopped</h2><p>You can close this browser window.</p></div>'; });
   document.querySelector('[data-home]')?.addEventListener('click', event => { event.preventDefault(); home(); });
   document.querySelectorAll('[data-nav]').forEach(button => button.addEventListener('click', () => admin(button.dataset.nav)));
@@ -254,7 +263,7 @@ function registerScreen() {
   });
 }
 
-async function home() { return state.user?.role === 'admin' ? admin('overview') : studentDashboard(); }
+async function home() { startSessionHeartbeat(); return state.user?.role === 'admin' ? admin('overview') : studentDashboard(); }
 
 async function studentDashboardLegacy() {
   const data = await api('/api/student/dashboard');
@@ -413,7 +422,15 @@ async function tests() {
   }));
 }
 
-async function students() { const data = await api('/api/admin/students'); layout('Manage <em>students.</em>', 'Select one or more students to permanently remove their accounts and practice records.', `<section class="card"><div class="heading"><div><p class="eyebrow">Enrolled students</p><h2>${data.students.length} students</h2></div><button class="primary" id="delete-selected">Delete selected</button></div><table><thead><tr><th><input type="checkbox" id="select-all-students" /></th><th>Name</th><th>USN</th><th>Class</th></tr></thead><tbody>${data.students.map(student => `<tr><td><input type="checkbox" class="student-choice" value="${esc(student.student_id)}" /></td><td>${esc(student.name)}</td><td><code>${esc(student.student_id)}</code></td><td>${esc(student.class)}-${esc(student.section)}</td></tr>`).join('')}</tbody></table></section>`, adminNav('students')); document.querySelector('#select-all-students').addEventListener('change', event => document.querySelectorAll('.student-choice').forEach(choice => { choice.checked = event.target.checked; })); document.querySelector('#delete-selected').addEventListener('click', async () => { const selected = [...document.querySelectorAll('.student-choice:checked')].map(choice => choice.value); if (!selected.length) { notify('Select at least one student.', true); return; } if (!confirm(`Delete ${selected.length} selected student(s) and all practice records? This cannot be undone.`)) return; try { for (const studentId of selected) await api(`/api/admin/students/${encodeURIComponent(studentId)}`, {method:'DELETE'}); notify('Selected students deleted.'); students(); } catch(error) { notify(error.message,true); } }); }
+async function studentsLegacy() { const data = await api('/api/admin/students'); layout('Manage <em>students.</em>', 'Select one or more students to permanently remove their accounts and practice records.', `<section class="card"><div class="heading"><div><p class="eyebrow">Enrolled students</p><h2>${data.students.length} students</h2></div><button class="primary" id="delete-selected">Delete selected</button></div><table><thead><tr><th><input type="checkbox" id="select-all-students" /></th><th>Name</th><th>USN</th><th>Class</th></tr></thead><tbody>${data.students.map(student => `<tr><td><input type="checkbox" class="student-choice" value="${esc(student.student_id)}" /></td><td>${esc(student.name)}</td><td><code>${esc(student.student_id)}</code></td><td>${esc(student.class)}-${esc(student.section)}</td></tr>`).join('')}</tbody></table></section>`, adminNav('students')); document.querySelector('#select-all-students').addEventListener('change', event => document.querySelectorAll('.student-choice').forEach(choice => { choice.checked = event.target.checked; })); document.querySelector('#delete-selected').addEventListener('click', async () => { const selected = [...document.querySelectorAll('.student-choice:checked')].map(choice => choice.value); if (!selected.length) { notify('Select at least one student.', true); return; } if (!confirm(`Delete ${selected.length} selected student(s) and all practice records? This cannot be undone.`)) return; try { for (const studentId of selected) await api(`/api/admin/students/${encodeURIComponent(studentId)}`, {method:'DELETE'}); notify('Selected students deleted.'); students(); } catch(error) { notify(error.message,true); } }); }
+
+async function students() {
+  const data = await api('/api/admin/students');
+  layout('Manage <em>students.</em>', 'Inactive login locks expire after two minutes. Faculty can also release a login immediately.', `<section class="card"><div class="heading"><div><p class="eyebrow">Enrolled students</p><h2>${data.students.length} students</h2></div><button class="primary" id="delete-selected">Delete selected</button></div><table><thead><tr><th><input type="checkbox" id="select-all-students" /></th><th>Name</th><th>USN</th><th>Class</th><th>Login</th></tr></thead><tbody>${data.students.map(student => `<tr><td><input type="checkbox" class="student-choice" value="${esc(student.student_id)}" /></td><td>${esc(student.name)}</td><td><code>${esc(student.student_id)}</code></td><td>${esc(student.class)}-${esc(student.section)}</td><td>${student.signed_in ? `<button class="secondary small" data-release-login="${esc(student.student_id)}">Release login</button><small>Active</small>` : '<span class="muted">Inactive</span>'}</td></tr>`).join('')}</tbody></table></section>`, adminNav('students'));
+  document.querySelector('#select-all-students').addEventListener('change', event => document.querySelectorAll('.student-choice').forEach(choice => { choice.checked = event.target.checked; }));
+  document.querySelectorAll('[data-release-login]').forEach(button => button.addEventListener('click', async () => { try { await api(`/api/admin/students/${encodeURIComponent(button.dataset.releaseLogin)}/session`, {method:'DELETE'}); notify(`${button.dataset.releaseLogin} can sign in again.`); students(); } catch(error) { notify(error.message,true); } }));
+  document.querySelector('#delete-selected').addEventListener('click', async () => { const selected = [...document.querySelectorAll('.student-choice:checked')].map(choice => choice.value); if (!selected.length) { notify('Select at least one student.', true); return; } if (!confirm(`Delete ${selected.length} selected student(s) and all practice records? This cannot be undone.`)) return; try { for (const studentId of selected) await api(`/api/admin/students/${encodeURIComponent(studentId)}`, {method:'DELETE'}); notify('Selected students deleted.'); students(); } catch(error) { notify(error.message,true); } });
+}
 
 async function boot() { try { state.user = (await api('/api/me')).user; state.user ? home() : loginScreen(); } catch { loginScreen(); } }
 boot();

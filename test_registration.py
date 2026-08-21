@@ -673,6 +673,27 @@ class StudentRegistrationTests(unittest.TestCase):
         app.logout(first)
         self.assertEqual(app.login(payload, second)["user"]["id"], "LOGIN1")
 
+    def test_inactive_login_expires_and_student_can_sign_in_again(self):
+        app.register_student("LOGIN2", "Inactive Login", "AI & DS", "A", "secret123")
+        first = app.Request({"type": "http", "method": "POST", "path": "/", "headers": [], "session": {}})
+        second = app.Request({"type": "http", "method": "POST", "path": "/", "headers": [], "session": {}})
+        payload = app.LoginPayload(identifier="LOGIN2", password="secret123", role="student")
+        app.login(payload, first)
+        with app.db() as connection:
+            connection.execute("UPDATE student_sessions SET last_seen_at = '2000-01-01T00:00:00+00:00' WHERE student_id = 'LOGIN2'")
+        self.assertEqual(app.login(payload, second)["user"]["id"], "LOGIN2")
+
+    def test_faculty_can_release_a_student_login(self):
+        app.register_student("LOGIN3", "Released Login", "AI & DS", "A", "secret123")
+        student_request = app.Request({"type": "http", "method": "POST", "path": "/", "headers": [], "session": {}})
+        retry_request = app.Request({"type": "http", "method": "POST", "path": "/", "headers": [], "session": {}})
+        admin_request = app.Request({"type": "http", "method": "DELETE", "path": "/", "headers": [], "session": {"user": {"role": "admin", "id": "faculty", "name": "Faculty"}}})
+        payload = app.LoginPayload(identifier="LOGIN3", password="secret123", role="student")
+        app.login(payload, student_request)
+        released = app.release_student_login("LOGIN3", admin_request)
+        self.assertTrue(released["released"])
+        self.assertEqual(app.login(payload, retry_request)["user"]["id"], "LOGIN3")
+
     def test_faculty_can_delete_an_assessment_and_its_history(self):
         app.register_student("DELETE1", "Delete Test Student", "AI & DS", "A", "secret123")
         with app.db() as connection:

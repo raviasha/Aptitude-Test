@@ -51,7 +51,7 @@ QUESTION_BANKS_DIR = DATA_DIR / "Question Banks"
 STATIC_DIR = BUNDLE_DIR / "static"
 TEMPLATE_DIR = BUNDLE_DIR / "templates"
 SERVER_URL = "http://127.0.0.1:8000"
-APP_VERSION = "1.2.2"
+APP_VERSION = "1.3.0"
 
 CATEGORIES = [
     "Quantitative Aptitude",
@@ -69,6 +69,7 @@ MAX_ASSESSMENT_QUESTIONS = 500
 MAX_PRACTICE_QUESTIONS = 100
 QUESTION_DIFFICULTIES = ("Easy", "Medium", "Hard")
 SECONDS_PER_FACULTY_QUESTION = 60
+STUDENT_SESSION_TIMEOUT_SECONDS = 120
 EXAM_VIOLATION_LABELS = {
     "fullscreen_exit": "Exited full-screen mode",
     "focus_lost": "Changed tab, window, or minimized the exam",
@@ -900,6 +901,8 @@ def ensure_schema() -> None:
         ensure_column(connection, "questions", "options_json TEXT NOT NULL DEFAULT '{}'")
         migrate_question_options(connection)
         ensure_column(connection, "question_banks", "format_version INTEGER NOT NULL DEFAULT 1")
+        ensure_column(connection, "student_sessions", "last_seen_at TEXT")
+        connection.execute("UPDATE student_sessions SET last_seen_at = created_at WHERE last_seen_at IS NULL")
         ensure_column(connection, "tests", "bank_id INTEGER")
         ensure_column(connection, "tests", "launched INTEGER NOT NULL DEFAULT 0")
         ensure_column(connection, "tests", "mode TEXT NOT NULL DEFAULT 'faculty'")
@@ -1257,18 +1260,26 @@ def save_v2_question_bank(
         raise
 
 
+def expire_stale_student_sessions(connection: sqlite3.Connection) -> int:
+    cutoff = (datetime.now(timezone.utc) - timedelta(seconds=STUDENT_SESSION_TIMEOUT_SECONDS)).isoformat(timespec="seconds")
+    return connection.execute("DELETE FROM student_sessions WHERE COALESCE(last_seen_at, created_at) < ?", (cutoff,)).rowcount
+
+
 def require_user(request: Request, role: Optional[str] = None) -> Dict[str, str]:
     user = request.session.get("user")
     if not user or (role and user["role"] != role):
         raise HTTPException(401, "Please sign in to continue.")
     if user["role"] == "student" and user.get("login_token"):
         with db() as connection:
+            expire_stale_student_sessions(connection)
             active = connection.execute(
                 "SELECT session_token FROM student_sessions WHERE student_id = ?", (user["id"],)
             ).fetchone()
-        if not active or active["session_token"] != user["login_token"]:
-            request.session.clear()
-            raise HTTPException(401, "This student login is no longer active. Ask Faculty to remove the account if you need to register again.")
+            if active and active["session_token"] == user["login_token"]:
+                connection.execute("UPDATE student_sessions SET last_seen_at = ? WHERE student_id = ?", (now(), user["id"]))
+            else:
+                request.session.clear()
+                raise HTTPException(401, "This student login is no longer active. Please sign in again.")
     return user
 
 
@@ -1481,6 +1492,8 @@ def home() -> FileResponse:
 
 @app.get("/api/me")
 def me(request: Request) -> Dict[str, Any]:
+    if request.session.get("user", {}).get("role") == "student":
+        require_user(request, "student")
     return {"user": request.session.get("user")}
 
 
@@ -1501,10 +1514,11 @@ def login(payload: LoginPayload, request: Request) -> Dict[str, Any]:
         user = {"role": role, "id": account[user_id], "name": account[label]}
         if role == "student":
             login_token = str(uuid.uuid4())
+            expire_stale_student_sessions(connection)
             try:
                 connection.execute(
-                    "INSERT INTO student_sessions (student_id, session_token, created_at) VALUES (?, ?, ?)",
-                    (account[user_id], login_token, now()),
+                    "INSERT INTO student_sessions (student_id, session_token, created_at, last_seen_at) VALUES (?, ?, ?, ?)",
+                    (account[user_id], login_token, now(), now()),
                 )
             except sqlite3.IntegrityError as error:
                 raise HTTPException(
@@ -1514,6 +1528,12 @@ def login(payload: LoginPayload, request: Request) -> Dict[str, Any]:
             user["login_token"] = login_token
         request.session["user"] = user
     return {"user": request.session["user"]}
+
+
+@app.post("/api/session/heartbeat")
+def session_heartbeat(request: Request) -> Dict[str, Any]:
+    user = require_user(request, "student")
+    return {"ok": True, "student_id": user["id"], "timeout_seconds": STUDENT_SESSION_TIMEOUT_SECONDS}
 
 
 @app.post("/api/register")
@@ -1838,7 +1858,19 @@ def admin_dashboard(request: Request) -> Dict[str, Any]:
 def list_students(request: Request) -> Dict[str, Any]:
     require_user(request, "admin")
     with db() as connection:
-        return {"students": rows(connection.execute("SELECT student_id, name, class, section, created_at FROM students ORDER BY name").fetchall())}
+        expire_stale_student_sessions(connection)
+        return {"students": rows(connection.execute("""SELECT s.student_id, s.name, s.class, s.section, s.created_at,
+                   ss.last_seen_at, ss.session_token IS NOT NULL AS signed_in
+                   FROM students s LEFT JOIN student_sessions ss ON ss.student_id = s.student_id
+                   ORDER BY s.name""").fetchall())}
+
+
+@app.delete("/api/admin/students/{student_id}/session")
+def release_student_login(student_id: str, request: Request) -> Dict[str, Any]:
+    require_user(request, "admin")
+    with db() as connection:
+        released = connection.execute("DELETE FROM student_sessions WHERE student_id = ?", (student_id.strip().upper(),)).rowcount
+    return {"released": bool(released), "student_id": student_id.strip().upper()}
 
 
 @app.post("/api/admin/students")

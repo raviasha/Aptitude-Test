@@ -329,7 +329,7 @@ async function submitAttempt(timerExpired = false) {
       if (!confirm(`${check.unanswered} question(s) remain unanswered. Submit anyway?`)) { examGuard.submitting = false; return; }
       return resultScreen(id, true);
     }
-    return resultScreen(id);
+    return resultScreen(id, true);
   } catch(error) { examGuard.submitting = false; notify(error.message,true); }
 }
 async function resultScreenLegacy(id, confirmSubmit = false) { const data = confirmSubmit ? await api(`/api/attempts/${id}/submit`, {method:'POST',body:{confirmed:true}}) : await api(`/api/attempts/${id}/result`); const a = data.attempt; app.innerHTML = `<main class="result"><a class="brand"><span>A</span>Aptitude <i>Lab</i></a><p class="eyebrow">Assessment complete</p><h1>${a.score} / ${a.total_questions}</h1><p class="big">${pct(a.percentage)} overall score</p><div class="score-stats"><span><b>${a.correct}</b> Correct</span><span><b>${data.incorrect}</b> Incorrect</span><span><b>${data.unanswered}</b> Unanswered</span></div><article class="card"><p class="eyebrow">Category performance</p>${data.categories.map(item => `<div class="bar"><div><span>${esc(item.category)}</span><b>${item.correct}/${item.total} · ${pct(item.percentage)}</b></div><i><em style="width:${item.percentage}%"></em></i></div>`).join('')}</article><button class="primary" data-dashboard>Back to dashboard →</button></main>`; document.querySelector('[data-dashboard]').addEventListener('click', studentDashboard); }

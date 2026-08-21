@@ -141,11 +141,12 @@ main.institutional-assessment {
 
   .institution-rail {
     top: 96px;
-    width: 74px;
-    gap: 14px;
+    width: 190px;
+    gap: 8px;
   }
 
   .institution-rail figure {
+    width: 91px;
     min-height: 82px;
     padding: 6px;
     border-radius: 10px;

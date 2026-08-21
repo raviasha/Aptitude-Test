@@ -6,6 +6,11 @@ APP_JS = Path(__file__).with_name("static") / "app.js"
 
 
 class FeedbackUiTests(unittest.TestCase):
+    def test_submit_click_passes_a_boolean_instead_of_the_click_event(self):
+        source = APP_JS.read_text(encoding="utf-8")
+        self.assertIn("addEventListener('click', () => submitAttempt(false))", source)
+        self.assertNotIn("addEventListener('click', submitAttempt)", source)
+
     def test_feedback_only_renders_correct_answer_and_solution_steps(self):
         source = APP_JS.read_text(encoding="utf-8")
         start = source.index("function renderAttempt()")

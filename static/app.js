@@ -1,6 +1,6 @@
 const app = document.querySelector('#app');
 const toast = document.querySelector('#toast');
-const BUILD_VERSION = '1.2.0';
+const BUILD_VERSION = '1.2.1';
 let state = { user: null, attempt: null, questionIndex: 0 };
 let examGuard = {active:false, deadlineMs:null, timerId:null, syncTimerId:null, submitting:false, lastViolation:null, needsResume:false};
 let facultyTimerId = null;
@@ -101,7 +101,8 @@ async function api(path, options = {}) {
   const response = await fetch(path, config);
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
-    throw new Error(body.detail || 'Something went wrong.');
+    const detail = Array.isArray(body.detail) ? body.detail.map(item => item.msg || JSON.stringify(item)).join(' ') : body.detail;
+    throw new Error(typeof detail === 'string' ? detail : 'Something went wrong.');
   }
   return response.headers.get('content-type')?.includes('application/json') ? response.json() : response;
 }
@@ -322,7 +323,7 @@ function renderAttempt() {
   document.querySelectorAll('[data-answer]').forEach(button => button.addEventListener('click', () => saveAnswer(q.question_id, button.dataset.answer)));
   document.querySelector('[data-prev]')?.addEventListener('click', () => { state.questionIndex--; renderAttempt(); });
   document.querySelector('[data-next]')?.addEventListener('click', () => { state.questionIndex++; renderAttempt(); });
-  document.querySelector('[data-submit]')?.addEventListener('click', submitAttempt);
+  document.querySelector('[data-submit]')?.addEventListener('click', () => submitAttempt(false));
   document.querySelector('[data-exit]')?.addEventListener('click', studentDashboard);
 }
 async function saveAnswer(questionId, answer) { try { const result = await api(`/api/attempts/${state.attempt.attempt_id}/responses/${questionId}`, {method:'PUT',body:{answer}}); const question = state.attempt.questions.find(item => item.question_id === questionId); question.selected_answer = answer; if (result.feedback) question.feedback = result.feedback; renderAttempt(); } catch(error) { notify(error.message,true); if (state.attempt.proctored) resultScreen(state.attempt.attempt_id).catch(() => {}); } }

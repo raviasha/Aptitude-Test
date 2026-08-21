@@ -609,6 +609,23 @@ class StudentRegistrationTests(unittest.TestCase):
         self.assertEqual(serialized["status"], "submitted")
         self.assertEqual(serialized["remaining_seconds"], 0)
 
+    def test_faculty_timer_starts_at_launch_and_extends_without_student_attempts(self):
+        rules = [{"category": "Quantitative Aptitude", "chapter": "Arithmetic", "quantity": 2}]
+        with app.db() as connection:
+            test_id = connection.execute(
+                "INSERT INTO tests (test_name, composition, created_at, active, launched, mode) VALUES (?, ?, ?, 1, 0, 'faculty')",
+                ("Timed faculty test", json.dumps(rules), app.now()),
+            ).lastrowid
+        request = app.Request({"type": "http", "method": "POST", "path": "/", "headers": [], "session": {"user": {"role": "admin", "id": "admin", "name": "Admin"}}})
+        app.launch_test(test_id, request)
+        initial = next(test for test in app.list_tests(request)["tests"] if test["test_id"] == test_id)
+        self.assertGreater(initial["remaining_seconds"], 0)
+        self.assertLessEqual(initial["remaining_seconds"], 120)
+        result = app.extend_test_duration(test_id, app.DurationExtensionPayload(minutes=5), request)
+        extended = next(test for test in app.list_tests(request)["tests"] if test["test_id"] == test_id)
+        self.assertEqual(result["attempts_extended"], 0)
+        self.assertGreaterEqual(extended["remaining_seconds"], initial["remaining_seconds"] + 299)
+
     def test_difficulty_filter_limits_validation_and_sampling(self):
         with app.db() as connection:
             bank_id = connection.execute(

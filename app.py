@@ -51,7 +51,7 @@ QUESTION_BANKS_DIR = DATA_DIR / "Question Banks"
 STATIC_DIR = BUNDLE_DIR / "static"
 TEMPLATE_DIR = BUNDLE_DIR / "templates"
 SERVER_URL = "http://127.0.0.1:8000"
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.2.1"
 
 CATEGORIES = [
     "Quantitative Aptitude",
@@ -905,6 +905,7 @@ def ensure_schema() -> None:
         ensure_column(connection, "tests", "mode TEXT NOT NULL DEFAULT 'faculty'")
         ensure_column(connection, "tests", "owner_student_id TEXT")
         ensure_column(connection, "tests", "difficulties TEXT NOT NULL DEFAULT '[\"Easy\",\"Medium\",\"Hard\"]'")
+        ensure_column(connection, "tests", "launch_expires_at TEXT")
         ensure_column(connection, "attempts", "expires_at TEXT")
         ensure_column(connection, "responses", "chapter TEXT NOT NULL DEFAULT 'Uncategorized'")
         connection.execute("CREATE INDEX IF NOT EXISTS idx_questions_bank ON questions(bank_id)")
@@ -1639,8 +1640,12 @@ def start_test(test_id: int, request: Request) -> Dict[str, Any]:
             connection, test["bank_id"], decode_selection_rules(test["composition"]), MAX_ASSESSMENT_QUESTIONS, difficulties
         )
         selected = sample_questions(connection, test["bank_id"], rules, difficulties)
-        time_limit = len(selected) * SECONDS_PER_FACULTY_QUESTION if test["launched"] else None
-        attempt_id = create_attempt_from_questions(connection, user["id"], test_id, selected, time_limit)
+        attempt_id = create_attempt_from_questions(connection, user["id"], test_id, selected)
+        if test["launched"]:
+            deadline = test["launch_expires_at"] or (
+                datetime.now(timezone.utc) + timedelta(seconds=len(selected) * SECONDS_PER_FACULTY_QUESTION)
+            ).isoformat(timespec="seconds")
+            connection.execute("UPDATE attempts SET expires_at = ? WHERE attempt_id = ?", (deadline, attempt_id))
     return {"attempt_id": attempt_id, "resumed": False}
 
 
@@ -2066,8 +2071,12 @@ def list_tests(request: Request) -> Dict[str, Any]:
         for test in tests:
             test["selection_rules"] = decode_selection_rules(test["composition"])
             test["difficulty_levels"] = decode_difficulties(test["difficulties"])
-            live = connection.execute("SELECT expires_at FROM attempts WHERE test_id = ? AND status = 'in_progress' AND expires_at IS NOT NULL ORDER BY expires_at LIMIT 1", (test["test_id"],)).fetchone()
-            test["remaining_seconds"] = max(0, int((parse_timestamp(live["expires_at"]) - datetime.now()) .total_seconds())) if live and parse_timestamp(live["expires_at"]) else None
+            deadline = parse_timestamp(test.get("launch_expires_at"))
+            if test["launched"] and not deadline:
+                total_questions = sum(rule["quantity"] for rule in test["selection_rules"])
+                deadline = datetime.now(timezone.utc) + timedelta(seconds=total_questions * SECONDS_PER_FACULTY_QUESTION)
+                connection.execute("UPDATE tests SET launch_expires_at = ? WHERE test_id = ?", (deadline.isoformat(timespec="seconds"), test["test_id"]))
+            test["remaining_seconds"] = max(0, math.ceil((deadline - datetime.now(timezone.utc)).total_seconds())) if deadline else None
         banks = rows(connection.execute(
             """SELECT b.bank_id, b.bank_name, COUNT(q.question_id) AS question_count
                FROM question_banks b LEFT JOIN questions q ON q.bank_id = b.bank_id AND q.active = 1
@@ -2121,12 +2130,16 @@ def delete_test(test_id: int, request: Request) -> Dict[str, Any]:
 def launch_test(test_id: int, request: Request) -> Dict[str, bool]:
     require_user(request, "admin")
     with db() as connection:
-        if not connection.execute(
-            "SELECT 1 FROM tests WHERE test_id = ? AND active = 1 AND mode = 'faculty'", (test_id,)
-        ).fetchone():
+        test = connection.execute(
+            "SELECT composition FROM tests WHERE test_id = ? AND active = 1 AND mode = 'faculty'", (test_id,)
+        ).fetchone()
+        if not test:
             raise HTTPException(404, "Test not found.")
-        connection.execute("UPDATE tests SET launched = 0 WHERE mode = 'faculty'")
-        connection.execute("UPDATE tests SET launched = 1 WHERE test_id = ?", (test_id,))
+        total_questions = sum(rule["quantity"] for rule in decode_selection_rules(test["composition"]))
+        deadline = (datetime.now(timezone.utc) + timedelta(seconds=total_questions * SECONDS_PER_FACULTY_QUESTION)).isoformat(timespec="seconds")
+        connection.execute("UPDATE tests SET launched = 0, launch_expires_at = NULL WHERE mode = 'faculty'")
+        connection.execute("UPDATE tests SET launched = 1, launch_expires_at = ? WHERE test_id = ?", (deadline, test_id))
+        connection.execute("UPDATE attempts SET expires_at = ? WHERE test_id = ? AND status = 'in_progress'", (deadline, test_id))
     return {"launched": True}
 
 
@@ -2134,7 +2147,7 @@ def launch_test(test_id: int, request: Request) -> Dict[str, bool]:
 def close_test(test_id: int, request: Request) -> Dict[str, bool]:
     require_user(request, "admin")
     with db() as connection:
-        connection.execute("UPDATE tests SET launched = 0 WHERE test_id = ? AND mode = 'faculty'", (test_id,))
+        connection.execute("UPDATE tests SET launched = 0, launch_expires_at = NULL WHERE test_id = ? AND mode = 'faculty'", (test_id,))
     return {"closed": True}
 
 
@@ -2142,18 +2155,17 @@ def close_test(test_id: int, request: Request) -> Dict[str, bool]:
 def extend_test_duration(test_id: int, payload: DurationExtensionPayload, request: Request) -> Dict[str, Any]:
     require_user(request, "admin")
     with db() as connection:
-        test = connection.execute("SELECT launched, mode FROM tests WHERE test_id = ?", (test_id,)).fetchone()
+        test = connection.execute("SELECT launched, mode, launch_expires_at FROM tests WHERE test_id = ?", (test_id,)).fetchone()
         if not test or test["mode"] != "faculty":
             raise HTTPException(404, "Faculty assessment not found.")
         if not test["launched"]:
             raise HTTPException(409, "Launch the assessment before extending its duration.")
-        attempts = connection.execute("SELECT attempt_id, started_at, total_questions, expires_at FROM attempts WHERE test_id = ? AND status = 'in_progress'", (test_id,)).fetchall()
+        deadline = parse_timestamp(test["launch_expires_at"]) or datetime.now(timezone.utc)
+        extended_deadline = deadline + timedelta(minutes=payload.minutes)
+        connection.execute("UPDATE tests SET launch_expires_at = ? WHERE test_id = ?", (extended_deadline.isoformat(timespec="seconds"), test_id))
+        attempts = connection.execute("SELECT attempt_id FROM attempts WHERE test_id = ? AND status = 'in_progress'", (test_id,)).fetchall()
         for attempt in attempts:
-            deadline = parse_timestamp(attempt["expires_at"])
-            if not deadline:
-                started = parse_timestamp(attempt["started_at"])
-                deadline = started + timedelta(seconds=attempt["total_questions"] * SECONDS_PER_FACULTY_QUESTION)
-            connection.execute("UPDATE attempts SET expires_at = ? WHERE attempt_id = ?", ((deadline + timedelta(minutes=payload.minutes)).isoformat(timespec="seconds"), attempt["attempt_id"]))
+            connection.execute("UPDATE attempts SET expires_at = ? WHERE attempt_id = ?", (extended_deadline.isoformat(timespec="seconds"), attempt["attempt_id"]))
     return {"extended": True, "minutes": payload.minutes, "attempts_extended": len(attempts)}
 
 

@@ -11,6 +11,16 @@ const pct = value => `${Number(value || 0).toFixed(1).replace('.0','')}%`;
 const optionEntries = question => Object.entries(question.options || {});
 const compositionTotal = test => (test.selection_rules || []).reduce((sum, rule) => sum + Number(rule.quantity || 0), 0);
 
+const institutionRail = side => side === 'left'
+  ? `<aside class="institution-rail institution-rail-left" aria-label="KSIT and KSAT logos">
+      <figure><img src="/static/branding/ksit-logo.png" alt="K. S. Institute of Technology" /></figure>
+      <figure><img src="/static/branding/ksat-logo.png" alt="KSIT Students Aptitude Test" /></figure>
+    </aside>`
+  : `<aside class="institution-rail institution-rail-right" aria-label="AIML department and silver jubilee logos">
+      <figure><img src="/static/branding/aiml-logo.png" alt="Department of Artificial Intelligence and Machine Learning, KSIT" /></figure>
+      <figure><img src="/static/branding/silver-jubilee-logo.png" alt="KSIT silver jubilee — 25 years" /></figure>
+    </aside>`;
+
 const selectedDifficulties = select => select?.value && select.value !== 'all' ? [select.value] : [...difficulties];
 const difficultyLabel = levels => levels?.length === difficulties.length ? 'All levels' : (levels || difficulties).join(', ');
 
@@ -198,7 +208,7 @@ function layout(title, subtitle, content, nav = '') {
 }
 
 function loginScreen() {
-  app.innerHTML = `<div class="login"><section><a class="brand"><span>A</span>Aptitude <i>Lab</i></a><p class="eyebrow">Local, secure assessment platform</p><h1>Know where<br/>you <em>stand.</em></h1><p>Randomized aptitude tests with server-side scoring and useful progress signals.</p><small>Runs inside your college network. No internet required.</small></section><section class="login-card"><p class="eyebrow">Welcome back</p><h2>Sign in</h2><div class="role"><button class="chosen" data-role="student">Student</button><button data-role="admin">Faculty</button></div><form id="login-form"><label id="login-id-label">Student ID / USN<input id="identifier" required placeholder="1KS23AI042" autocomplete="username" /></label><label>Password<input id="password" type="password" required placeholder="Enter password" autocomplete="current-password" /></label><button class="primary">Sign in →</button></form><p class="demo" id="demo">Student demo: <code>1KS23AI042</code> / <code>student123</code></p><button class="secondary link" id="register-link">New student? Register here</button></section></div>`;
+  app.innerHTML = `<div class="login campus-login"><section class="login-intro" aria-hidden="true"></section><section class="login-card campus-login-card"><a class="brand login-brand"><span>A</span>Aptitude <i>Lab</i></a><p class="eyebrow">Welcome back</p><h2>Sign in</h2><div class="role"><button class="chosen" data-role="student">Student</button><button data-role="admin">Faculty</button></div><form id="login-form"><label id="login-id-label">Student ID / USN<input id="identifier" required placeholder="1KS23AI042" autocomplete="username" /></label><label>Password<input id="password" type="password" required placeholder="Enter password" autocomplete="current-password" /></label><button class="primary">Sign in →</button></form><p class="demo" id="demo">Student demo: <code>1KS23AI042</code> / <code>student123</code></p><button class="secondary link" id="register-link">New student? Register here</button><small>Securely hosted inside the college network.</small></section></div>`;
   let role = 'student';
   document.querySelectorAll('[data-role]').forEach(button => button.addEventListener('click', () => {
     role = button.dataset.role; document.querySelectorAll('[data-role]').forEach(item => item.classList.toggle('chosen', item === button));
@@ -215,7 +225,7 @@ function loginScreen() {
 }
 
 function registerScreen() {
-  app.innerHTML = `<div class="login"><section><a class="brand"><span>A</span>Aptitude <i>Lab</i></a><p class="eyebrow">Student registration</p><h1>Ready to<br/><em>begin?</em></h1><p>Create your own student account for this lab.</p><small>Use your official Student ID / USN.</small></section><section class="login-card"><p class="eyebrow">New student</p><h2>Create account</h2><form id="register-form"><label>Student name<input name="name" required autocomplete="name" /></label><label>Student ID / USN<input name="student_id" required /></label><div class="split"><label>Class<input name="student_class" value="AI & DS" required /></label><label>Section<input name="section" value="A" required /></label></div><label>Password<input name="password" type="password" minlength="6" required autocomplete="new-password" /></label><button class="primary">Create account →</button></form><button class="secondary link" id="back-login">Back to sign in</button></section></div>`;
+  app.innerHTML = `<div class="login campus-login"><section class="login-intro" aria-hidden="true"></section><section class="login-card campus-login-card register-card"><a class="brand login-brand"><span>A</span>Aptitude <i>Lab</i></a><p class="eyebrow">Student registration</p><h2>Create account</h2><form id="register-form"><label>Student name<input name="name" required autocomplete="name" /></label><label>Student ID / USN<input name="student_id" required /></label><div class="split"><label>Class<input name="student_class" value="AI & DS" required /></label><label>Section<input name="section" value="A" required /></label></div><label>Password<input name="password" type="password" minlength="6" required autocomplete="new-password" /></label><button class="primary">Create account →</button></form><button class="secondary link" id="back-login">Back to sign in</button><small>Use your official Student ID / USN.</small></section></div>`;
   document.querySelector('#back-login').addEventListener('click', loginScreen);
   document.querySelector('#register-form').addEventListener('submit', async event => {
     event.preventDefault();
@@ -291,6 +301,10 @@ function renderAttempt() {
   const feedback = attempt.feedback_allowed && q.feedback ? `<article class="card feedback"><h3>${q.feedback.correct ? 'Correct' : 'Not quite'}</h3><p><strong>Correct answer:</strong> ${q.feedback.correct_answer}</p>${q.feedback.solution_steps?.length ? `<h4>Solution steps</h4><ol>${q.feedback.solution_steps.map(step => `<li>${esc(step)}</li>`).join('')}</ol>` : ''}</article>` : '';
   const questionContent = `${stimulusMarkup(q.stimulus)}${q.question_html ? `<div class="visual-question">${q.question_html}</div>` : `<h1>${esc(q.question_text)}</h1>`}`;
   app.innerHTML = `<header class="top exam-top"><a class="brand"><span>A</span>Aptitude <i>Lab</i></a>${proctored ? '<div class="exam-timer"><span>Time remaining</span><strong data-exam-timer>00:00</strong></div>' : '<div class="save">✓ Answer saved automatically</div><button class="ghost" data-exit>Save and exit</button>'}</header><main class="assessment ${proctored?'proctored-assessment':''}"><aside><p class="eyebrow">Questions launched</p><strong>${attempt.questions.length}</strong><p>${answered} answered · ${attempt.questions.length-answered} unanswered</p>${proctored ? '<div class="legend-key"><span><i class="answered"></i>Answered</span><span><i class="unanswered"></i>Unanswered</span></div>' : ''}<div class="numbers">${attempt.questions.map((item,index) => `<button class="${index===state.questionIndex?'current':''} ${item.selected_answer?'answered':'unanswered'}" data-index="${index}" aria-label="Question ${index+1}, ${item.selected_answer?'answered':'unanswered'}">${index+1}</button>`).join('')}</div></aside><section class="question"><div class="question-meta"><span>${esc(short(q.category))} · ${esc(q.chapter)} · ${esc(q.difficulty)}</span><span>Question ${state.questionIndex+1} of ${attempt.questions.length}</span></div>${questionContent}<div class="answers">${optionEntries(q).map(([key,value]) => `<button class="${q.selected_answer===key?'selected':''}" data-answer="${key}" ${attempt.feedback_allowed && q.selected_answer ? 'disabled' : ''}><i>${key}</i>${esc(value)}<b>${q.selected_answer===key?'✓':''}</b></button>`).join('')}</div>${feedback}<footer><button class="secondary" data-prev ${state.questionIndex===0?'disabled':''}>← Previous</button>${state.questionIndex===attempt.questions.length-1 ? '<button class="primary" data-submit>Review & submit →</button>' : '<button class="primary" data-next>Next question →</button>'}</footer></section></main>`;
+  const assessmentMain = document.querySelector('main.assessment');
+  assessmentMain.classList.add('institutional-assessment');
+  assessmentMain.insertAdjacentHTML('beforebegin', institutionRail('left'));
+  assessmentMain.insertAdjacentHTML('afterend', institutionRail('right'));
   if (proctored) startExamTimer();
   document.querySelectorAll('[data-index]').forEach(button => button.addEventListener('click', () => { state.questionIndex = Number(button.dataset.index); renderAttempt(); }));
   document.querySelectorAll('[data-answer]').forEach(button => button.addEventListener('click', () => saveAnswer(q.question_id, button.dataset.answer)));

@@ -1,0 +1,240 @@
+/* KSIT institutional branding for the sign-in and active quiz views. */
+.campus-login {
+  position: relative;
+  isolation: isolate;
+  display: grid;
+  grid-template-columns: 1fr;
+  place-items: center end;
+  min-height: 100svh;
+  padding: clamp(110px, 18vh, 150px) clamp(24px, 6vw, 96px) 20px;
+  background-color: #eef2f5;
+  background-image: url('/static/branding/campus-login.jpg');
+  background-position: center;
+  background-size: contain;
+  background-repeat: no-repeat;
+}
+
+.campus-login::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: linear-gradient(90deg, rgba(17, 30, 52, .04) 0%, rgba(17, 30, 52, .08) 48%, rgba(17, 30, 52, .36) 100%);
+}
+
+.login.campus-login > section.login-intro {
+  display: none;
+}
+
+.campus-login-card {
+  align-self: center;
+  width: min(430px, 100%);
+  margin: 0;
+  padding: 24px 30px;
+  border: 1px solid rgba(255, 255, 255, .72);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, .91);
+  box-shadow: 0 24px 70px rgba(20, 34, 57, .28);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+
+.campus-login-card h2 {
+  margin-bottom: 14px;
+  color: #241f46;
+}
+
+.campus-login-card .login-brand {
+  margin-bottom: 18px;
+}
+
+.campus-login-card .eyebrow {
+  color: #8f2418;
+}
+
+.campus-login-card .role {
+  background: rgba(229, 234, 242, .82);
+}
+
+.campus-login-card input {
+  background: rgba(255, 255, 255, .93);
+}
+
+.campus-login-card .primary {
+  background: #8f2418;
+  box-shadow: 0 6px 16px rgba(143, 36, 24, .25);
+}
+
+.campus-login-card .demo {
+  border-radius: 7px;
+  background: rgba(237, 240, 246, .86);
+}
+
+.campus-login-card > small {
+  display: block;
+  margin: 18px 0 0;
+  color: #69768a;
+  text-align: center;
+  font-size: 10px;
+}
+
+.campus-login-card.register-card {
+  padding-top: 26px;
+  padding-bottom: 26px;
+}
+
+main.institutional-assessment {
+  width: min(1180px, calc(100vw - 300px));
+}
+
+.institution-rail {
+  position: fixed;
+  top: 111px;
+  z-index: 5;
+  display: flex;
+  width: 112px;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.institution-rail-left {
+  left: max(14px, calc((100vw - 1510px) / 2));
+}
+
+.institution-rail-right {
+  right: max(14px, calc((100vw - 1510px) / 2));
+}
+
+.institution-rail figure {
+  display: grid;
+  place-items: center;
+  min-height: 125px;
+  margin: 0;
+  padding: 10px;
+  border: 1px solid rgba(207, 216, 230, .9);
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 12px 30px rgba(29, 44, 82, .1);
+}
+
+.institution-rail img {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 160px;
+  object-fit: contain;
+}
+
+.institution-rail-left figure:first-child {
+  padding: 7px;
+}
+
+.institution-rail-right figure:last-child {
+  padding: 14px;
+}
+
+@media (max-width: 1100px) {
+  main.institutional-assessment {
+    width: min(900px, calc(100vw - 190px));
+  }
+
+  .institution-rail {
+    top: 96px;
+    width: 74px;
+    gap: 14px;
+  }
+
+  .institution-rail figure {
+    min-height: 82px;
+    padding: 6px;
+    border-radius: 10px;
+  }
+
+  .institutional-assessment.assessment {
+    grid-template-columns: 180px 1fr;
+    gap: 14px;
+  }
+}
+
+@media (max-width: 760px) {
+  #app:has(main.institutional-assessment) {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+
+  #app:has(main.institutional-assessment) > .exam-top {
+    grid-row: 1;
+    grid-column: 1 / -1;
+  }
+
+  .campus-login {
+    place-items: end center;
+    padding: 150px 16px 20px;
+    background-image: url('/static/branding/campus-login.jpg');
+    background-position: 42% center;
+    background-size: cover;
+  }
+
+  .campus-login::before {
+    background: linear-gradient(180deg, rgba(17, 30, 52, .02) 0%, rgba(17, 30, 52, .08) 40%, rgba(17, 30, 52, .4) 100%);
+  }
+
+  .campus-login-card {
+    padding: 24px 22px;
+    border-radius: 14px;
+  }
+
+  .campus-login-card .login-brand {
+    margin-bottom: 18px;
+  }
+
+  .institution-rail {
+    position: static;
+    display: grid;
+    width: auto;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+
+  .institution-rail-left {
+    grid-row: 2;
+    grid-column: 1;
+    margin: 14px 5px 0 16px;
+  }
+
+  .institution-rail-right {
+    grid-row: 2;
+    grid-column: 2;
+    margin: 14px 16px 0 5px;
+  }
+
+  .institution-rail figure {
+    min-height: 0;
+    height: 90px;
+    padding: 5px;
+  }
+
+  .institution-rail img {
+    width: 100%;
+    height: 100%;
+  }
+
+  main.institutional-assessment,
+  .institutional-assessment.assessment,
+  .institutional-assessment.proctored-assessment {
+    grid-row: 3;
+    grid-column: 1 / -1;
+    width: min(620px, calc(100% - 32px));
+    grid-template-columns: 1fr;
+    margin: 0 auto;
+    padding: 14px 0;
+  }
+
+  .institutional-assessment.assessment > aside {
+    display: none;
+  }
+
+  .institutional-assessment.proctored-assessment > aside {
+    display: block;
+  }
+}

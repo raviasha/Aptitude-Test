@@ -1,5 +1,5 @@
 #define AppName "Aptitude Lab"
-#define AppVersion "1.1.0"
+#define AppVersion "1.1.1"
 #define AppPublisher "College Assessment Lab"
 #define AppExeName "AptitudeLabServer.exe"
 
@@ -33,6 +33,15 @@ Name: "{group}\Aptitude Lab"; Filename: "{app}\{#AppExeName}"; WorkingDir: "{app
 [Run]
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""Aptitude Lab LAN"" dir=in action=allow protocol=TCP localport=8000 profile=private"; Flags: runhidden
 Filename: "{app}\{#AppExeName}"; Description: "Launch Aptitude Lab now"; Flags: nowait postinstall skipifsilent
+
+[Code]
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  ResultCode: Integer;
+begin
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM AptitudeLabServer.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Result := '';
+end;
 
 [UninstallRun]
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Aptitude Lab LAN"" protocol=TCP localport=8000"; Flags: runhidden

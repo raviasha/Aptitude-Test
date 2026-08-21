@@ -1,6 +1,6 @@
 const app = document.querySelector('#app');
 const toast = document.querySelector('#toast');
-const BUILD_VERSION = '1.2.1';
+const BUILD_VERSION = '1.2.2';
 let state = { user: null, attempt: null, questionIndex: 0 };
 let examGuard = {active:false, deadlineMs:null, timerId:null, syncTimerId:null, submitting:false, lastViolation:null, needsResume:false};
 let facultyTimerId = null;
@@ -96,7 +96,7 @@ async function api(path, options = {}) {
   const form = options.body instanceof FormData;
   const headers = {...(options.headers || {})};
   if (options.body && !form && !headers['Content-Type']) headers['Content-Type'] = 'application/json';
-  const config = {...options, headers};
+  const config = {cache:'no-store', ...options, headers};
   if (config.body && !form && typeof config.body !== 'string') config.body = JSON.stringify(config.body);
   const response = await fetch(path, config);
   if (!response.ok) {
@@ -202,9 +202,16 @@ function startExamTimer() {
   };
   update();
   examGuard.timerId = setInterval(update, 1000);
-  examGuard.syncTimerId = setInterval(async () => {
-    try { const latest = await api(`/api/attempts/${state.attempt?.attempt_id}`); if (latest.status === 'submitted') return resultScreen(latest.attempt_id); if (Number.isFinite(latest.remaining_seconds)) examGuard.deadlineMs = Date.now() + latest.remaining_seconds * 1000; } catch (_) {}
-  }, 10000);
+  const syncDeadline = async () => {
+    try {
+      const latest = await api(`/api/attempts/${state.attempt?.attempt_id}/timer?_=${Date.now()}`);
+      if (latest.status === 'submitted') return resultScreen(latest.attempt_id);
+      if (latest.expires_at) examGuard.deadlineMs = Date.parse(latest.expires_at);
+      else if (Number.isFinite(latest.remaining_seconds)) examGuard.deadlineMs = Date.now() + latest.remaining_seconds * 1000;
+    } catch (_) {}
+  };
+  syncDeadline();
+  examGuard.syncTimerId = setInterval(syncDeadline, 2000);
 }
 
 function logoutButton() { return `${state.user?.role === 'admin' ? '<button class="ghost" data-stop-server>Stop server</button>' : ''}<button class="ghost" data-logout>Sign out</button>`; }

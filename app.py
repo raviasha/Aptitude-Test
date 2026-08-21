@@ -51,7 +51,7 @@ QUESTION_BANKS_DIR = DATA_DIR / "Question Banks"
 STATIC_DIR = BUNDLE_DIR / "static"
 TEMPLATE_DIR = BUNDLE_DIR / "templates"
 SERVER_URL = "http://127.0.0.1:8000"
-APP_VERSION = "1.2.1"
+APP_VERSION = "1.2.2"
 
 CATEGORIES = [
     "Quantitative Aptitude",
@@ -1655,6 +1655,20 @@ def get_student_attempt(attempt_id: str, request: Request) -> Dict[str, Any]:
     with db() as connection:
         attempt = assert_student_attempt(connection, attempt_id, user["id"])
         return serialize_attempt(connection, attempt)
+
+
+@app.get("/api/attempts/{attempt_id}/timer")
+def get_attempt_timer(attempt_id: str, request: Request) -> Dict[str, Any]:
+    user = require_user(request, "student")
+    with db() as connection:
+        attempt = expire_attempt_if_needed(connection, assert_student_attempt(connection, attempt_id, user["id"]))
+        return {
+            "attempt_id": attempt["attempt_id"],
+            "status": attempt["status"],
+            "expires_at": attempt["expires_at"],
+            "remaining_seconds": seconds_remaining(attempt),
+            "server_time": now(),
+        }
 
 
 @app.put("/api/attempts/{attempt_id}/responses/{question_id}")

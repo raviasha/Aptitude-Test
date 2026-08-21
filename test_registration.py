@@ -609,7 +609,7 @@ class StudentRegistrationTests(unittest.TestCase):
         self.assertEqual(serialized["status"], "submitted")
         self.assertEqual(serialized["remaining_seconds"], 0)
 
-    def test_faculty_timer_starts_at_launch_and_extends_without_student_attempts(self):
+    def test_faculty_and_student_deadlines_follow_repeated_extensions(self):
         rules = [{"category": "Quantitative Aptitude", "chapter": "Arithmetic", "quantity": 2}]
         with app.db() as connection:
             test_id = connection.execute(
@@ -621,10 +621,20 @@ class StudentRegistrationTests(unittest.TestCase):
         initial = next(test for test in app.list_tests(request)["tests"] if test["test_id"] == test_id)
         self.assertGreater(initial["remaining_seconds"], 0)
         self.assertLessEqual(initial["remaining_seconds"], 120)
+        with app.db() as connection:
+            deadline = connection.execute("SELECT launch_expires_at FROM tests WHERE test_id = ?", (test_id,)).fetchone()["launch_expires_at"]
+            connection.execute("INSERT INTO students VALUES ('TIMER1', 'Timer Student', 'hash', 'AIML', 'A', ?)", (app.now(),))
+            connection.execute("INSERT INTO attempts (attempt_id, student_id, test_id, started_at, total_questions, expires_at) VALUES ('timer-attempt', 'TIMER1', ?, ?, 2, ?)", (test_id, app.now(), deadline))
         result = app.extend_test_duration(test_id, app.DurationExtensionPayload(minutes=5), request)
         extended = next(test for test in app.list_tests(request)["tests"] if test["test_id"] == test_id)
-        self.assertEqual(result["attempts_extended"], 0)
+        self.assertEqual(result["attempts_extended"], 1)
         self.assertGreaterEqual(extended["remaining_seconds"], initial["remaining_seconds"] + 299)
+        with app.db() as connection:
+            first_deadline = app.parse_timestamp(connection.execute("SELECT expires_at FROM attempts WHERE attempt_id = 'timer-attempt'").fetchone()["expires_at"])
+        app.extend_test_duration(test_id, app.DurationExtensionPayload(minutes=5), request)
+        with app.db() as connection:
+            second_deadline = app.parse_timestamp(connection.execute("SELECT expires_at FROM attempts WHERE attempt_id = 'timer-attempt'").fetchone()["expires_at"])
+        self.assertEqual(int((second_deadline - first_deadline).total_seconds()), 300)
 
     def test_difficulty_filter_limits_validation_and_sampling(self):
         with app.db() as connection:

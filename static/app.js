@@ -1,7 +1,7 @@
 const app = document.querySelector('#app');
 const toast = document.querySelector('#toast');
 let state = { user: null, attempt: null, questionIndex: 0 };
-let examGuard = {active:false, deadlineMs:null, timerId:null, submitting:false, lastViolation:null, needsResume:false};
+let examGuard = {active:false, deadlineMs:null, timerId:null, syncTimerId:null, submitting:false, lastViolation:null, needsResume:false};
 
 const categories = ['Quantitative Aptitude', 'Logical Reasoning', 'Data Interpretation', 'Verbal Ability', 'Coding / Computational Thinking'];
 const difficulties = ['Easy', 'Medium', 'Hard'];
@@ -168,6 +168,8 @@ function cleanupExamGuard(exitFullscreen = true) {
   examGuard.needsResume = false;
   if (examGuard.timerId) clearInterval(examGuard.timerId);
   examGuard.timerId = null;
+  if (examGuard.syncTimerId) clearInterval(examGuard.syncTimerId);
+  examGuard.syncTimerId = null;
   ['copy','cut','paste','contextmenu'].forEach(type => document.removeEventListener(type, blockExamAction, true));
   document.removeEventListener('visibilitychange', onExamVisibilityChange);
   document.removeEventListener('fullscreenchange', onFullscreenChange);
@@ -195,6 +197,9 @@ function startExamTimer() {
   };
   update();
   examGuard.timerId = setInterval(update, 1000);
+  examGuard.syncTimerId = setInterval(async () => {
+    try { const latest = await api(`/api/attempts/${state.attempt?.attempt_id}`); if (latest.status === 'submitted') return resultScreen(latest.attempt_id); if (Number.isFinite(latest.remaining_seconds)) examGuard.deadlineMs = Date.now() + latest.remaining_seconds * 1000; } catch (_) {}
+  }, 10000);
 }
 
 function logoutButton() { return `${state.user?.role === 'admin' ? '<button class="ghost" data-stop-server>Stop server</button>' : ''}<button class="ghost" data-logout>Sign out</button>`; }
@@ -375,7 +380,7 @@ async function testsLegacy() { const data = await api('/api/admin/tests'); layou
 
 async function tests() {
   const data = await api('/api/admin/tests');
-  layout('Create a <em>test.</em>', 'Choose a difficulty and quantities from the selected bank’s categories and chapters.', `<section class="grid two"><article class="card"><p class="eyebrow">New assessment</p><h2>Question composition</h2><form id="test-form"><label>Test name<input name="test_name" required placeholder="Placement Readiness · Set 02" /></label><label>Question bank<select id="test-bank" name="bank_id" required><option value="">Choose a bank…</option>${data.banks.map(bank => `<option value="${bank.bank_id}">${esc(bank.bank_name)} · ${bank.question_count} active questions</option>`).join('')}</select></label><label>Difficulty<select id="test-difficulty"><option value="all">All difficulty levels</option>${difficulties.map(level => `<option value="${level}">${level}</option>`).join('')}</select></label><div id="test-composition" class="taxonomy"><p class="muted">Choose a question bank to see its categories and chapters.</p></div><p class="composition-total">Selected: <strong id="test-total">0</strong> / 500</p><button class="primary">Create test →</button></form></article><article class="card"><p class="eyebrow">Current and past tests</p><h2>Test library</h2><div class="table-scroll"><table><thead><tr><th>Name</th><th>Bank</th><th>Difficulty</th><th>Questions</th><th>Action</th></tr></thead><tbody>${data.tests.map(test => `<tr><td>${esc(test.test_name)}<small>${test.attempt_count} attempt${test.attempt_count===1?'':'s'}</small></td><td>${esc(test.bank_name || '—')}</td><td>${esc(difficultyLabel(test.difficulty_levels))}</td><td>${compositionTotal(test)}</td><td><div class="row-actions">${test.launched ? `<button class="secondary small" data-close-test="${test.test_id}">Close</button>` : `<button class="primary small" data-launch-test="${test.test_id}">Launch</button>`}<button class="danger small" data-delete-test="${test.test_id}" data-test-name="${esc(test.test_name)}" data-attempt-count="${test.attempt_count}">Delete</button></div></td></tr>`).join('')}</tbody></table></div></article></section>`, adminNav('tests'));
+  layout('Create a <em>test.</em>', 'Choose a difficulty and quantities from the selected bank’s categories and chapters.', `<section class="grid two"><article class="card"><p class="eyebrow">New assessment</p><h2>Question composition</h2><form id="test-form"><label>Test name<input name="test_name" required placeholder="Placement Readiness · Set 02" /></label><label>Question bank<select id="test-bank" name="bank_id" required><option value="">Choose a bank…</option>${data.banks.map(bank => `<option value="${bank.bank_id}">${esc(bank.bank_name)} · ${bank.question_count} active questions</option>`).join('')}</select></label><label>Difficulty<select id="test-difficulty"><option value="all">All difficulty levels</option>${difficulties.map(level => `<option value="${level}">${level}</option>`).join('')}</select></label><div id="test-composition" class="taxonomy"><p class="muted">Choose a question bank to see its categories and chapters.</p></div><p class="composition-total">Selected: <strong id="test-total">0</strong> / 500</p><button class="primary">Create test →</button></form></article><article class="card"><p class="eyebrow">Current and past tests</p><h2>Test library</h2><div class="table-scroll"><table><thead><tr><th>Name</th><th>Bank</th><th>Difficulty</th><th>Questions</th><th>Action</th></tr></thead><tbody>${data.tests.map(test => `<tr><td>${esc(test.test_name)}<small>${test.attempt_count} attempt${test.attempt_count===1?'':'s'}</small></td><td>${esc(test.bank_name || '—')}</td><td>${esc(difficultyLabel(test.difficulty_levels))}</td><td>${compositionTotal(test)}</td><td><div class="row-actions">${test.launched ? `<button class="secondary small" data-close-test="${test.test_id}">Close</button><button class="secondary small" data-extend-test="${test.test_id}">+5 min</button>` : `<button class="primary small" data-launch-test="${test.test_id}">Launch</button>`}<button class="danger small" data-delete-test="${test.test_id}" data-test-name="${esc(test.test_name)}" data-attempt-count="${test.attempt_count}">Delete</button></div></td></tr>`).join('')}</tbody></table></div></article></section>`, adminNav('tests'));
   const bankSelect = document.querySelector('#test-bank'), difficultySelect = document.querySelector('#test-difficulty'), composition = document.querySelector('#test-composition'), total = document.querySelector('#test-total');
   await attachTaxonomySelector(bankSelect, composition, total, 500, 'test', difficultySelect);
   document.querySelector('#test-form').addEventListener('submit', async event => { event.preventDefault(); const values = Object.fromEntries(new FormData(event.currentTarget)); try { await api('/api/admin/tests',{method:'POST',body:{test_name:values.test_name,bank_id:Number(bankSelect.value),selection_rules:selectedRules(composition),difficulties:selectedDifficulties(difficultySelect)}}); notify('Test created.'); tests(); } catch(error) { notify(error.message,true); } });

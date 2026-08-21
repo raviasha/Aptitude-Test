@@ -96,7 +96,7 @@ SOLUTION_REVIEW_NOTICE = [
     "This source calculation could not be displayed reliably because its PDF formula layout was damaged during import. The correct answer is shown above; the detailed solution is awaiting faculty verification."
 ]
 
-app = FastAPI(title="Aptitude Lab")
+app = FastAPI(title="KSAT")
 app.add_middleware(SessionMiddleware, secret_key=os.getenv("SESSION_SECRET", "replace-this-before-production"), https_only=False, same_site="lax")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -105,6 +105,7 @@ class LoginPayload(BaseModel):
     identifier: str
     password: str
     role: str = "student"
+    department: str = "AIML"
 
 
 class AnswerPayload(BaseModel):
@@ -113,6 +114,10 @@ class AnswerPayload(BaseModel):
 
 class SubmitPayload(BaseModel):
     confirmed: bool = False
+
+
+class DurationExtensionPayload(BaseModel):
+    minutes: int = Field(ge=1, le=120)
 
 
 class StudentPayload(BaseModel):
@@ -245,8 +250,10 @@ def student_available_tests(connection: sqlite3.Connection, student_id: Optional
 
 def feedback_allowed(test: sqlite3.Row | Dict[str, Any]) -> bool:
     keys = set(test.keys())
-    if "mode" in keys and test["mode"] == "student_practice":
-        return True
+    if "mode" in keys and test["mode"] in {"student_practice", "faculty"}:
+        # Faculty assessments never expose answers or solutions during the attempt,
+        # whether they are currently launched or simply available to students.
+        return test["mode"] == "student_practice"
     if "expires_at" in keys and test["expires_at"]:
         return False
     return not bool(test["launched"])
@@ -1270,6 +1277,20 @@ def seconds_remaining(attempt: sqlite3.Row | Dict[str, Any]) -> Optional[int]:
     return max(0, math.ceil((expires_at - datetime.now(timezone.utc)).total_seconds()))
 
 
+def ensure_faculty_deadline(connection: sqlite3.Connection, attempt: sqlite3.Row) -> sqlite3.Row:
+    """Backfill the timer for older live Faculty attempts created before expiry was stored."""
+    if (
+        attempt["mode"] == "faculty"
+        and attempt["launched"]
+        and not attempt["expires_at"]
+        and (started_at := parse_timestamp(attempt["started_at"]))
+    ):
+        expires_at = (started_at + timedelta(seconds=attempt["total_questions"] * SECONDS_PER_FACULTY_QUESTION)).isoformat(timespec="seconds")
+        connection.execute("UPDATE attempts SET expires_at = ? WHERE attempt_id = ?", (expires_at, attempt["attempt_id"]))
+        return get_attempt(connection, attempt["attempt_id"])
+    return attempt
+
+
 def finalize_attempt(connection: sqlite3.Connection, attempt_id: str) -> sqlite3.Row:
     attempt = get_attempt(connection, attempt_id)
     if attempt["status"] == "submitted":
@@ -1321,6 +1342,7 @@ def assert_student_attempt(connection: sqlite3.Connection, attempt_id: str, stud
 
 
 def serialize_attempt(connection: sqlite3.Connection, attempt: sqlite3.Row, include_answers: bool = False) -> Dict[str, Any]:
+    attempt = ensure_faculty_deadline(connection, attempt)
     attempt = expire_attempt_if_needed(connection, attempt)
     include_answers = include_answers or feedback_allowed(attempt)
     response_rows = connection.execute(
@@ -2093,6 +2115,25 @@ def close_test(test_id: int, request: Request) -> Dict[str, bool]:
     with db() as connection:
         connection.execute("UPDATE tests SET launched = 0 WHERE test_id = ? AND mode = 'faculty'", (test_id,))
     return {"closed": True}
+
+
+@app.post("/api/admin/tests/{test_id}/extend")
+def extend_test_duration(test_id: int, payload: DurationExtensionPayload, request: Request) -> Dict[str, Any]:
+    require_user(request, "admin")
+    with db() as connection:
+        test = connection.execute("SELECT launched, mode FROM tests WHERE test_id = ?", (test_id,)).fetchone()
+        if not test or test["mode"] != "faculty":
+            raise HTTPException(404, "Faculty assessment not found.")
+        if not test["launched"]:
+            raise HTTPException(409, "Launch the assessment before extending its duration.")
+        attempts = connection.execute("SELECT attempt_id, started_at, total_questions, expires_at FROM attempts WHERE test_id = ? AND status = 'in_progress'", (test_id,)).fetchall()
+        for attempt in attempts:
+            deadline = parse_timestamp(attempt["expires_at"])
+            if not deadline:
+                started = parse_timestamp(attempt["started_at"])
+                deadline = started + timedelta(seconds=attempt["total_questions"] * SECONDS_PER_FACULTY_QUESTION)
+            connection.execute("UPDATE attempts SET expires_at = ? WHERE attempt_id = ?", ((deadline + timedelta(minutes=payload.minutes)).isoformat(timespec="seconds"), attempt["attempt_id"]))
+    return {"extended": True, "minutes": payload.minutes, "attempts_extended": len(attempts)}
 
 
 @app.get("/api/admin/export")

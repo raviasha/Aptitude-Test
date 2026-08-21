@@ -165,12 +165,18 @@ class StudentRegistrationTests(unittest.TestCase):
 
     def test_feedback_is_available_only_for_practice_attempts(self):
         with app.db() as connection:
-            connection.execute("INSERT INTO tests (test_name, composition, created_at, active, launched) VALUES (?, ?, ?, ?, ?)", ("Practice", "{}", app.now(), 1, 0))
+            connection.execute("INSERT INTO tests (test_name, composition, created_at, active, launched, mode) VALUES (?, ?, ?, ?, ?, ?)", ("Practice", "{}", app.now(), 1, 0, "student_practice"))
             practice = connection.execute("SELECT * FROM tests WHERE test_name = 'Practice'").fetchone()
             connection.execute("INSERT INTO tests (test_name, composition, created_at, active, launched) VALUES (?, ?, ?, ?, ?)", ("Exam", "{}", app.now(), 1, 1))
             exam = connection.execute("SELECT * FROM tests WHERE test_name = 'Exam'").fetchone()
         self.assertTrue(app.feedback_allowed(practice))
         self.assertFalse(app.feedback_allowed(exam))
+
+        faculty_available = dict(practice)
+        faculty_available["mode"] = "faculty"
+        faculty_available["launched"] = 0
+        faculty_available["expires_at"] = None
+        self.assertFalse(app.feedback_allowed(faculty_available))
 
     def test_question_bank_preserves_solution_steps_and_option_explanations(self):
         html = '<section data-question-key="q1"><h3>What is 2 + 2?</h3></section>'
@@ -431,8 +437,8 @@ class StudentRegistrationTests(unittest.TestCase):
                 ("Choose five.", "Quantitative Aptitude", "Easy", "1", "2", "3", "4", json.dumps(options), "E", "Five is correct.", app.now()),
             ).lastrowid
             test_id = connection.execute(
-                "INSERT INTO tests (test_name, composition, created_at, active, launched) VALUES (?, ?, ?, ?, ?)",
-                ("Five choices", "{}", app.now(), 1, 0),
+                "INSERT INTO tests (test_name, composition, created_at, active, launched, mode) VALUES (?, ?, ?, ?, ?, ?)",
+                ("Five choices", "{}", app.now(), 1, 0, "student_practice"),
             ).lastrowid
             connection.execute(
                 "INSERT INTO attempts (attempt_id, student_id, test_id, started_at, total_questions) VALUES (?, ?, ?, ?, ?)",
@@ -476,12 +482,12 @@ class StudentRegistrationTests(unittest.TestCase):
                 ("What is 2 + 2?", "Quantitative Aptitude", "Easy", "3", "4", "5", "6", "B", "Two plus two is four.", app.now()),
             ).lastrowid
             practice_test_id = connection.execute(
-                "INSERT INTO tests (test_name, composition, created_at, active, launched) VALUES (?, ?, ?, ?, ?)",
-                ("Practice", "{}", app.now(), 1, 0),
+                "INSERT INTO tests (test_name, composition, created_at, active, launched, mode) VALUES (?, ?, ?, ?, ?, ?)",
+                ("Practice", "{}", app.now(), 1, 0, "student_practice"),
             ).lastrowid
             exam_test_id = connection.execute(
-                "INSERT INTO tests (test_name, composition, created_at, active, launched) VALUES (?, ?, ?, ?, ?)",
-                ("Faculty-led", "{}", app.now(), 1, 1),
+                "INSERT INTO tests (test_name, composition, created_at, active, launched, mode) VALUES (?, ?, ?, ?, ?, ?)",
+                ("Faculty-led", "{}", app.now(), 1, 1, "faculty"),
             ).lastrowid
             for attempt_id, test_id in (("practice-attempt", practice_test_id), ("exam-attempt", exam_test_id)):
                 connection.execute(
@@ -570,6 +576,21 @@ class StudentRegistrationTests(unittest.TestCase):
         with self.assertRaises(app.HTTPException) as repeated:
             app.start_test(test_id, request)
         self.assertEqual(repeated.exception.status_code, 409)
+
+    def test_legacy_live_faculty_attempt_gets_a_timer_when_serialized(self):
+        app.register_student("LEGACY1", "Legacy Student", "AI & DS", "A", "secret123")
+        with app.db() as connection:
+            test_id = connection.execute(
+                "INSERT INTO tests (test_name, composition, created_at, active, launched, mode) VALUES ('Legacy timed', '[]', ?, 1, 1, 'faculty')",
+                (app.now(),),
+            ).lastrowid
+            connection.execute(
+                "INSERT INTO attempts (attempt_id, student_id, test_id, started_at, total_questions) VALUES ('legacy-timed-attempt', 'LEGACY1', ?, ?, 2)",
+                (test_id, app.now()),
+            )
+            serialized = app.serialize_attempt(connection, app.get_attempt(connection, "legacy-timed-attempt"))
+        self.assertTrue(serialized["proctored"])
+        self.assertGreater(serialized["remaining_seconds"], 0)
 
     def test_expired_faculty_attempt_is_automatically_submitted(self):
         app.register_student("EXPIRE1", "Expired Student", "AI & DS", "A", "secret123")

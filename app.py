@@ -17,9 +17,12 @@ import re
 import shutil
 import socket
 import sqlite3
+import subprocess
 import sys
 import threading
+import time
 import unicodedata
+import urllib.request
 import uuid
 import webbrowser
 import zipfile
@@ -48,7 +51,7 @@ QUESTION_BANKS_DIR = DATA_DIR / "Question Banks"
 STATIC_DIR = BUNDLE_DIR / "static"
 TEMPLATE_DIR = BUNDLE_DIR / "templates"
 SERVER_URL = "http://127.0.0.1:8000"
-APP_VERSION = "1.1.2"
+APP_VERSION = "1.1.3"
 
 CATEGORIES = [
     "Quantitative Aptitude",
@@ -110,6 +113,11 @@ async def prevent_stale_frontend_assets(request: Request, call_next):
         response.headers["Pragma"] = "no-cache"
         response.headers["Expires"] = "0"
     return response
+
+
+@app.get("/api/build")
+def build_information() -> Dict[str, str]:
+    return {"version": APP_VERSION}
 
 
 class LoginPayload(BaseModel):
@@ -2238,14 +2246,41 @@ def server_is_already_running() -> bool:
         return False
 
 
+def running_server_version() -> Optional[str]:
+    try:
+        with urllib.request.urlopen(f"{SERVER_URL}/api/build", timeout=0.8) as response:
+            return json.loads(response.read().decode("utf-8")).get("version")
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+
+
+def stop_stale_server_on_port() -> None:
+    if os.name != "nt":
+        return
+    result = subprocess.run(["netstat", "-ano", "-p", "tcp"], capture_output=True, text=True, check=False)
+    pids = set()
+    for line in result.stdout.splitlines():
+        if "LISTENING" not in line.upper():
+            continue
+        parts = line.split()
+        if len(parts) >= 5 and parts[1].rsplit(":", 1)[-1] == "8000" and parts[-1].isdigit():
+            pids.add(parts[-1])
+    for pid in pids:
+        subprocess.run(["taskkill", "/F", "/PID", pid], capture_output=True, check=False)
+    if pids:
+        time.sleep(0.8)
+
+
 def open_local_browser() -> None:
     webbrowser.open(SERVER_URL, new=1)
 
 
 if __name__ == "__main__":
-    if server_is_already_running():
+    if server_is_already_running() and running_server_version() == APP_VERSION:
         open_local_browser()
     else:
+        if server_is_already_running():
+            stop_stale_server_on_port()
         threading.Timer(1.1, open_local_browser).start()
         import uvicorn
 

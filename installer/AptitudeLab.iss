@@ -1,5 +1,5 @@
 #define AppName "Aptitude Lab"
-#define AppVersion "1.1.2"
+#define AppVersion "1.1.3"
 #define AppPublisher "College Assessment Lab"
 #define AppExeName "AptitudeLabServer.exe"
 
@@ -12,7 +12,7 @@ DefaultDirName={autopf}\Aptitude Lab
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
 OutputDir=..\release
-OutputBaseFilename=KSAT-Setup-1.1.2
+OutputBaseFilename=KSAT-Setup-1.1.3
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern

@@ -36,5 +36,5 @@ if not defined ISCC_EXE (
 "%ISCC_EXE%" installer\AptitudeLab.iss
 if errorlevel 1 exit /b 1
 echo.
-echo Complete: release\Aptitude-Lab-Setup.exe
+echo Complete: release\KSAT-Setup-1.1.2.exe
 endlocal

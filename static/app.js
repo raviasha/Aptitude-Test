@@ -1,5 +1,6 @@
 const app = document.querySelector('#app');
 const toast = document.querySelector('#toast');
+const BUILD_VERSION = '1.1.2';
 let state = { user: null, attempt: null, questionIndex: 0 };
 let examGuard = {active:false, deadlineMs:null, timerId:null, syncTimerId:null, submitting:false, lastViolation:null, needsResume:false};
 let facultyTimerId = null;
@@ -219,7 +220,7 @@ function layout(title, subtitle, content, nav = '') {
 }
 
 function loginScreen() {
-  app.innerHTML = `<div class="login campus-login"><section class="login-intro" aria-hidden="true"></section><section class="login-card campus-login-card"><a class="brand login-brand"><span>A</span>AIML-<i>KSAT</i></a><p class="eyebrow">Welcome back</p><h2>Sign in</h2><div class="role"><button class="chosen" data-role="student">Student</button><button data-role="admin">Faculty</button></div><form id="login-form"><label>Department<select id="department" required><option value="AIML">AIML</option></select></label><label id="login-id-label">Student ID / USN<input id="identifier" required placeholder="1KS23AI042" autocomplete="username" /></label><label>Password<input id="password" type="password" required placeholder="Enter password" autocomplete="current-password" /></label><button class="primary">Sign in →</button></form><p class="demo" id="demo">Student demo: <code>1KS23AI042</code> / <code>student123</code></p><button class="secondary link" id="register-link">New student? Register here</button><small>Securely hosted inside the college network.</small></section></div>`;
+  app.innerHTML = `<div class="login campus-login"><section class="login-intro" aria-hidden="true"></section><section class="login-card campus-login-card"><a class="brand login-brand"><span>A</span>AIML-<i>KSAT</i></a><p class="eyebrow">Welcome back</p><h2>Sign in</h2><div class="role"><button class="chosen" data-role="student">Student</button><button data-role="admin">Faculty</button></div><form id="login-form"><label>Department<select id="department" required><option value="AIML">AIML</option></select></label><label id="login-id-label">Student ID / USN<input id="identifier" required placeholder="1KS23AI042" autocomplete="username" /></label><label>Password<input id="password" type="password" required placeholder="Enter password" autocomplete="current-password" /></label><button class="primary">Sign in →</button></form><p class="demo" id="demo">Student demo: <code>1KS23AI042</code> / <code>student123</code></p><button class="secondary link" id="register-link">New student? Register here</button><small>Securely hosted inside the college network. · Build ${BUILD_VERSION}</small></section></div>`;
   let role = 'student';
   document.querySelectorAll('[data-role]').forEach(button => button.addEventListener('click', () => {
     role = button.dataset.role; document.querySelectorAll('[data-role]').forEach(item => item.classList.toggle('chosen', item === button));

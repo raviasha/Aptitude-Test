@@ -13,7 +13,7 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt pyinstaller
 
 set "PYINSTALLER_ROOT=%TEMP%\AptitudeLab-PyInstaller"
-python -m PyInstaller --noconfirm --clean --onefile --windowed --name AptitudeLabServer ^
+python -m PyInstaller --noconfirm --clean --onefile --windowed --name KSATServer ^
   --workpath "%PYINSTALLER_ROOT%\work" --specpath "%PYINSTALLER_ROOT%\spec" --distpath "%CD%\dist" ^
   --add-data "%CD%\static;static" ^
   --add-data "%CD%\templates\visual-data-interpretation.html;templates" ^
@@ -28,7 +28,7 @@ if not defined ISCC_EXE if exist "%ProgramFiles%\Inno Setup 6\ISCC.exe" set "ISC
 if not defined ISCC_EXE if exist "%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" set "ISCC_EXE=%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe"
 if not defined ISCC_EXE (
   echo.
-  echo The server executable was built at dist\AptitudeLabServer.exe.
+  echo The server executable was built at dist\KSATServer.exe.
   echo Install Inno Setup 6, ensure ISCC is on PATH, then rerun this script to create the installer.
   exit /b 1
 )
@@ -36,5 +36,5 @@ if not defined ISCC_EXE (
 "%ISCC_EXE%" installer\AptitudeLab.iss
 if errorlevel 1 exit /b 1
 echo.
-echo Complete: release\KSAT-Setup-1.1.3.exe
+echo Complete: release\KSAT-Setup-1.2.0.exe
 endlocal

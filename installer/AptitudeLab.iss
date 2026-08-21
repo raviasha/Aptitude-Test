@@ -1,18 +1,18 @@
-#define AppName "Aptitude Lab"
-#define AppVersion "1.1.3"
+#define AppName "KSAT"
+#define AppVersion "1.2.0"
 #define AppPublisher "College Assessment Lab"
-#define AppExeName "AptitudeLabServer.exe"
+#define AppExeName "KSATServer.exe"
 
 [Setup]
-AppId={{89D710B6-1437-4FB7-AFF7-0895627E77E3}
+AppId={{AA14D31A-7D94-49E4-9A36-50CBE59C8D61}
 AppName={#AppName}
 AppVersion={#AppVersion}
 AppPublisher={#AppPublisher}
-DefaultDirName={autopf}\Aptitude Lab
+DefaultDirName={autopf}\KSAT
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
 OutputDir=..\release
-OutputBaseFilename=KSAT-Setup-1.1.3
+OutputBaseFilename=KSAT-Setup-1.2.0
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
@@ -20,19 +20,22 @@ PrivilegesRequired=admin
 ArchitecturesInstallIn64BitMode=x64compatible
 
 [Files]
-Source: "..\dist\AptitudeLabServer.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\dist\KSATServer.exe"; DestDir: "{app}"; Flags: ignoreversion
+
+[InstallDelete]
+Type: files; Name: "{autodesktop}\Aptitude Lab.lnk"
 
 [Dirs]
 Name: "{commonappdata}\Aptitude Lab"; Permissions: users-modify
 Name: "{commonappdata}\Aptitude Lab\Question Banks"; Permissions: users-modify
 
 [Icons]
-Name: "{autodesktop}\Aptitude Lab"; Filename: "{app}\{#AppExeName}"; WorkingDir: "{app}"; Comment: "Start the Aptitude Lab server"
-Name: "{group}\Aptitude Lab"; Filename: "{app}\{#AppExeName}"; WorkingDir: "{app}"
+Name: "{autodesktop}\KSAT"; Filename: "{app}\{#AppExeName}"; WorkingDir: "{app}"; Comment: "Start the KSAT server"
+Name: "{group}\KSAT"; Filename: "{app}\{#AppExeName}"; WorkingDir: "{app}"
 
 [Run]
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""Aptitude Lab LAN"" dir=in action=allow protocol=TCP localport=8000 profile=private"; Flags: runhidden
-Filename: "{app}\{#AppExeName}"; Description: "Launch Aptitude Lab now"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#AppExeName}"; Description: "Launch KSAT now"; Flags: nowait postinstall skipifsilent
 
 [Code]
 function PrepareToInstall(var NeedsRestart: Boolean): String;
@@ -40,6 +43,7 @@ var
   ResultCode: Integer;
 begin
   Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM AptitudeLabServer.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM KSATServer.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   Result := '';
 end;
 

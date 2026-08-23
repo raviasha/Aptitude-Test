@@ -1,3 +1,5 @@
+import asyncio
+import csv
 import io
 import json
 import sqlite3
@@ -576,6 +578,60 @@ class StudentRegistrationTests(unittest.TestCase):
         with self.assertRaises(app.HTTPException) as repeated:
             app.start_test(test_id, request)
         self.assertEqual(repeated.exception.status_code, 409)
+
+    def test_results_csv_includes_all_exam_violations(self):
+        with app.db() as connection:
+            connection.execute(
+                "INSERT INTO students VALUES (?, ?, ?, ?, ?, ?)",
+                ("CSV1", "CSV Student", "hash", "AIML", "A", app.now()),
+            )
+            question_id = connection.execute(
+                """INSERT INTO questions
+                   (question_text, category, chapter, difficulty, option_a, option_b,
+                    option_c, option_d, correct_answer, created_at)
+                   VALUES ('2 + 2?', 'Quantitative Aptitude', 'Arithmetic', 'Easy',
+                           '3', '4', '5', '6', 'B', ?)""",
+                (app.now(),),
+            ).lastrowid
+            test_id = connection.execute(
+                "INSERT INTO tests (test_name, composition, created_at, mode) VALUES ('CSV Test', '[]', ?, 'faculty')",
+                (app.now(),),
+            ).lastrowid
+            connection.execute(
+                """INSERT INTO attempts
+                   (attempt_id, student_id, test_id, started_at, submitted_at, status,
+                    total_questions, attempted, correct, score, percentage)
+                   VALUES ('csv-attempt', 'CSV1', ?, ?, ?, 'submitted', 1, 1, 1, 1, 100)""",
+                (test_id, app.now(), "2026-08-23T10:05:00+00:00"),
+            )
+            connection.execute(
+                """INSERT INTO responses
+                   (attempt_id, question_id, selected_answer, correct, category, chapter, question_order)
+                   VALUES ('csv-attempt', ?, 'B', 1, 'Quantitative Aptitude', 'Arithmetic', 1)""",
+                (question_id,),
+            )
+            connection.executemany(
+                "INSERT INTO exam_violations (attempt_id, violation_type, occurred_at) VALUES ('csv-attempt', ?, ?)",
+                [
+                    ("focus_lost", "2026-08-23T10:01:00+00:00"),
+                    ("copy", "2026-08-23T10:02:00+00:00"),
+                ],
+            )
+
+        request = app.Request({"type": "http", "method": "GET", "path": "/", "headers": [], "session": {"user": {"role": "admin", "id": "faculty", "name": "Faculty"}}})
+        response = app.export_results(request)
+
+        async def read_body():
+            chunks = []
+            async for chunk in response.body_iterator:
+                chunks.append(chunk if isinstance(chunk, bytes) else chunk.encode())
+            return b"".join(chunks)
+
+        exported = list(csv.DictReader(io.StringIO(asyncio.run(read_body()).decode("utf-8"))))
+        self.assertEqual(len(exported), 1)
+        self.assertEqual(exported[0]["Violation Count"], "2")
+        self.assertIn("Changed tab, window, or minimized the exam (2026-08-23T10:01:00+00:00)", exported[0]["Violations"])
+        self.assertIn("Attempted to copy exam content (2026-08-23T10:02:00+00:00)", exported[0]["Violations"])
 
     def test_legacy_live_faculty_attempt_gets_a_timer_when_serialized(self):
         app.register_student("LEGACY1", "Legacy Student", "AI & DS", "A", "secret123")

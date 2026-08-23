@@ -1,6 +1,6 @@
 const app = document.querySelector('#app');
 const toast = document.querySelector('#toast');
-const BUILD_VERSION = '1.3.0';
+const BUILD_VERSION = '1.3.1';
 let state = { user: null, attempt: null, questionIndex: 0 };
 let examGuard = {active:false, deadlineMs:null, timerId:null, syncTimerId:null, submitting:false, lastViolation:null, needsResume:false};
 let facultyTimerId = null;

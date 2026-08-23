@@ -51,7 +51,7 @@ QUESTION_BANKS_DIR = DATA_DIR / "Question Banks"
 STATIC_DIR = BUNDLE_DIR / "static"
 TEMPLATE_DIR = BUNDLE_DIR / "templates"
 SERVER_URL = "http://127.0.0.1:8000"
-APP_VERSION = "1.3.0"
+APP_VERSION = "1.3.1"
 
 CATEGORIES = [
     "Quantitative Aptitude",
@@ -2220,7 +2220,7 @@ def export_results(request: Request) -> StreamingResponse:
     require_user(request, "admin")
     with db() as connection:
         result = connection.execute(
-            """SELECT s.student_id, s.name, t.test_name, a.submitted_at, a.score, a.total_questions, a.percentage,
+            """SELECT a.attempt_id, s.student_id, s.name, t.test_name, a.submitted_at, a.score, a.total_questions, a.percentage,
                  ROUND(AVG(CASE WHEN r.category = 'Quantitative Aptitude' THEN r.correct END) * 100, 1) AS quantitative,
                  ROUND(AVG(CASE WHEN r.category = 'Logical Reasoning' THEN r.correct END) * 100, 1) AS logical,
                  ROUND(AVG(CASE WHEN r.category = 'Data Interpretation' THEN r.correct END) * 100, 1) AS data_interpretation,
@@ -2231,11 +2231,28 @@ def export_results(request: Request) -> StreamingResponse:
                WHERE a.status = 'submitted' AND t.mode = 'faculty'
                GROUP BY a.attempt_id ORDER BY a.submitted_at DESC"""
         ).fetchall()
+        violations_by_attempt: Dict[str, List[sqlite3.Row]] = {}
+        if result:
+            violation_rows = connection.execute(
+                """SELECT ev.attempt_id, ev.violation_type, ev.occurred_at
+                   FROM exam_violations ev
+                   JOIN attempts a ON a.attempt_id = ev.attempt_id
+                   JOIN tests t ON t.test_id = a.test_id
+                   WHERE a.status = 'submitted' AND t.mode = 'faculty'
+                   ORDER BY ev.occurred_at, ev.violation_id"""
+            ).fetchall()
+            for violation in violation_rows:
+                violations_by_attempt.setdefault(violation["attempt_id"], []).append(violation)
     output = io.StringIO()
-    writer = csv.DictWriter(output, fieldnames=["Student ID", "Student Name", "Test", "Date", "Overall Score", "Total Questions", "Percentage", "Quantitative", "Logical Reasoning", "Data Interpretation", "Verbal Ability", "Coding"])
+    writer = csv.DictWriter(output, fieldnames=["Student ID", "Student Name", "Test", "Date", "Overall Score", "Total Questions", "Percentage", "Quantitative", "Logical Reasoning", "Data Interpretation", "Verbal Ability", "Coding", "Violation Count", "Violations"])
     writer.writeheader()
     for item in result:
-        writer.writerow({"Student ID": item["student_id"], "Student Name": item["name"], "Test": item["test_name"], "Date": item["submitted_at"], "Overall Score": item["score"], "Total Questions": item["total_questions"], "Percentage": item["percentage"], "Quantitative": item["quantitative"], "Logical Reasoning": item["logical"], "Data Interpretation": item["data_interpretation"], "Verbal Ability": item["verbal"], "Coding": item["coding"]})
+        violations = violations_by_attempt.get(item["attempt_id"], [])
+        violation_details = "; ".join(
+            f'{EXAM_VIOLATION_LABELS.get(event["violation_type"], event["violation_type"])} ({event["occurred_at"]})'
+            for event in violations
+        )
+        writer.writerow({"Student ID": item["student_id"], "Student Name": item["name"], "Test": item["test_name"], "Date": item["submitted_at"], "Overall Score": item["score"], "Total Questions": item["total_questions"], "Percentage": item["percentage"], "Quantitative": item["quantitative"], "Logical Reasoning": item["logical"], "Data Interpretation": item["data_interpretation"], "Verbal Ability": item["verbal"], "Coding": item["coding"], "Violation Count": len(violations), "Violations": violation_details})
     return StreamingResponse(iter([output.getvalue()]), media_type="text/csv", headers={"Content-Disposition": "attachment; filename=aptitude-results.csv"})
 
 

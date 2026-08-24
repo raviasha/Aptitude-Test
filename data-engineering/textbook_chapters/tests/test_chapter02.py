@@ -59,7 +59,7 @@ class Chapter02BuildTests(unittest.TestCase):
     def test_audited_totals(self) -> None:
         self.assertEqual(
             self.summary,
-            {"source_records": 130, "published_questions": 119, "rejected_questions": 11, "stimuli": 0},
+            {"source_records": 130, "published_questions": 106, "rejected_questions": 24, "stimuli": 0},
         )
 
     def test_every_answer_matches_the_textbook_key(self) -> None:
@@ -81,6 +81,9 @@ class Chapter02BuildTests(unittest.TestCase):
         _, questions, _, _ = self.package_records()
         by_number = {question["source_question_number"]: question for question in questions}
         self.assertEqual(by_number[8]["solution_steps"][-1], "Dividing numerator and denominator by 38,896,717 gives 3/11.")
+        self.assertIn("2² × 3³ × 5⁵", by_number[10]["question_text"])
+        self.assertEqual(by_number[10]["options"]["A"], "2² × 3² × 5")
+        self.assertEqual(by_number[10]["solution_steps"][-1], "Therefore, H.C.F. = 2² × 3² × 5 = 180.")
         self.assertEqual(by_number[64]["correct_answer"], "A")
         self.assertEqual(by_number[64]["solution_steps"][-1], "Since one number lies between 200 and 300, the numbers are 273 and 357.")
         self.assertEqual(by_number[74]["solution_steps"][-1], "The largest square-tile side is H.C.F.(378, 525) = 21 cm.")
@@ -90,7 +93,7 @@ class Chapter02BuildTests(unittest.TestCase):
     def test_all_question_pages_have_question_first_vision_review(self) -> None:
         manifest, questions, rejected, lineage = self.package_records()
         self.assertEqual(manifest["stimuli"], [])
-        self.assertEqual(len(rejected), 11)
+        self.assertEqual(len(rejected), 24)
         self.assertTrue(all(record["reason"] == "unresolved_pdf_layout_artifact" for record in rejected))
         self.assertEqual(lineage["vision_reviewed_question_pages"], list(range(64, 71)))
         self.assertTrue(
@@ -101,7 +104,7 @@ class Chapter02BuildTests(unittest.TestCase):
         manifest, questions, _, _ = self.package_records()
         self.assertEqual(manifest["format_version"], 2)
         self.assertEqual(manifest["chapter"], 2)
-        self.assertEqual(len(questions), 119)
+        self.assertEqual(len(questions), 106)
         self.assertEqual(manifest["total_questions"], len(questions))
 
     def test_every_published_record_is_readable_and_graded(self) -> None:
@@ -110,7 +113,7 @@ class Chapter02BuildTests(unittest.TestCase):
         self.assertFalse(any(BUILD.unresolved_layout_issues(question) for question in questions))
         self.assertEqual(
             Counter(question["difficulty"] for question in questions),
-            {"Easy": 76, "Medium": 39, "Hard": 4},
+            {"Easy": 67, "Medium": 37, "Hard": 2},
         )
 
 

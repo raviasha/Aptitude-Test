@@ -14,8 +14,8 @@
   "allowed_missing_solution_markers": [],
   "solution_marker_overrides": {},
   "minimum_solution_page_token_coverage": 0.7,
-  "expected_published_questions": 119,
-  "expected_rejected_questions": 11,
+  "expected_published_questions": 106,
+  "expected_rejected_questions": 24,
   "rejections": {},
   "questions": {
     "6": {
@@ -41,6 +41,31 @@
       "question_review": "codex-vision-page-65",
       "solution_review": "codex-vision-pages-71-72",
       "solution_pages": [71, 72]
+    },
+    "10": {
+      "question_text": "The H.C.F. of 2² × 3³ × 5⁵, 2³ × 3² × 5² × 7, and 2⁴ × 3⁴ × 5 × 7² × 11 is",
+      "options": {"A": "2² × 3² × 5", "B": "2² × 3² × 5 × 7 × 11", "C": "2⁴ × 3⁴ × 5⁵", "D": "2⁴ × 3⁴ × 5⁵ × 7 × 11"},
+      "solution_steps": ["The H.C.F. is the product of the lowest powers of the common prime factors.", "Therefore, H.C.F. = 2² × 3² × 5 = 180."],
+      "question_review": "codex-vision-page-65",
+      "solution_review": "codex-vision-page-72",
+      "solution_pages": [72]
+    },
+    "11": {
+      "question_text": "The H.C.F. of 2⁴ × 3² × 5³ × 7, 2³ × 3³ × 5² × 7², and 3 × 5 × 7 × 11 is",
+      "solution_steps": ["The common prime factors are 3, 5, and 7, each with lowest power 1.", "Therefore, H.C.F. = 3 × 5 × 7 = 105."],
+      "question_review": "codex-vision-page-65",
+      "solution_review": "codex-vision-page-72",
+      "solution_pages": [72]
+    },
+    "15": {
+      "solution_steps": ["204 = 2² × 3 × 17; 1190 = 2 × 5 × 7 × 17; and 1445 = 5 × 17².", "Therefore, the H.C.F. is 17."],
+      "solution_review": "codex-vision-page-72",
+      "solution_pages": [72]
+    },
+    "17": {
+      "solution_steps": ["3239 = 2923 × 1 + 316.", "2923 = 316 × 9 + 79.", "316 = 79 × 4, so the H.C.F. is 79."],
+      "solution_review": "codex-vision-page-72",
+      "solution_pages": [72]
     },
     "19": {
       "question_text": "Find the L.C.M. of 2³ × 3² × 5 × 11, 2⁴ × 3⁴ × 5² × 7, and 2⁵ × 3³ × 5³ × 7² × 11.",

@@ -25,13 +25,21 @@ SOLUTION_CRITICAL_RULES = {
     "replacement_character": re.compile(r"\uFFFD"),
     "empty_layout_braces": re.compile(r"\{\s*\}"),
     "repeated_operator_fragment": re.compile(r"(?:\u00D7=|=\u00D7|==|%%|%\s+%|\u00D7\s+\u00D7)"),
+    "operator_cluster": re.compile(r"(?:[+\-\u2212*/=\u00D7\u00F7]\s*){3,}"),
     "detached_digit_array": re.compile(r"(?:\b\d\s+){5,}\d\b"),
+    "detached_numeric_layout": re.compile(r"(?:\b\d+(?:\.\d+)?\s+){5,}\d+(?:\.\d+)?\b"),
+    "decimal_column_spill": re.compile(
+        r"(?:\d+\s+\.\d+|\.\d+\s+\d+).{0,24}"
+        r"(?:\d+\s+\.\d+|\.\d+\s+\d+)"
+    ),
     "concatenated_formula_numbers": re.compile(r"\b\d{4,}\s+\d{4,}\b"),
 }
 
 QUESTION_CRITICAL_RULES = {
     "replacement_character": re.compile(r"\uFFFD"),
-    "operator_run": re.compile(r"(?:[+\-*/=]\s*){4,}"),
+    "operator_run": re.compile(r"(?:[+\-\u2212*/=\u00D7\u00F7]\s*){3,}"),
+    "repeated_multiplication": re.compile(r"[\u00D7\u00F7]\s*[\u00D7\u00F7]"),
+    "flattened_power_chain": re.compile(r"(?:\b\d{1,3}\s+[2-9]\s*\u00D7\s*){2,}"),
     "broken_formula_word_order": re.compile(
         r"then\s+the\s+value\s+of\s+is|value\s+of\s+is\w",
         re.IGNORECASE,
@@ -56,7 +64,9 @@ def normalize_extracted_text(value: str) -> str:
         if repaired is None:
             break
         value = repaired
-    value = unicodedata.normalize("NFKC", value).replace("\u00a0", " ")
+    # Preserve mathematical compatibility characters (for example ², ³, and ⁵)
+    # that were verified from the rendered page. NFKC silently flattened them.
+    value = unicodedata.normalize("NFC", value).replace("\u00a0", " ")
     value = re.sub(r"[\uE000-\uF8FF]", "", value)
     return re.sub(r"[ \t]+", " ", value).strip()
 

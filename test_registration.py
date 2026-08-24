@@ -46,6 +46,24 @@ class StudentRegistrationTests(unittest.TestCase):
         steps = app.display_solution_steps(question, '["garbled formula"]')
         self.assertEqual(steps[-1], "Imports in 2009 are 140% of exports. So imports = 1.40 × ₹300 = ₹420 crores. Therefore, option D is correct.")
 
+    def test_already_imported_chapter_question_uses_vision_reviewed_repair(self):
+        source_key = "ch02-q0010"
+        repaired_text = app.display_question_text("The H.C.F. of 2 2 × 3 3", source_key)
+        repaired_options = app.question_options({"source_key": source_key})
+        repaired_steps = app.display_solution_steps("broken", '["broken"]', source_key)
+
+        self.assertIn("2² × 3³ × 5⁵", repaired_text)
+        self.assertEqual(repaired_options["A"], "2² × 3² × 5")
+        self.assertEqual(repaired_steps[-1], "Therefore, H.C.F. = 2² × 3² × 5 = 180.")
+
+    def test_reported_decimal_solution_is_repaired_for_existing_database(self):
+        steps = app.display_solution_steps("broken", '["merged columns"]', "ch03-q0030")
+
+        self.assertEqual(steps, [
+            "Align the decimal points: 555.05 + 55.50 + 5.55 + 5.00 + 0.55.",
+            "The sum is 621.65.",
+        ])
+
     def test_unverified_malformed_solution_is_hidden_from_students(self):
         result = app.clean_display_value(["Required %= 250 100250 2501.25 200 == ×="])
         self.assertEqual(result, app.SOLUTION_REVIEW_NOTICE)
@@ -147,6 +165,27 @@ class StudentRegistrationTests(unittest.TestCase):
 
         with self.assertRaises(app.RegistrationError):
             app.register_student("S123", "Another Student", "AI & DS", "A", "secret123")
+
+    def test_new_student_payloads_and_blank_classes_default_to_aiml(self):
+        self.assertEqual(
+            app.StudentPayload(student_id="AIML1", name="Default Student").student_class,
+            "AIML",
+        )
+        self.assertEqual(
+            app.RegistrationPayload(
+                student_id="AIML2",
+                name="Registered Student",
+                password="secret123",
+            ).student_class,
+            "AIML",
+        )
+
+        app.register_student("AIML3", "Blank Class", "", "A", "secret123")
+        with app.db() as connection:
+            stored_class = connection.execute(
+                "SELECT class FROM students WHERE student_id = 'AIML3'"
+            ).fetchone()["class"]
+        self.assertEqual(stored_class, "AIML")
 
     def test_student_delete_is_allowed_without_attempts(self):
         app.register_student("S456", "Delete Me", "AI & DS", "A", "secret123")

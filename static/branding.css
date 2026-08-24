@@ -83,35 +83,89 @@
   padding-bottom: 26px;
 }
 
+#app:has(main.institutional-assessment) {
+  display: grid;
+  grid-template-columns: minmax(92px, 220px) minmax(0, 1180px) minmax(92px, 220px);
+  grid-template-rows: auto 1fr;
+  column-gap: clamp(8px, 1vw, 18px);
+  justify-content: center;
+  align-items: start;
+}
+
+#app:has(main.institutional-assessment) > .exam-top {
+  grid-row: 1;
+  grid-column: 1 / -1;
+  width: 100%;
+}
+
 main.institutional-assessment {
-  width: min(1180px, calc(100vw - 300px));
+  grid-row: 2;
+  grid-column: 2;
+  width: 100%;
+  min-width: 0;
+}
+
+.institutional-assessment .question,
+.institutional-assessment .visual-question,
+.institutional-assessment .feedback,
+.institutional-assessment .answers button {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* Keep question status visible in every student assessment, not only while
+   fullscreen proctoring is active. */
+.institutional-assessment .numbers button.answered {
+  border-color: #a9dcc9;
+  background: #e9f8f1;
+  color: #16865f;
+  font-weight: 800;
+}
+
+.institutional-assessment .numbers button.unanswered {
+  border-color: #e1e7f0;
+  background: #fff;
+  color: #7c8a9f;
+}
+
+.institutional-assessment .legend-key i.answered {
+  border: 1px solid #a9dcc9;
+  background: #e9f8f1;
+}
+
+.institutional-assessment .legend-key i.unanswered {
+  border: 1px solid #cfd8e6;
+  background: #fff;
 }
 
 .institution-rail {
-  position: fixed;
-  top: 111px;
+  position: sticky;
+  top: 96px;
   z-index: 5;
-  display: flex;
-  width: 230px;
-  flex-direction: row;
-  gap: 10px;
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  grid-row: 2;
+  grid-template-columns: repeat(auto-fit, minmax(82px, 1fr));
+  gap: 8px;
 }
 
 .institution-rail-left {
-  left: max(14px, calc((100vw - 1510px) / 2));
+  grid-column: 1;
 }
 
 .institution-rail-right {
-  right: max(14px, calc((100vw - 1510px) / 2));
+  grid-column: 3;
 }
 
 .institution-rail figure {
   display: grid;
   place-items: center;
-  width: 110px;
-  min-height: 125px;
+  width: auto;
+  min-width: 0;
+  min-height: 112px;
   margin: 0;
-  padding: 10px;
+  padding: 8px;
   border: 1px solid rgba(207, 216, 230, .9);
   border-radius: 14px;
   background: #fff;
@@ -135,18 +189,11 @@ main.institutional-assessment {
 }
 
 @media (max-width: 1100px) {
-  main.institutional-assessment {
-    width: min(900px, calc(100vw - 190px));
-  }
-
   .institution-rail {
-    top: 96px;
-    width: 190px;
-    gap: 8px;
+    grid-template-columns: 1fr;
   }
 
   .institution-rail figure {
-    width: 91px;
     min-height: 82px;
     padding: 6px;
     border-radius: 10px;
@@ -162,6 +209,8 @@ main.institutional-assessment {
   #app:has(main.institutional-assessment) {
     display: grid;
     grid-template-columns: 1fr 1fr;
+    grid-template-rows: auto auto 1fr;
+    column-gap: 0;
   }
 
   #app:has(main.institutional-assessment) > .exam-top {

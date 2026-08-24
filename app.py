@@ -51,7 +51,7 @@ QUESTION_BANKS_DIR = DATA_DIR / "Question Banks"
 STATIC_DIR = BUNDLE_DIR / "static"
 TEMPLATE_DIR = BUNDLE_DIR / "templates"
 SERVER_URL = "http://127.0.0.1:8000"
-APP_VERSION = "1.3.1"
+APP_VERSION = "1.3.3"
 
 CATEGORIES = [
     "Quantitative Aptitude",
@@ -101,6 +101,48 @@ SOLUTION_REVIEW_NOTICE = [
     "This source calculation could not be displayed reliably because its PDF formula layout was damaged during import. The correct answer is shown above; the detailed solution is awaiting faculty verification."
 ]
 
+# Repairs for chapter packages that may already be imported into a deployed
+# database. The source_key is stable across rebuilds, so students receive the
+# vision-reviewed wording immediately without deleting attempts or bank data.
+LEGACY_QUESTION_REPAIRS = {
+    "ch01-q0140": {
+        "question_text": "(256 × 256 − 144 × 144) ÷ 112 is equal to (S.S.C., 2010)",
+        "solution_steps": [
+            "Use a² − b² = (a + b)(a − b).",
+            "(256² − 144²) ÷ 112 = [(256 + 144)(256 − 144)] ÷ 112.",
+            "= (400 × 112) ÷ 112 = 400.",
+        ],
+    },
+    "ch02-q0010": {
+        "question_text": "The H.C.F. of 2² × 3³ × 5⁵, 2³ × 3² × 5² × 7, and 2⁴ × 3⁴ × 5 × 7² × 11 is",
+        "options": {
+            "A": "2² × 3² × 5",
+            "B": "2² × 3² × 5 × 7 × 11",
+            "C": "2⁴ × 3⁴ × 5⁵",
+            "D": "2⁴ × 3⁴ × 5⁵ × 7 × 11",
+        },
+        "solution_steps": [
+            "The H.C.F. is the product of the lowest powers of the common prime factors.",
+            "Therefore, H.C.F. = 2² × 3² × 5 = 180.",
+        ],
+    },
+    "ch03-q0030": {
+        "question_text": "555.05 + 55.5 + 5.55 + 5 + 0.55 = ? (S.B.I.P.O., 2008)",
+        "solution_steps": [
+            "Align the decimal points: 555.05 + 55.50 + 5.55 + 5.00 + 0.55.",
+            "The sum is 621.65.",
+        ],
+    },
+    "ch03-q0173": {
+        "question_text": "The value of (0.943² − 0.943 × 0.057 + 0.057²) ÷ (0.943³ + 0.057³) is (M.B.A., 2005)",
+        "solution_steps": [
+            "Let a = 0.943 and b = 0.057. The expression is (a² − ab + b²) ÷ (a³ + b³).",
+            "Since a³ + b³ = (a + b)(a² − ab + b²), the expression is 1 ÷ (a + b).",
+            "1 ÷ (0.943 + 0.057) = 1. Since 1 is not listed, option D is correct.",
+        ],
+    },
+}
+
 app = FastAPI(title="KSAT")
 app.add_middleware(SessionMiddleware, secret_key=os.getenv("SESSION_SECRET", "replace-this-before-production"), https_only=False, same_site="lax")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
@@ -143,7 +185,7 @@ class DurationExtensionPayload(BaseModel):
 class StudentPayload(BaseModel):
     student_id: str
     name: str
-    student_class: str = "AI & DS"
+    student_class: str = "AIML"
     section: str = "A"
     password: str = "student123"
 
@@ -151,7 +193,7 @@ class StudentPayload(BaseModel):
 class RegistrationPayload(BaseModel):
     student_id: str
     name: str
-    student_class: str = "AI & DS"
+    student_class: str = "AIML"
     section: str = "A"
     password: str
 
@@ -216,7 +258,7 @@ def check_password(password: str, password_hash: str) -> bool:
 def register_student(student_id: str, name: str, student_class: str, section: str, password: str) -> Dict[str, str]:
     normalized_id = student_id.strip().upper()
     normalized_name = name.strip()
-    normalized_class = student_class.strip() or "AI & DS"
+    normalized_class = student_class.strip() or "AIML"
     normalized_section = section.strip() or "A"
     if not normalized_id or not normalized_name or len(password) < 6:
         raise RegistrationError("Enter a Student ID, name, and a password of at least 6 characters.")
@@ -538,8 +580,18 @@ def clean_display_value(value: Any) -> Any:
     return value
 
 
-def display_solution_steps(question_text: str, stored_steps: str) -> List[str]:
+def display_question_text(question_text: str, source_key: Optional[str] = None) -> str:
+    """Return a vision-reviewed stem for known legacy package records."""
+    normalized = clean_display_text(question_text)
+    repair = LEGACY_QUESTION_REPAIRS.get(source_key or "", {})
+    return str(repair.get("question_text", normalized))
+
+
+def display_solution_steps(question_text: str, stored_steps: str, source_key: Optional[str] = None) -> List[str]:
     """Use repaired steps where PDF extraction did not preserve formula order."""
+    repair = LEGACY_QUESTION_REPAIRS.get(source_key or "", {})
+    if repair.get("solution_steps"):
+        return list(repair["solution_steps"])
     normalized_question_text = clean_display_text(question_text)
     if normalized_question_text in SOLUTION_STEP_OVERRIDES:
         return SOLUTION_STEP_OVERRIDES[normalized_question_text]
@@ -549,6 +601,10 @@ def display_solution_steps(question_text: str, stored_steps: str) -> List[str]:
 def question_options(question: sqlite3.Row | Dict[str, Any]) -> Dict[str, str]:
     """Return JSON-defined choices, falling back to legacy A-D columns."""
     columns = set(question.keys())
+    source_key = question["source_key"] if "source_key" in columns else None
+    repair = LEGACY_QUESTION_REPAIRS.get(source_key or "", {})
+    if repair.get("options"):
+        return dict(repair["options"])
     raw_options = question["options_json"] if "options_json" in columns else None
     if raw_options:
         try:
@@ -924,11 +980,11 @@ def seed_data() -> None:
         if not connection.execute("SELECT 1 FROM students LIMIT 1").fetchone():
             connection.execute(
                 "INSERT INTO students VALUES (?, ?, ?, ?, ?, ?)",
-                ("1KS23AI042", "Aarav Sharma", hash_password("student123"), "AI & DS", "A", now()),
+                ("1KS23AI042", "Aarav Sharma", hash_password("student123"), "AIML", "A", now()),
             )
             connection.execute(
                 "INSERT INTO students VALUES (?, ?, ?, ?, ?, ?)",
-                ("1KS23AI018", "Nisha Patel", hash_password("student123"), "AI & DS", "A", now()),
+                ("1KS23AI018", "Nisha Patel", hash_password("student123"), "AIML", "A", now()),
             )
         starter_bank = connection.execute("SELECT bank_id FROM question_banks WHERE bank_name = ?", ("Starter general aptitude",)).fetchone()
         if not starter_bank:
@@ -1378,7 +1434,7 @@ def serialize_attempt(connection: sqlite3.Connection, attempt: sqlite3.Row, incl
     include_answers = include_answers or feedback_allowed(attempt)
     response_rows = connection.execute(
         """SELECT r.question_order, r.selected_answer, r.category, r.chapter,
-                  q.question_id, q.question_text, q.question_html, q.bank_id, q.stimulus_id,
+                   q.question_id, q.source_key, q.question_text, q.question_html, q.bank_id, q.stimulus_id,
                   q.difficulty, q.option_a, q.option_b, q.option_c, q.option_d, q.options_json,
                   q.explanation, q.correct_answer, q.solution_steps, q.option_explanations,
                   s.stimulus_type, s.title AS stimulus_title, s.alt_text, s.asset_filename, s.content_json
@@ -1390,7 +1446,7 @@ def serialize_attempt(connection: sqlite3.Connection, attempt: sqlite3.Row, incl
     questions = []
     for row in response_rows:
         question = {
-            "question_id": row["question_id"], "question_text": clean_display_text(row["question_text"]), "question_html": clean_display_text(row["question_html"]),
+            "question_id": row["question_id"], "question_text": display_question_text(row["question_text"], row["source_key"]), "question_html": clean_display_text(row["question_html"]),
             "category": row["category"], "chapter": row["chapter"], "difficulty": row["difficulty"],
             "options": question_options(row),
             "selected_answer": row["selected_answer"],
@@ -1408,13 +1464,13 @@ def serialize_attempt(connection: sqlite3.Connection, attempt: sqlite3.Row, incl
                 stimulus["content"] = json.loads(row["content_json"] or "{}")
             question["stimulus"] = stimulus
         if include_answers:
-            question.update({"correct_answer": row["correct_answer"], "explanation": clean_display_text(row["explanation"]), "solution_steps": display_solution_steps(row["question_text"], row["solution_steps"]), "option_explanations": clean_display_value(json.loads(row["option_explanations"]))})
+            question.update({"correct_answer": row["correct_answer"], "explanation": clean_display_text(row["explanation"]), "solution_steps": display_solution_steps(row["question_text"], row["solution_steps"], row["source_key"]), "option_explanations": clean_display_value(json.loads(row["option_explanations"]))})
             if row["selected_answer"] is not None and feedback_allowed(attempt):
                 question["feedback"] = {
                     "correct": row["selected_answer"] == row["correct_answer"],
                     "correct_answer": row["correct_answer"],
                     "explanation": clean_display_text(row["explanation"]),
-                    "solution_steps": display_solution_steps(row["question_text"], row["solution_steps"]),
+                    "solution_steps": display_solution_steps(row["question_text"], row["solution_steps"], row["source_key"]),
                     "option_explanations": clean_display_value(json.loads(row["option_explanations"])),
                 }
         questions.append(question)
@@ -1724,8 +1780,8 @@ def save_answer(attempt_id: str, question_id: int, payload: AnswerPayload, reque
         connection.execute("UPDATE attempts SET attempted = ? WHERE attempt_id = ?", (attempted, attempt_id))
         feedback = None
         if feedback_allowed(attempt):
-            question = connection.execute("SELECT correct_answer, explanation, solution_steps, option_explanations FROM questions WHERE question_id = ?", (question_id,)).fetchone()
-            feedback = {"correct": payload.answer == question["correct_answer"], "correct_answer": question["correct_answer"], "explanation": clean_display_text(question["explanation"]), "solution_steps": clean_display_value(json.loads(question["solution_steps"])), "option_explanations": clean_display_value(json.loads(question["option_explanations"]))}
+            question = connection.execute("SELECT source_key, question_text, correct_answer, explanation, solution_steps, option_explanations FROM questions WHERE question_id = ?", (question_id,)).fetchone()
+            feedback = {"correct": payload.answer == question["correct_answer"], "correct_answer": question["correct_answer"], "explanation": clean_display_text(question["explanation"]), "solution_steps": display_solution_steps(question["question_text"], question["solution_steps"], question["source_key"]), "option_explanations": clean_display_value(json.loads(question["option_explanations"]))}
     return {"saved": True, "attempted": attempted, "feedback": feedback}
 
 

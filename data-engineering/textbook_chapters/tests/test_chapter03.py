@@ -59,7 +59,7 @@ class Chapter03BuildTests(unittest.TestCase):
     def test_audited_totals(self) -> None:
         self.assertEqual(
             self.summary,
-            {"source_records": 206, "published_questions": 90, "rejected_questions": 116, "stimuli": 0},
+            {"source_records": 206, "published_questions": 77, "rejected_questions": 129, "stimuli": 0},
         )
 
     def test_every_answer_matches_the_textbook_key(self) -> None:
@@ -81,8 +81,12 @@ class Chapter03BuildTests(unittest.TestCase):
         _, questions, _, _ = self.package_records()
         by_number = {question["source_question_number"]: question for question in questions}
         self.assertEqual(by_number[8]["solution_steps"][-1], "0.1 = 10 x 0.01, so 0.1 is 10 times 0.01.")
+        self.assertEqual(by_number[30]["question_text"], "555.05 + 55.5 + 5.55 + 5 + 0.55 = ? (S.B.I.P.O., 2008)")
+        self.assertEqual(by_number[30]["solution_steps"][-1], "The sum is 621.65.")
         self.assertEqual(by_number[68]["correct_answer"], "A")
         self.assertIn("368.39 divided by 17", by_number[68]["question_text"])
+        self.assertIn("0.943²", by_number[173]["question_text"])
+        self.assertEqual(by_number[173]["solution_steps"][-1], "1 ÷ (0.943 + 0.057) = 1. Since 1 is not listed, option D is correct.")
         self.assertEqual(by_number[194]["correct_answer"], "B")
         self.assertEqual(by_number[194]["solution_steps"][-1], "This is 35 + 24 x 16 = 419, whose closest listed value is 420.")
         self.assertEqual(by_number[205]["solution_steps"][-1], "Thus, 30% of 333 = 99.9.")
@@ -92,7 +96,7 @@ class Chapter03BuildTests(unittest.TestCase):
     def test_all_question_pages_have_question_first_vision_review(self) -> None:
         manifest, questions, rejected, lineage = self.package_records()
         self.assertEqual(manifest["stimuli"], [])
-        self.assertEqual(len(rejected), 116)
+        self.assertEqual(len(rejected), 129)
         self.assertTrue(all(record["reason"] == "unresolved_pdf_layout_artifact" for record in rejected))
         self.assertEqual(lineage["vision_reviewed_question_pages"], list(range(83, 94)))
         self.assertTrue(
@@ -103,7 +107,7 @@ class Chapter03BuildTests(unittest.TestCase):
         manifest, questions, _, _ = self.package_records()
         self.assertEqual(manifest["format_version"], 2)
         self.assertEqual(manifest["chapter"], 3)
-        self.assertEqual(len(questions), 90)
+        self.assertEqual(len(questions), 77)
         self.assertEqual(manifest["total_questions"], len(questions))
 
     def test_every_published_record_is_readable_and_graded(self) -> None:
@@ -112,7 +116,7 @@ class Chapter03BuildTests(unittest.TestCase):
         self.assertFalse(any(BUILD.unresolved_layout_issues(question) for question in questions))
         self.assertEqual(
             Counter(question["difficulty"] for question in questions),
-            {"Easy": 79, "Medium": 10, "Hard": 1},
+            {"Easy": 64, "Medium": 12, "Hard": 1},
         )
 
 

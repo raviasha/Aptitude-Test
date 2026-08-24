@@ -19,8 +19,8 @@
     "34": {"page": 96, "x0": 231.0, "top": 435.3}
   },
   "minimum_solution_page_token_coverage": 0.7,
-  "expected_published_questions": 90,
-  "expected_rejected_questions": 116,
+  "expected_published_questions": 77,
+  "expected_rejected_questions": 129,
   "rejections": {},
   "questions": {
     "8": {
@@ -40,6 +40,13 @@
     },
     "29": {
       "solution_steps": ["24.424 + 5.656 + 1.131 + 0.089 = 31.300, which is 31.3."],
+      "solution_review": "codex-vision-page-96",
+      "solution_pages": [96]
+    },
+    "30": {
+      "question_text": "555.05 + 55.5 + 5.55 + 5 + 0.55 = ? (S.B.I.P.O., 2008)",
+      "solution_steps": ["Align the decimal points: 555.05 + 55.50 + 5.55 + 5.00 + 0.55.", "The sum is 621.65."],
+      "question_review": "codex-vision-page-85",
       "solution_review": "codex-vision-page-96",
       "solution_pages": [96]
     },
@@ -75,6 +82,18 @@
       "solution_review": "codex-vision-page-97",
       "solution_pages": [97]
     },
+    "169": {"question_text": "The value of [(2.697 − 0.498)² + (2.697 + 0.498)²] ÷ (2.697² + 0.498²) is", "solution_steps": ["Use (a − b)² + (a + b)² = 2(a² + b²).", "The expression is 2(a² + b²) ÷ (a² + b²) = 2."], "question_review": "codex-vision-page-91", "solution_review": "codex-vision-page-101", "solution_pages": [101]},
+    "170": {"question_text": "The value of [(0.137 + 0.098)² − (0.137 − 0.098)²] ÷ (0.137 × 0.098) is", "solution_steps": ["Use (a + b)² − (a − b)² = 4ab.", "The expression is 4ab ÷ ab = 4."], "question_review": "codex-vision-page-91", "solution_review": "codex-vision-page-101", "solution_pages": [101]},
+    "171": {"question_text": "The value of (0.051³ + 0.041³) ÷ (0.051² − 0.051 × 0.041 + 0.041²) is (S.S.C., 2003)", "solution_steps": ["Use a³ + b³ = (a + b)(a² − ab + b²).", "The expression reduces to a + b = 0.051 + 0.041 = 0.092."], "question_review": "codex-vision-page-91", "solution_review": "codex-vision-page-101", "solution_pages": [101]},
+    "172": {"question_text": "The value of (5.71³ − 2.79³) ÷ (5.71² + 5.71 × 2.79 + 2.79²) is (S.S.C., 2005)", "solution_steps": ["Use a³ − b³ = (a − b)(a² + ab + b²).", "The expression reduces to a − b = 5.71 − 2.79 = 2.92."], "question_review": "codex-vision-page-91", "solution_review": "codex-vision-page-101", "solution_pages": [101]},
+    "173": {"question_text": "The value of (0.943² − 0.943 × 0.057 + 0.057²) ÷ (0.943³ + 0.057³) is (M.B.A., 2005)", "solution_steps": ["Let a = 0.943 and b = 0.057. The expression is (a² − ab + b²) ÷ (a³ + b³).", "Since a³ + b³ = (a + b)(a² − ab + b²), the expression is 1 ÷ (a + b).", "1 ÷ (0.943 + 0.057) = 1. Since 1 is not listed, option D is correct."], "question_review": "codex-vision-page-91", "solution_review": "codex-vision-page-101", "solution_pages": [101]},
+    "174": {"question_text": "The value of (0.125 + 0.027) ÷ (0.5 × 0.5 + 0.09 − 0.15) is (S.S.C., 2010)", "solution_steps": ["Write 0.125 = 0.5³, 0.027 = 0.3³, 0.09 = 0.3², and 0.15 = 0.5 × 0.3.", "The expression becomes (a³ + b³) ÷ (a² − ab + b²) = a + b.", "Therefore, the value is 0.5 + 0.3 = 0.8."], "question_review": "codex-vision-page-91", "solution_review": "codex-vision-page-101", "solution_pages": [101]},
+    "175": {"question_text": "(10.3³ + 1) ÷ (10.3² − 10.3 + 1) is equal to (S.S.C., 2004)", "solution_steps": ["Use (a³ + b³) ÷ (a² − ab + b²) = a + b, with a = 10.3 and b = 1.", "The value is 10.3 + 1 = 11.3."], "question_review": "codex-vision-page-91", "solution_review": "codex-vision-page-101", "solution_pages": [101]},
+    "176": {"question_text": "[8(3.75)³ + 1] ÷ [(7.5)² − 6.5] is equal to (S.S.C., 2003)", "options": {"A": "9/5", "B": "2.75", "C": "4.75", "D": "8.5"}, "solution_steps": ["8(3.75)³ = 7.5³, and (7.5)² − 6.5 = 7.5² − 7.5 × 1 + 1².", "The expression is (7.5³ + 1³) ÷ (7.5² − 7.5 × 1 + 1²) = 7.5 + 1 = 8.5."], "question_review": "codex-vision-page-91", "solution_review": "codex-vision-page-101", "solution_pages": [101]},
+    "177": {"question_text": "The value of (0.1³ + 0.02³) ÷ (0.2³ + 0.04³) is (Hotel Management 2003; S.S.C., 2005)", "solution_steps": ["0.2³ + 0.04³ = 2³(0.1³ + 0.02³).", "Therefore, the expression is 1 ÷ 2³ = 1/8 = 0.125."], "question_review": "codex-vision-page-91", "solution_review": "codex-vision-page-101", "solution_pages": [101]},
+    "178": {"question_text": "[(0.013)³ + 0.000000343] ÷ [(0.013)² − 0.000091 + 0.000049] = ? (I.I.F.T., 2005)", "solution_steps": ["0.000000343 = 0.007³, 0.000091 = 0.013 × 0.007, and 0.000049 = 0.007².", "The expression is (a³ + b³) ÷ (a² − ab + b²) = a + b.", "Therefore, the value is 0.013 + 0.007 = 0.020."], "question_review": "codex-vision-page-92", "solution_review": "codex-vision-page-101", "solution_pages": [101]},
+    "179": {"question_text": "The value of [(2.3)³ − 0.027] ÷ [(2.3)² + 0.69 + 0.09] is (R.R.B., 2005)", "solution_steps": ["Write 0.027 = 0.3³, 0.69 = 2.3 × 0.3, and 0.09 = 0.3².", "The expression is (a³ − b³) ÷ (a² + ab + b²) = a − b.", "Therefore, the value is 2.3 − 0.3 = 2."], "question_review": "codex-vision-page-92", "solution_review": "codex-vision-page-101", "solution_pages": [101]},
+    "180": {"question_text": "The value of (0.06² + 0.47² + 0.079²) ÷ (0.006² + 0.047² + 0.0079²) is (N.M.A.T. 2006; G.B.O. 2007)", "solution_steps": ["Each denominator term is one tenth of the corresponding numerator term, squared.", "Thus the denominator is (0.06² + 0.47² + 0.079²) ÷ 100.", "Therefore, the value of the ratio is 100."], "question_review": "codex-vision-page-92", "solution_review": "codex-vision-page-101", "solution_pages": [101]},
     "194": {
       "question_text": "Solve 1576 / 45.02 + 23.99 x sqrt(255).",
       "solution_steps": ["Using the textbook approximations, 1576 / 45.02 + 23.99 x sqrt(255) is approximately 1575 / 45 + 24 x sqrt(256).", "This is 35 + 24 x 16 = 419, whose closest listed value is 420."],

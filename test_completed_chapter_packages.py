@@ -9,10 +9,10 @@ import app
 
 ROOT = Path(__file__).resolve().parent
 PACKAGES = {
-    "ch01_number_system_complete.zip": (312, {"Easy": 169, "Medium": 129, "Hard": 14}, 0),
-    "ch02_hcf_lcm_complete.zip": (119, {"Easy": 76, "Medium": 39, "Hard": 4}, 0),
-    "ch03_decimal_fractions_complete.zip": (90, {"Easy": 79, "Medium": 10, "Hard": 1}, 0),
-    "ch04_simplification_complete.zip": (291, {"Easy": 96, "Medium": 161, "Hard": 34}, 0),
+    "ch01_number_system_complete.zip": (293, {"Easy": 156, "Medium": 123, "Hard": 14}, 0),
+    "ch02_hcf_lcm_complete.zip": (106, {"Easy": 67, "Medium": 37, "Hard": 2}, 0),
+    "ch03_decimal_fractions_complete.zip": (77, {"Easy": 64, "Medium": 12, "Hard": 1}, 0),
+    "ch04_simplification_complete.zip": (218, {"Easy": 75, "Medium": 119, "Hard": 24}, 0),
     "ch36_tabulation_complete.zip": (60, {"Easy": 29, "Medium": 27, "Hard": 4}, 12),
 }
 

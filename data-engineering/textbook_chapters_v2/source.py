@@ -102,30 +102,36 @@ def render_page(pdf_path: Path, page_number: int, dpi: int, output_path: Path) -
         raise ValueError("output_path must have a .png suffix.")
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
-        [
-            str(locate_pdftoppm()),
-            "-f",
-            str(page_number),
-            "-l",
-            str(page_number),
-            "-r",
-            str(dpi),
-            "-png",
-            "-singlefile",
-            str(pdf_path),
-            str(output_path.with_suffix("")),
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    if not output_path.is_file():
-        raise RuntimeError(f"Poppler did not create {output_path}.")
-    with Image.open(output_path) as rendered:
-        rendered.load()
-        normalized = rendered.copy()
-    _write_stable_png(normalized, output_path)
+    temporary_directory = Path(tempfile.mkdtemp(dir=output_path.parent, prefix=f".{output_path.stem}.render-"))
+    try:
+        render_prefix = temporary_directory / "page"
+        rendered_path = render_prefix.with_suffix(".png")
+        subprocess.run(
+            [
+                str(locate_pdftoppm()),
+                "-f",
+                str(page_number),
+                "-l",
+                str(page_number),
+                "-r",
+                str(dpi),
+                "-png",
+                "-singlefile",
+                str(pdf_path),
+                str(render_prefix),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        if not rendered_path.is_file():
+            raise RuntimeError(f"Poppler did not create a fresh render for {output_path}.")
+        with Image.open(rendered_path) as rendered:
+            rendered.load()
+            normalized = rendered.copy()
+        _write_stable_png(normalized, output_path)
+    finally:
+        shutil.rmtree(temporary_directory, ignore_errors=True)
     return SourceImage(output_path, page_number, dpi, sha256_path(output_path))
 
 
@@ -159,6 +165,8 @@ def crop_region(page: SourceImage, box: CropBox, output_path: Path) -> SourceCro
         width=cropped.width,
         height=cropped.height,
         sha256=sha256_path(Path(output_path)),
+        source_image_sha256=page.sha256,
+        source_dpi=page.dpi,
     )
 
 
@@ -242,7 +250,9 @@ def _crop_role(
         if next_marker is not None and (next_marker["page"], next_marker["top"]) <= (current["page"], current["top"]):
             raise ValueError(f"Reviewed {role} markers must increase for question {number}.")
 
-        final_page = next_marker["page"] if next_marker is not None else last_page
+        if number in config.intentional_exclusions:
+            continue
+        final_page = current["page"] if "bottom" in current else (next_marker["page"] if next_marker is not None else last_page)
         if final_page > last_page:
             final_page = last_page
         crops: list[SourceCrop] = []
@@ -288,6 +298,8 @@ def _evidence_payload(evidence: RecordEvidence) -> dict[str, Any]:
             "width": crop.width,
             "height": crop.height,
             "sha256": crop.sha256,
+            "source_image_sha256": crop.source_image_sha256,
+            "source_dpi": crop.source_dpi,
         }
 
     return {
@@ -333,8 +345,15 @@ def prepare_source_evidence(config: ChapterConfig, pdf_path: Path, work_dir: Pat
     for number in range(config.question_numbers[0], config.question_numbers[1] + 1):
         if number in config.intentional_exclusions:
             continue
-        crop_hashes = tuple(
-            crop.sha256
+        crop_provenance = tuple(
+            {
+                "role": crop.role,
+                "page_number": crop.page_number,
+                "box": [crop.box.left, crop.box.top, crop.box.right, crop.box.bottom],
+                "source_image_sha256": crop.source_image_sha256,
+                "source_dpi": crop.source_dpi,
+                "crop_sha256": crop.sha256,
+            }
             for role in ("question", "answer_key", "solution")
             for crop in role_crops[role][number]
         )
@@ -344,7 +363,7 @@ def prepare_source_evidence(config: ChapterConfig, pdf_path: Path, work_dir: Pat
                 "question_number": number,
                 "source_pdf_sha256": source_pdf_sha256,
                 "dpi": dpi,
-                "crop_hashes": crop_hashes,
+                "crop_provenance": crop_provenance,
             }
         )
         evidence = RecordEvidence(

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,7 +12,7 @@ from PIL import Image
 
 from textbook_chapters_v2.config import ChapterConfig
 from textbook_chapters_v2.models import CropBox, SourceImage
-from textbook_chapters_v2.source import crop_region, prepare_source_evidence, sha256_path
+from textbook_chapters_v2.source import crop_region, prepare_source_evidence, render_page, sha256_path
 
 
 class SourceEvidenceTests(unittest.TestCase):
@@ -21,8 +23,8 @@ class SourceEvidenceTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary_directory.cleanup()
 
-    def _page(self, page_number: int, bands: list[tuple[int, int, str]]) -> SourceImage:
-        path = self.root / f"page-{page_number:03d}.png"
+    def _page(self, page_number: int, bands: list[tuple[int, int, str]], name: str | None = None) -> SourceImage:
+        path = self.root / (name or f"page-{page_number:03d}.png")
         image = Image.new("RGB", (100, 200), "white")
         for top, bottom, colour in bands:
             image.paste(colour, (0, top, 100, bottom))
@@ -39,8 +41,25 @@ class SourceEvidenceTests(unittest.TestCase):
         self.assertEqual(crop.page_number, 38)
         self.assertEqual(crop.box, CropBox(0, 40, 100, 120))
         self.assertEqual(crop.sha256, sha256_path(output_path))
+        self.assertEqual(crop.source_image_sha256, page.sha256)
+        self.assertEqual(crop.source_dpi, 180)
         with Image.open(output_path) as result:
             self.assertEqual(result.getpixel((50, 40)), (0, 128, 0))
+
+    def test_render_page_rejects_a_stale_output_when_renderer_writes_nothing(self) -> None:
+        pdf_path = self.root / "source.pdf"
+        pdf_path.write_bytes(b"synthetic source")
+        output_path = self.root / "page.png"
+        Image.new("RGB", (100, 100), "red").save(output_path)
+        fake_renderer = self.root / "fake-pdftoppm.cmd"
+        fake_renderer.write_text("@echo off\r\nexit /b 0\r\n", encoding="utf-8")
+
+        with patch.dict(os.environ, {"PDFTOPPM": str(fake_renderer)}):
+            with self.assertRaisesRegex(RuntimeError, "did not create"):
+                render_page(pdf_path, 1, 180, output_path)
+
+        with Image.open(output_path) as stale:
+            self.assertEqual(stale.getpixel((50, 50)), (255, 0, 0))
 
     def test_reviewed_adjacent_markers_bound_crops_and_keep_multi_page_solutions_ordered(self) -> None:
         pages = {
@@ -84,6 +103,100 @@ class SourceEvidenceTests(unittest.TestCase):
         self.assertEqual([crop.page_number for crop in first.solution_crops], [4, 5])
         self.assertTrue(all(crop.path.is_file() for crop in first.solution_crops))
         self.assertEqual(first.source_pdf_sha256, hashlib.sha256(pdf_path.read_bytes()).hexdigest())
+
+    def test_explicit_bottom_ends_a_multi_page_crop_before_the_next_marker_page(self) -> None:
+        pages = {
+            1: self._page(1, [(0, 100, "red"), (100, 200, "green")]),
+            3: self._page(3, [(0, 100, "yellow"), (100, 200, "purple")]),
+            4: self._page(4, [(0, 200, "blue")]),
+            5: self._page(5, [(0, 30, "orange"), (30, 200, "black")]),
+        }
+        config = ChapterConfig.from_dict(
+            {
+                "chapter": 8,
+                "bank_name": "explicit-bottom",
+                "question_pages": [1, 1],
+                "answer_pages": [3, 3],
+                "solution_pages": [4, 5],
+                "question_numbers": [1, 2],
+                "marker_overrides": {
+                    "question": {"1": {"page": 1, "top": 0}, "2": {"page": 1, "top": 100}},
+                    "answer_key": {"1": {"page": 3, "top": 0}, "2": {"page": 3, "top": 100}},
+                    "solution": {"1": {"page": 4, "top": 0, "bottom": 100}, "2": {"page": 5, "top": 30}},
+                },
+            }
+        )
+        pdf_path = self.root / "source.pdf"
+        pdf_path.write_bytes(b"reviewed source bytes")
+
+        with patch("textbook_chapters_v2.source.render_page", side_effect=lambda _pdf, page, _dpi, _output: pages[page]):
+            evidence = prepare_source_evidence(config, pdf_path, self.root / "work")
+
+        self.assertEqual([(crop.page_number, crop.box) for crop in evidence[0].solution_crops], [
+            (4, CropBox(0, 0, 100, 100)),
+        ])
+
+    def test_excluded_marker_bounds_the_prior_record_without_creating_excluded_artifacts(self) -> None:
+        page = self._page(1, [(0, 100, "red"), (100, 200, "green")])
+        config = ChapterConfig.from_dict(
+            {
+                "chapter": 9,
+                "bank_name": "exclusions",
+                "question_pages": [1, 1],
+                "answer_pages": [1, 1],
+                "solution_pages": [1, 1],
+                "question_numbers": [1, 2],
+                "intentional_exclusions": [2],
+                "marker_overrides": {
+                    role: {"1": {"page": 1, "top": 0}, "2": {"page": 1, "top": 100}}
+                    for role in ("question", "answer_key", "solution")
+                },
+            }
+        )
+        pdf_path = self.root / "source.pdf"
+        pdf_path.write_bytes(b"reviewed source bytes")
+        work_dir = self.root / "work"
+
+        with patch("textbook_chapters_v2.source.render_page", return_value=page):
+            evidence = prepare_source_evidence(config, pdf_path, work_dir)
+
+        self.assertEqual([record.question_number for record in evidence], [1])
+        self.assertEqual(evidence[0].question_crops[0].box, CropBox(0, 0, 100, 100))
+        self.assertEqual(list((work_dir / "crops").glob("*q0002*")), [])
+
+    def test_evidence_fingerprint_and_manifest_bind_source_render_hash_and_dpi(self) -> None:
+        first_page = self._page(1, [(0, 100, "red"), (100, 200, "blue")], "first.png")
+        second_page = self._page(1, [(0, 100, "red"), (100, 200, "green")], "second.png")
+        config = ChapterConfig.from_dict(
+            {
+                "chapter": 10,
+                "bank_name": "provenance",
+                "question_pages": [1, 1],
+                "answer_pages": [1, 1],
+                "solution_pages": [1, 1],
+                "question_numbers": [1, 1],
+                "marker_overrides": {
+                    role: {"1": {"page": 1, "top": 0, "bottom": 100}}
+                    for role in ("question", "answer_key", "solution")
+                },
+            }
+        )
+        pdf_path = self.root / "source.pdf"
+        pdf_path.write_bytes(b"reviewed source bytes")
+
+        with patch("textbook_chapters_v2.source.render_page", return_value=first_page):
+            first = prepare_source_evidence(config, pdf_path, self.root / "first-work")[0]
+        with patch("textbook_chapters_v2.source.render_page", return_value=second_page):
+            second = prepare_source_evidence(config, pdf_path, self.root / "second-work")[0]
+
+        self.assertEqual(first.question_crops[0].source_image_sha256, first_page.sha256)
+        self.assertEqual(first.question_crops[0].source_dpi, first_page.dpi)
+        self.assertEqual(first.question_crops[0].sha256, second.question_crops[0].sha256)
+        self.assertNotEqual(first.dependency_fingerprint, second.dependency_fingerprint)
+        manifest = json.loads((self.root / "first-work" / "source-evidence" / "ch010-q0001.json").read_text(encoding="utf-8"))
+        persisted = manifest["payload"]["question_crops"][0]
+        self.assertEqual(persisted["source_image_sha256"], first_page.sha256)
+        self.assertEqual(persisted["source_dpi"], first_page.dpi)
 
 
 if __name__ == "__main__":

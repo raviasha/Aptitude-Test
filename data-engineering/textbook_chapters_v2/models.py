@@ -72,6 +72,8 @@ class SourceCrop:
     width: int
     height: int
     sha256: str
+    source_image_sha256: str
+    source_dpi: int
 
 
 @dataclass(frozen=True)

@@ -130,8 +130,11 @@ class CoreContractTests(unittest.TestCase):
             width=100,
             height=80,
             sha256="a" * 64,
+            source_image_sha256="b" * 64,
+            source_dpi=180,
         )
         self.assertEqual(crop.box, box)
+        self.assertEqual((crop.source_image_sha256, crop.source_dpi), ("b" * 64, 180))
         with self.assertRaises(FrozenInstanceError):
             crop.width = 101  # type: ignore[misc]
 

@@ -42,7 +42,10 @@ import question_media
 
 SOURCE_ROOT = Path(__file__).resolve().parent
 BUNDLE_DIR = Path(getattr(sys, "_MEIPASS", SOURCE_ROOT))
-if getattr(sys, "frozen", False):
+configured_data_dir = os.getenv("KSAT_DATA_DIR")
+if configured_data_dir:
+    DATA_DIR = Path(configured_data_dir).resolve()
+elif getattr(sys, "frozen", False):
     DATA_DIR = Path(os.getenv("PROGRAMDATA", r"C:\ProgramData")) / "Aptitude Lab"
 else:
     DATA_DIR = SOURCE_ROOT / "data"

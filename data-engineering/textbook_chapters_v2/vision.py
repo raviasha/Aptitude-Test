@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -16,21 +17,8 @@ from .store import canonical_json, dependency_fingerprint
 
 _SCHEMA_DIRECTORY = Path(__file__).with_name("schemas")
 _HASH = re.compile(r"^[0-9a-f]{64}$")
-_OPTION_LABELS = ("A", "B", "C", "D")
+_OPTION_LABEL_SETS = (tuple("ABCD"), tuple("ABCDE"))
 _REPRESENTATION_MODES = frozenset(("text", "image", "quarantine"))
-_VERDICT_FIELDS = (
-    "question",
-    "options.A",
-    "options.B",
-    "options.C",
-    "options.D",
-    "answer_mapping",
-    "solution",
-    "readability",
-    "clipping",
-)
-
-
 def _require_string(value: Any, field: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{field} must be a non-empty string.")
@@ -65,20 +53,90 @@ def _local_schema(name: str) -> Mapping[str, Any]:
     return schema
 
 
-def _validate_schema_envelope(payload: Mapping[str, Any], schema_name: str) -> None:
-    """Validate strict local schema envelope without resolving any remote URI."""
-    schema = _local_schema(schema_name)
-    required = schema.get("required")
-    properties = schema.get("properties")
+def _schema_path(parent: str, child: str) -> str:
+    return f"{parent}.{child}" if parent else child
+
+
+def _validate_local_schema(value: Any, schema: Mapping[str, Any], path: str = "") -> None:
+    """Validate the bundled JSON-Schema subset locally, without URI resolution."""
+    schema_type = schema.get("type")
+    if schema_type is None:
+        if "enum" not in schema:
+            raise RuntimeError(f"Unsupported bundled schema at {path or 'result'}.")
+        if value not in schema["enum"]:
+            raise ValueError(f"{path or 'result'} must be one of the bundled schema values.")
+        return
+    valid_type = {
+        "object": lambda item: isinstance(item, dict),
+        "array": lambda item: isinstance(item, list),
+        "string": lambda item: isinstance(item, str),
+    }.get(schema_type)
+    if valid_type is None:
+        raise RuntimeError(f"Unsupported bundled schema type at {path or 'result'}: {schema_type!r}")
+    if not valid_type(value):
+        raise ValueError(f"{path or 'result'} must be a {schema_type}.")
+    if "enum" in schema and value not in schema["enum"]:
+        raise ValueError(f"{path or 'result'} must be one of the bundled schema values.")
+    if schema_type == "string":
+        if len(value) < schema.get("minLength", 0):
+            raise ValueError(f"{path or 'result'} is shorter than the bundled schema permits.")
+        pattern = schema.get("pattern")
+        if pattern is not None and not re.search(pattern, value):
+            raise ValueError(f"{path or 'result'} does not match the bundled schema pattern.")
+        return
+    if schema_type == "array":
+        if len(value) < schema.get("minItems", 0):
+            raise ValueError(f"{path or 'result'} has too few items.")
+        item_schema = schema.get("items")
+        if item_schema is not None:
+            if not isinstance(item_schema, dict):
+                raise RuntimeError(f"Invalid bundled item schema at {path or 'result'}.")
+            for index, item in enumerate(value):
+                _validate_local_schema(item, item_schema, f"{path}[{index}]")
+        return
+    required = schema.get("required", [])
+    properties = schema.get("properties", {})
     if not isinstance(required, list) or not isinstance(properties, dict):
-        raise RuntimeError(f"Bundled schema is not usable: {schema_name}")
-    missing = [field for field in required if field not in payload]
+        raise RuntimeError(f"Invalid bundled object schema at {path or 'result'}.")
+    missing = [field for field in required if field not in value]
     if missing:
-        raise ValueError(f"Result is missing required fields: {', '.join(missing)}.")
-    if schema.get("additionalProperties") is False:
-        unexpected = sorted(set(payload) - set(properties))
-        if unexpected:
-            raise ValueError(f"Result has unexpected fields: {', '.join(unexpected)}.")
+        raise ValueError(f"{path or 'result'} is missing required fields: {', '.join(missing)}.")
+    if len(value) < schema.get("minProperties", 0):
+        raise ValueError(f"{path or 'result'} has too few properties.")
+    maximum = schema.get("maxProperties")
+    if maximum is not None and len(value) > maximum:
+        raise ValueError(f"{path or 'result'} has too many properties.")
+    additional = schema.get("additionalProperties", True)
+    for key, item in value.items():
+        child_path = _schema_path(path, key)
+        if key in properties:
+            child_schema = properties[key]
+            if not isinstance(child_schema, dict):
+                raise RuntimeError(f"Invalid bundled property schema at {child_path}.")
+            _validate_local_schema(item, child_schema, child_path)
+        elif additional is False:
+            raise ValueError(f"{child_path} is not allowed by the bundled schema.")
+        elif isinstance(additional, dict):
+            _validate_local_schema(item, additional, child_path)
+
+
+def _validate_schema_envelope(payload: Mapping[str, Any], schema_name: str) -> None:
+    """Fully validate a result against its bundled schema without remote fetches."""
+    _validate_local_schema(payload, _local_schema(schema_name))
+
+
+def _option_labels(options: Mapping[str, Any], field: str) -> tuple[str, ...]:
+    if tuple(sorted(options)) not in _OPTION_LABEL_SETS:
+        raise ValueError(f"{field} must contain exactly contiguous options A-D or A-E.")
+    return tuple(sorted(options))
+
+
+def _sha256_path(path: Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _crop_source(crop: SourceCrop) -> dict[str, Any]:
@@ -86,11 +144,14 @@ def _crop_source(crop: SourceCrop) -> dict[str, Any]:
         raise TypeError("source_crops must contain SourceCrop values.")
     if not crop.path.is_file():
         raise ValueError(f"Source crop does not exist: {crop.path}")
+    declared_hash = _require_hash(crop.sha256, "source crop sha256")
+    if _sha256_path(crop.path) != declared_hash:
+        raise ValueError(f"Source crop hash does not match file: {crop.path}")
     return {
         "kind": "source_crop",
         "role": crop.role,
         "path": str(crop.path),
-        "sha256": _require_hash(crop.sha256, "source crop sha256"),
+        "sha256": declared_hash,
         "page_number": crop.page_number,
         "box": {"left": crop.box.left, "top": crop.box.top, "right": crop.box.right, "bottom": crop.box.bottom},
         "source_image_sha256": _require_hash(crop.source_image_sha256, "source image sha256"),
@@ -193,11 +254,12 @@ def _validate_extraction_result(job: VisionJob, payload: Mapping[str, Any]) -> N
         raise ValueError("Extraction result job fingerprint does not match the work item.")
     _require_string(payload.get("question_text"), "question_text")
     options = payload.get("options")
-    if not isinstance(options, dict) or set(options) != set(_OPTION_LABELS):
-        raise ValueError("options must contain exactly A, B, C, and D.")
-    for label in _OPTION_LABELS:
+    if not isinstance(options, dict):
+        raise ValueError("options must be a JSON object.")
+    option_labels = _option_labels(options, "options")
+    for label in option_labels:
         _require_string(options[label], f"options.{label}")
-    if payload.get("correct_answer") not in _OPTION_LABELS:
+    if payload.get("correct_answer") not in option_labels:
         raise ValueError("correct_answer must name one complete option.")
     steps = payload.get("solution_steps")
     if not isinstance(steps, list) or not steps:
@@ -211,8 +273,8 @@ def _validate_extraction_result(job: VisionJob, payload: Mapping[str, Any]) -> N
         if representation[field] not in _REPRESENTATION_MODES:
             raise ValueError(f"representation.{field} has an unknown mode.")
     option_modes = representation["options"]
-    if not isinstance(option_modes, dict) or set(option_modes) != set(_OPTION_LABELS):
-        raise ValueError("representation.options must define every option mode.")
+    if not isinstance(option_modes, dict) or tuple(sorted(option_modes)) != option_labels:
+        raise ValueError("representation.options must define every extracted option mode.")
     if any(mode not in _REPRESENTATION_MODES for mode in option_modes.values()):
         raise ValueError("representation.options has an unknown mode.")
     differences = payload.get("differences_from_legacy")
@@ -248,7 +310,10 @@ def _render_sources(render_artifacts: RenderArtifacts) -> tuple[dict[str, Any], 
                 raise ValueError(f"Render screenshot does not exist: {path}")
             if key not in render_artifacts.screenshot_hashes:
                 raise ValueError(f"Render screenshot hash is missing: {key}")
-            sources.append({"kind": kind, "viewport": viewport, "path": str(path), "sha256": _require_hash(render_artifacts.screenshot_hashes[key], key)})
+            declared_hash = _require_hash(render_artifacts.screenshot_hashes[key], key)
+            if _sha256_path(path) != declared_hash:
+                raise ValueError(f"Render screenshot hash does not match file: {path}")
+            sources.append({"kind": kind, "viewport": viewport, "path": str(path), "sha256": declared_hash})
     if not sources:
         raise ValueError("Verification requires real render screenshots.")
     return tuple(sources)
@@ -260,6 +325,7 @@ def create_verification_job(candidate: CandidateRecord, source_crops: Iterable[S
         raise TypeError("candidate must be a CandidateRecord value.")
     if not isinstance(render_artifacts, RenderArtifacts):
         raise TypeError("render_artifacts must be a RenderArtifacts value.")
+    _option_labels(candidate.options, "candidate options")
     crop_sources = tuple(_crop_source(crop) for crop in source_crops)
     if not crop_sources:
         raise ValueError("Verification requires source crops.")
@@ -285,23 +351,41 @@ def create_verification_job(candidate: CandidateRecord, source_crops: Iterable[S
     )
 
 
+def _verification_fields(job: VisionJob) -> tuple[str, ...]:
+    candidate_sources = [source for source in job.sources if source.get("kind") == "candidate_record"]
+    if len(candidate_sources) != 1:
+        raise ValueError("Verification job must bind exactly one candidate record.")
+    record = candidate_sources[0].get("record")
+    if not isinstance(record, Mapping) or not isinstance(record.get("options"), Mapping):
+        raise ValueError("Verification job candidate record is invalid.")
+    return (
+        "question",
+        *(f"options.{label}" for label in _option_labels(record["options"], "candidate options")),
+        "answer_mapping",
+        "solution",
+        "readability",
+        "clipping",
+    )
+
+
 def ingest_verification_result(job: VisionJob, result_path: Path) -> VerificationResult:
     """Locally validate a field-by-field independent verification result."""
     if job.stage != "verification":
         raise ValueError("Verification result must be paired with a verification job.")
     payload = _read_json_object(Path(result_path))
-    _validate_schema_envelope(payload, "verification-result.schema.json")
     if payload.get("job_id") != job.job_id:
         raise ValueError("Verification result job_id does not match the work item.")
     if payload.get("job_fingerprint") != job.fingerprint:
         raise ValueError("Verification result job fingerprint does not match the work item.")
     verdicts = payload.get("verdicts")
-    if not isinstance(verdicts, dict) or set(verdicts) != set(_VERDICT_FIELDS):
+    verdict_fields = _verification_fields(job)
+    if not isinstance(verdicts, dict) or set(verdicts) != set(verdict_fields):
         raise ValueError("Verification requires concrete field-level verdicts; bulk approval is forbidden.")
+    _validate_schema_envelope(payload, "verification-result.schema.json")
     if any(verdict not in {"pass", "fail"} for verdict in verdicts.values()):
         raise ValueError("Each field-level verdict must be pass or fail.")
     differences = payload.get("differences")
-    if not isinstance(differences, dict) or any(field not in _VERDICT_FIELDS for field in differences):
+    if not isinstance(differences, dict) or any(field not in verdict_fields for field in differences):
         raise ValueError("differences must be keyed by a known field-level verdict.")
     for field, verdict in verdicts.items():
         if verdict == "fail" and (not isinstance(differences.get(field), str) or not differences[field].strip()):

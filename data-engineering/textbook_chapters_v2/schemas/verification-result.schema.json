@@ -17,6 +17,7 @@
         "options.B": {"enum": ["pass", "fail"]},
         "options.C": {"enum": ["pass", "fail"]},
         "options.D": {"enum": ["pass", "fail"]},
+        "options.E": {"enum": ["pass", "fail"]},
         "answer_mapping": {"enum": ["pass", "fail"]},
         "solution": {"enum": ["pass", "fail"]},
         "readability": {"enum": ["pass", "fail"]},

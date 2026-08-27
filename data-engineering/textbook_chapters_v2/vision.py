@@ -195,6 +195,9 @@ def _candidate_payload(candidate: CandidateRecord) -> dict[str, Any]:
         "question_text": candidate.question_text,
         "options": dict(candidate.options),
         "correct_answer": candidate.correct_answer,
+        "answer_key_answer": candidate.answer_key_answer,
+        "answer_key_crop_sha256": candidate.answer_key_crop_sha256,
+        "answer_key_job_fingerprint": candidate.answer_key_job_fingerprint,
         "solution_steps": list(candidate.solution_steps),
         "representation": dict(candidate.representation),
         "source_fingerprint": candidate.source_fingerprint,
@@ -261,6 +264,17 @@ def _validate_extraction_result(job: VisionJob, payload: Mapping[str, Any]) -> N
         _require_string(options[label], f"options.{label}")
     if payload.get("correct_answer") not in option_labels:
         raise ValueError("correct_answer must name one complete option.")
+    answer_key = payload.get("answer_key")
+    if not isinstance(answer_key, dict) or answer_key.get("correct_answer") not in option_labels:
+        raise ValueError("answer_key must name one complete option.")
+    if answer_key.get("job_fingerprint") != job.fingerprint:
+        raise ValueError("answer_key job_fingerprint does not match the extraction job.")
+    answer_crop_hashes = {
+        source.get("sha256") for source in job.sources
+        if source.get("kind") == "source_crop" and source.get("role") == "answer_key"
+    }
+    if answer_key.get("crop_sha256") not in answer_crop_hashes:
+        raise ValueError("answer_key crop_sha256 is not an answer-key crop from the extraction job.")
     steps = payload.get("solution_steps")
     if not isinstance(steps, list) or not steps:
         raise ValueError("solution_steps must be a non-empty list.")
@@ -293,6 +307,9 @@ def ingest_extraction_result(job: VisionJob, result_path: Path) -> CandidateReco
         "question_text": payload["question_text"],
         "options": payload["options"],
         "correct_answer": payload["correct_answer"],
+        "answer_key_answer": payload["answer_key"]["correct_answer"],
+        "answer_key_crop_sha256": payload["answer_key"]["crop_sha256"],
+        "answer_key_job_fingerprint": payload["answer_key"]["job_fingerprint"],
         "solution_steps": payload["solution_steps"],
         "representation": payload["representation"],
         "source_fingerprint": job.fingerprint,

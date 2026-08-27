@@ -8,6 +8,7 @@ import unittest
 import zipfile
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
 
 DATA_ENGINEERING_ROOT = Path(__file__).resolve().parents[2]
@@ -18,6 +19,7 @@ if str(WORKSPACE_ROOT) not in sys.path:
     sys.path.insert(0, str(WORKSPACE_ROOT))
 
 import app
+import textbook_chapters_v2.package as package_module
 from textbook_chapters_v2.candidates import assemble_candidate
 from textbook_chapters_v2.config import ChapterConfig
 from textbook_chapters_v2.models import CropBox, PipelineBlocked, RecordEvidence, SourceCrop
@@ -83,7 +85,7 @@ class CandidatePackageTests(unittest.TestCase):
             "question_text": "The remainder when 7⁸⁴ is divided by 342 is",
             "options": {"A": "0", "B": "1", "C": "49", "D": "341"},
             "correct_answer": "B",
-            "answer_key_answer": "B",
+            "answer_key": {"correct_answer": "B", "crop_sha256": self.answer_crop.sha256, "job_fingerprint": "d" * 64},
             "solution_steps": ["7⁸⁴ = (7³)²⁸ = 343²⁸.", "Therefore, the remainder is 1."],
             "representation": {
                 "question": "text",
@@ -111,9 +113,13 @@ class CandidatePackageTests(unittest.TestCase):
         self.assertEqual(candidate.correct_answer, "B")
         self.assertIn("7⁸⁴", " ".join(candidate.solution_steps))
 
-        disagreeing = self._extraction(answer_key_answer="D")
+        disagreeing = self._extraction(answer_key={"correct_answer": "D", "crop_sha256": self.answer_crop.sha256, "job_fingerprint": "d" * 64})
         with self.assertRaisesRegex(PipelineBlocked, "answer-key"):
             assemble_candidate(self.evidence, disagreeing, [])
+
+        wrong_crop = self._extraction(answer_key={"correct_answer": "B", "crop_sha256": "0" * 64, "job_fingerprint": "d" * 64})
+        with self.assertRaisesRegex(PipelineBlocked, "answer-key crop"):
+            assemble_candidate(self.evidence, wrong_crop, [])
 
     def test_assembly_requires_each_field_decision_and_blocks_quarantine(self) -> None:
         incomplete = self._extraction(
@@ -174,6 +180,21 @@ class CandidatePackageTests(unittest.TestCase):
         self.assertEqual(format_version, 3)
         self.assertEqual(parsed[0]["options"]["D"], "341")
 
+    def test_assembly_rejects_an_image_crop_not_authorized_by_this_record_evidence(self) -> None:
+        foreign_crop = replace(self.question_crop, question_number=335)
+        extraction = self._extraction(
+            representation={
+                "question": "image",
+                "options": {"A": "text", "B": "text", "C": "text", "D": "text"},
+                "solution": "text",
+            },
+            media_crops={"question": foreign_crop},
+            alt_text={"question": "Verified question crop."},
+        )
+
+        with self.assertRaisesRegex(PipelineBlocked, "authorized"):
+            assemble_candidate(self.evidence, extraction, [])
+
     def test_build_requires_terminal_audit_and_never_overwrites_an_existing_zip(self) -> None:
         candidate = assemble_candidate(self.evidence, self._extraction(), [])
         path = self.root / "candidate.zip"
@@ -197,6 +218,45 @@ class CandidatePackageTests(unittest.TestCase):
 
         with self.assertRaisesRegex(PipelineBlocked, "pending"):
             build_candidate_package(self.config, [pending], self._approved_audit(), self.root / "pending.zip")
+
+    def test_build_requires_terminal_reviewed_rejection_metadata(self) -> None:
+        candidate = assemble_candidate(self.evidence, self._extraction(), [])
+        invalid_rejections = (
+            {"status": "pending_vision", "reviewer": "reviewer", "rejection_reason": "reason"},
+            {"status": "reviewed_rejection", "reviewer": "", "rejection_reason": "reason"},
+            {"status": "reviewed_rejection", "reviewer": "reviewer", "rejection_reason": ""},
+        )
+
+        for index, rejection in enumerate(invalid_rejections):
+            with self.subTest(rejection=rejection):
+                audit = self._approved_audit(reviewed_rejections=[rejection])
+                with self.assertRaisesRegex(PipelineBlocked, "reviewed rejection"):
+                    build_candidate_package(self.config, [candidate], audit, self.root / f"bad-rejection-{index}.zip")
+
+    def test_build_revalidates_complete_representation_and_media_for_direct_candidate(self) -> None:
+        candidate = assemble_candidate(self.evidence, self._extraction(), [])
+        bypassed = replace(candidate, representation={"question": "image", "options": {"A": "text", "B": "text", "C": "text", "D": "text"}, "solution": "text", "media": {}})
+
+        with self.assertRaisesRegex(PipelineBlocked, "display media"):
+            build_candidate_package(self.config, [bypassed], self._approved_audit(), self.root / "bypassed.zip")
+
+        without_answer_key = replace(candidate, answer_key_crop_sha256="")
+        with self.assertRaisesRegex(PipelineBlocked, "answer-key"):
+            build_candidate_package(self.config, [without_answer_key], self._approved_audit(), self.root / "missing-answer-key.zip")
+
+    def test_build_does_not_clobber_destination_created_after_validation(self) -> None:
+        candidate = assemble_candidate(self.evidence, self._extraction(), [])
+        path = self.root / "raced.zip"
+        original_validate = package_module._validate_written_package
+
+        def create_competing_destination(*args: object, **kwargs: object) -> None:
+            original_validate(*args, **kwargs)
+            path.write_bytes(b"published package")
+
+        with patch.object(package_module, "_validate_written_package", side_effect=create_competing_destination):
+            with self.assertRaisesRegex(PipelineBlocked, "existing"):
+                build_candidate_package(self.config, [candidate], self._approved_audit(), path)
+        self.assertEqual(path.read_bytes(), b"published package")
 
     def test_unchanged_builds_are_byte_deterministic_and_parse_as_v3(self) -> None:
         candidate = assemble_candidate(self.evidence, self._extraction(), [])

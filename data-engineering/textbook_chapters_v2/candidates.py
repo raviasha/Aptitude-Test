@@ -36,6 +36,9 @@ def _accepted_payload(extraction: Any) -> tuple[Mapping[str, Any], Mapping[str, 
             "question_text": extraction.question_text,
             "options": extraction.options,
             "correct_answer": extraction.correct_answer,
+            "answer_key_answer": extraction.answer_key_answer,
+            "answer_key_crop_sha256": extraction.answer_key_crop_sha256,
+            "answer_key_job_fingerprint": extraction.answer_key_job_fingerprint,
             "solution_steps": extraction.solution_steps,
             "representation": extraction.representation,
             "source_fingerprint": extraction.source_fingerprint,
@@ -48,6 +51,9 @@ def _accepted_payload(extraction: Any) -> tuple[Mapping[str, Any], Mapping[str, 
             "question_text": embedded.question_text,
             "options": embedded.options,
             "correct_answer": embedded.correct_answer,
+            "answer_key_answer": embedded.answer_key_answer,
+            "answer_key_crop_sha256": embedded.answer_key_crop_sha256,
+            "answer_key_job_fingerprint": embedded.answer_key_job_fingerprint,
             "solution_steps": embedded.solution_steps,
             "representation": embedded.representation,
             "source_fingerprint": embedded.source_fingerprint,
@@ -55,17 +61,31 @@ def _accepted_payload(extraction: Any) -> tuple[Mapping[str, Any], Mapping[str, 
     return extraction, extraction
 
 
-def _answer_key_answer(attached: Mapping[str, Any]) -> str:
-    raw = attached.get("answer_key_answer")
-    if raw is None:
-        for key in ("answer_key", "answer_key_result"):
-            result = attached.get(key)
-            if isinstance(result, Mapping):
-                raw = result.get("correct_answer", result.get("answer"))
-                break
-    if not isinstance(raw, str) or raw not in _OPTION_LABELS:
+def _answer_key_evidence(record: Mapping[str, Any], evidence: RecordEvidence) -> str:
+    answer_key = record.get("answer_key")
+    if isinstance(answer_key, Mapping):
+        answer = answer_key.get("correct_answer")
+        crop_sha256 = answer_key.get("crop_sha256")
+        job_fingerprint = answer_key.get("job_fingerprint")
+    else:
+        answer = record.get("answer_key_answer")
+        crop_sha256 = record.get("answer_key_crop_sha256")
+        job_fingerprint = record.get("answer_key_job_fingerprint")
+    if not isinstance(answer, str) or answer not in _OPTION_LABELS:
         raise PipelineBlocked("Accepted extraction needs an independently extracted answer-key answer.")
-    return raw
+    if not isinstance(crop_sha256, str) or len(crop_sha256) != 64:
+        raise PipelineBlocked("Accepted extraction needs an independently extracted answer-key crop hash.")
+    source_fingerprint = record.get("source_fingerprint")
+    if not isinstance(job_fingerprint, str) or job_fingerprint != source_fingerprint:
+        raise PipelineBlocked("Accepted extraction answer-key evidence is not bound to its extraction job.")
+    if not any(
+        crop.role == "answer_key"
+        and crop.question_number == evidence.question_number
+        and crop.sha256 == crop_sha256
+        for crop in evidence.answer_key_crops
+    ):
+        raise PipelineBlocked("Accepted extraction answer-key crop is not authorized by this record evidence.")
+    return answer
 
 
 def _field_findings(findings: Sequence[Finding], field: str) -> list[Finding]:
@@ -74,7 +94,7 @@ def _field_findings(findings: Sequence[Finding], field: str) -> list[Finding]:
     return [item for item in findings if item.field_path in {field, field.replace("question", "question_text")}]
 
 
-def _crop_payload(crop: Any, field: str, alt_text: Any) -> dict[str, Any]:
+def _crop_payload(crop: Any, field: str, alt_text: Any, evidence: RecordEvidence, allowed_crops: Sequence[SourceCrop], expected_role: str) -> dict[str, Any]:
     if not isinstance(crop, SourceCrop):
         raise PipelineBlocked(f"Image representation for {field} needs an approved SourceCrop.")
     if not crop.path.is_file():
@@ -83,6 +103,15 @@ def _crop_payload(crop: Any, field: str, alt_text: Any) -> dict[str, Any]:
     digest = hashlib.sha256(content).hexdigest()
     if digest != crop.sha256:
         raise PipelineBlocked(f"Approved source crop hash does not match for {field}.")
+    if crop.role != expected_role or crop.question_number != evidence.question_number:
+        raise PipelineBlocked(f"Approved source crop for {field} is not authorized by this record evidence.")
+    if not any(
+        approved.role == expected_role
+        and approved.question_number == evidence.question_number
+        and approved.sha256 == crop.sha256
+        for approved in allowed_crops
+    ):
+        raise PipelineBlocked(f"Approved source crop for {field} is not authorized by this record evidence.")
     text = _non_empty_text(alt_text, f"verified alt text for {field}")
     return {
         "source_path": str(Path(crop.path)),
@@ -96,7 +125,7 @@ def _crop_payload(crop: Any, field: str, alt_text: Any) -> dict[str, Any]:
 
 
 def _media_payload(
-    attached: Mapping[str, Any], modes: Mapping[str, Any], options: Mapping[str, str]
+    attached: Mapping[str, Any], modes: Mapping[str, Any], options: Mapping[str, str], evidence: RecordEvidence
 ) -> dict[str, Any]:
     crops = attached.get("media_crops")
     alt_text = attached.get("alt_text")
@@ -106,7 +135,9 @@ def _media_payload(
         alt_text = {}
     media: dict[str, Any] = {}
     if modes["question"] == "image":
-        media["question"] = _crop_payload(crops.get("question"), "question", alt_text.get("question"))
+        media["question"] = _crop_payload(
+            crops.get("question"), "question", alt_text.get("question"), evidence, evidence.question_crops, "question"
+        )
     option_media: dict[str, Any] = {}
     raw_option_crops = crops.get("options")
     raw_option_alt_text = alt_text.get("options")
@@ -114,7 +145,9 @@ def _media_payload(
     option_alt_text = raw_option_alt_text if isinstance(raw_option_alt_text, Mapping) else {}
     for label in options:
         if modes["options"][label] == "image":
-            option_media[label] = _crop_payload(option_crops.get(label), f"option {label}", option_alt_text.get(label))
+            option_media[label] = _crop_payload(
+                option_crops.get(label), f"option {label}", option_alt_text.get(label), evidence, evidence.question_crops, "question"
+            )
     if option_media:
         media["options"] = option_media
     if modes["solution"] == "image":
@@ -125,7 +158,7 @@ def _media_payload(
         if len(solution_crops) != len(solution_alt_text) or not solution_crops:
             raise PipelineBlocked("Image representation for solution needs approved crops and verified alt text.")
         media["solution"] = [
-            _crop_payload(crop, "solution", item_alt_text)
+            _crop_payload(crop, "solution", item_alt_text, evidence, evidence.solution_crops, "solution")
             for crop, item_alt_text in zip(solution_crops, solution_alt_text)
         ]
     return media
@@ -141,7 +174,7 @@ def assemble_candidate(evidence: RecordEvidence, extraction: Any, findings: Sequ
     correct_answer = record.get("correct_answer")
     if not isinstance(correct_answer, str) or correct_answer not in options:
         raise PipelineBlocked("Accepted extraction correct_answer must identify an existing option.")
-    answer_key_answer = _answer_key_answer(attached)
+    answer_key_answer = _answer_key_evidence(record, evidence)
     if correct_answer != answer_key_answer:
         raise PipelineBlocked("Vision answer disagrees with independently extracted answer-key evidence.")
     raw_steps = record.get("solution_steps")
@@ -169,7 +202,7 @@ def assemble_candidate(evidence: RecordEvidence, extraction: Any, findings: Sequ
         mode == "quarantine" for mode in modes["options"].values()
     ):
         raise PipelineBlocked("A quarantined field cannot be assembled into a candidate.")
-    media = _media_payload(attached, modes, options)
+    media = _media_payload(attached, modes, options, evidence)
     source_fingerprint = record.get("source_fingerprint") or evidence.dependency_fingerprint
     if not isinstance(source_fingerprint, str) or len(source_fingerprint) != 64:
         raise PipelineBlocked("Candidate needs a source dependency fingerprint.")
@@ -179,6 +212,17 @@ def assemble_candidate(evidence: RecordEvidence, extraction: Any, findings: Sequ
         "question_text": question_text,
         "options": options,
         "correct_answer": correct_answer,
+        "answer_key_answer": answer_key_answer,
+        "answer_key_crop_sha256": (
+            record["answer_key"]["crop_sha256"]
+            if isinstance(record.get("answer_key"), Mapping)
+            else record["answer_key_crop_sha256"]
+        ),
+        "answer_key_job_fingerprint": (
+            record["answer_key"]["job_fingerprint"]
+            if isinstance(record.get("answer_key"), Mapping)
+            else record["answer_key_job_fingerprint"]
+        ),
         "solution_steps": solution_steps,
         "representation": {**modes, "media": media},
         "source_fingerprint": source_fingerprint,

@@ -9,6 +9,7 @@
     "question_text",
     "options",
     "correct_answer",
+    "answer_key",
     "solution_steps",
     "representation",
     "differences_from_legacy",
@@ -33,6 +34,16 @@
       }
     },
     "correct_answer": {"enum": ["A", "B", "C", "D", "E"]},
+    "answer_key": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["correct_answer", "crop_sha256", "job_fingerprint"],
+      "properties": {
+        "correct_answer": {"enum": ["A", "B", "C", "D", "E"]},
+        "crop_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "job_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
     "solution_steps": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
     "representation": {
       "type": "object",

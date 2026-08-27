@@ -49,6 +49,15 @@ def _require_audit_summary(audit: Any) -> tuple[dict[str, Any], list[dict[str, A
     reviewed = audit.get("reviewed_rejections", [])
     if not isinstance(reviewed, (list, tuple)) or any(not isinstance(item, Mapping) for item in reviewed):
         raise PipelineBlocked("Audit reviewed_rejections must be a list of mappings.")
+    for item in reviewed:
+        if (
+            item.get("status") != "reviewed_rejection"
+            or not isinstance(item.get("reviewer"), str)
+            or not item["reviewer"].strip()
+            or not isinstance(item.get("rejection_reason"), str)
+            or not item["rejection_reason"].strip()
+        ):
+            raise PipelineBlocked("Every reviewed rejection needs terminal reviewed rejection status, reviewer, and reason.")
     normalized = {str(key): value for key, value in audit.items()}
     rejections = [{str(key): value for key, value in item.items()} for item in reviewed]
     return normalized, rejections
@@ -58,6 +67,38 @@ def _candidate_media(candidate: CandidateRecord) -> Mapping[str, Any]:
     media = candidate.representation.get("media", {})
     if not isinstance(media, Mapping):
         raise PipelineBlocked("Candidate display media must be a mapping.")
+    return media
+
+
+def _validate_candidate_representation(candidate: CandidateRecord) -> Mapping[str, Any]:
+    if (
+        candidate.answer_key_answer != candidate.correct_answer
+        or not isinstance(candidate.answer_key_crop_sha256, str)
+        or len(candidate.answer_key_crop_sha256) != 64
+        or candidate.answer_key_job_fingerprint != candidate.source_fingerprint
+    ):
+        raise PipelineBlocked("Candidate answer-key provenance is incomplete or disagrees with the candidate answer.")
+    representation = candidate.representation
+    if not isinstance(representation, Mapping) or set(representation) != {"question", "options", "solution", "media"}:
+        raise PipelineBlocked("Candidate needs complete question, option, solution, and media representation decisions.")
+    options = representation.get("options")
+    if not isinstance(options, Mapping) or set(options) != set(candidate.options):
+        raise PipelineBlocked("Candidate needs a representation decision for every option.")
+    if representation.get("question") not in {"text", "image"} or representation.get("solution") not in {"text", "image"}:
+        raise PipelineBlocked("Candidate representation decision is invalid.")
+    if any(mode not in {"text", "image"} for mode in options.values()):
+        raise PipelineBlocked("Candidate option representation decision is invalid.")
+    media = _candidate_media(candidate)
+    if set(media) - {"question", "options", "solution"}:
+        raise PipelineBlocked("Candidate display media contains an unknown field.")
+    if (representation["question"] == "image") != ("question" in media):
+        raise PipelineBlocked("Candidate question image representation needs matching display media.")
+    if (representation["solution"] == "image") != ("solution" in media):
+        raise PipelineBlocked("Candidate solution image representation needs matching display media.")
+    image_options = {label for label, mode in options.items() if mode == "image"}
+    media_options = media.get("options", {})
+    if not isinstance(media_options, Mapping) or set(media_options) != image_options:
+        raise PipelineBlocked("Candidate option image representation needs matching display media.")
     return media
 
 
@@ -104,7 +145,7 @@ def _question_entry(config: ChapterConfig, candidate: CandidateRecord, assets: d
         "explanation": "",
         "solution_steps": list(candidate.solution_steps),
     }
-    media = _candidate_media(candidate)
+    media = _validate_candidate_representation(candidate)
     display_media: dict[str, Any] = {}
     lineage_media: dict[str, Any] = {}
     if "question" in media:
@@ -155,8 +196,6 @@ def build_candidate_package(
     output = Path(output_path)
     if output.suffix.lower() != ".zip":
         raise ValueError("Candidate output_path must end in .zip.")
-    if output.exists():
-        raise PipelineBlocked("Candidate packaging refuses to overwrite an existing ZIP.")
     records = tuple(candidates)
     if not records or any(not isinstance(candidate, CandidateRecord) for candidate in records):
         raise PipelineBlocked("Candidate packaging needs one or more CandidateRecord values.")
@@ -195,7 +234,11 @@ def build_candidate_package(
             for name in sorted(members):
                 _write_member(archive, name, members[name])
         _validate_written_package(temporary_path, manifest, len(entries), set(assets))
-        os.replace(temporary_path, output)
+        try:
+            os.link(temporary_path, output)
+        except FileExistsError as error:
+            raise PipelineBlocked("Candidate packaging refuses to overwrite an existing ZIP.") from error
+        temporary_path.unlink()
         temporary_name = None
     finally:
         if temporary_name is not None:

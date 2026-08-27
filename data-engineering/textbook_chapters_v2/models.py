@@ -114,6 +114,9 @@ class CandidateRecord:
     question_text: str = ""
     options: Mapping[str, str] = field(default_factory=frozen_mapping)
     correct_answer: str = ""
+    answer_key_answer: str = ""
+    answer_key_crop_sha256: str = ""
+    answer_key_job_fingerprint: str = ""
     solution_steps: tuple[str, ...] = ()
     representation: Mapping[str, Any] = field(default_factory=frozen_mapping)
     source_fingerprint: str = ""

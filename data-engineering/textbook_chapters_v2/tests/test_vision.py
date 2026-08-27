@@ -12,6 +12,7 @@ from textbook_chapters_v2.models import (
     RenderArtifacts,
     SourceCrop,
 )
+from textbook_chapters_v2.candidates import assemble_candidate
 from textbook_chapters_v2.vision import (
     create_extraction_job,
     create_verification_job,
@@ -65,6 +66,11 @@ class VisionProtocolTests(unittest.TestCase):
             "question_text": "The remainder when 7⁸⁴ is divided by 342 is",
             "options": {"A": "0", "B": "1", "C": "49", "D": "341"},
             "correct_answer": "B",
+            "answer_key": {
+                "correct_answer": "B",
+                "crop_sha256": self.answer_crop.sha256,
+                "job_fingerprint": self.extraction_job.fingerprint,
+            },
             "solution_steps": ["7⁸⁴ = (7³)²⁸ = 343²⁸.", "Therefore, the remainder is 1."],
             "representation": {
                 "question": "text",
@@ -122,6 +128,41 @@ class VisionProtocolTests(unittest.TestCase):
         self.assertEqual(candidate.correct_answer, "B")
         self.assertEqual(candidate.source_fingerprint, self.extraction_job.fingerprint)
         self.assertEqual(len(candidate.sha256), 64)
+
+    def test_accepted_extraction_handoff_carries_answer_key_crop_provenance_to_assembly(self) -> None:
+        accepted = ingest_extraction_result(
+            self.extraction_job, self._write_result("accepted-extraction.json", self._extraction_result())
+        )
+
+        assembled = assemble_candidate(self.evidence, accepted, [])
+
+        self.assertEqual(assembled.correct_answer, "B")
+        self.assertEqual(assembled.question_text, "The remainder when 7⁸⁴ is divided by 342 is")
+        self.assertEqual(assembled.answer_key_crop_sha256, self.answer_crop.sha256)
+        self.assertEqual(assembled.answer_key_job_fingerprint, self.extraction_job.fingerprint)
+
+    def test_extraction_ingestion_rejects_answer_key_crop_or_job_binding_mismatch(self) -> None:
+        wrong_crop = self._extraction_result(
+            answer_key={
+                "correct_answer": "B",
+                "crop_sha256": "0" * 64,
+                "job_fingerprint": self.extraction_job.fingerprint,
+            }
+        )
+        wrong_job = self._extraction_result(
+            answer_key={
+                "correct_answer": "B",
+                "crop_sha256": self.answer_crop.sha256,
+                "job_fingerprint": "0" * 64,
+            }
+        )
+
+        with self.subTest("crop"):
+            with self.assertRaisesRegex(ValueError, "answer_key"):
+                ingest_extraction_result(self.extraction_job, self._write_result("wrong-answer-crop.json", wrong_crop))
+        with self.subTest("job"):
+            with self.assertRaisesRegex(ValueError, "answer_key"):
+                ingest_extraction_result(self.extraction_job, self._write_result("wrong-answer-job.json", wrong_job))
 
     def test_extraction_ingestion_rejects_incomplete_option_set(self) -> None:
         result = self._extraction_result(options={"A": "0", "B": "1", "C": "49"})

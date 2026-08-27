@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Textbook V2 independent verification result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["job_id", "job_fingerprint", "verdicts", "differences", "reviewer"],
+  "properties": {
+    "job_id": {"type": "string", "minLength": 1},
+    "job_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "verdicts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["question", "options.A", "options.B", "options.C", "options.D", "answer_mapping", "solution", "readability", "clipping"],
+      "properties": {
+        "question": {"enum": ["pass", "fail"]},
+        "options.A": {"enum": ["pass", "fail"]},
+        "options.B": {"enum": ["pass", "fail"]},
+        "options.C": {"enum": ["pass", "fail"]},
+        "options.D": {"enum": ["pass", "fail"]},
+        "answer_mapping": {"enum": ["pass", "fail"]},
+        "solution": {"enum": ["pass", "fail"]},
+        "readability": {"enum": ["pass", "fail"]},
+        "clipping": {"enum": ["pass", "fail"]}
+      }
+    },
+    "differences": {"type": "object", "additionalProperties": {"type": "string"}},
+    "reviewer": {"type": "string", "minLength": 1}
+  }
+}

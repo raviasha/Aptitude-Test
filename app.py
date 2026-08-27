@@ -1466,7 +1466,9 @@ def assert_student_attempt(connection: sqlite3.Connection, attempt_id: str, stud
     return attempt
 
 
-def display_media_for_attempt(stored_json: str, bank_id: int, include_solution: bool) -> Dict[str, Any]:
+def display_media_for_attempt(
+    stored_json: str, bank_id: int, include_solution: bool, attempt_id: Optional[str] = None
+) -> Dict[str, Any]:
     try:
         stored = json.loads(stored_json or "{}")
     except (TypeError, json.JSONDecodeError):
@@ -1475,9 +1477,10 @@ def display_media_for_attempt(stored_json: str, bank_id: int, include_solution: 
         return {}
     public = question_media.public_display_media(stored, bank_id=bank_id, include_solution=include_solution)
 
-    def item(media: Dict[str, Any]) -> Dict[str, Any]:
+    def item(media: Dict[str, Any], solution: bool = False) -> Dict[str, Any]:
+        suffix = f"?attempt_id={attempt_id}" if solution and attempt_id else ""
         return {
-            "url": f"/api/question-banks/{bank_id}/media/{Path(media['asset_url']).name}",
+            "url": f"/api/question-banks/{bank_id}/media/{Path(media['asset_url']).name}{suffix}",
             "alt_text": media["alt_text"],
             "width": media["width"],
             "height": media["height"],
@@ -1488,8 +1491,8 @@ def display_media_for_attempt(stored_json: str, bank_id: int, include_solution: 
         display_media["question"] = item(public["question"])
     if "options" in public:
         display_media["options"] = {key: item(value) for key, value in public["options"].items()}
-    if include_solution and "solution" in public:
-        display_media["solution"] = [item(value) for value in public["solution"]]
+    if include_solution and attempt_id and "solution" in public:
+        display_media["solution"] = [item(value, solution=True) for value in public["solution"]]
     return display_media
 
 
@@ -1541,7 +1544,10 @@ def serialize_attempt(connection: sqlite3.Connection, attempt: sqlite3.Row, incl
                     "solution_steps": display_solution_steps(row["question_text"], row["solution_steps"], row["source_key"]),
                     "option_explanations": clean_display_value(json.loads(row["option_explanations"])),
                 }
-                solution_media = display_media_for_attempt(row["display_media_json"], row["bank_id"], include_solution=True)
+                solution_media = display_media_for_attempt(
+                    row["display_media_json"], row["bank_id"], include_solution=True,
+                    attempt_id=attempt["attempt_id"],
+                )
                 if "solution" in solution_media:
                     question["feedback"]["display_media"] = {"solution": solution_media["solution"]}
         questions.append(question)
@@ -1853,7 +1859,10 @@ def save_answer(attempt_id: str, question_id: int, payload: AnswerPayload, reque
         if feedback_allowed(attempt):
             question = connection.execute("SELECT source_key, question_text, correct_answer, explanation, solution_steps, option_explanations, bank_id, display_media_json FROM questions WHERE question_id = ?", (question_id,)).fetchone()
             feedback = {"correct": payload.answer == question["correct_answer"], "correct_answer": question["correct_answer"], "explanation": clean_display_text(question["explanation"]), "solution_steps": display_solution_steps(question["question_text"], question["solution_steps"], question["source_key"]), "option_explanations": clean_display_value(json.loads(question["option_explanations"]))}
-            solution_media = display_media_for_attempt(question["display_media_json"], question["bank_id"], include_solution=True)
+            solution_media = display_media_for_attempt(
+                question["display_media_json"], question["bank_id"], include_solution=True,
+                attempt_id=attempt_id,
+            )
             if "solution" in solution_media:
                 feedback["display_media"] = {"solution": solution_media["solution"]}
     return {"saved": True, "attempted": attempted, "feedback": feedback}
@@ -2153,8 +2162,10 @@ def get_stimulus_asset(bank_id: int, stimulus_id: str, request: Request) -> File
 
 
 @app.get("/api/question-banks/{bank_id}/media/{filename}")
-def get_question_media(bank_id: int, filename: str, request: Request) -> FileResponse:
-    require_user(request)
+def get_question_media(
+    bank_id: int, filename: str, request: Request, attempt_id: Optional[str] = None
+) -> FileResponse:
+    user = require_user(request)
     safe = Path(filename).name
     if safe != filename:
         raise HTTPException(404, "Media asset was not found.")
@@ -2162,6 +2173,35 @@ def get_question_media(bank_id: int, filename: str, request: Request) -> FileRes
         media_rows = connection.execute(
             "SELECT display_media_json FROM questions WHERE bank_id = ?", (bank_id,)
         ).fetchall()
+        solution_owned = any(
+            question_media.media_owns_solution_filename(row["display_media_json"], safe)
+            for row in media_rows
+        )
+        public_owned = any(
+            question_media.media_owns_public_filename(row["display_media_json"], safe)
+            for row in media_rows
+        )
+        if solution_owned and not public_owned:
+            if not attempt_id:
+                raise HTTPException(404, "Media asset was not found.")
+            attempt = connection.execute(
+                """SELECT a.*, t.launched, t.mode, t.owner_student_id, t.bank_id
+                   FROM attempts a JOIN tests t ON t.test_id = a.test_id
+                   WHERE a.attempt_id = ? AND a.student_id = ?""",
+                (attempt_id, user["id"]),
+            ).fetchone()
+            response_rows = connection.execute(
+                """SELECT r.selected_answer, q.display_media_json
+                   FROM responses r JOIN questions q ON q.question_id = r.question_id
+                   WHERE r.attempt_id = ? AND q.bank_id = ?""",
+                (attempt_id, bank_id),
+            ).fetchall()
+            if not attempt or not feedback_allowed(attempt) or not any(
+                row["selected_answer"] is not None
+                and question_media.media_owns_solution_filename(row["display_media_json"], safe)
+                for row in response_rows
+            ):
+                raise HTTPException(404, "Media asset was not found.")
     owned = any(question_media.media_owns_filename(row["display_media_json"], safe) for row in media_rows)
     path = question_assets_dir() / str(bank_id) / safe
     if not owned or not path.is_file():

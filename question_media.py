@@ -171,3 +171,37 @@ def media_owns_filename(stored_json: str, filename: str) -> bool:
         return True
     solution = stored.get("solution")
     return isinstance(solution, list) and any(owns(item) for item in solution)
+
+
+def media_owns_solution_filename(stored_json: str, filename: str) -> bool:
+    if not filename or Path(filename).name != filename:
+        return False
+    try:
+        stored = json.loads(stored_json)
+    except (TypeError, json.JSONDecodeError):
+        return False
+    if not isinstance(stored, dict) or not isinstance(stored.get("solution"), list):
+        return False
+    return any(
+        isinstance(item, dict) and item.get("asset_filename") == filename
+        for item in stored["solution"]
+    )
+
+
+def media_owns_public_filename(stored_json: str, filename: str) -> bool:
+    if not filename or Path(filename).name != filename:
+        return False
+    try:
+        stored = json.loads(stored_json)
+    except (TypeError, json.JSONDecodeError):
+        return False
+    if not isinstance(stored, dict):
+        return False
+
+    def owns(item: Any) -> bool:
+        return isinstance(item, dict) and item.get("asset_filename") == filename
+
+    if owns(stored.get("question")):
+        return True
+    options = stored.get("options")
+    return isinstance(options, dict) and any(owns(item) for item in options.values())

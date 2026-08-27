@@ -1050,6 +1050,71 @@ class StudentRegistrationTests(unittest.TestCase):
         self.assertFalse(app.question_media.media_owns_filename('{"options": ["malformed"]}', "owned.png"))
         self.assertFalse(app.question_media.media_owns_filename('{"solution": {"asset_filename": "owned.png"}}', "owned.png"))
 
+    def test_solution_media_endpoint_requires_answered_practice_feedback_context(self):
+        app.register_student("MEDIA2", "Protected Media Student", "AIML", "A", "secret123")
+        stored_media = json.dumps({
+            "solution": [{"asset_filename": "solution.png", "alt_text": "Solution diagram", "sha256": "s", "width": 151, "height": 81}],
+        })
+        with app.db() as connection:
+            bank_id = connection.execute(
+                "INSERT INTO question_banks (bank_name, source_html_filename, answer_key_filename, imported_at) VALUES (?, '', '', ?)",
+                ("Protected media bank", app.now()),
+            ).lastrowid
+            question_id = connection.execute(
+                """INSERT INTO questions
+                   (question_text, category, chapter, difficulty, option_a, option_b, option_c, option_d,
+                    correct_answer, bank_id, solution_steps, display_media_json, created_at)
+                   VALUES ('Protected solution', 'Quantitative Aptitude', 'Arithmetic', 'Easy', 'A', 'B', 'C', 'D',
+                           'A', ?, '["Read the diagram."]', ?, ?)""",
+                (bank_id, stored_media, app.now()),
+            ).lastrowid
+            practice_test_id = connection.execute(
+                "INSERT INTO tests (test_name, composition, bank_id, created_at, mode) VALUES ('Protected practice', '[]', ?, ?, 'student_practice')",
+                (bank_id, app.now()),
+            ).lastrowid
+            faculty_test_id = connection.execute(
+                "INSERT INTO tests (test_name, composition, bank_id, created_at, launched, mode) VALUES ('Protected faculty', '[]', ?, ?, 1, 'faculty')",
+                (bank_id, app.now()),
+            ).lastrowid
+            for attempt_id, test_id, selected_answer in (
+                ("protected-practice-unanswered", practice_test_id, None),
+                ("protected-practice-answered", practice_test_id, "A"),
+                ("protected-faculty", faculty_test_id, "A"),
+            ):
+                connection.execute(
+                    "INSERT INTO attempts (attempt_id, student_id, test_id, started_at, total_questions) VALUES (?, 'MEDIA2', ?, ?, 1)",
+                    (attempt_id, test_id, app.now()),
+                )
+                connection.execute(
+                    "INSERT INTO responses (attempt_id, question_id, selected_answer, category, chapter, question_order) VALUES (?, ?, ?, 'Quantitative Aptitude', 'Arithmetic', 1)",
+                    (attempt_id, question_id, selected_answer),
+                )
+            serialized = app.serialize_attempt(connection, app.get_attempt(connection, "protected-practice-answered"))
+        asset_directory = app.question_assets_dir() / str(bank_id)
+        asset_directory.mkdir()
+        (asset_directory / "solution.png").write_bytes(b"png")
+        student_request = app.Request({
+            "type": "http", "method": "GET", "path": "/", "headers": [],
+            "session": {"user": {"role": "student", "id": "MEDIA2", "name": "Protected Media Student"}},
+        })
+
+        with self.assertRaises(app.HTTPException) as missing_context:
+            app.get_question_media(bank_id, "solution.png", student_request)
+        with self.assertRaises(app.HTTPException) as unanswered_practice:
+            app.get_question_media(bank_id, "solution.png", student_request, "protected-practice-unanswered")
+        with self.assertRaises(app.HTTPException) as faculty_exam:
+            app.get_question_media(bank_id, "solution.png", student_request, "protected-faculty")
+        response = app.get_question_media(bank_id, "solution.png", student_request, "protected-practice-answered")
+
+        self.assertEqual(missing_context.exception.status_code, 404)
+        self.assertEqual(unanswered_practice.exception.status_code, 404)
+        self.assertEqual(faculty_exam.exception.status_code, 404)
+        self.assertEqual(Path(response.path), asset_directory / "solution.png")
+        self.assertEqual(
+            serialized["questions"][0]["feedback"]["display_media"]["solution"][0]["url"],
+            f"/api/question-banks/{bank_id}/media/solution.png?attempt_id=protected-practice-answered",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -43,9 +43,9 @@ def _write_member(archive: zipfile.ZipFile, name: str, content: bytes) -> None:
 def _require_audit_summary(
     audit: Any, config: ChapterConfig, candidates: tuple[CandidateRecord, ...]
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    if not isinstance(audit, AuditSummary):
+    if type(audit) is not AuditSummary:
         raise PipelineBlocked("Candidate packaging requires an authoritative AuditSummary from AuditLedger.")
-    return audit._verified_package_payload(config, candidates)
+    return AuditSummary._verified_package_payload(audit, config, candidates)
 
 
 def _candidate_media(candidate: CandidateRecord) -> Mapping[str, Any]:

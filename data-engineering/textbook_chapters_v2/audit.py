@@ -148,6 +148,7 @@ class AuditSummary(Mapping[str, Any]):
         _ledger_path: Path | None = None,
         _expected_question_numbers: tuple[int, ...] = (),
         _approved_candidate_hashes: Mapping[int, str] | None = None,
+        _approved_option_labels: Mapping[int, tuple[str, ...]] | None = None,
     ) -> None:
         if _capability is not _AUDIT_SUMMARY_CAPABILITY:
             raise TypeError("AuditSummary values must be produced by AuditLedger.validate_release_gate().")
@@ -155,10 +156,12 @@ class AuditSummary(Mapping[str, Any]):
             raise TypeError("AuditSummary requires its validated AuditLedger path.")
         normalized_rejections = tuple(MappingProxyType(dict(item)) for item in reviewed_rejections)
         approved_hashes = dict(_approved_candidate_hashes or {})
+        approved_options = {number: tuple(labels) for number, labels in (_approved_option_labels or {}).items()}
         self._capability = _capability
         self._ledger_path = Path(_ledger_path)
         self._expected_question_numbers = tuple(_expected_question_numbers)
         self._approved_candidate_hashes = MappingProxyType(approved_hashes)
+        self._approved_option_labels = MappingProxyType(approved_options)
         self._data = MappingProxyType(
             {
                 "chapter": chapter,
@@ -169,7 +172,13 @@ class AuditSummary(Mapping[str, Any]):
                 "all_records_approved_or_reviewed_rejection": True,
                 "expected_question_numbers": self._expected_question_numbers,
                 "approved_records": tuple(
-                    MappingProxyType({"question_number": number, "candidate_sha256": approved_hashes[number]})
+                    MappingProxyType(
+                        {
+                            "question_number": number,
+                            "candidate_sha256": approved_hashes[number],
+                            "option_labels": approved_options[number],
+                        }
+                    )
                     for number in sorted(approved_hashes)
                 ),
                 "reviewed_rejections": normalized_rejections,
@@ -223,12 +232,16 @@ class AuditSummary(Mapping[str, Any]):
             raise PipelineBlocked("AuditSummary is stale against the current chapter ledger.")
 
         candidate_hashes: dict[int, str] = {}
+        candidate_option_labels: dict[int, tuple[str, ...]] = {}
         for candidate in candidates:
             if candidate.chapter != config.chapter or candidate.question_number in candidate_hashes:
                 raise PipelineBlocked("Package candidates do not match authoritative approved audit records.")
             candidate_hashes[candidate.question_number] = candidate.sha256
+            candidate_option_labels[candidate.question_number] = tuple(sorted(candidate.options))
         if candidate_hashes != dict(self._approved_candidate_hashes):
             raise PipelineBlocked("Package candidate hashes do not match authoritative approved audit records.")
+        if candidate_option_labels != dict(self._approved_option_labels):
+            raise PipelineBlocked("Package candidate option verdict coverage does not match approved candidate labels.")
 
         normalized = {str(key): value for key, value in self.items()}
         rejections = [{str(key): value for key, value in item.items()} for item in self["reviewed_rejections"]]
@@ -412,6 +425,7 @@ class AuditLedger:
 
         approved = 0
         approved_candidate_hashes: dict[int, str] = {}
+        approved_option_labels: dict[int, tuple[str, ...]] = {}
         rejected: list[Mapping[str, Any]] = []
         for number in sorted(expected):
             record = self._records[number]
@@ -421,6 +435,9 @@ class AuditLedger:
                 self._require_approved_evidence(record)
                 approved += 1
                 approved_candidate_hashes[number] = record.candidate_sha256
+                approved_option_labels[number] = tuple(
+                    sorted(field.removeprefix("options.") for field in record.field_verdicts if field.startswith("options."))
+                )
                 continue
             if record.status == REVIEWED_REJECTION:
                 if not _nonempty_string(record.reviewer) or not _nonempty_string(record.rejection_reason):
@@ -453,6 +470,7 @@ class AuditLedger:
             _ledger_path=self.path,
             _expected_question_numbers=tuple(sorted(expected)),
             _approved_candidate_hashes=approved_candidate_hashes,
+            _approved_option_labels=approved_option_labels,
         )
 
 

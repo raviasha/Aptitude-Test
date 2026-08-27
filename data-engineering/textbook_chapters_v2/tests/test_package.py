@@ -102,7 +102,13 @@ class CandidatePackageTests(unittest.TestCase):
         extraction.update(changes)
         return extraction
 
-    def _audit_record(self, candidate: CandidateRecord, question_number: int = 334) -> AuditRecord:
+    def _audit_record(
+        self,
+        candidate: CandidateRecord,
+        question_number: int = 334,
+        verdict_option_labels: tuple[str, ...] | None = None,
+    ) -> AuditRecord:
+        option_labels = verdict_option_labels or tuple(candidate.options)
         record = AuditRecord(
             chapter=1,
             question_number=question_number,
@@ -118,7 +124,7 @@ class CandidatePackageTests(unittest.TestCase):
             reviewer="independent-vision-reviewer",
             field_verdicts={
                 "question": "pass",
-                **{f"options.{label}": "pass" for label in candidate.options},
+                **{f"options.{label}": "pass" for label in option_labels},
                 "answer_mapping": "pass",
                 "solution": "pass",
                 "readability": "pass",
@@ -312,6 +318,62 @@ class CandidatePackageTests(unittest.TestCase):
 
         with self.assertRaisesRegex(PipelineBlocked, "audit_sha256"):
             build_candidate_package(self.config, [candidate], summary, self.root / "stale-summary.zip")
+
+    def test_package_rejects_an_audit_summary_subclass_with_overridden_verification(self) -> None:
+        candidate = assemble_candidate(self.evidence, self._extraction(), [])
+
+        class ForgedAuditSummary(AuditSummary):
+            def __init__(self) -> None:
+                pass
+
+            def _verified_package_payload(self, config: object, candidates: object) -> tuple[dict[str, object], list[dict[str, object]]]:
+                return (
+                    {
+                        "all_records_terminal": True,
+                        "all_records_approved_or_reviewed_rejection": True,
+                        "reviewed_rejections": [],
+                        "audit_sha256": "0" * 64,
+                    },
+                    [],
+                )
+
+        with self.assertRaisesRegex(PipelineBlocked, "authoritative AuditSummary"):
+            build_candidate_package(
+                self.config,
+                [candidate],
+                ForgedAuditSummary(),
+                self.root / "forged-subclass.zip",
+            )
+
+    def test_package_binds_audit_option_verdicts_to_actual_candidate_labels(self) -> None:
+        candidate = assemble_candidate(self.evidence, self._extraction(), [])
+        five_option = self._with_current_candidate_hash(
+            replace(
+                candidate,
+                options={**dict(candidate.options), "E": "343"},
+                representation={
+                    **dict(candidate.representation),
+                    "options": {**dict(candidate.representation["options"]), "E": "text"},
+                },
+            )
+        )
+        cases = (
+            (five_option, ("A", "B", "C", "D"), "five-missing-e"),
+            (candidate, ("A", "B", "C", "D", "E"), "four-extra-e"),
+        )
+
+        for index, (actual_candidate, verdict_labels, name) in enumerate(cases):
+            ledger = AuditLedger(self.root / f"option-binding-{index}" / "work", 1)
+            ledger.merge_record(self._audit_record(actual_candidate, verdict_option_labels=verdict_labels))
+            summary = ledger.validate_release_gate(self.config)
+
+            with self.subTest(name=name), self.assertRaisesRegex(PipelineBlocked, "option verdict"):
+                build_candidate_package(
+                    self.config,
+                    [actual_candidate],
+                    summary,
+                    self.root / f"{name}.zip",
+                )
 
     def test_build_revalidates_complete_representation_and_media_for_direct_candidate(self) -> None:
         candidate = assemble_candidate(self.evidence, self._extraction(), [])

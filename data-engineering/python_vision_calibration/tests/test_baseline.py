@@ -13,7 +13,12 @@ DATA_ENGINEERING = PROJECT_ROOT / "data-engineering"
 if str(DATA_ENGINEERING) not in sys.path:
     sys.path.insert(0, str(DATA_ENGINEERING))
 
-from python_vision_calibration.baseline import _raw_config, build_raw_baseline_from_fixture
+from python_vision_calibration.baseline import (
+    _candidate_for_source_position,
+    _raw_config,
+    _with_missing_raw_candidate,
+    build_raw_baseline_from_fixture,
+)
 from textbook_chapters import build as legacy_build
 
 
@@ -149,6 +154,88 @@ class RawBaselineTests(unittest.TestCase):
         self.assertEqual(_raw_config(raw), _raw_config(reviewed))
         self.assertNotIn("source_only_question_numbers", _raw_config(reviewed))
         self.assertNotIn("allowed_missing_solution_markers", _raw_config(reviewed))
+
+    def test_missing_raw_candidate_with_source_provenance_is_a_hash_bound_placeholder(self) -> None:
+        placeholder = _with_missing_raw_candidate(
+            record_id="ch01-q0142",
+            source_association={
+                "question": ["q142-question"],
+                "answer": ["q142-answer"],
+                "solution": ["q142-solution"],
+            },
+        )
+
+        records = build_raw_baseline_from_fixture(
+            chapter=1,
+            source_pdf=self.pdf,
+            work_root=self.work_root,
+            raw_records=(placeholder,),
+            legacy_review={},
+        )
+
+        self.assertEqual(records[0].candidate["question_text"], "")
+        self.assertIn("missing_raw_candidate", records[0].candidate["baseline_failures"])
+        self.assertEqual(records[0].source_hashes["question"], ("q142-question",))
+        self.assertNotEqual(records[0].baseline_sha256, "")
+
+    def test_real_chapter_four_missing_raw_candidate_becomes_placeholder(self) -> None:
+        raw = legacy_build.source_questions(
+            PROJECT_ROOT / "question-banks" / "quantitative_aptitude_complete_extended.json",
+            "Simplification",
+        )
+        self.assertEqual(len(raw), 542)
+
+        record = _candidate_for_source_position(
+            chapter=4,
+            source_number=543,
+            raw_records=raw,
+            source_association={
+                "question": ["q543-question"],
+                "answer": ["q543-answer"],
+                "solution": ["q543-solution"],
+            },
+        )
+
+        self.assertEqual(record["record_id"], "ch04-q0543")
+        self.assertEqual(record["baseline_failures"], ["missing_raw_candidate"])
+
+    def test_malformed_nonempty_raw_fields_are_explicit_baseline_failures(self) -> None:
+        raw = dict(self.raw_records[0])
+        raw.update({
+            "question_text": " ",
+            "options": {"A": "good", "Q": "", "C": 4},
+            "correct_answer": "F",
+            "solution_steps": [" ", 42],
+        })
+
+        record = build_raw_baseline_from_fixture(
+            chapter=1,
+            source_pdf=self.pdf,
+            work_root=self.work_root,
+            raw_records=(raw,),
+            legacy_review={},
+        )[0]
+
+        self.assertIn("blank_question_text", record.candidate["baseline_failures"])
+        self.assertIn("invalid_option_labels", record.candidate["baseline_failures"])
+        self.assertIn("invalid_option_text", record.candidate["baseline_failures"])
+        self.assertIn("invalid_correct_answer", record.candidate["baseline_failures"])
+        self.assertIn("invalid_solution_step", record.candidate["baseline_failures"])
+
+    def test_non_string_question_and_options_are_explicit_baseline_failures(self) -> None:
+        raw = dict(self.raw_records[0])
+        raw.update({"question_text": 7, "options": 12})
+
+        record = build_raw_baseline_from_fixture(
+            chapter=1,
+            source_pdf=self.pdf,
+            work_root=self.work_root,
+            raw_records=(raw,),
+            legacy_review={},
+        )[0]
+
+        self.assertIn("invalid_question_text", record.candidate["baseline_failures"])
+        self.assertIn("invalid_options", record.candidate["baseline_failures"])
 
 
 if __name__ == "__main__":

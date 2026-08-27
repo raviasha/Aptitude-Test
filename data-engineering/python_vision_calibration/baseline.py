@@ -110,9 +110,48 @@ def _validate_association(record: Mapping[str, object]) -> dict[str, tuple[str, 
     return hashes
 
 
+def _with_missing_raw_candidate(
+    *,
+    record_id: str,
+    source_association: Mapping[str, object],
+) -> dict[str, object]:
+    """Represent a source-backed record absent from the raw Python source bank."""
+    return {
+        "record_id": record_id,
+        "question_text": "",
+        "options": {},
+        "correct_answer": "",
+        "solution_steps": [],
+        "source_association": deepcopy(dict(source_association)),
+        "baseline_failures": ["missing_raw_candidate"],
+    }
+
+
+def _candidate_for_source_position(
+    *,
+    chapter: int,
+    source_number: int,
+    raw_records: list[dict[str, object]],
+    source_association: Mapping[str, object],
+) -> dict[str, object]:
+    """Return the positional raw candidate or a source-backed missing marker.
+
+    The raw source bank has no trustworthy reviewed exception map.  Its order is
+    therefore the only raw association available here; any missing tail record
+    is preserved as a placeholder for mandatory source comparison.
+    """
+    record_id = f"ch{chapter:02d}-q{source_number:04d}"
+    if source_number <= len(raw_records):
+        raw = deepcopy(raw_records[source_number - 1])
+        raw["record_id"] = record_id
+        return raw
+    return _with_missing_raw_candidate(record_id=record_id, source_association=source_association)
+
+
 def _candidate_from_raw(record: Mapping[str, object]) -> dict[str, object]:
     candidate = {field: deepcopy(record[field]) for field in _CANDIDATE_FIELDS if field in record}
-    failures: list[str] = []
+    supplied_failures = record.get("baseline_failures", [])
+    failures = [value for value in supplied_failures if isinstance(value, str) and value] if isinstance(supplied_failures, list) else []
     defaults: dict[str, object] = {
         "question_text": "",
         "options": {},
@@ -123,14 +162,33 @@ def _candidate_from_raw(record: Mapping[str, object]) -> dict[str, object]:
         if field not in candidate:
             candidate[field] = default
             failures.append(f"missing_{field}")
-    if not isinstance(candidate["question_text"], str) or not str(candidate["question_text"]).strip():
-        failures.append("missing_question_text")
-    if not isinstance(candidate["options"], dict) or not candidate["options"]:
+    question_text = candidate["question_text"]
+    if not isinstance(question_text, str):
+        failures.append("invalid_question_text")
+    elif not question_text.strip():
+        failures.append("blank_question_text")
+    options = candidate["options"]
+    option_labels: set[str] = set()
+    if not isinstance(options, dict):
+        failures.append("invalid_options")
+    elif not options:
         failures.append("missing_options")
-    if not isinstance(candidate["correct_answer"], str) or not str(candidate["correct_answer"]).strip():
-        failures.append("missing_correct_answer")
-    if not isinstance(candidate["solution_steps"], list) or not candidate["solution_steps"]:
+    else:
+        option_labels = {label for label in options if isinstance(label, str)}
+        if option_labels not in ({"A", "B", "C", "D"}, {"A", "B", "C", "D", "E"}) or len(option_labels) != len(options):
+            failures.append("invalid_option_labels")
+        if any(not isinstance(value, str) or not value.strip() for value in options.values()):
+            failures.append("invalid_option_text")
+    answer = candidate["correct_answer"]
+    if not isinstance(answer, str) or answer not in {"A", "B", "C", "D", "E"} or answer not in option_labels:
+        failures.append("invalid_correct_answer")
+    solution_steps = candidate["solution_steps"]
+    if not isinstance(solution_steps, list):
+        failures.append("invalid_solution_steps")
+    elif not solution_steps:
         failures.append("missing_solution_steps")
+    elif any(not isinstance(step, str) or not step.strip() for step in solution_steps):
+        failures.append("invalid_solution_step")
     candidate = legacy_build.normalize_record_text(candidate)
     if failures:
         candidate["baseline_failures"] = sorted(set(failures))
@@ -224,7 +282,6 @@ def _raw_legacy_records(chapter: int, source_pdf: Path) -> tuple[dict[str, objec
     raw = legacy_build.source_questions(SOURCE_BANK_PATH, chapter_name)
     # Do not substitute review-only records.  Their absence is evidence that raw
     # Python has no candidate and must be reported rather than repaired here.
-    aligned = legacy_build.align_raw_records(raw, total, set())
     question_candidates = legacy_build._marker_candidates(
         source_pdf,
         range(int(raw_config["question_pages"][0]), int(raw_config["question_pages"][1]) + 1),
@@ -252,29 +309,32 @@ def _raw_legacy_records(chapter: int, source_pdf: Path) -> tuple[dict[str, objec
     source_pdf_hash = _sha256_path(source_pdf)
     records: list[dict[str, object]] = []
     for number in range(1, total + 1):
-        source_record = aligned.get(number)
-        if source_record is None:
-            raise ValueError(f"ch{chapter:02d}-q{number:04d} lacks a raw Python candidate/source association.")
-        raw_record = deepcopy(source_record)
         if number not in questions or number not in solutions:
             raise ValueError(f"ch{chapter:02d}-q{number:04d} lacks raw source/answer/solution association.")
         solution_pages = legacy_build.inferred_solution_pages(number, solutions, total)
         question_page, question_x0, question_top = questions[number]
         solution_page, solution_x0, solution_top = solutions[number]
+        source_association = {
+            "question": [_association_hash(source_pdf_hash, "question", {
+                    "page": question_page, "x0": question_x0, "top": question_top,
+            })],
+            "answer": [_association_hash(source_pdf_hash, "answer", {
+                    "pages": [int(page) for page in raw_config["answer_pages"]], "number": number,
+            })],
+            "solution": [_association_hash(source_pdf_hash, "solution", {
+                    "page": solution_page, "x0": solution_x0, "top": solution_top, "pages": solution_pages,
+            })],
+        }
+        raw_record = _candidate_for_source_position(
+            chapter=chapter,
+            source_number=number,
+            raw_records=raw,
+            source_association=source_association,
+        )
         raw_record.update({
             "record_id": f"ch{chapter:02d}-q{number:04d}",
             "correct_answer": answers[number],
-            "source_association": {
-                "question": [_association_hash(source_pdf_hash, "question", {
-                    "page": question_page, "x0": question_x0, "top": question_top,
-                })],
-                "answer": [_association_hash(source_pdf_hash, "answer", {
-                    "pages": [int(page) for page in raw_config["answer_pages"]], "number": number,
-                })],
-                "solution": [_association_hash(source_pdf_hash, "solution", {
-                    "page": solution_page, "x0": solution_x0, "top": solution_top, "pages": solution_pages,
-                })],
-            },
+            "source_association": source_association,
         })
         records.append(raw_record)
     return tuple(records)

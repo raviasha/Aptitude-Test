@@ -1212,11 +1212,16 @@ def parse_question_package(package_file: Any) -> tuple[str, List[Dict[str, Any]]
                 question = parse_v2_question(entry, filename)
                 if format_version == 3 and isinstance(entry, dict) and "display_media" in entry:
                     try:
-                        question["display_media"] = question_media.parse_display_media(
+                        display_media = question_media.parse_display_media(
                             entry["display_media"], archive=archive, members=names, question_key=question["key"]
                         )
                     except ValueError as error:
                         raise HTTPException(400, str(error)) from error
+                    if display_media.get("solution") and not question["solution_steps"]:
+                        raise HTTPException(400, f"Question {question['key']!r} needs solution_steps for solution display media.")
+                    if set(display_media.get("options", {})) - set(question["options"]):
+                        raise HTTPException(400, f"Question {question['key']!r} display media needs a matching text option.")
+                    question["display_media"] = display_media
                 if question["key"] in question_keys:
                     raise HTTPException(400, f"Duplicate question key: {question['key']!r}.")
                 question_keys.add(question["key"])

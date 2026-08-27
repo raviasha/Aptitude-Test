@@ -334,6 +334,7 @@ class StudentRegistrationTests(unittest.TestCase):
             "key": "ch01-q0334", "question_text": "What is seven to the power eighty-four?",
             "category": "Quantitative Aptitude", "chapter": "Powers", "difficulty": "Easy",
             "options": {"A": "0", "B": "1", "C": "7", "D": "84"}, "correct_answer": "B",
+            "solution_steps": ["The correct answer is option B."],
             "display_media": {
                 "question": {"asset": "assets/q.png", "sha256": digest, "alt_text": "seven to the power eighty-four"},
                 "options": {"D": {"asset": "assets/d.png", "sha256": digest, "alt_text": "option D"}},
@@ -402,6 +403,63 @@ class StudentRegistrationTests(unittest.TestCase):
         package.seek(0)
 
         with self.assertRaises(app.HTTPException):
+            app.parse_question_package(package)
+
+    def test_format_v3_rejects_solution_media_without_solution_steps(self):
+        png = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+        )
+        digest = hashlib.sha256(png).hexdigest()
+        manifest = {
+            "format_version": 3,
+            "bank_name": "V3 solution fallback required",
+            "question_files": ["questions/data.jsonl"],
+        }
+        question = {
+            "key": "solution-media-q1", "question_text": "Which option is correct?",
+            "category": "Quantitative Aptitude", "chapter": "Integers", "difficulty": "Easy",
+            "options": {"A": "1", "B": "2", "C": "3", "D": "4"}, "correct_answer": "A",
+            "display_media": {
+                "solution": [{"asset": "assets/solution.png", "sha256": digest, "alt_text": "textbook solution"}],
+            },
+        }
+        package = io.BytesIO()
+        with zipfile.ZipFile(package, "w") as archive:
+            archive.writestr("manifest.json", json.dumps(manifest))
+            archive.writestr("questions/data.jsonl", json.dumps(question) + "\n")
+            archive.writestr("assets/solution.png", png)
+        package.seek(0)
+
+        with self.assertRaisesRegex(app.HTTPException, "solution_steps"):
+            app.parse_question_package(package)
+
+    def test_format_v3_rejects_option_media_without_matching_text_option(self):
+        png = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+        )
+        digest = hashlib.sha256(png).hexdigest()
+        manifest = {
+            "format_version": 3,
+            "bank_name": "V3 option fallback required",
+            "question_files": ["questions/data.jsonl"],
+        }
+        question = {
+            "key": "option-media-q1", "question_text": "Which option is correct?",
+            "category": "Quantitative Aptitude", "chapter": "Integers", "difficulty": "Easy",
+            "options": {"A": "1", "B": "2", "C": "3", "D": "4"}, "correct_answer": "A",
+            "solution_steps": ["Option A is correct."],
+            "display_media": {
+                "options": {"E": {"asset": "assets/e.png", "sha256": digest, "alt_text": "option E"}},
+            },
+        }
+        package = io.BytesIO()
+        with zipfile.ZipFile(package, "w") as archive:
+            archive.writestr("manifest.json", json.dumps(manifest))
+            archive.writestr("questions/data.jsonl", json.dumps(question) + "\n")
+            archive.writestr("assets/e.png", png)
+        package.seek(0)
+
+        with self.assertRaisesRegex(app.HTTPException, "matching text option"):
             app.parse_question_package(package)
 
     def test_v2_package_rejects_executable_svg(self):

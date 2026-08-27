@@ -1,5 +1,7 @@
 import asyncio
+import base64
 import csv
+import hashlib
 import io
 import json
 import sqlite3
@@ -317,6 +319,90 @@ class StudentRegistrationTests(unittest.TestCase):
         self.assertEqual(stored["chapter"], "Bar Graphs")
         self.assertEqual(stored["stimulus_id"], "bar-1")
         self.assertTrue((app.question_assets_dir() / str(result["bank_id"]) / stimulus["asset_filename"]).is_file())
+
+    def test_format_v3_imports_display_media_and_preserves_v2(self):
+        png = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+        )
+        digest = hashlib.sha256(png).hexdigest()
+        manifest = {
+            "format_version": 3,
+            "bank_name": "V3 display media bank",
+            "question_files": ["questions/data.jsonl"],
+        }
+        question = {
+            "key": "ch01-q0334", "question_text": "What is seven to the power eighty-four?",
+            "category": "Quantitative Aptitude", "chapter": "Powers", "difficulty": "Easy",
+            "options": {"A": "0", "B": "1", "C": "7", "D": "84"}, "correct_answer": "B",
+            "display_media": {
+                "question": {"asset": "assets/q.png", "sha256": digest, "alt_text": "seven to the power eighty-four"},
+                "options": {"D": {"asset": "assets/d.png", "sha256": digest, "alt_text": "option D"}},
+                "solution": [{"asset": "assets/s.png", "sha256": digest, "alt_text": "textbook solution"}],
+            },
+        }
+        package = io.BytesIO()
+        with zipfile.ZipFile(package, "w") as archive:
+            archive.writestr("manifest.json", json.dumps(manifest))
+            archive.writestr("questions/data.jsonl", json.dumps(question) + "\n")
+            archive.writestr("assets/q.png", png)
+            archive.writestr("assets/d.png", png)
+            archive.writestr("assets/s.png", png)
+        package.seek(0)
+
+        bank_name, questions, stimuli, version = app.parse_question_package(package)
+        self.assertEqual(version, 3)
+        self.assertIn("display_media", questions[0])
+        saved = app.save_question_package(bank_name, questions, stimuli, "chapter.zip", version)
+
+        self.assertEqual(saved["format_version"], 3)
+        with app.db() as connection:
+            row = connection.execute(
+                "SELECT display_media_json FROM questions WHERE bank_id = ?", (saved["bank_id"],)
+            ).fetchone()
+        self.assertIn("asset_filename", json.loads(row["display_media_json"])["question"])
+
+        v2_manifest = {
+            "format_version": 2,
+            "bank_name": "V2 compatibility bank",
+            "question_files": ["questions/data.jsonl"],
+        }
+        v2_question = {
+            "key": "compat-q1", "question_text": "Which option is correct?",
+            "category": "Quantitative Aptitude", "chapter": "Integers", "difficulty": "Easy",
+            "options": {"A": "1", "B": "2", "C": "3", "D": "4"}, "correct_answer": "A",
+        }
+        v2_package = io.BytesIO()
+        with zipfile.ZipFile(v2_package, "w") as archive:
+            archive.writestr("manifest.json", json.dumps(v2_manifest))
+            archive.writestr("questions/data.jsonl", json.dumps(v2_question) + "\n")
+        v2_package.seek(0)
+
+        legacy_name, legacy_questions, legacy_stimuli = app.parse_v2_package(v2_package)
+        legacy_saved = app.save_v2_question_bank(
+            legacy_name, legacy_questions, legacy_stimuli, "legacy-chapter.zip"
+        )
+        self.assertEqual(legacy_saved["format_version"], 2)
+
+    def test_format_v2_rejects_display_media(self):
+        manifest = {
+            "format_version": 2,
+            "bank_name": "V2 media is unsupported",
+            "question_files": ["questions/data.jsonl"],
+        }
+        question = {
+            "key": "compat-q1", "question_text": "Which option is correct?",
+            "category": "Quantitative Aptitude", "chapter": "Integers", "difficulty": "Easy",
+            "options": {"A": "1", "B": "2", "C": "3", "D": "4"}, "correct_answer": "A",
+            "display_media": {},
+        }
+        package = io.BytesIO()
+        with zipfile.ZipFile(package, "w") as archive:
+            archive.writestr("manifest.json", json.dumps(manifest))
+            archive.writestr("questions/data.jsonl", json.dumps(question) + "\n")
+        package.seek(0)
+
+        with self.assertRaises(app.HTTPException):
+            app.parse_question_package(package)
 
     def test_v2_package_rejects_executable_svg(self):
         manifest = {

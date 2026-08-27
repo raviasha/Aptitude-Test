@@ -38,6 +38,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.middleware.sessions import SessionMiddleware
+import question_media
 
 SOURCE_ROOT = Path(__file__).resolve().parent
 BUNDLE_DIR = Path(getattr(sys, "_MEIPASS", SOURCE_ROOT))
@@ -907,6 +908,7 @@ def ensure_schema() -> None:
               correct_answer TEXT NOT NULL, explanation TEXT DEFAULT '', active INTEGER NOT NULL DEFAULT 1,
               bank_id INTEGER, stimulus_id TEXT, question_html TEXT NOT NULL DEFAULT '',
               solution_steps TEXT NOT NULL DEFAULT '[]', option_explanations TEXT NOT NULL DEFAULT '{}',
+              display_media_json TEXT NOT NULL DEFAULT '{}',
               created_at TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS stimuli (
@@ -955,6 +957,7 @@ def ensure_schema() -> None:
         ensure_column(connection, "questions", "solution_steps TEXT NOT NULL DEFAULT '[]'")
         ensure_column(connection, "questions", "option_explanations TEXT NOT NULL DEFAULT '{}'")
         ensure_column(connection, "questions", "options_json TEXT NOT NULL DEFAULT '{}'")
+        ensure_column(connection, "questions", "display_media_json TEXT NOT NULL DEFAULT '{}'")
         migrate_question_options(connection)
         ensure_column(connection, "question_banks", "format_version INTEGER NOT NULL DEFAULT 1")
         ensure_column(connection, "student_sessions", "last_seen_at TEXT")
@@ -1150,11 +1153,11 @@ def parse_v2_question(entry: Any, origin: str) -> Dict[str, Any]:
     }
 
 
-def parse_v2_package(package_file: Any) -> tuple[str, List[Dict[str, Any]], List[Dict[str, Any]]]:
+def parse_question_package(package_file: Any) -> tuple[str, List[Dict[str, Any]], List[Dict[str, Any]], int]:
     try:
         archive = zipfile.ZipFile(package_file)
     except (zipfile.BadZipFile, OSError) as error:
-        raise HTTPException(400, "The uploaded v2 question bank is not a valid ZIP file.") from error
+        raise HTTPException(400, "The uploaded question bank is not a valid ZIP file.") from error
     with archive:
         members = archive.infolist()
         if len(members) > MAX_PACKAGE_FILES:
@@ -1164,13 +1167,14 @@ def parse_v2_package(package_file: Any) -> tuple[str, List[Dict[str, Any]], List
         names = {validate_package_member(member.filename): member for member in members if not member.is_dir()}
         manifest_info = names.get("manifest.json")
         if not manifest_info or manifest_info.file_size > 1_000_000:
-            raise HTTPException(400, "A v2 package needs a manifest.json under 1 MB.")
+            raise HTTPException(400, "A question-bank package needs a manifest.json under 1 MB.")
         try:
             manifest = json.loads(archive.read(manifest_info).decode("utf-8-sig"))
         except (UnicodeDecodeError, json.JSONDecodeError) as error:
             raise HTTPException(400, "manifest.json must be valid UTF-8 JSON.") from error
-        if not isinstance(manifest, dict) or manifest.get("format_version") != 2:
-            raise HTTPException(400, "manifest.json must declare format_version 2.")
+        if not isinstance(manifest, dict) or manifest.get("format_version") not in {2, 3}:
+            raise HTTPException(400, "manifest.json must declare format_version 2 or 3.")
+        format_version = manifest["format_version"]
         bank_name = str(manifest.get("bank_name", "")).strip()
         if not bank_name:
             raise HTTPException(400, "manifest.json needs a non-empty bank_name.")
@@ -1203,7 +1207,16 @@ def parse_v2_package(package_file: Any) -> tuple[str, List[Dict[str, Any]], List
             if not isinstance(entries, list):
                 raise HTTPException(400, f"Question file {filename!r} must contain a question list.")
             for entry in entries:
+                if format_version == 2 and isinstance(entry, dict) and "display_media" in entry:
+                    raise HTTPException(400, "display_media is only supported by format_version 3 packages.")
                 question = parse_v2_question(entry, filename)
+                if format_version == 3 and isinstance(entry, dict) and "display_media" in entry:
+                    try:
+                        question["display_media"] = question_media.parse_display_media(
+                            entry["display_media"], archive=archive, members=names, question_key=question["key"]
+                        )
+                    except ValueError as error:
+                        raise HTTPException(400, str(error)) from error
                 if question["key"] in question_keys:
                     raise HTTPException(400, f"Duplicate question key: {question['key']!r}.")
                 question_keys.add(question["key"])
@@ -1249,15 +1262,23 @@ def parse_v2_package(package_file: Any) -> tuple[str, List[Dict[str, Any]], List
         unknown_stimuli = sorted({question["stimulus_id"] for question in questions if question["stimulus_id"]} - stimulus_ids)
         if unknown_stimuli:
             raise HTTPException(400, "Questions reference missing stimuli: " + ", ".join(unknown_stimuli[:20]))
-        return bank_name, questions, stimuli
+        return bank_name, questions, stimuli, format_version
 
 
-def save_v2_question_bank(
+def parse_v2_package(package_file: Any) -> tuple[str, List[Dict[str, Any]], List[Dict[str, Any]]]:
+    bank_name, questions, stimuli, _ = parse_question_package(package_file)
+    return bank_name, questions, stimuli
+
+
+def save_question_package(
     bank_name: str,
     questions: List[Dict[str, Any]],
     stimuli: List[Dict[str, Any]],
     package_name: str,
+    format_version: int,
 ) -> Dict[str, Any]:
+    if format_version not in {2, 3}:
+        raise HTTPException(400, "Question-bank packages must use format_version 2 or 3.")
     bank_asset_dir: Optional[Path] = None
     try:
         with db() as connection:
@@ -1266,8 +1287,8 @@ def save_v2_question_bank(
             bank_id = connection.execute(
                 """INSERT INTO question_banks
                    (bank_name, source_html_filename, answer_key_filename, imported_at, format_version)
-                   VALUES (?, ?, ?, ?, 2)""",
-                (bank_name, package_name, "manifest.json", now()),
+                   VALUES (?, ?, ?, ?, ?)""",
+                (bank_name, package_name, "manifest.json", now(), format_version),
             ).lastrowid
             bank_asset_dir = question_assets_dir() / str(bank_id)
             bank_asset_dir.mkdir(parents=True, exist_ok=False)
@@ -1288,23 +1309,26 @@ def save_v2_question_bank(
                 )
             for question in questions:
                 options = question["options"]
+                stored_media = question_media.store_display_media(
+                    question.get("display_media", {}), asset_dir=bank_asset_dir
+                )
                 connection.execute(
                     """INSERT INTO questions
                        (source_key, question_text, question_html, category, chapter, stimulus_id, difficulty,
                         option_a, option_b, option_c, option_d, options_json, correct_answer, explanation,
-                        bank_id, created_at, solution_steps, option_explanations)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        bank_id, created_at, solution_steps, option_explanations, display_media_json)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         question["key"], question["question_text"], question["question_html"], question["category"],
                         question["chapter"], question["stimulus_id"], question["difficulty"], options["A"],
                         options["B"], options["C"], options["D"], json.dumps(options), question["correct_answer"],
                         question["explanation"], bank_id, now(), json.dumps(question["solution_steps"]),
-                        json.dumps(question["option_explanations"]),
+                        json.dumps(question["option_explanations"]), json.dumps(stored_media),
                     ),
                 )
         return {
             "imported": True,
-            "format_version": 2,
+            "format_version": format_version,
             "bank_id": bank_id,
             "bank_name": bank_name,
             "question_count": len(questions),
@@ -1314,6 +1338,15 @@ def save_v2_question_bank(
         if bank_asset_dir and bank_asset_dir.is_dir():
             shutil.rmtree(bank_asset_dir)
         raise
+
+
+def save_v2_question_bank(
+    bank_name: str,
+    questions: List[Dict[str, Any]],
+    stimuli: List[Dict[str, Any]],
+    package_name: str,
+) -> Dict[str, Any]:
+    return save_question_package(bank_name, questions, stimuli, package_name, 2)
 
 
 def expire_stale_student_sessions(connection: sqlite3.Connection) -> int:
@@ -2118,14 +2151,14 @@ async def import_question_bank_package(
     require_user(request, "admin")
     package_name = Path(package_file.filename or "").name
     if not package_name.lower().endswith(".zip"):
-        raise HTTPException(400, "A v2 question bank must be uploaded as a ZIP file.")
+        raise HTTPException(400, "A question bank must be uploaded as a ZIP file.")
     package_bytes = await package_file.read(MAX_PACKAGE_BYTES + 1)
     if not package_bytes:
         raise HTTPException(400, "Choose a non-empty question-bank package.")
     if len(package_bytes) > MAX_PACKAGE_BYTES:
         raise HTTPException(413, "The compressed question-bank package must be under 50 MB.")
-    bank_name, questions, stimuli = parse_v2_package(io.BytesIO(package_bytes))
-    return save_v2_question_bank(bank_name, questions, stimuli, package_name)
+    bank_name, questions, stimuli, format_version = parse_question_package(io.BytesIO(package_bytes))
+    return save_question_package(bank_name, questions, stimuli, package_name, format_version)
 
 
 @app.post("/api/admin/question-banks/import-from-folder")

@@ -958,6 +958,98 @@ class StudentRegistrationTests(unittest.TestCase):
         self.assertEqual(result["attempts_deleted"], 1)
         self.assertEqual((remaining, attempts, violations), (0, 0, 0))
 
+    def test_display_media_visibility_follows_feedback_policy(self):
+        app.register_student("MEDIA1", "Media Student", "AIML", "A", "secret123")
+        stored_media = json.dumps({
+            "question": {"asset_filename": "question.png", "alt_text": "Question diagram", "sha256": "q", "width": 101, "height": 51},
+            "options": {"A": {"asset_filename": "option-a.png", "alt_text": "Option A diagram", "sha256": "a", "width": 71, "height": 31}},
+            "solution": [{"asset_filename": "solution.png", "alt_text": "Solution diagram", "sha256": "s", "width": 151, "height": 81}],
+        })
+        with app.db() as connection:
+            bank_id = connection.execute(
+                "INSERT INTO question_banks (bank_name, source_html_filename, answer_key_filename, imported_at) VALUES (?, '', '', ?)",
+                ("Media bank", app.now()),
+            ).lastrowid
+            question_id = connection.execute(
+                """INSERT INTO questions
+                   (question_text, category, chapter, difficulty, option_a, option_b, option_c, option_d,
+                    correct_answer, bank_id, solution_steps, display_media_json, created_at)
+                   VALUES ('What is shown?', 'Quantitative Aptitude', 'Arithmetic', 'Easy', 'A', 'B', 'C', 'D',
+                           'A', ?, '["Read the diagram."]', ?, ?)""",
+                (bank_id, stored_media, app.now()),
+            ).lastrowid
+            practice_test_id = connection.execute(
+                "INSERT INTO tests (test_name, composition, bank_id, created_at, mode) VALUES ('Media practice', '[]', ?, ?, 'student_practice')",
+                (bank_id, app.now()),
+            ).lastrowid
+            faculty_test_id = connection.execute(
+                "INSERT INTO tests (test_name, composition, bank_id, created_at, launched, mode) VALUES ('Media faculty', '[]', ?, ?, 1, 'faculty')",
+                (bank_id, app.now()),
+            ).lastrowid
+            for attempt_id, test_id, selected_answer in (
+                ("media-practice", practice_test_id, None),
+                ("media-practice-answered", practice_test_id, None),
+                ("media-faculty", faculty_test_id, "A"),
+            ):
+                connection.execute(
+                    "INSERT INTO attempts (attempt_id, student_id, test_id, started_at, total_questions) VALUES (?, 'MEDIA1', ?, ?, 1)",
+                    (attempt_id, test_id, app.now()),
+                )
+                connection.execute(
+                    "INSERT INTO responses (attempt_id, question_id, selected_answer, category, chapter, question_order) VALUES (?, ?, ?, 'Quantitative Aptitude', 'Arithmetic', 1)",
+                    (attempt_id, question_id, selected_answer),
+                )
+            practice = app.serialize_attempt(connection, app.get_attempt(connection, "media-practice"))
+            exam = app.serialize_attempt(connection, app.get_attempt(connection, "media-faculty"), include_answers=True)
+
+        request = app.Request({
+            "type": "http", "method": "PUT", "path": "/", "headers": [],
+            "session": {"user": {"role": "student", "id": "MEDIA1", "name": "Media Student"}},
+        })
+        saved = app.save_answer("media-practice-answered", question_id, app.AnswerPayload(answer="A"), request)
+        with app.db() as connection:
+            answered = app.serialize_attempt(connection, app.get_attempt(connection, "media-practice-answered"))
+
+        self.assertEqual(practice["questions"][0]["display_media"]["question"]["url"], f"/api/question-banks/{bank_id}/media/question.png")
+        self.assertIn("options", practice["questions"][0]["display_media"])
+        self.assertNotIn("solution", practice["questions"][0]["display_media"])
+        self.assertIn("solution", answered["questions"][0]["feedback"]["display_media"])
+        self.assertIn("solution", saved["feedback"]["display_media"])
+        self.assertNotIn("solution", exam["questions"][0].get("display_media", {}))
+
+    def test_question_media_endpoint_requires_authentication_and_owned_filename(self):
+        with app.db() as connection:
+            bank_id = connection.execute(
+                "INSERT INTO question_banks (bank_name, source_html_filename, answer_key_filename, imported_at) VALUES (?, '', '', ?)",
+                ("Asset guard bank", app.now()),
+            ).lastrowid
+            connection.execute(
+                """INSERT INTO questions
+                   (question_text, category, chapter, difficulty, option_a, option_b, option_c, option_d,
+                    correct_answer, bank_id, display_media_json, created_at)
+                   VALUES ('Asset question', 'Quantitative Aptitude', 'Arithmetic', 'Easy', 'A', 'B', 'C', 'D', 'A', ?, ?, ?)""",
+                (bank_id, json.dumps({"question": {"asset_filename": "owned.png"}}), app.now()),
+            )
+        asset_directory = app.question_assets_dir() / str(bank_id)
+        asset_directory.mkdir()
+        (asset_directory / "owned.png").write_bytes(b"png")
+        anonymous = app.Request({"type": "http", "method": "GET", "path": "/", "headers": [], "session": {}})
+        signed_in = app.Request({"type": "http", "method": "GET", "path": "/", "headers": [], "session": {"user": {"role": "admin", "id": "faculty", "name": "Faculty"}}})
+
+        with self.assertRaises(app.HTTPException) as unauthenticated:
+            app.get_question_media(bank_id, "owned.png", anonymous)
+        with self.assertRaises(app.HTTPException) as traversal:
+            app.get_question_media(bank_id, "../owned.png", signed_in)
+        response = app.get_question_media(bank_id, "owned.png", signed_in)
+
+        self.assertEqual(unauthenticated.exception.status_code, 401)
+        self.assertEqual(traversal.exception.status_code, 404)
+        self.assertEqual(Path(response.path), asset_directory / "owned.png")
+
+    def test_question_media_asset_guard_rejects_malformed_nested_media_json(self):
+        self.assertFalse(app.question_media.media_owns_filename('{"options": ["malformed"]}', "owned.png"))
+        self.assertFalse(app.question_media.media_owns_filename('{"solution": {"asset_filename": "owned.png"}}', "owned.png"))
+
 
 if __name__ == "__main__":
     unittest.main()

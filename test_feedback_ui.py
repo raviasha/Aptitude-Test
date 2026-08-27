@@ -64,6 +64,25 @@ class FeedbackUiTests(unittest.TestCase):
         self.assertNotIn("option_explanations", render_attempt)
         self.assertNotIn("This option is not the correct answer.", render_attempt)
 
+    def test_attempt_renderer_includes_verified_question_option_and_solution_media(self):
+        source = APP_JS.read_text(encoding="utf-8")
+        styles = Path(__file__).with_name("static").joinpath("styles.css").read_text(encoding="utf-8")
+        start = source.index("function renderAttempt()")
+        end = source.index("\nasync function saveAnswer", start)
+        render_attempt = source[start:end]
+
+        self.assertIn("function mediaMarkup(media, className)", source)
+        self.assertIn("mediaMarkup(q.display_media?.question, 'question-media')", render_attempt)
+        self.assertIn("mediaMarkup(q.display_media?.options?.[key], 'option-media')", render_attempt)
+        self.assertIn("mediaMarkup(q.feedback?.display_media?.solution", render_attempt)
+        self.assertIn("window.renderAttemptForValidation", source)
+        for class_name in (".question-media", ".option-media", ".solution-media"):
+            start = styles.index(class_name)
+            rules = styles[start:styles.index("}", start)]
+            self.assertIn("max-width:100%", rules)
+            self.assertIn("height:auto", rules)
+            self.assertNotIn("position:absolute", rules)
+
 
 if __name__ == "__main__":
     unittest.main()

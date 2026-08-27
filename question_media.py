@@ -166,6 +166,8 @@ def media_owns_filename(stored_json: str, filename: str) -> bool:
 
     if owns(stored.get("question")):
         return True
-    if any(owns(item) for item in (stored.get("options") or {}).values()):
+    options = stored.get("options")
+    if isinstance(options, dict) and any(owns(item) for item in options.values()):
         return True
-    return any(owns(item) for item in (stored.get("solution") or []))
+    solution = stored.get("solution")
+    return isinstance(solution, list) and any(owns(item) for item in solution)

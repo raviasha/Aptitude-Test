@@ -1466,6 +1466,33 @@ def assert_student_attempt(connection: sqlite3.Connection, attempt_id: str, stud
     return attempt
 
 
+def display_media_for_attempt(stored_json: str, bank_id: int, include_solution: bool) -> Dict[str, Any]:
+    try:
+        stored = json.loads(stored_json or "{}")
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    if not isinstance(stored, dict):
+        return {}
+    public = question_media.public_display_media(stored, bank_id=bank_id, include_solution=include_solution)
+
+    def item(media: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "url": f"/api/question-banks/{bank_id}/media/{Path(media['asset_url']).name}",
+            "alt_text": media["alt_text"],
+            "width": media["width"],
+            "height": media["height"],
+        }
+
+    display_media: Dict[str, Any] = {}
+    if "question" in public:
+        display_media["question"] = item(public["question"])
+    if "options" in public:
+        display_media["options"] = {key: item(value) for key, value in public["options"].items()}
+    if include_solution and "solution" in public:
+        display_media["solution"] = [item(value) for value in public["solution"]]
+    return display_media
+
+
 def serialize_attempt(connection: sqlite3.Connection, attempt: sqlite3.Row, include_answers: bool = False) -> Dict[str, Any]:
     attempt = ensure_faculty_deadline(connection, attempt)
     attempt = expire_attempt_if_needed(connection, attempt)
@@ -1474,7 +1501,7 @@ def serialize_attempt(connection: sqlite3.Connection, attempt: sqlite3.Row, incl
         """SELECT r.question_order, r.selected_answer, r.category, r.chapter,
                    q.question_id, q.source_key, q.question_text, q.question_html, q.bank_id, q.stimulus_id,
                   q.difficulty, q.option_a, q.option_b, q.option_c, q.option_d, q.options_json,
-                  q.explanation, q.correct_answer, q.solution_steps, q.option_explanations,
+                  q.explanation, q.correct_answer, q.solution_steps, q.option_explanations, q.display_media_json,
                   s.stimulus_type, s.title AS stimulus_title, s.alt_text, s.asset_filename, s.content_json
            FROM responses r JOIN questions q ON q.question_id = r.question_id
            LEFT JOIN stimuli s ON s.bank_id = q.bank_id AND s.stimulus_id = q.stimulus_id
@@ -1489,6 +1516,9 @@ def serialize_attempt(connection: sqlite3.Connection, attempt: sqlite3.Row, incl
             "options": question_options(row),
             "selected_answer": row["selected_answer"],
         }
+        display_media = display_media_for_attempt(row["display_media_json"], row["bank_id"], include_solution=False)
+        if display_media:
+            question["display_media"] = display_media
         if row["stimulus_id"] and row["stimulus_type"]:
             stimulus = {
                 "id": row["stimulus_id"],
@@ -1511,6 +1541,9 @@ def serialize_attempt(connection: sqlite3.Connection, attempt: sqlite3.Row, incl
                     "solution_steps": display_solution_steps(row["question_text"], row["solution_steps"], row["source_key"]),
                     "option_explanations": clean_display_value(json.loads(row["option_explanations"])),
                 }
+                solution_media = display_media_for_attempt(row["display_media_json"], row["bank_id"], include_solution=True)
+                if "solution" in solution_media:
+                    question["feedback"]["display_media"] = {"solution": solution_media["solution"]}
         questions.append(question)
     return {
         **dict(attempt),
@@ -1818,8 +1851,11 @@ def save_answer(attempt_id: str, question_id: int, payload: AnswerPayload, reque
         connection.execute("UPDATE attempts SET attempted = ? WHERE attempt_id = ?", (attempted, attempt_id))
         feedback = None
         if feedback_allowed(attempt):
-            question = connection.execute("SELECT source_key, question_text, correct_answer, explanation, solution_steps, option_explanations FROM questions WHERE question_id = ?", (question_id,)).fetchone()
+            question = connection.execute("SELECT source_key, question_text, correct_answer, explanation, solution_steps, option_explanations, bank_id, display_media_json FROM questions WHERE question_id = ?", (question_id,)).fetchone()
             feedback = {"correct": payload.answer == question["correct_answer"], "correct_answer": question["correct_answer"], "explanation": clean_display_text(question["explanation"]), "solution_steps": display_solution_steps(question["question_text"], question["solution_steps"], question["source_key"]), "option_explanations": clean_display_value(json.loads(question["option_explanations"]))}
+            solution_media = display_media_for_attempt(question["display_media_json"], question["bank_id"], include_solution=True)
+            if "solution" in solution_media:
+                feedback["display_media"] = {"solution": solution_media["solution"]}
     return {"saved": True, "attempted": attempted, "feedback": feedback}
 
 
@@ -2114,6 +2150,23 @@ def get_stimulus_asset(bank_id: int, stimulus_id: str, request: Request) -> File
     if not asset_path.is_file():
         raise HTTPException(404, "Stimulus asset not found.")
     return FileResponse(asset_path)
+
+
+@app.get("/api/question-banks/{bank_id}/media/{filename}")
+def get_question_media(bank_id: int, filename: str, request: Request) -> FileResponse:
+    require_user(request)
+    safe = Path(filename).name
+    if safe != filename:
+        raise HTTPException(404, "Media asset was not found.")
+    with db() as connection:
+        media_rows = connection.execute(
+            "SELECT display_media_json FROM questions WHERE bank_id = ?", (bank_id,)
+        ).fetchall()
+    owned = any(question_media.media_owns_filename(row["display_media_json"], safe) for row in media_rows)
+    path = question_assets_dir() / str(bank_id) / safe
+    if not owned or not path.is_file():
+        raise HTTPException(404, "Media asset was not found.")
+    return FileResponse(path, media_type="image/png")
 
 
 @app.get("/api/admin/question-banks/staged")

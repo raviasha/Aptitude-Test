@@ -59,12 +59,72 @@ class Chapter001PreflightTests(unittest.TestCase):
             self.assertTrue(raw["marker_overrides"]["answer_key"][key]["segments"])
             self.assertTrue(raw["marker_overrides"]["solution"][key]["segments"])
 
+    def test_questions_54_to_57_share_reviewed_directions_and_working_without_polluting_question_53(self) -> None:
+        raw = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+        q53_segment = raw["marker_overrides"]["question"]["53"]["segments"]
+        q53_solution_segment = raw["marker_overrides"]["solution"]["53"]["segments"]
+        context = raw["shared_contexts"]["question"]["questions-54-57"]
+        solution_context = raw["shared_contexts"]["solution"]["questions-54-57-working"]
+
+        self.assertEqual(
+            q53_segment,
+            [{"page": 25, "left": 775, "top": 504, "right": 1435, "bottom": 690}],
+        )
+        self.assertEqual(context["question_numbers"], [54, 55, 56, 57])
+        self.assertEqual(
+            context["segments"],
+            [{"page": 25, "left": 775, "top": 690, "right": 1435, "bottom": 970}],
+        )
+        self.assertEqual(
+            context["crop_sha256s"],
+            ["04335ee9d3794b50511ad75e960b29742b4d077ba0f928c023dce317b1634cbb"],
+        )
+        self.assertEqual(
+            q53_solution_segment,
+            [{"page": 43, "left": 775, "top": 195, "right": 1435, "bottom": 326}],
+        )
+        self.assertEqual(solution_context["question_numbers"], [54, 55, 56, 57])
+        self.assertEqual(
+            solution_context["segments"],
+            [{"page": 43, "left": 775, "top": 326, "right": 1435, "bottom": 727}],
+        )
+        self.assertEqual(
+            solution_context["crop_sha256s"],
+            ["5af028d6d87976c5c05c9c7982ad5f179995393888dd20328e686381680a62b8"],
+        )
+
+        source_pdf = ROOT / raw["source_pdf"]
+        work = Path(tempfile.mkdtemp(prefix="ksat-shared-context-"))
+        try:
+            page = render_page(source_pdf, 25, raw["source_dpi"], work / "page-025.png")
+            q53 = crop_region(
+                page, CropBox(775, 504, 1435, 690), work / "q53.png"
+            )
+            directions = crop_region(
+                page, CropBox(775, 690, 1435, 970), work / "questions-54-57.png"
+            )
+            self.assertEqual(q53.sha256, raw["boundary_reviews"]["question:53"]["crop_sha256s"][0])
+            self.assertEqual(directions.sha256, context["crop_sha256s"][0])
+            solution_page = render_page(source_pdf, 43, raw["source_dpi"], work / "page-043.png")
+            q53_solution = crop_region(
+                solution_page, CropBox(775, 195, 1435, 326), work / "q53-solution.png"
+            )
+            shared_working = crop_region(
+                solution_page, CropBox(775, 326, 1435, 727), work / "questions-54-57-working.png"
+            )
+            self.assertEqual(
+                q53_solution.sha256, raw["boundary_reviews"]["solution:53"]["crop_sha256s"][0]
+            )
+            self.assertEqual(shared_working.sha256, solution_context["crop_sha256s"][0])
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+
     def test_every_cross_boundary_record_has_human_reviewed_source_image_anchors(self) -> None:
         raw = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
         reviews = raw["boundary_reviews"]
         expected = {
-            *(f"question:{number}" for number in (11, 22, 123, 136, 165, 219, 278, 309, 318)),
-            *(f"solution:{number}" for number in (26, 40, 52, 90, 170, 200, 214, 226, 234, 294, 304, 315, 325, 337, 352, 360, 377, 378)),
+            *(f"question:{number}" for number in (11, 22, 53, 123, 136, 165, 219, 278, 309, 318)),
+            *(f"solution:{number}" for number in (26, 40, 52, 53, 90, 170, 200, 214, 226, 234, 294, 304, 315, 325, 337, 352, 360, 377, 378)),
             "solution:44",
             "solution:45",
             "solution:46",

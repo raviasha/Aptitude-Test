@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -271,6 +272,73 @@ def _role_range(config: ChapterConfig, role: str) -> tuple[int, int]:
     return config.solution_pages
 
 
+def _shared_context_groups(
+    config: ChapterConfig, role: str
+) -> tuple[tuple[str, tuple[int, ...], tuple[Mapping[str, int], ...]], ...]:
+    raw_groups = config.shared_contexts.get(role, {})
+    if not isinstance(raw_groups, Mapping):
+        raise ValueError(f"shared_contexts.{role} must be an object keyed by stable context id.")
+    groups: list[tuple[str, tuple[int, ...], tuple[Mapping[str, int], ...]]] = []
+    claimed: set[int] = set()
+    configured = set(range(config.question_numbers[0], config.question_numbers[1] + 1))
+    for context_id, raw in raw_groups.items():
+        if not isinstance(context_id, str) or re.fullmatch(r"[a-z0-9][a-z0-9-]*", context_id) is None:
+            raise ValueError(f"Shared {role} context ids must use lowercase letters, digits, and hyphens.")
+        if not isinstance(raw, Mapping):
+            raise ValueError(f"Shared {role} context {context_id} must be an object.")
+        numbers = raw.get("question_numbers")
+        if (
+            not isinstance(numbers, (list, tuple))
+            or not numbers
+            or any(isinstance(number, bool) or not isinstance(number, int) for number in numbers)
+        ):
+            raise ValueError(f"Shared {role} context {context_id} requires question_numbers.")
+        selected = tuple(numbers)
+        if len(set(selected)) != len(selected) or not set(selected) <= configured:
+            raise ValueError(f"Shared {role} context {context_id} has duplicate or unconfigured question numbers.")
+        overlap = claimed.intersection(selected)
+        if overlap:
+            raise ValueError(f"Questions may belong to only one shared {role} context: {sorted(overlap)}.")
+        segments = _explicit_segments(raw, role, selected[0])
+        if not segments:
+            raise ValueError(f"Shared {role} context {context_id} requires explicit segments.")
+        claimed.update(selected)
+        groups.append((context_id, selected, segments))
+    return tuple(groups)
+
+
+def _crop_shared_contexts(
+    config: ChapterConfig,
+    role: str,
+    pages: Mapping[int, SourceImage],
+    work_dir: Path,
+) -> Mapping[int, tuple[SourceCrop, ...]]:
+    start_page, last_page = _role_range(config, role)
+    result: dict[int, list[SourceCrop]] = {}
+    for context_id, numbers, segments in _shared_context_groups(config, role):
+        for number in numbers:
+            if number in config.intentional_exclusions:
+                continue
+            for segment_index, segment in enumerate(segments):
+                page_number = segment["page"]
+                if page_number < start_page or page_number > last_page:
+                    raise ValueError(
+                        f"Shared {role} context {context_id} is outside the configured page range."
+                    )
+                page = pages[page_number]
+                box = CropBox(segment["left"], segment["top"], segment["right"], segment["bottom"])
+                output_path = (
+                    work_dir
+                    / "crops"
+                    / f"ch{config.chapter:03d}-q{number:04d}-{role}-context-{context_id}-s{segment_index:02d}-p{page_number:03d}.png"
+                )
+                crop = crop_region(page, box, output_path)
+                result.setdefault(number, []).append(
+                    replace(crop, role=role, question_number=number, context_id=context_id)
+                )
+    return {number: tuple(crops) for number, crops in result.items()}
+
+
 def _crop_role(
     config: ChapterConfig,
     role: str,
@@ -367,7 +435,7 @@ def _configured_dpi(config: ChapterConfig) -> int:
 
 def _evidence_payload(evidence: RecordEvidence) -> dict[str, Any]:
     def crop_value(crop: SourceCrop) -> dict[str, Any]:
-        return {
+        value = {
             "role": crop.role,
             "question_number": crop.question_number,
             "page_number": crop.page_number,
@@ -379,6 +447,9 @@ def _evidence_payload(evidence: RecordEvidence) -> dict[str, Any]:
             "source_image_sha256": crop.source_image_sha256,
             "source_dpi": crop.source_dpi,
         }
+        if crop.context_id:
+            value["context_id"] = crop.context_id
+        return value
 
     return {
         "chapter": evidence.chapter,
@@ -463,10 +534,14 @@ def prepare_source_evidence(config: ChapterConfig, pdf_path: Path, work_dir: Pat
         )
         for page_number in all_pages
     }
-    role_crops = {
-        role: _crop_role(config, role, pages, work_dir)
-        for role in ("question", "answer_key", "solution")
-    }
+    role_crops = {}
+    for role in ("question", "answer_key", "solution"):
+        primary = _crop_role(config, role, pages, work_dir)
+        contexts = _crop_shared_contexts(config, role, pages, work_dir)
+        role_crops[role] = {
+            number: contexts.get(number, ()) + primary[number]
+            for number in primary
+        }
     prepared: list[RecordEvidence] = []
     store = ArtifactStore(work_dir)
     for number in range(config.question_numbers[0], config.question_numbers[1] + 1):
@@ -480,6 +555,7 @@ def prepare_source_evidence(config: ChapterConfig, pdf_path: Path, work_dir: Pat
                 "source_image_sha256": crop.source_image_sha256,
                 "source_dpi": crop.source_dpi,
                 "crop_sha256": crop.sha256,
+                **({"context_id": crop.context_id} if crop.context_id else {}),
             }
             for role in ("question", "answer_key", "solution")
             for crop in role_crops[role][number]

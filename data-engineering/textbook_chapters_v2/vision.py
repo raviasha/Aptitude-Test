@@ -147,7 +147,7 @@ def _crop_source(crop: SourceCrop) -> dict[str, Any]:
     declared_hash = _require_hash(crop.sha256, "source crop sha256")
     if _sha256_path(crop.path) != declared_hash:
         raise ValueError(f"Source crop hash does not match file: {crop.path}")
-    return {
+    source = {
         "kind": "source_crop",
         "role": crop.role,
         "path": str(crop.path),
@@ -157,6 +157,9 @@ def _crop_source(crop: SourceCrop) -> dict[str, Any]:
         "source_image_sha256": _require_hash(crop.source_image_sha256, "source image sha256"),
         "source_dpi": crop.source_dpi,
     }
+    if crop.context_id:
+        source["context_id"] = crop.context_id
+    return source
 
 
 def _job_payload(job: VisionJob) -> dict[str, Any]:

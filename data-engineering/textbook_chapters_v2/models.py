@@ -74,6 +74,7 @@ class SourceCrop:
     sha256: str
     source_image_sha256: str
     source_dpi: int
+    context_id: str = ""
 
 
 @dataclass(frozen=True)

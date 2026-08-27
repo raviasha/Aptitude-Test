@@ -36,12 +36,14 @@ class ChapterConfig:
     intentional_exclusions: tuple[int, ...] = ()
     marker_overrides: Mapping[str, Any] = field(default_factory=frozen_mapping)
     layout_boundaries: Mapping[str, Any] = field(default_factory=frozen_mapping)
+    shared_contexts: Mapping[str, Any] = field(default_factory=frozen_mapping)
     extras: Mapping[str, Any] = field(default_factory=frozen_mapping)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "intentional_exclusions", tuple(self.intentional_exclusions))
         object.__setattr__(self, "marker_overrides", frozen_mapping(self.marker_overrides))
         object.__setattr__(self, "layout_boundaries", frozen_mapping(self.layout_boundaries))
+        object.__setattr__(self, "shared_contexts", frozen_mapping(self.shared_contexts))
         object.__setattr__(self, "extras", frozen_mapping(self.extras))
 
     @property
@@ -107,7 +109,11 @@ class ChapterConfig:
         known = {
             "chapter", "bank_name", "question_pages", "answer_key_pages", "answer_pages", "solution_pages",
             "question_numbers", "expected_question_numbers", "intentional_exclusions", "marker_overrides", "layout_boundaries",
+            "shared_contexts",
         }
+        shared_contexts = raw.get("shared_contexts", {})
+        if not isinstance(shared_contexts, Mapping):
+            raise ValueError("shared_contexts must be an object keyed by source role.")
         return cls(
             chapter=chapter,
             bank_name=str(raw.get("bank_name") or f"chapter-{chapter:03d}"),
@@ -118,5 +124,6 @@ class ChapterConfig:
             intentional_exclusions=tuple(exclusions),
             marker_overrides=frozen_mapping(raw.get("marker_overrides", {})),
             layout_boundaries=frozen_mapping(raw.get("layout_boundaries", {})),
+            shared_contexts=frozen_mapping(shared_contexts),
             extras=frozen_mapping({key: value for key, value in raw.items() if key not in known}),
         )

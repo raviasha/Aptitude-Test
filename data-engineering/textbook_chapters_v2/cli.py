@@ -249,7 +249,7 @@ def _evidence_is_current(config: ChapterConfig) -> bool:
 
 
 def _crop_payload(crop: SourceCrop) -> dict[str, Any]:
-    return {
+    payload = {
         "role": crop.role,
         "question_number": crop.question_number,
         "page_number": crop.page_number,
@@ -261,6 +261,9 @@ def _crop_payload(crop: SourceCrop) -> dict[str, Any]:
         "source_image_sha256": crop.source_image_sha256,
         "source_dpi": crop.source_dpi,
     }
+    if crop.context_id:
+        payload["context_id"] = crop.context_id
+    return payload
 
 
 def _crop_from_payload(raw: Mapping[str, Any]) -> SourceCrop:
@@ -268,6 +271,7 @@ def _crop_from_payload(raw: Mapping[str, Any]) -> SourceCrop:
         role=str(raw["role"]), question_number=int(raw["question_number"]), page_number=int(raw["page_number"]),
         box=CropBox(**raw["box"]), path=Path(raw["path"]), width=int(raw["width"]), height=int(raw["height"]),
         sha256=str(raw["sha256"]), source_image_sha256=str(raw["source_image_sha256"]), source_dpi=int(raw["source_dpi"]),
+        context_id=str(raw.get("context_id", "")),
     )
 
 
@@ -732,11 +736,43 @@ def _source_audit_hashes(evidence: RecordEvidence) -> tuple[str, ...]:
     ) + (evidence.dependency_fingerprint,)
 
 
+def _prior_prepare_state(config: ChapterConfig) -> tuple[dict[int, RecordEvidence], Mapping[str, Any]]:
+    state = _chapter_root(config) / "state"
+    try:
+        records = {
+            item.question_number: item
+            for item in (_evidence_from_payload(raw) for raw in _read_list(state / "evidence.json"))
+        }
+        field_media = json.loads((state / "field-media.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError, PipelineBlocked, json.JSONDecodeError):
+        return {}, {}
+    return records, field_media if isinstance(field_media, Mapping) else {}
+
+
+def _same_evidence_except_fingerprint(left: RecordEvidence, right: RecordEvidence) -> bool:
+    left_payload = _evidence_payload(left)
+    right_payload = _evidence_payload(right)
+    left_payload.pop("dependency_fingerprint", None)
+    right_payload.pop("dependency_fingerprint", None)
+    return left_payload == right_payload
+
+
 def _prepare(config: ChapterConfig) -> int:
     input_fingerprint = _evidence_input_fingerprint(config)
+    prior_records, prior_field_media = _prior_prepare_state(config)
     base_records = tuple(prepare_source_evidence(config, _path_value(config, "source_pdf"), _chapter_root(config)))
     prepared = tuple(_prepare_field_media(config, evidence, _chapter_root(config)) for evidence in base_records)
-    records = tuple(item[0] for item in prepared)
+    records_list: list[RecordEvidence] = []
+    for current, manifest in prepared:
+        previous = prior_records.get(current.question_number)
+        if (
+            previous is not None
+            and _same_evidence_except_fingerprint(previous, current)
+            and prior_field_media.get(str(current.question_number)) == manifest
+        ):
+            current = replace(current, dependency_fingerprint=previous.dependency_fingerprint)
+        records_list.append(current)
+    records = tuple(records_list)
     state = _chapter_root(config) / "state"
     evidence_path = state / "evidence.json"
     field_media_path = state / "field-media.json"

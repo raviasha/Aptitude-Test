@@ -106,9 +106,46 @@
       "detail": "The numbered textbook solution solves a polynomial problem rather than summing 1 through 100."
     }
   },
+  "shared_contexts": {
+    "question": {
+      "questions-54-57": {
+        "question_numbers": [54, 55, 56, 57],
+        "segments": [
+          {
+            "page": 25,
+            "left": 775,
+            "top": 690,
+            "right": 1435,
+            "bottom": 970
+          }
+        ],
+        "first_visible_content": "Directions (Questions 54-57): For a 5-digit number, without repetition of digits",
+        "last_visible_content": "the first digit is also the largest",
+        "crop_sha256s": ["04335ee9d3794b50511ad75e960b29742b4d077ba0f928c023dce317b1634cbb"]
+      }
+    },
+    "solution": {
+      "questions-54-57-working": {
+        "question_numbers": [54, 55, 56, 57],
+        "segments": [
+          {
+            "page": 43,
+            "left": 775,
+            "top": 326,
+            "right": 1435,
+            "bottom": 727
+          }
+        ],
+        "first_visible_content": "Questions 54 to 57: Let the digits of the number in order be A, B, C, D, E",
+        "last_visible_content": "Hence, the number is 95721 or 97521",
+        "crop_sha256s": ["5af028d6d87976c5c05c9c7982ad5f179995393888dd20328e686381680a62b8"]
+      }
+    }
+  },
   "boundary_reviews": {
     "question:11": {"first_visible_content": "11. Consider the following statements about natural numbers", "last_visible_content": "(d) 2 and 3", "crop_sha256s": ["43974ffe9bb804df53aa93cfabd2428769a4ee3d12d4f0ab23cc58eb1a54dece", "1d5624a2c801363cf734388f310f0f16e7f2e2460f8df953c79adb8c52438551"]},
     "question:22": {"first_visible_content": "22. If the numbers from 1 to 24", "last_visible_content": "(d) 18", "crop_sha256s": ["6267359259cb6137231d0ee0b2b5bd5a2c8cb6877fa076ab83d521abd42783e4", "1c3e3a6ad610e3efa91c3a0de756b7552b0fb84438cb3c589dfdc4f8946e5287"]},
+    "question:53": {"first_visible_content": "53. If 13 = 13w/(1-w), then (2w)^2 = ?", "last_visible_content": "(d) 2", "crop_sha256s": ["31f9d42695537456edf115e9dafabfb6efab8cf8c1e52fcb8f00a36bce122967"]},
     "question:123": {"first_visible_content": "123. {(476 + 424)^2 - 4 x 476 x 424}", "last_visible_content": "(e) None of these", "crop_sha256s": ["279ad230a8174d1c73ab27a694826b35922e79d0f5844a91b7257b8fb5e4a642", "7a308363dd80e32fd048dae2e0ef703d6d610d98051afa8e010118263680651f"]},
     "question:136": {"first_visible_content": "136. ((963 + 476)^2 + (963 - 476)^2) / (963 x 963 + 476 x 476)", "last_visible_content": "(e) None of these", "crop_sha256s": ["c9cf79ea841a66b376cc81bdd9d0f69e3362ef615d2401182d100c968197ecf4", "fd559fdb4b3b916e2a58394baa4106e8eba8f60ed58124dcddd6074e3ed7f526"]},
     "question:137": {"first_visible_content": "768 x 768 x 768 + 232 x 232 x 232", "last_visible_content": "(e) None of these", "crop_sha256s": ["3f24a80773e57b43bc4aec551d4e7d07ec3ff7df8384260f51d21c8feddb0677"]},
@@ -126,6 +163,7 @@
     "solution:45": {"first_visible_content": "45. p < 1", "last_visible_content": "Hence, (2/p - p) is a positive number", "crop_sha256s": ["1556da087a42dab9e73cb71ef9f3ce4aac247900ff3aa5d4b62ade1b530ed700"]},
     "solution:46": {"first_visible_content": "46. (x^2 + x + 1)", "last_visible_content": "Hence, (x^2 + x + 1) is greater than or equal to 3/4", "crop_sha256s": ["e8936a2bb6c587a0e1a05781842e67254620807fb1f013f79e3c104a24abe8d6"]},
     "solution:52": {"first_visible_content": "(a - b) / 3.5 = 4/7", "last_visible_content": "b < a", "crop_sha256s": ["4c4dd6c547cf01fcc6c26dcbc77d66cf9ea48fe00ecdf0717ab089e07843aa38", "2fe68264013170048eac56b7af1076c50f48d040f25bd24b046657fcd7057fc5"]},
+    "solution:53": {"first_visible_content": "53. 13/1 = 13w/(1-w)", "last_visible_content": "(2w)^2 = 4w^2 = 4 x 1/4 = 1", "crop_sha256s": ["940e4bef3e5457d164a2677bf473465b15dded3b2a8c980d9e1ef8f6b4990842"]},
     "solution:90": {"first_visible_content": "90. Let 8888 + 848 + 88 - x", "last_visible_content": "9824 arithmetic working", "crop_sha256s": ["532aaed3c19110eaf27f515cd154da8bb80070de18a8317e8ccb8f52c0f76592", "d19400946ed0a68493cc5bd4506708264a60f7e197348a348e4af8d8c929fab8"]},
     "solution:170": {"first_visible_content": "170. Number on thumbs = 1, 9, 17, 25", "last_visible_content": "1993 lies on thumb and 1994 on index finger", "crop_sha256s": ["6d76eab0cea4d89dd2b659bd3b66ce6aa44b9065bfb8c0e6daa0da9590fe0a2e", "c7011a6f52e149c435bb74a4678edd03863960ae0a9c0e35eabb3bcfb8ac139c"]},
     "solution:200": {"first_visible_content": "200. In 5^n we have 5 as unit digit", "last_visible_content": "Unit digit in 11 = 1", "crop_sha256s": ["7d3e0b294adac813284d5bc0c00d987d6451eafc99c731f72263449fa0ce1b43", "cd400d86ece960692ef87919482d85f3465661a3deeb9a000da48cb834882baf"]},
@@ -737,7 +775,7 @@
             "left": 775,
             "top": 504,
             "right": 1435,
-            "bottom": 966
+            "bottom": 690
           }
         ]
       },
@@ -746,7 +784,7 @@
           {
             "page": 25,
             "left": 775,
-            "top": 966,
+            "top": 970,
             "right": 1435,
             "bottom": 1093
           }
@@ -9171,7 +9209,7 @@
             "left": 775,
             "top": 195,
             "right": 1435,
-            "bottom": 720
+            "bottom": 326
           }
         ]
       },
@@ -9180,7 +9218,7 @@
           {
             "page": 43,
             "left": 775,
-            "top": 720,
+            "top": 727,
             "right": 1435,
             "bottom": 747
           }

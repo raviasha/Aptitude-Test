@@ -7,6 +7,7 @@ import json
 import os
 import re
 import tempfile
+import time
 from dataclasses import fields, replace
 from pathlib import Path
 from types import MappingProxyType
@@ -41,6 +42,7 @@ _SAFE_FIXTURE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 _REQUIRED_APPROVAL_VERDICTS = {"question", "answer_mapping", "solution", "readability", "clipping"}
 _RENDER_EVIDENCE_RE = re.compile(r"^(unanswered|submitted)(?:\.[a-z0-9_-]+)?:([0-9a-f]{64})$")
 _AUDIT_SUMMARY_CAPABILITY = object()
+_REPLACE_RETRY_DELAYS = (0.05, 0.1, 0.2, 0.4)
 
 
 def _nonempty_string(value: Any) -> bool:
@@ -127,7 +129,14 @@ def _atomic_write(path: Path, payload: Mapping[str, Any]) -> None:
             temporary.write(canonical_json(payload))
             temporary.flush()
             os.fsync(temporary.fileno())
-        os.replace(temporary_name, path)
+        for attempt in range(len(_REPLACE_RETRY_DELAYS) + 1):
+            try:
+                os.replace(temporary_name, path)
+                break
+            except PermissionError:
+                if attempt == len(_REPLACE_RETRY_DELAYS):
+                    raise
+                time.sleep(_REPLACE_RETRY_DELAYS[attempt])
         temporary_name = None
     finally:
         if temporary_name is not None:

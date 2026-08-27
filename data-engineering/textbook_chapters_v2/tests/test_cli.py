@@ -25,7 +25,10 @@ from textbook_chapters_v2.cli import (
     PENDING_VISION_EXIT,
     _application_renderer_manifest,
     _candidates,
+    _evidence_from_payload,
+    _evidence_payload,
     _path_value,
+    _prepare,
     _render_dependency_fingerprint,
     main,
 )
@@ -34,6 +37,7 @@ from textbook_chapters_v2.models import AuditRecord, CandidateRecord, CropBox, P
 from textbook_chapters_v2.promote import promote_candidate
 from textbook_chapters_v2.render import RenderArtifacts as BrowserRenderArtifacts
 from textbook_chapters_v2.store import canonical_json, dependency_fingerprint
+from textbook_chapters_v2.vision import create_extraction_job
 
 
 def _sha256(path: Path) -> str:
@@ -150,6 +154,78 @@ class WorkflowCliTests(unittest.TestCase):
         return [RecordEvidence(chapter=7, question_number=84, source_pdf=self.source_pdf, source_pdf_sha256=_sha256(self.source_pdf),
                                question_crops=(crops[0],), answer_key_crops=(crops[1],), solution_crops=(crops[2],),
                                dependency_fingerprint="c" * 64)]
+
+    def test_evidence_state_round_trip_preserves_shared_context_authorization_for_jobs(self) -> None:
+        context_path = self.root / "shared-context.png"
+        context_path.write_bytes(b"shared directions")
+        own_path = self.root / "own-question.png"
+        own_path.write_bytes(b"question")
+        evidence = RecordEvidence(
+            chapter=7,
+            question_number=84,
+            source_pdf=self.source_pdf,
+            source_pdf_sha256=_sha256(self.source_pdf),
+            question_crops=(
+                SourceCrop(
+                    role="question", question_number=84, page_number=1, box=CropBox(0, 0, 10, 10),
+                    path=context_path, width=10, height=10, sha256=_sha256(context_path),
+                    source_image_sha256="a" * 64, source_dpi=180, context_id="questions-84-85",
+                ),
+                SourceCrop(
+                    role="question", question_number=84, page_number=1, box=CropBox(0, 10, 10, 20),
+                    path=own_path, width=10, height=10, sha256=_sha256(own_path),
+                    source_image_sha256="a" * 64, source_dpi=180,
+                ),
+            ),
+            dependency_fingerprint="c" * 64,
+        )
+
+        restored = _evidence_from_payload(_evidence_payload(evidence))
+        job = create_extraction_job(restored, self.root / "job.json")
+
+        self.assertEqual(restored.question_crops[0].context_id, "questions-84-85")
+        self.assertEqual(job.sources[0]["context_id"], "questions-84-85")
+        self.assertNotIn("context_id", job.sources[1])
+
+    def test_prepare_preserves_the_prior_fingerprint_for_semantically_unchanged_records(self) -> None:
+        crop_path = self.root / "crop.png"
+        crop_path.write_bytes(b"stable crop")
+        changed_path = self.root / "changed.png"
+        changed_path.write_bytes(b"corrected crop")
+
+        def evidence(number: int, path: Path, fingerprint: str) -> RecordEvidence:
+            crop = SourceCrop(
+                role="question", question_number=number, page_number=1, box=CropBox(0, 0, 1, 1),
+                path=path, width=1, height=1, sha256=_sha256(path), source_image_sha256="a" * 64,
+                source_dpi=180,
+            )
+            return RecordEvidence(
+                chapter=7, question_number=number, source_pdf=self.source_pdf,
+                source_pdf_sha256=_sha256(self.source_pdf), question_crops=(crop,),
+                dependency_fingerprint=fingerprint,
+            )
+
+        raw = json.loads(self.config_path.read_text(encoding="utf-8"))
+        raw["question_numbers"] = [84, 85]
+        config = ChapterConfig.from_dict(raw)
+        chapter_root = self.work_root / "chapter-007"
+        state = chapter_root / "state"
+        state.mkdir(parents=True)
+        previous = (evidence(84, crop_path, "1" * 64), evidence(85, crop_path, "2" * 64))
+        (state / "evidence.json").write_text(
+            json.dumps([_evidence_payload(item) for item in previous]), encoding="utf-8"
+        )
+        (state / "field-media.json").write_text(json.dumps({"84": {}, "85": {}}), encoding="utf-8")
+        current = (evidence(84, crop_path, "3" * 64), evidence(85, changed_path, "4" * 64))
+
+        with patch("textbook_chapters_v2.cli.prepare_source_evidence", return_value=current), patch(
+            "textbook_chapters_v2.cli._prepare_field_media", side_effect=lambda _config, item, _root: (item, {})
+        ):
+            self.assertEqual(_prepare(config), 0)
+
+        persisted = json.loads((state / "evidence.json").read_text(encoding="utf-8"))
+        self.assertEqual(persisted[0]["dependency_fingerprint"], "1" * 64)
+        self.assertEqual(persisted[1]["dependency_fingerprint"], "4" * 64)
 
     def _png_crop(self, name: str, role: str, size: tuple[int, int], color: str, index: int) -> SourceCrop:
         path = self.root / f"{name}.png"

@@ -5,6 +5,7 @@ import json
 import os
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -13,6 +14,7 @@ from PIL import Image
 from textbook_chapters_v2.config import ChapterConfig
 from textbook_chapters_v2.models import CropBox, SourceImage
 from textbook_chapters_v2.source import crop_region, prepare_source_evidence, render_page, sha256_path
+from textbook_chapters_v2.vision import create_extraction_job
 
 
 class SourceEvidenceTests(unittest.TestCase):
@@ -234,6 +236,84 @@ class SourceEvidenceTests(unittest.TestCase):
         )
         self.assertEqual(manifest["payload"]["source_status"], "missing_solution")
         self.assertEqual(manifest["payload"]["source_reasons"], list(evidence[1].source_reasons))
+
+    def test_named_shared_question_context_is_authorized_for_each_target_job_only(self) -> None:
+        pages = {
+            1: self._page(
+                1,
+                [(0, 40, "red"), (40, 80, "yellow"), (80, 120, "green"), (120, 160, "blue")],
+            ),
+            2: self._page(2, [(0, 200, "orange")]),
+            3: self._page(3, [(0, 200, "purple")]),
+        }
+        config = ChapterConfig.from_dict(
+            {
+                "chapter": 13,
+                "bank_name": "shared-directions",
+                "question_pages": [1, 1],
+                "answer_pages": [2, 2],
+                "solution_pages": [3, 3],
+                "question_numbers": [1, 3],
+                "shared_contexts": {
+                    "question": {
+                        "questions-2-3": {
+                            "question_numbers": [2, 3],
+                            "segments": [
+                                {"page": 1, "left": 0, "top": 40, "right": 100, "bottom": 80}
+                            ],
+                        }
+                    }
+                },
+                "marker_overrides": {
+                    "question": {
+                        "1": {"segments": [{"page": 1, "left": 0, "top": 0, "right": 100, "bottom": 40}]},
+                        "2": {"segments": [{"page": 1, "left": 0, "top": 80, "right": 100, "bottom": 120}]},
+                        "3": {"segments": [{"page": 1, "left": 0, "top": 120, "right": 100, "bottom": 160}]},
+                    },
+                    "answer_key": {
+                        str(number): {
+                            "segments": [{"page": 2, "left": 0, "top": (number - 1) * 40, "right": 100, "bottom": number * 40}]
+                        }
+                        for number in range(1, 4)
+                    },
+                    "solution": {
+                        str(number): {
+                            "segments": [{"page": 3, "left": 0, "top": (number - 1) * 40, "right": 100, "bottom": number * 40}]
+                        }
+                        for number in range(1, 4)
+                    },
+                },
+            }
+        )
+        pdf_path = self.root / "source.pdf"
+        pdf_path.write_bytes(b"reviewed source bytes")
+
+        with patch("textbook_chapters_v2.source.render_page", side_effect=lambda _pdf, page, _dpi, _output: pages[page]):
+            evidence = prepare_source_evidence(config, pdf_path, self.root / "work")
+
+        self.assertEqual(
+            [(crop.box, crop.context_id) for crop in evidence[0].question_crops],
+            [(CropBox(0, 0, 100, 40), "")],
+        )
+        for record, own_box in (
+            (evidence[1], CropBox(0, 80, 100, 120)),
+            (evidence[2], CropBox(0, 120, 100, 160)),
+        ):
+            self.assertEqual(
+                [(crop.box, crop.context_id) for crop in record.question_crops],
+                [(CropBox(0, 40, 100, 80), "questions-2-3"), (own_box, "")],
+            )
+            job = create_extraction_job(record, self.root / "jobs" / f"q{record.question_number}.json")
+            question_sources = [source for source in job.sources if source["role"] == "question"]
+            self.assertEqual(question_sources[0]["context_id"], "questions-2-3")
+            self.assertNotIn("context_id", question_sources[1])
+
+        with_context = create_extraction_job(evidence[1], self.root / "jobs" / "q2.json")
+        same_record_without_context = create_extraction_job(
+            replace(evidence[1], question_crops=(evidence[1].question_crops[1],)),
+            self.root / "jobs" / "q2-without-context.json",
+        )
+        self.assertNotEqual(with_context.fingerprint, same_record_without_context.fingerprint)
 
     def test_prepare_rejects_a_source_pdf_that_does_not_match_the_pinned_hash(self) -> None:
         page = self._page(1, [(0, 100, "red")])

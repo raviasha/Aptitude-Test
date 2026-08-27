@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
 
 DATA_ENGINEERING_ROOT = Path(__file__).resolve().parents[2]
@@ -204,6 +205,25 @@ class AuditLedgerTests(unittest.TestCase):
         self.assertEqual(persisted["records"][0]["status"], "approved_for_publish")
         self.assertEqual(list(path.parent.glob("*.tmp")), [])
         self.assertEqual(AuditLedger(work_root, 7).record(84), self._approved(84))
+
+    def test_atomic_merge_retries_a_transient_windows_replace_denial(self) -> None:
+        work_root = self.root / "transient-replace" / "work"
+        ledger = AuditLedger(work_root, 7)
+        real_replace = __import__("os").replace
+        attempts = 0
+
+        def transient_replace(source: str, destination: str) -> None:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise PermissionError(5, "transient destination lock", destination)
+            real_replace(source, destination)
+
+        with patch("textbook_chapters_v2.audit.os.replace", side_effect=transient_replace):
+            ledger.merge_record(replace(self._approved(84), status="pending_extraction"))
+
+        self.assertEqual(attempts, 2)
+        self.assertEqual(AuditLedger(work_root, 7).record(84).status, "pending_extraction")
 
     def test_ledger_path_is_fixed_beneath_its_declared_chapter_work_root(self) -> None:
         work_root = self.root / "scoped" / "work"

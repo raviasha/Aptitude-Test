@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -37,6 +38,8 @@ _KNOWN_NONTERMINAL_STATUSES = {
 _HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 _SAFE_FIXTURE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 _REQUIRED_APPROVAL_VERDICTS = {"question", "answer_mapping", "solution", "readability", "clipping"}
+_RENDER_EVIDENCE_RE = re.compile(r"^(unanswered|submitted)(?:\.[a-z0-9_-]+)?:([0-9a-f]{64})$")
+_AUDIT_SUMMARY_CAPABILITY = object()
 
 
 def _nonempty_string(value: Any) -> bool:
@@ -45,6 +48,14 @@ def _nonempty_string(value: Any) -> bool:
 
 def _valid_hash(value: Any) -> bool:
     return isinstance(value, str) and _HASH_RE.fullmatch(value) is not None
+
+
+def _sha256_path(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as file:
+        for block in iter(lambda: file.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 def _approval_dependencies(record: AuditRecord) -> dict[str, Any]:
@@ -133,8 +144,21 @@ class AuditSummary(Mapping[str, Any]):
         approved_count: int,
         reviewed_rejections: tuple[Mapping[str, Any], ...],
         audit_sha256: str,
+        _capability: object | None = None,
+        _ledger_path: Path | None = None,
+        _expected_question_numbers: tuple[int, ...] = (),
+        _approved_candidate_hashes: Mapping[int, str] | None = None,
     ) -> None:
+        if _capability is not _AUDIT_SUMMARY_CAPABILITY:
+            raise TypeError("AuditSummary values must be produced by AuditLedger.validate_release_gate().")
+        if _ledger_path is None:
+            raise TypeError("AuditSummary requires its validated AuditLedger path.")
         normalized_rejections = tuple(MappingProxyType(dict(item)) for item in reviewed_rejections)
+        approved_hashes = dict(_approved_candidate_hashes or {})
+        self._capability = _capability
+        self._ledger_path = Path(_ledger_path)
+        self._expected_question_numbers = tuple(_expected_question_numbers)
+        self._approved_candidate_hashes = MappingProxyType(approved_hashes)
         self._data = MappingProxyType(
             {
                 "chapter": chapter,
@@ -143,6 +167,11 @@ class AuditSummary(Mapping[str, Any]):
                 "reviewed_rejection_count": len(normalized_rejections),
                 "all_records_terminal": True,
                 "all_records_approved_or_reviewed_rejection": True,
+                "expected_question_numbers": self._expected_question_numbers,
+                "approved_records": tuple(
+                    MappingProxyType({"question_number": number, "candidate_sha256": approved_hashes[number]})
+                    for number in sorted(approved_hashes)
+                ),
                 "reviewed_rejections": normalized_rejections,
                 "audit_sha256": audit_sha256,
             }
@@ -173,12 +202,53 @@ class AuditSummary(Mapping[str, Any]):
     def __len__(self) -> int:
         return len(self._data)
 
+    def _verified_package_payload(
+        self, config: ChapterConfig, candidates: tuple[Any, ...]
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        """Revalidate the sealed ledger and bind approved records to package inputs."""
+        if self._capability is not _AUDIT_SUMMARY_CAPABILITY:
+            raise PipelineBlocked("Candidate packaging requires an authoritative AuditSummary.")
+        expected = tuple(
+            number
+            for number in range(config.question_numbers[0], config.question_numbers[1] + 1)
+            if number not in config.intentional_exclusions
+        )
+        if self.chapter != config.chapter or self._expected_question_numbers != expected:
+            raise PipelineBlocked("AuditSummary chapter or expected record ids do not match package configuration.")
+        if not self._ledger_path.is_file() or _sha256_path(self._ledger_path) != self["audit_sha256"]:
+            raise PipelineBlocked("AuditSummary audit_sha256 no longer matches its chapter ledger.")
+
+        current = AuditLedger(self._ledger_path.parent.parent, config.chapter).validate_release_gate(config)
+        if current["audit_sha256"] != self["audit_sha256"] or dict(current) != dict(self):
+            raise PipelineBlocked("AuditSummary is stale against the current chapter ledger.")
+
+        candidate_hashes: dict[int, str] = {}
+        for candidate in candidates:
+            if candidate.chapter != config.chapter or candidate.question_number in candidate_hashes:
+                raise PipelineBlocked("Package candidates do not match authoritative approved audit records.")
+            candidate_hashes[candidate.question_number] = candidate.sha256
+        if candidate_hashes != dict(self._approved_candidate_hashes):
+            raise PipelineBlocked("Package candidate hashes do not match authoritative approved audit records.")
+
+        normalized = {str(key): value for key, value in self.items()}
+        rejections = [{str(key): value for key, value in item.items()} for item in self["reviewed_rejections"]]
+        return normalized, rejections
+
 
 class AuditLedger:
     """One atomically persisted audit record collection for one chapter."""
 
-    def __init__(self, path: Path) -> None:
-        self.path = Path(path)
+    def __init__(self, work_root: Path, chapter: int) -> None:
+        if isinstance(chapter, bool) or not isinstance(chapter, int) or chapter <= 0:
+            raise ValueError("Audit ledger chapter must be a positive integer.")
+        self.work_root = Path(work_root).resolve()
+        self.chapter = chapter
+        self.chapter_root = (self.work_root / f"chapter-{chapter:03d}").resolve()
+        try:
+            self.chapter_root.relative_to(self.work_root)
+        except ValueError as error:
+            raise ValueError("Audit ledger chapter path escapes its work root.") from error
+        self.path = self.chapter_root / "audit-ledger.json"
         self._records: dict[int, AuditRecord] = {}
         if self.path.exists():
             self._load()
@@ -201,18 +271,16 @@ class AuditLedger:
             loaded[record.question_number] = record
         declared_chapter = payload.get("chapter")
         chapters = {record.chapter for record in loaded.values()}
-        if len(chapters) > 1 or (chapters and declared_chapter not in chapters):
+        if declared_chapter != self.chapter or chapters - {self.chapter}:
             raise PipelineBlocked("Audit ledger contains inconsistent chapter records.")
         self._records = loaded
 
     def _persist(self) -> None:
-        chapters = {record.chapter for record in self._records.values()}
-        chapter = next(iter(chapters)) if len(chapters) == 1 else None
         _atomic_write(
             self.path,
             {
                 "schema_version": AUDIT_SCHEMA_VERSION,
-                "chapter": chapter,
+                "chapter": self.chapter,
                 "records": [_record_payload(self._records[number]) for number in sorted(self._records)],
             },
         )
@@ -274,8 +342,8 @@ class AuditLedger:
             raise TypeError("record must be an AuditRecord value.")
         if record.chapter <= 0 or record.question_number <= 0:
             raise ValueError("Audit records require positive chapter and question numbers.")
-        if self._records and record.chapter not in {item.chapter for item in self._records.values()}:
-            raise PipelineBlocked("One audit ledger cannot contain records from multiple chapters.")
+        if record.chapter != self.chapter:
+            raise PipelineBlocked("Audit record chapter does not match its chapter work root.")
         previous = self._records.get(record.question_number)
         merged = self._invalidate_changed_approval(previous, record) if previous is not None else record
         self._records[record.question_number] = merged
@@ -290,8 +358,20 @@ class AuditLedger:
             raise PipelineBlocked(f"{key} approved record is missing a valid source crop hash.")
         if not _valid_hash(record.candidate_sha256):
             raise PipelineBlocked(f"{key} approved record is missing a valid candidate hash.")
-        if len(record.asset_hashes) < 2 or any(not _valid_hash(value) for value in record.asset_hashes):
+        render_hashes: dict[str, set[str]] = {"unanswered": set(), "submitted": set()}
+        invalid_asset_evidence = False
+        for value in record.asset_hashes:
+            if _valid_hash(value):
+                continue
+            match = _RENDER_EVIDENCE_RE.fullmatch(value) if isinstance(value, str) else None
+            if match is None:
+                invalid_asset_evidence = True
+                break
+            render_hashes[match.group(1)].add(match.group(2))
+        if invalid_asset_evidence or not render_hashes["unanswered"] or not render_hashes["submitted"]:
             raise PipelineBlocked(f"{key} approved record needs screenshots for both rendering states.")
+        if render_hashes["unanswered"] & render_hashes["submitted"]:
+            raise PipelineBlocked(f"{key} approved record needs distinct evidence for both rendering states.")
         if record.policy_version != POLICY_VERSION:
             raise PipelineBlocked(f"{key} approved record has a missing or stale policy version.")
         if record.extractor_schema_version <= 0:
@@ -303,11 +383,10 @@ class AuditLedger:
         if not _nonempty_string(record.application_asset_version):
             raise PipelineBlocked(f"{key} approved record is missing application asset version.")
         verdicts = record.field_verdicts
-        option_fields = {field for field in verdicts if field.startswith("options.") and len(field) > len("options.")}
-        if (
-            not _REQUIRED_APPROVAL_VERDICTS.issubset(verdicts)
-            or not option_fields
-            or any(value != "pass" for value in verdicts.values())
+        four_options = _REQUIRED_APPROVAL_VERDICTS | {f"options.{label}" for label in "ABCD"}
+        five_options = four_options | {"options.E"}
+        if frozenset(verdicts) not in {frozenset(four_options), frozenset(five_options)} or any(
+            value != "pass" for value in verdicts.values()
         ):
             raise PipelineBlocked(f"{key} approved record lacks complete passing field verdicts.")
         if record.findings:
@@ -332,6 +411,7 @@ class AuditLedger:
             raise PipelineBlocked(f"Audit ledger contains excluded or unconfigured questions: {extra}.")
 
         approved = 0
+        approved_candidate_hashes: dict[int, str] = {}
         rejected: list[Mapping[str, Any]] = []
         for number in sorted(expected):
             record = self._records[number]
@@ -340,6 +420,7 @@ class AuditLedger:
             if record.status == APPROVED_FOR_PUBLISH:
                 self._require_approved_evidence(record)
                 approved += 1
+                approved_candidate_hashes[number] = record.candidate_sha256
                 continue
             if record.status == REVIEWED_REJECTION:
                 if not _nonempty_string(record.reviewer) or not _nonempty_string(record.rejection_reason):
@@ -359,15 +440,19 @@ class AuditLedger:
         total = len(expected)
         if approved + len(rejected) != total:
             raise PipelineBlocked("Audit terminal counts do not match the chapter configuration.")
-        audit_hash = dependency_fingerprint(
-            [_record_payload(self._records[number]) for number in sorted(expected)]
-        )
+        if not self.path.is_file():
+            raise PipelineBlocked("Audit ledger persistence is missing at release validation.")
+        audit_hash = _sha256_path(self.path)
         return AuditSummary(
             chapter=config.chapter,
             total_records=total,
             approved_count=approved,
             reviewed_rejections=tuple(rejected),
             audit_sha256=audit_hash,
+            _capability=_AUDIT_SUMMARY_CAPABILITY,
+            _ledger_path=self.path,
+            _expected_question_numbers=tuple(sorted(expected)),
+            _approved_candidate_hashes=approved_candidate_hashes,
         )
 
 

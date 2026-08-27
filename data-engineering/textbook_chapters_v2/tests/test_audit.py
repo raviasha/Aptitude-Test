@@ -58,7 +58,7 @@ class AuditLedgerTests(unittest.TestCase):
             status="approved_for_publish",
             source_crop_hashes=("a" * 64, "b" * 64, "c" * 64),
             candidate_sha256="d" * 64,
-            asset_hashes=("e" * 64, "f" * 64),
+            asset_hashes=("unanswered.desktop:" + "e" * 64, "submitted.desktop:" + "f" * 64),
             policy_version=1,
             extractor_schema_version=1,
             verifier_schema_version=1,
@@ -84,7 +84,7 @@ class AuditLedgerTests(unittest.TestCase):
         return changed
 
     def _ledger_with(self, record: AuditRecord, name: str = "chapter-007.json") -> AuditLedger:
-        ledger = AuditLedger(self.root / name)
+        ledger = AuditLedger(self.root / name / "work", 7)
         ledger.merge_record(record)
         return ledger
 
@@ -99,7 +99,12 @@ class AuditLedgerTests(unittest.TestCase):
             ("reviewer", {"reviewer": ""}),
             ("source crop", {"source_crop_hashes": ()}),
             ("candidate", {"candidate_sha256": ""}),
-            ("both rendering states", {"asset_hashes": ("e" * 64,)}),
+            ("both rendering states", {"asset_hashes": ("unanswered.desktop:" + "e" * 64,)}),
+            ("both rendering states", {"asset_hashes": ("e" * 64, "f" * 64)}),
+            (
+                "distinct",
+                {"asset_hashes": ("unanswered.desktop:" + "e" * 64, "submitted.desktop:" + "e" * 64)},
+            ),
             ("field verdicts", {"field_verdicts": {}}),
             ("policy version", {"policy_version": 0}),
             ("extractor schema version", {"extractor_schema_version": 0}),
@@ -119,6 +124,10 @@ class AuditLedgerTests(unittest.TestCase):
     def test_approved_record_requires_literal_complete_passing_field_verdicts(self) -> None:
         verdict_cases = (
             {"question": "pass", "answer_mapping": "pass", "solution": "pass", "readability": "pass", "clipping": "pass"},
+            {
+                "question": "pass", "options.A": "pass", "answer_mapping": "pass",
+                "solution": "pass", "readability": "pass", "clipping": "pass",
+            },
             {
                 "question": "pass", "options.A": "fail", "answer_mapping": "pass",
                 "solution": "pass", "readability": "pass", "clipping": "pass",
@@ -168,7 +177,7 @@ class AuditLedgerTests(unittest.TestCase):
         self.assertEqual(summary["reviewed_rejections"][0]["question_number"], 85)
 
     def test_missing_extra_or_wrong_chapter_record_blocks_exact_coverage(self) -> None:
-        missing = AuditLedger(self.root / "missing-record.json")
+        missing = AuditLedger(self.root / "missing" / "work", 7)
         with self.assertRaisesRegex(PipelineBlocked, "missing.*84"):
             missing.validate_release_gate(self.config)
 
@@ -177,13 +186,15 @@ class AuditLedgerTests(unittest.TestCase):
         with self.assertRaisesRegex(PipelineBlocked, "excluded or unconfigured.*86"):
             extra.validate_release_gate(self.config)
 
-        wrong = self._ledger_with(replace(self._approved(84), chapter=8), "wrong-chapter.json")
+        wrong = AuditLedger(self.root / "wrong" / "work", 8)
+        wrong.merge_record(replace(self._approved(84), chapter=8))
         with self.assertRaisesRegex(PipelineBlocked, "chapter"):
             wrong.validate_release_gate(self.config)
 
     def test_merge_is_atomic_persistent_and_keeps_one_record_per_question(self) -> None:
-        path = self.root / "chapter-007.json"
-        ledger = AuditLedger(path)
+        work_root = self.root / "atomic" / "work"
+        path = work_root / "chapter-007" / "audit-ledger.json"
+        ledger = AuditLedger(work_root, 7)
         ledger.merge_record(replace(self._approved(84), status="pending_vision"))
         ledger.merge_record(self._approved(84))
 
@@ -192,13 +203,27 @@ class AuditLedgerTests(unittest.TestCase):
         self.assertEqual(len(persisted["records"]), 1)
         self.assertEqual(persisted["records"][0]["status"], "approved_for_publish")
         self.assertEqual(list(path.parent.glob("*.tmp")), [])
-        self.assertEqual(AuditLedger(path).record(84), self._approved(84))
+        self.assertEqual(AuditLedger(work_root, 7).record(84), self._approved(84))
+
+    def test_ledger_path_is_fixed_beneath_its_declared_chapter_work_root(self) -> None:
+        work_root = self.root / "scoped" / "work"
+        ledger = AuditLedger(work_root, 7)
+        ledger.merge_record(self._approved())
+
+        self.assertEqual(ledger.path, work_root.resolve() / "chapter-007" / "audit-ledger.json")
+        self.assertTrue(ledger.path.is_file())
+        with self.assertRaisesRegex((TypeError, ValueError), "chapter"):
+            AuditLedger(self.root / "arbitrary-ledger.json")
 
     def test_dependency_changes_reset_only_that_record_to_earliest_affected_state(self) -> None:
         mutations = (
             ("source_crop_hashes", ("1" * 64,), "pending_extraction"),
             ("candidate_sha256", "2" * 64, "pending_render"),
-            ("asset_hashes", ("3" * 64, "4" * 64), "pending_vision"),
+            (
+                "asset_hashes",
+                ("unanswered.desktop:" + "3" * 64, "submitted.desktop:" + "4" * 64),
+                "pending_vision",
+            ),
             ("policy_version", 2, "pending_extraction"),
             ("extractor_schema_version", 2, "pending_extraction"),
             ("verifier_schema_version", 2, "pending_vision"),
@@ -206,8 +231,9 @@ class AuditLedgerTests(unittest.TestCase):
             ("application_asset_version", "ksat-ui-2", "pending_render"),
         )
         for index, (field, value, expected_status) in enumerate(mutations):
-            path = self.root / f"invalidate-{index}.json"
-            ledger = AuditLedger(path)
+            work_root = self.root / f"invalidate-{index}" / "work"
+            path = work_root / "chapter-007" / "audit-ledger.json"
+            ledger = AuditLedger(work_root, 7)
             ledger.merge_record(self._approved(84))
             ledger.merge_record(self._approved(85))
             changed = replace(self._approved(84), **{field: value})

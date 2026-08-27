@@ -11,6 +11,7 @@ from typing import Any, Iterable, Mapping
 
 import app
 
+from .audit import AuditSummary
 from .config import ChapterConfig
 from .models import CandidateRecord, PackageResult, PipelineBlocked, PIPELINE_VERSION
 from .rules import POLICY_VERSION
@@ -39,28 +40,12 @@ def _write_member(archive: zipfile.ZipFile, name: str, content: bytes) -> None:
     archive.writestr(info, content, compresslevel=9)
 
 
-def _require_audit_summary(audit: Any) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    if not isinstance(audit, Mapping):
-        raise PipelineBlocked("Candidate packaging needs an explicit audit summary mapping.")
-    if audit.get("all_records_terminal") is not True:
-        raise PipelineBlocked("Candidate packaging requires audit evidence that all records are terminal.")
-    if audit.get("all_records_approved_or_reviewed_rejection") is not True:
-        raise PipelineBlocked("Candidate packaging requires audit evidence that all records are approved or reviewed rejections.")
-    reviewed = audit.get("reviewed_rejections", [])
-    if not isinstance(reviewed, (list, tuple)) or any(not isinstance(item, Mapping) for item in reviewed):
-        raise PipelineBlocked("Audit reviewed_rejections must be a list of mappings.")
-    for item in reviewed:
-        if (
-            item.get("status") != "reviewed_rejection"
-            or not isinstance(item.get("reviewer"), str)
-            or not item["reviewer"].strip()
-            or not isinstance(item.get("rejection_reason"), str)
-            or not item["rejection_reason"].strip()
-        ):
-            raise PipelineBlocked("Every reviewed rejection needs terminal reviewed rejection status, reviewer, and reason.")
-    normalized = {str(key): value for key, value in audit.items()}
-    rejections = [{str(key): value for key, value in item.items()} for item in reviewed]
-    return normalized, rejections
+def _require_audit_summary(
+    audit: Any, config: ChapterConfig, candidates: tuple[CandidateRecord, ...]
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    if not isinstance(audit, AuditSummary):
+        raise PipelineBlocked("Candidate packaging requires an authoritative AuditSummary from AuditLedger.")
+    return audit._verified_package_payload(config, candidates)
 
 
 def _candidate_media(candidate: CandidateRecord) -> Mapping[str, Any]:
@@ -68,6 +53,23 @@ def _candidate_media(candidate: CandidateRecord) -> Mapping[str, Any]:
     if not isinstance(media, Mapping):
         raise PipelineBlocked("Candidate display media must be a mapping.")
     return media
+
+
+def _candidate_fingerprint(candidate: CandidateRecord) -> str:
+    payload = {
+        "chapter": candidate.chapter,
+        "question_number": candidate.question_number,
+        "question_text": candidate.question_text,
+        "options": dict(candidate.options),
+        "correct_answer": candidate.correct_answer,
+        "answer_key_answer": candidate.answer_key_answer,
+        "answer_key_crop_sha256": candidate.answer_key_crop_sha256,
+        "answer_key_job_fingerprint": candidate.answer_key_job_fingerprint,
+        "solution_steps": list(candidate.solution_steps),
+        "representation": dict(candidate.representation),
+        "source_fingerprint": candidate.source_fingerprint,
+    }
+    return dependency_fingerprint(payload)
 
 
 def _validate_candidate_representation(candidate: CandidateRecord) -> Mapping[str, Any]:
@@ -187,12 +189,11 @@ def _validate_written_package(path: Path, manifest: Mapping[str, Any], expected_
 
 
 def build_candidate_package(
-    config: ChapterConfig, candidates: Iterable[CandidateRecord], audit: Mapping[str, Any], output_path: Path
+    config: ChapterConfig, candidates: Iterable[CandidateRecord], audit: AuditSummary, output_path: Path
 ) -> PackageResult:
     """Write one new candidate ZIP; existing files are never overwritten or promoted."""
     if not isinstance(config, ChapterConfig):
         raise TypeError("config must be a ChapterConfig value.")
-    audit_summary, rejections = _require_audit_summary(audit)
     output = Path(output_path)
     if output.suffix.lower() != ".zip":
         raise ValueError("Candidate output_path must end in .zip.")
@@ -202,6 +203,9 @@ def build_candidate_package(
     ordered = tuple(sorted(records, key=lambda item: (item.chapter, item.question_number)))
     if len({(item.chapter, item.question_number) for item in ordered}) != len(ordered):
         raise PipelineBlocked("Candidate packaging refuses duplicate question numbers.")
+    if any(candidate.sha256 != _candidate_fingerprint(candidate) for candidate in ordered):
+        raise PipelineBlocked("Package candidate fingerprint is missing or stale.")
+    audit_summary, rejections = _require_audit_summary(audit, config, ordered)
     assets: dict[str, bytes] = {}
     entries_and_lineage = [_question_entry(config, candidate, assets) for candidate in ordered]
     entries = [item[0] for item in entries_and_lineage]

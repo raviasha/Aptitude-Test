@@ -20,10 +20,12 @@ if str(WORKSPACE_ROOT) not in sys.path:
 
 import app
 import textbook_chapters_v2.package as package_module
+from textbook_chapters_v2.audit import AuditLedger, AuditSummary, approval_dependency_fingerprint
 from textbook_chapters_v2.candidates import assemble_candidate
 from textbook_chapters_v2.config import ChapterConfig
-from textbook_chapters_v2.models import CropBox, PipelineBlocked, RecordEvidence, SourceCrop
+from textbook_chapters_v2.models import AuditRecord, CandidateRecord, CropBox, PipelineBlocked, RecordEvidence, SourceCrop
 from textbook_chapters_v2.package import build_candidate_package
+from textbook_chapters_v2.store import dependency_fingerprint
 from textbook_chapters_v2.vision import extraction_job_fingerprint
 
 
@@ -61,6 +63,7 @@ class CandidatePackageTests(unittest.TestCase):
                 "question_numbers": [334, 334],
             }
         )
+        self.audit_index = 0
 
     def tearDown(self) -> None:
         self.temporary_directory.cleanup()
@@ -99,14 +102,52 @@ class CandidatePackageTests(unittest.TestCase):
         extraction.update(changes)
         return extraction
 
-    def _approved_audit(self, **changes: object) -> dict[str, object]:
-        audit: dict[str, object] = {
-            "all_records_terminal": True,
-            "all_records_approved_or_reviewed_rejection": True,
-            "reviewed_rejections": [],
+    def _audit_record(self, candidate: CandidateRecord, question_number: int = 334) -> AuditRecord:
+        record = AuditRecord(
+            chapter=1,
+            question_number=question_number,
+            status="approved_for_publish",
+            source_crop_hashes=(self.question_crop.sha256, self.answer_crop.sha256, self.solution_crop.sha256),
+            candidate_sha256=candidate.sha256,
+            asset_hashes=("unanswered.desktop:" + "e" * 64, "submitted.desktop:" + "f" * 64),
+            policy_version=1,
+            extractor_schema_version=1,
+            verifier_schema_version=1,
+            renderer_version="playwright-1.58.0",
+            application_asset_version="ksat-ui-1.3.0",
+            reviewer="independent-vision-reviewer",
+            field_verdicts={
+                "question": "pass",
+                **{f"options.{label}": "pass" for label in candidate.options},
+                "answer_mapping": "pass",
+                "solution": "pass",
+                "readability": "pass",
+                "clipping": "pass",
+            },
+        )
+        return replace(record, dependency_fingerprint=approval_dependency_fingerprint(record))
+
+    def _with_current_candidate_hash(self, candidate: CandidateRecord) -> CandidateRecord:
+        payload = {
+            "chapter": candidate.chapter,
+            "question_number": candidate.question_number,
+            "question_text": candidate.question_text,
+            "options": dict(candidate.options),
+            "correct_answer": candidate.correct_answer,
+            "answer_key_answer": candidate.answer_key_answer,
+            "answer_key_crop_sha256": candidate.answer_key_crop_sha256,
+            "answer_key_job_fingerprint": candidate.answer_key_job_fingerprint,
+            "solution_steps": list(candidate.solution_steps),
+            "representation": dict(candidate.representation),
+            "source_fingerprint": candidate.source_fingerprint,
         }
-        audit.update(changes)
-        return audit
+        return replace(candidate, sha256=dependency_fingerprint(payload))
+
+    def _approved_audit(self, candidate: CandidateRecord, config: ChapterConfig | None = None) -> AuditSummary:
+        self.audit_index += 1
+        ledger = AuditLedger(self.root / f"audit-{self.audit_index}" / "work", 1)
+        ledger.merge_record(self._audit_record(candidate))
+        return ledger.validate_release_gate(config or self.config)
 
     def test_assembly_keeps_known_math_text_and_answer_key_is_independent(self) -> None:
         candidate = assemble_candidate(self.evidence, self._extraction(), [])
@@ -166,7 +207,7 @@ class CandidatePackageTests(unittest.TestCase):
         candidate = assemble_candidate(self.evidence, extraction, [])
         path = self.root / "candidate.zip"
 
-        build_candidate_package(self.config, [candidate], self._approved_audit(), path)
+        build_candidate_package(self.config, [candidate], self._approved_audit(candidate), path)
 
         with zipfile.ZipFile(path) as archive:
             question = json.loads(archive.read("questions/ch01.jsonl").decode("utf-8"))
@@ -202,50 +243,101 @@ class CandidatePackageTests(unittest.TestCase):
         candidate = assemble_candidate(self.evidence, self._extraction(), [])
         path = self.root / "candidate.zip"
 
-        with self.assertRaisesRegex(PipelineBlocked, "terminal"):
+        with self.assertRaisesRegex(PipelineBlocked, "authoritative AuditSummary"):
             build_candidate_package(
                 self.config,
                 [candidate],
-                self._approved_audit(all_records_terminal=False),
+                {
+                    "all_records_terminal": True,
+                    "all_records_approved_or_reviewed_rejection": True,
+                    "reviewed_rejections": [],
+                    "audit_sha256": "0" * 64,
+                },
                 path,
             )
 
-        build_candidate_package(self.config, [candidate], self._approved_audit(), path)
+        build_candidate_package(self.config, [candidate], self._approved_audit(candidate), path)
         original = path.read_bytes()
         with self.assertRaisesRegex(PipelineBlocked, "existing"):
-            build_candidate_package(self.config, [candidate], self._approved_audit(), path)
+            build_candidate_package(self.config, [candidate], self._approved_audit(candidate), path)
         self.assertEqual(path.read_bytes(), original)
 
     def test_build_refuses_a_pending_candidate_even_when_summary_claims_terminal(self) -> None:
-        pending = replace(assemble_candidate(self.evidence, self._extraction(), []), status="pending_vision")
+        candidate = assemble_candidate(self.evidence, self._extraction(), [])
+        pending = replace(candidate, status="pending_vision")
 
         with self.assertRaisesRegex(PipelineBlocked, "pending"):
-            build_candidate_package(self.config, [pending], self._approved_audit(), self.root / "pending.zip")
+            build_candidate_package(self.config, [pending], self._approved_audit(candidate), self.root / "pending.zip")
 
-    def test_build_requires_terminal_reviewed_rejection_metadata(self) -> None:
+    def test_build_embeds_only_a_genuine_reviewed_rejection_from_the_ledger(self) -> None:
         candidate = assemble_candidate(self.evidence, self._extraction(), [])
-        invalid_rejections = (
-            {"status": "pending_vision", "reviewer": "reviewer", "rejection_reason": "reason"},
-            {"status": "reviewed_rejection", "reviewer": "", "rejection_reason": "reason"},
-            {"status": "reviewed_rejection", "reviewer": "reviewer", "rejection_reason": ""},
+        config = replace(self.config, question_numbers=(334, 335))
+        ledger = AuditLedger(self.root / "rejection-audit" / "work", 1)
+        ledger.merge_record(self._audit_record(candidate))
+        ledger.merge_record(
+            AuditRecord(
+                chapter=1,
+                question_number=335,
+                status="reviewed_rejection",
+                reviewer="source-reviewer",
+                rejection_reason="The source answer key is absent.",
+            )
         )
+        summary = ledger.validate_release_gate(config)
+        output = self.root / "with-rejection.zip"
 
-        for index, rejection in enumerate(invalid_rejections):
-            with self.subTest(rejection=rejection):
-                audit = self._approved_audit(reviewed_rejections=[rejection])
-                with self.assertRaisesRegex(PipelineBlocked, "reviewed rejection"):
-                    build_candidate_package(self.config, [candidate], audit, self.root / f"bad-rejection-{index}.zip")
+        result = build_candidate_package(config, [candidate], summary, output)
+
+        self.assertEqual(result.rejected_count, 1)
+        with zipfile.ZipFile(output) as archive:
+            rejection = json.loads(archive.read("metadata/rejected-questions.jsonl"))
+        self.assertEqual(rejection["question_number"], 335)
+
+    def test_audit_summary_cannot_be_publicly_constructed_or_reused_after_ledger_changes(self) -> None:
+        candidate = assemble_candidate(self.evidence, self._extraction(), [])
+        with self.assertRaisesRegex(TypeError, "AuditLedger"):
+            AuditSummary(
+                chapter=1,
+                total_records=1,
+                approved_count=1,
+                reviewed_rejections=(),
+                audit_sha256="0" * 64,
+            )
+
+        ledger = AuditLedger(self.root / "stale-summary" / "work", 1)
+        approved = self._audit_record(candidate)
+        ledger.merge_record(approved)
+        summary = ledger.validate_release_gate(self.config)
+        ledger.merge_record(replace(approved, status="pending_vision"))
+
+        with self.assertRaisesRegex(PipelineBlocked, "audit_sha256"):
+            build_candidate_package(self.config, [candidate], summary, self.root / "stale-summary.zip")
 
     def test_build_revalidates_complete_representation_and_media_for_direct_candidate(self) -> None:
         candidate = assemble_candidate(self.evidence, self._extraction(), [])
-        bypassed = replace(candidate, representation={"question": "image", "options": {"A": "text", "B": "text", "C": "text", "D": "text"}, "solution": "text", "media": {}})
+        bypassed = self._with_current_candidate_hash(
+            replace(candidate, representation={"question": "image", "options": {"A": "text", "B": "text", "C": "text", "D": "text"}, "solution": "text", "media": {}})
+        )
 
         with self.assertRaisesRegex(PipelineBlocked, "display media"):
-            build_candidate_package(self.config, [bypassed], self._approved_audit(), self.root / "bypassed.zip")
+            build_candidate_package(self.config, [bypassed], self._approved_audit(bypassed), self.root / "bypassed.zip")
 
-        without_answer_key = replace(candidate, answer_key_crop_sha256="")
+        without_answer_key = self._with_current_candidate_hash(replace(candidate, answer_key_crop_sha256=""))
         with self.assertRaisesRegex(PipelineBlocked, "answer-key"):
-            build_candidate_package(self.config, [without_answer_key], self._approved_audit(), self.root / "missing-answer-key.zip")
+            build_candidate_package(
+                self.config,
+                [without_answer_key],
+                self._approved_audit(without_answer_key),
+                self.root / "missing-answer-key.zip",
+            )
+
+    def test_build_recomputes_candidate_fingerprint_instead_of_trusting_its_sha256_field(self) -> None:
+        candidate = assemble_candidate(self.evidence, self._extraction(), [])
+        summary = self._approved_audit(candidate)
+        tampered = replace(candidate, question_text="A different question with the old approved hash")
+
+        with self.assertRaisesRegex(PipelineBlocked, "candidate fingerprint"):
+            build_candidate_package(self.config, [tampered], summary, self.root / "tampered-candidate.zip")
 
     def test_build_does_not_clobber_destination_created_after_validation(self) -> None:
         candidate = assemble_candidate(self.evidence, self._extraction(), [])
@@ -258,7 +350,7 @@ class CandidatePackageTests(unittest.TestCase):
 
         with patch.object(package_module, "_validate_written_package", side_effect=create_competing_destination):
             with self.assertRaisesRegex(PipelineBlocked, "existing"):
-                build_candidate_package(self.config, [candidate], self._approved_audit(), path)
+                build_candidate_package(self.config, [candidate], self._approved_audit(candidate), path)
         self.assertEqual(path.read_bytes(), b"published package")
 
     def test_unchanged_builds_are_byte_deterministic_and_parse_as_v3(self) -> None:
@@ -266,8 +358,8 @@ class CandidatePackageTests(unittest.TestCase):
         first = self.root / "first.zip"
         second = self.root / "second.zip"
 
-        first_result = build_candidate_package(self.config, [candidate], self._approved_audit(), first)
-        second_result = build_candidate_package(self.config, [candidate], self._approved_audit(), second)
+        first_result = build_candidate_package(self.config, [candidate], self._approved_audit(candidate), first)
+        second_result = build_candidate_package(self.config, [candidate], self._approved_audit(candidate), second)
 
         self.assertEqual(hashlib.sha256(first.read_bytes()).hexdigest(), hashlib.sha256(second.read_bytes()).hexdigest())
         self.assertEqual(first_result.sha256, second_result.sha256)

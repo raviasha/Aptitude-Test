@@ -30,6 +30,38 @@ Paths are resolved from the directory where the command is run. Run commands
 from the repository root. The crop-marker format is documented by the checked
 chapter configs and is validated before any source crop is accepted.
 
+Fields that must remain images require an explicit, record-scoped
+`field_media` mapping. The mapping selects only source crops already authorized
+for that record; it never falls back to the whole question crop for a question,
+option, or solution field. A mapping can select a relative sub-box within a
+crop:
+
+```json
+{
+  "field_media": {
+    "84": {
+      "question": [
+        {"role": "question", "source_index": 0},
+        {"role": "question", "source_index": 1}
+      ],
+      "options": {
+        "D": [{"role": "question", "source_index": 2, "box": [20, 30, 420, 180]}]
+      },
+      "solution": [
+        {"role": "solution", "source_index": 0},
+        {"role": "solution", "source_index": 1}
+      ]
+    }
+  }
+}
+```
+
+Multiple question or option segments are combined in source order into one
+display image. Solution segments remain separate and their count is independent
+of any transcribed solution-step count. If vision recommends an image field but
+no safe field-level mapping exists, the record is quarantined instead of
+substituting a broader crop.
+
 ## Repeatable workflow
 
 In PowerShell:
@@ -54,8 +86,10 @@ python -m textbook_chapters_v2 verify --config data-engineering/textbook_chapter
 
 `verify` emits a separate queue. Verification must use a fresh context and
 compares the textbook source crops with screenshots from the real KSAT student
-screen in unanswered and submitted states. Put results in the verification
-results directory, then run:
+screen in unanswered and submitted states. The queue includes both full-card
+screenshots and Task 8 field screenshots; every persisted screenshot is
+reloaded and hash-validated before it can enter the verification fingerprint.
+Put results in the verification results directory, then run:
 
 ```powershell
 python -m textbook_chapters_v2 ingest-verification --config data-engineering/textbook_chapters_v2/configs/chapter-001.json --results tmp/textbook-v2/chapter-001/verification-results
@@ -83,7 +117,15 @@ all-green chapter but deliberately does not promote it.
 Every configured source record must be either `approved_for_publish` with
 current source, candidate, render, and field-level verification evidence, or a
 reviewed rejection with a reviewer and reason. Pending, quarantined, missing,
-or stale records block both packaging and promotion.
+or stale records block both packaging and promotion. Source PDF bytes, chapter
+configuration, crop evidence, extraction jobs/results, candidate content,
+render assets, and verification jobs/results are fingerprinted. Replacing any
+dependency invalidates only the downstream cache and returns a
+`vision_pending` boundary instead of silently reusing stale results.
+
+Reviewed rejections remain documented in the package audit metadata, but only
+the authoritative ledger's `approved_records` are written to the published
+question JSONL.
 
 `--force` only clears disposable cache entries under the configured chapter
 work directory. It cannot alter the audit ledger, turn a failed vision verdict

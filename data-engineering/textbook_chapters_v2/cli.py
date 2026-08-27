@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -11,6 +12,8 @@ import tempfile
 from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
+
+from PIL import Image
 
 from .audit import AuditLedger, approval_dependency_fingerprint
 from .candidates import assemble_candidate
@@ -32,13 +35,14 @@ from .models import (
 )
 from .package import build_candidate_package
 from .promote import promote_candidate
-from .render import render_candidate
+from .render import RenderArtifacts as BrowserRenderArtifacts, render_candidate
 from .rules import POLICY_VERSION, validate_record
 from .source import prepare_source_evidence
-from .store import canonical_json
+from .store import canonical_json, dependency_fingerprint
 from .vision import (
     create_extraction_job,
     create_verification_job,
+    extraction_job_fingerprint,
     ingest_extraction_result,
     ingest_verification_result,
 )
@@ -86,6 +90,30 @@ def _atomic_jsonl(path: Path, payloads: Iterable[Mapping[str, Any]]) -> None:
             Path(temporary_name).unlink(missing_ok=True)
 
 
+def _sha256_path(path: Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as source:
+        for block in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _write_png(path: Path, image: Image.Image) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_name: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile("wb", dir=path.parent, prefix=f".{path.stem}.", suffix=".tmp", delete=False) as temporary:
+            temporary_name = temporary.name
+            image.save(temporary, format="PNG", optimize=False, compress_level=9)
+            temporary.flush()
+            os.fsync(temporary.fileno())
+        os.replace(temporary_name, path)
+        temporary_name = None
+    finally:
+        if temporary_name is not None:
+            Path(temporary_name).unlink(missing_ok=True)
+
+
 def _path_value(config: ChapterConfig, key: str, default: str | None = None) -> Path:
     raw = config.extras.get(key, default)
     if not isinstance(raw, str) or not raw.strip():
@@ -109,6 +137,39 @@ def _published_path(config: ChapterConfig) -> Path:
     return _path_value(config, "published_path")
 
 
+def _evidence_input_fingerprint(config: ChapterConfig) -> str:
+    source = _path_value(config, "source_pdf")
+    if not source.is_file():
+        raise PipelineBlocked(f"Source PDF is missing: {source}")
+    return dependency_fingerprint("source-evidence-input", config, _sha256_path(source))
+
+
+def _evidence_is_current(config: ChapterConfig) -> bool:
+    state = _chapter_root(config) / "state"
+    cache_path = state / "evidence-cache.json"
+    evidence_path = state / "evidence.json"
+    field_media_path = state / "field-media.json"
+    try:
+        cache = json.loads(cache_path.read_text(encoding="utf-8"))
+        if (
+            not isinstance(cache, dict)
+            or cache.get("input_fingerprint") != _evidence_input_fingerprint(config)
+            or cache.get("evidence_sha256") != _sha256_path(evidence_path)
+            or cache.get("field_media_sha256") != _sha256_path(field_media_path)
+        ):
+            return False
+        records = _evidence(config)
+    except (OSError, ValueError, TypeError, PipelineBlocked):
+        return False
+    for evidence in records:
+        if evidence.source_pdf is None or not evidence.source_pdf.is_file() or _sha256_path(evidence.source_pdf) != evidence.source_pdf_sha256:
+            return False
+        for crop in evidence.question_crops + evidence.answer_key_crops + evidence.solution_crops:
+            if not crop.path.is_file() or _sha256_path(crop.path) != crop.sha256:
+                return False
+    return True
+
+
 def _crop_payload(crop: SourceCrop) -> dict[str, Any]:
     return {
         "role": crop.role,
@@ -130,6 +191,154 @@ def _crop_from_payload(raw: Mapping[str, Any]) -> SourceCrop:
         box=CropBox(**raw["box"]), path=Path(raw["path"]), width=int(raw["width"]), height=int(raw["height"]),
         sha256=str(raw["sha256"]), source_image_sha256=str(raw["source_image_sha256"]), source_dpi=int(raw["source_dpi"]),
     )
+
+
+def _field_specs(config: ChapterConfig, question_number: int) -> Mapping[str, Any]:
+    configured = config.extras.get("field_media", {})
+    if not isinstance(configured, Mapping):
+        raise PipelineBlocked("field_media must be a mapping keyed by question number.")
+    raw = configured.get(str(question_number), configured.get(question_number, {}))
+    if not isinstance(raw, Mapping):
+        raise PipelineBlocked(f"field_media for question {question_number} must be an object.")
+    if set(raw) - {"question", "options", "solution"}:
+        raise PipelineBlocked(f"field_media for question {question_number} contains an unknown field.")
+    return raw
+
+
+def _selected_segment(
+    evidence: RecordEvidence,
+    raw: Any,
+    expected_role: str,
+    field: str,
+    output_dir: Path,
+    ordinal: int,
+) -> SourceCrop:
+    if not isinstance(raw, Mapping) or raw.get("role") != expected_role:
+        raise PipelineBlocked(f"Explicit field evidence for {field} must name role {expected_role}.")
+    candidates = evidence.question_crops if expected_role == "question" else evidence.solution_crops
+    index = raw.get("source_index")
+    if isinstance(index, bool) or not isinstance(index, int) or index < 0 or index >= len(candidates):
+        raise PipelineBlocked(f"Explicit field evidence for {field} names an invalid source_index.")
+    source = candidates[index]
+    if not source.path.is_file() or _sha256_path(source.path) != source.sha256:
+        raise PipelineBlocked(f"Explicit field evidence for {field} has stale source bytes.")
+    box_raw = raw.get("box")
+    if box_raw is None:
+        return source
+    if not isinstance(box_raw, (list, tuple)) or len(box_raw) != 4 or any(
+        isinstance(value, bool) or not isinstance(value, int) for value in box_raw
+    ):
+        raise PipelineBlocked(f"Explicit field evidence for {field} needs a four-integer relative box.")
+    left, top, right, bottom = box_raw
+    with Image.open(source.path) as image:
+        image.load()
+        if left < 0 or top < 0 or right > image.width or bottom > image.height or left >= right or top >= bottom:
+            raise PipelineBlocked(f"Explicit field evidence for {field} has an out-of-bounds box.")
+        cropped = image.crop((left, top, right, bottom))
+    output = output_dir / f"{field.replace('.', '-')}-{ordinal:02d}.png"
+    _write_png(output, cropped)
+    return SourceCrop(
+        role=expected_role,
+        question_number=evidence.question_number,
+        page_number=source.page_number,
+        box=CropBox(source.box.left + left, source.box.top + top, source.box.left + right, source.box.top + bottom),
+        path=output,
+        width=right - left,
+        height=bottom - top,
+        sha256=_sha256_path(output),
+        source_image_sha256=source.source_image_sha256,
+        source_dpi=source.source_dpi,
+    )
+
+
+def _combined_segment(
+    evidence: RecordEvidence,
+    segments: tuple[SourceCrop, ...],
+    expected_role: str,
+    field: str,
+    output_dir: Path,
+) -> SourceCrop:
+    if len(segments) == 1:
+        return segments[0]
+    loaded: list[Image.Image] = []
+    try:
+        for segment in segments:
+            with Image.open(segment.path) as image:
+                image.load()
+                loaded.append(image.convert("RGB"))
+        width = max(image.width for image in loaded)
+        height = sum(image.height for image in loaded)
+        combined = Image.new("RGB", (width, height), "white")
+        top = 0
+        for image in loaded:
+            combined.paste(image, (0, top))
+            top += image.height
+        output = output_dir / f"{field.replace('.', '-')}-combined.png"
+        _write_png(output, combined)
+    finally:
+        for image in loaded:
+            image.close()
+    return SourceCrop(
+        role=expected_role,
+        question_number=evidence.question_number,
+        page_number=segments[0].page_number,
+        box=CropBox(0, 0, width, height),
+        path=output,
+        width=width,
+        height=height,
+        sha256=_sha256_path(output),
+        source_image_sha256=dependency_fingerprint("field-composite", [item.sha256 for item in segments]),
+        source_dpi=segments[0].source_dpi,
+    )
+
+
+def _prepare_field_media(config: ChapterConfig, evidence: RecordEvidence, chapter_root: Path) -> tuple[RecordEvidence, dict[str, Any]]:
+    configured = _field_specs(config, evidence.question_number)
+    output_dir = chapter_root / "field-media" / f"q{evidence.question_number:04d}"
+    manifest: dict[str, Any] = {}
+    extra_question: list[SourceCrop] = []
+    extra_solution: list[SourceCrop] = []
+
+    def prepare_field(field: str, raw_specs: Any, role: str, *, combine: bool) -> list[SourceCrop]:
+        if not isinstance(raw_specs, (list, tuple)) or not raw_specs:
+            raise PipelineBlocked(f"Explicit field evidence for {field} must contain one or more source segments.")
+        selected = tuple(
+            _selected_segment(evidence, raw, role, field, output_dir, index)
+            for index, raw in enumerate(raw_specs)
+        )
+        prepared = [_combined_segment(evidence, selected, role, field, output_dir)] if combine else list(selected)
+        destination = extra_question if role == "question" else extra_solution
+        for crop in prepared:
+            if all(existing.sha256 != crop.sha256 for existing in (evidence.question_crops + evidence.solution_crops + tuple(destination))):
+                destination.append(crop)
+        manifest[field] = {
+            "crop_sha256s": [crop.sha256 for crop in prepared],
+            "component_sha256s": [crop.sha256 for crop in selected],
+        }
+        return prepared
+
+    if "question" in configured:
+        prepare_field("question", configured["question"], "question", combine=True)
+    options = configured.get("options", {})
+    if not isinstance(options, Mapping):
+        raise PipelineBlocked(f"field_media options for question {evidence.question_number} must be an object.")
+    for label, raw_specs in sorted(options.items()):
+        if label not in {"A", "B", "C", "D", "E"}:
+            raise PipelineBlocked(f"field_media contains an invalid option label {label!r}.")
+        prepare_field(f"options.{label}", raw_specs, "question", combine=True)
+    if "solution" in configured:
+        prepare_field("solution", configured["solution"], "solution", combine=False)
+
+    mapping_fingerprint = dependency_fingerprint(manifest)
+    augmented = replace(
+        evidence,
+        question_crops=evidence.question_crops + tuple(extra_question),
+        solution_crops=evidence.solution_crops + tuple(extra_solution),
+        dependency_fingerprint=dependency_fingerprint(
+            evidence.dependency_fingerprint, mapping_fingerprint, _evidence_input_fingerprint(config)
+        ),
+    )
+    return augmented, manifest
 
 
 def _evidence_payload(evidence: RecordEvidence) -> dict[str, Any]:
@@ -185,19 +394,31 @@ def _job_from_payload(raw: Mapping[str, Any]) -> VisionJob:
     )
 
 
+def _result_is_current(path: Path, job: VisionJob) -> bool:
+    try:
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return isinstance(payload, dict) and payload.get("job_id") == job.job_id and payload.get("job_fingerprint") == job.fingerprint
+
+
 def _render_payload(rendered: RenderArtifacts) -> dict[str, Any]:
     return {
         "question_screenshots": {key: str(value) for key, value in rendered.question_screenshots.items()},
         "solution_screenshots": {key: str(value) for key, value in rendered.solution_screenshots.items()},
+        "field_screenshots": {
+            key: str(value) for key, value in getattr(rendered, "field_screenshots", {}).items()
+        },
         "screenshot_hashes": dict(rendered.screenshot_hashes), "findings": list(rendered.findings),
         "renderer_version": rendered.renderer_version,
     }
 
 
-def _render_from_payload(raw: Mapping[str, Any]) -> RenderArtifacts:
-    return RenderArtifacts(
+def _render_from_payload(raw: Mapping[str, Any]) -> BrowserRenderArtifacts:
+    return BrowserRenderArtifacts(
         question_screenshots={key: Path(value) for key, value in raw["question_screenshots"].items()},
         solution_screenshots={key: Path(value) for key, value in raw["solution_screenshots"].items()},
+        field_screenshots={key: Path(value) for key, value in raw.get("field_screenshots", {}).items()},
         screenshot_hashes=raw["screenshot_hashes"], findings=tuple(raw["findings"]), renderer_version=str(raw["renderer_version"]),
     )
 
@@ -222,9 +443,67 @@ def _candidates(config: ChapterConfig) -> tuple[CandidateRecord, ...]:
     return tuple(_candidate_from_payload(item) for item in _read_list(_chapter_root(config) / "state" / "candidates.json"))
 
 
+def _candidate_content_fingerprint(candidate: CandidateRecord) -> str:
+    return dependency_fingerprint({
+        "chapter": candidate.chapter, "question_number": candidate.question_number,
+        "question_text": candidate.question_text, "options": dict(candidate.options),
+        "correct_answer": candidate.correct_answer, "answer_key_answer": candidate.answer_key_answer,
+        "answer_key_crop_sha256": candidate.answer_key_crop_sha256,
+        "answer_key_job_fingerprint": candidate.answer_key_job_fingerprint,
+        "solution_steps": list(candidate.solution_steps), "representation": dict(candidate.representation),
+        "source_fingerprint": candidate.source_fingerprint,
+    })
+
+
+def _candidate_cache_is_current(config: ChapterConfig) -> bool:
+    if not _evidence_is_current(config):
+        return False
+    try:
+        evidence = {item.question_number: item for item in _evidence(config)}
+        candidates = _candidates(config)
+    except (OSError, ValueError, TypeError, PipelineBlocked):
+        return False
+    if {item.question_number for item in candidates} != set(evidence):
+        return False
+    return all(
+        candidate.source_fingerprint == extraction_job_fingerprint(evidence[candidate.question_number])
+        and candidate.sha256 == _candidate_content_fingerprint(candidate)
+        for candidate in candidates
+    )
+
+
 def _renders(config: ChapterConfig) -> dict[int, RenderArtifacts]:
     return {int(item["question_number"]): _render_from_payload(item["artifacts"])
             for item in _read_list(_chapter_root(config) / "state" / "renders.json")}
+
+
+def _verification_job(
+    candidate: CandidateRecord,
+    source_crops: Iterable[SourceCrop],
+    rendered: RenderArtifacts,
+) -> VisionJob:
+    base = create_verification_job(candidate, source_crops, rendered)
+    field_sources: list[dict[str, Any]] = []
+    for key, path in sorted(getattr(rendered, "field_screenshots", {}).items()):
+        expected_key = f"field.{key}"
+        declared = rendered.screenshot_hashes.get(expected_key)
+        if not isinstance(declared, str) or len(declared) != 64 or not path.is_file() or _sha256_path(path) != declared:
+            raise PipelineBlocked(f"Field render screenshot evidence is missing or stale: {key}")
+        parts = key.split(".", 2)
+        if len(parts) != 3 or parts[0] not in {"unanswered", "submitted"}:
+            raise PipelineBlocked(f"Field render screenshot key is malformed: {key}")
+        field_sources.append({
+            "kind": "field_render", "state": parts[0], "viewport": parts[1], "field": parts[2],
+            "path": str(path), "sha256": declared,
+        })
+    if not field_sources:
+        raise PipelineBlocked("Verification requires field-bounded application screenshots.")
+    sources = base.sources + tuple(field_sources)
+    return replace(
+        base,
+        sources=sources,
+        fingerprint=dependency_fingerprint(base.fingerprint, "field-renders", field_sources),
+    )
 
 
 def _clear_cache(config: ChapterConfig, command: str) -> None:
@@ -259,22 +538,42 @@ def _write_pending(stage: str, count: int, queue: Path) -> int:
 
 
 def _prepare(config: ChapterConfig) -> int:
-    records = tuple(prepare_source_evidence(config, _path_value(config, "source_pdf"), _chapter_root(config)))
-    _atomic_json(_chapter_root(config) / "state" / "evidence.json", [_evidence_payload(item) for item in records])
+    input_fingerprint = _evidence_input_fingerprint(config)
+    base_records = tuple(prepare_source_evidence(config, _path_value(config, "source_pdf"), _chapter_root(config)))
+    prepared = tuple(_prepare_field_media(config, evidence, _chapter_root(config)) for evidence in base_records)
+    records = tuple(item[0] for item in prepared)
+    state = _chapter_root(config) / "state"
+    evidence_path = state / "evidence.json"
+    field_media_path = state / "field-media.json"
+    _atomic_json(evidence_path, [_evidence_payload(item) for item in records])
+    _atomic_json(
+        field_media_path,
+        {str(evidence.question_number): manifest for evidence, manifest in prepared},
+    )
+    _atomic_json(
+        state / "evidence-cache.json",
+        {
+            "input_fingerprint": input_fingerprint,
+            "evidence_sha256": _sha256_path(evidence_path),
+            "field_media_sha256": _sha256_path(field_media_path),
+        },
+    )
     ledger = AuditLedger(_work_root(config), config.chapter)
     for evidence in records:
         try:
             current = ledger.record(evidence.question_number)
             incoming = replace(
                 current,
-                source_crop_hashes=tuple(crop.sha256 for crop in evidence.question_crops + evidence.answer_key_crops + evidence.solution_crops),
+                source_crop_hashes=tuple(crop.sha256 for crop in evidence.question_crops + evidence.answer_key_crops + evidence.solution_crops)
+                + (evidence.dependency_fingerprint,),
                 policy_version=POLICY_VERSION,
                 extractor_schema_version=EXTRACTOR_SCHEMA_VERSION,
             )
         except KeyError:
             incoming = AuditRecord(
                 chapter=config.chapter, question_number=evidence.question_number, status=PENDING_EXTRACTION,
-                source_crop_hashes=tuple(crop.sha256 for crop in evidence.question_crops + evidence.answer_key_crops + evidence.solution_crops),
+                source_crop_hashes=tuple(crop.sha256 for crop in evidence.question_crops + evidence.answer_key_crops + evidence.solution_crops)
+                + (evidence.dependency_fingerprint,),
                 policy_version=POLICY_VERSION, extractor_schema_version=EXTRACTOR_SCHEMA_VERSION,
             )
         ledger.merge_record(incoming)
@@ -283,6 +582,8 @@ def _prepare(config: ChapterConfig) -> int:
 
 
 def _extract(config: ChapterConfig, results_dir: Path | None = None) -> int:
+    if not _evidence_is_current(config):
+        _prepare(config)
     jobs: list[VisionJob] = []
     pending: list[VisionJob] = []
     default_results = results_dir or (_chapter_root(config) / "extraction-results")
@@ -290,47 +591,75 @@ def _extract(config: ChapterConfig, results_dir: Path | None = None) -> int:
         job_path = _chapter_root(config) / "extraction-jobs" / f"extract-ch{config.chapter:02d}-q{evidence.question_number:04d}.json"
         job = create_extraction_job(evidence, job_path)
         jobs.append(job)
-        if not (default_results / f"{job.job_id}.json").is_file():
+        if not _result_is_current(default_results / f"{job.job_id}.json", job):
             pending.append(job)
     queue = _chapter_root(config) / "extraction-jobs.jsonl"
     _atomic_jsonl(queue, (_job_payload(job) for job in jobs))
     return _write_pending("extract", len(pending), queue) if pending else SUCCESS_EXIT
 
 
-def _image_evidence(raw: dict[str, Any], evidence: RecordEvidence) -> dict[str, Any]:
+def _image_evidence(config: ChapterConfig, raw: dict[str, Any], evidence: RecordEvidence) -> dict[str, Any]:
     representation = raw.get("representation", {})
     option_modes = representation.get("options", {}) if isinstance(representation, dict) else {}
+    manifest_path = _chapter_root(config) / "state" / "field-media.json"
+    try:
+        chapter_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise PipelineBlocked("Explicit source-backed field media evidence is missing.") from error
+    record_manifest = chapter_manifest.get(str(evidence.question_number), {}) if isinstance(chapter_manifest, dict) else {}
+    if not isinstance(record_manifest, dict):
+        raise PipelineBlocked("Explicit source-backed field media evidence is malformed.")
+    authorized = {
+        crop.sha256: crop
+        for crop in evidence.question_crops + evidence.solution_crops
+    }
+
+    def field_crops(field: str) -> tuple[SourceCrop, ...]:
+        item = record_manifest.get(field)
+        hashes = item.get("crop_sha256s") if isinstance(item, dict) else None
+        if not isinstance(hashes, list) or not hashes or any(value not in authorized for value in hashes):
+            raise PipelineBlocked(f"Image representation for {field} lacks explicit record-authorized field crop evidence.")
+        return tuple(authorized[value] for value in hashes)
+
     media_crops: dict[str, Any] = {}
     alt_text: dict[str, Any] = {}
     if representation.get("question") == "image":
-        media_crops["question"] = evidence.question_crops[0]
+        question = field_crops("question")
+        if len(question) != 1:
+            raise PipelineBlocked("Question image field evidence must be combined into one complete display artifact.")
+        media_crops["question"] = question[0]
         alt_text["question"] = raw.get("question_text")
-    image_options = {label: evidence.question_crops[0] for label, mode in option_modes.items() if mode == "image"}
+    image_options = {label: field_crops(f"options.{label}") for label, mode in option_modes.items() if mode == "image"}
     if image_options:
-        media_crops["options"] = image_options
+        if any(len(crops) != 1 for crops in image_options.values()):
+            raise PipelineBlocked("Option image field evidence must be combined into one option-only display artifact.")
+        media_crops["options"] = {label: crops[0] for label, crops in image_options.items()}
         alt_text["options"] = {label: raw["options"][label] for label in image_options}
     if representation.get("solution") == "image":
-        media_crops["solution"] = evidence.solution_crops
-        alt_text["solution"] = raw.get("solution_steps")
+        solution = field_crops("solution")
+        media_crops["solution"] = solution
+        semantic_solution = " ".join(str(step).strip() for step in raw.get("solution_steps", ()) if str(step).strip())
+        alt_text["solution"] = [semantic_solution for _ in solution]
     return {**raw, "source_fingerprint": raw["job_fingerprint"], "media_crops": media_crops, "alt_text": alt_text}
 
 
 def _ingest_extraction(config: ChapterConfig, results: Path) -> int:
+    if not _evidence_is_current(config):
+        _prepare(config)
+        return _extract(config, results)
     records: list[CandidateRecord] = []
     ledger = AuditLedger(_work_root(config), config.chapter)
     for evidence in _evidence(config):
         job_file = _chapter_root(config) / "extraction-jobs" / f"extract-ch{config.chapter:02d}-q{evidence.question_number:04d}.json"
-        if not job_file.is_file():
-            create_extraction_job(evidence, job_file)
-        job = _job_from_payload(json.loads(job_file.read_text(encoding="utf-8")))
+        job = create_extraction_job(evidence, job_file)
         result_path = results / f"{job.job_id}.json"
-        if not result_path.is_file():
+        if not _result_is_current(result_path, job):
             return _write_pending("extract", 1, _chapter_root(config) / "extraction-jobs.jsonl")
         raw = json.loads(result_path.read_text(encoding="utf-8"))
         findings = validate_record(raw)
         try:
             ingest_extraction_result(job, result_path)
-            candidate = assemble_candidate(evidence, _image_evidence(raw, evidence), findings)
+            candidate = assemble_candidate(evidence, _image_evidence(config, raw, evidence), findings)
         except PipelineBlocked as error:
             current = ledger.record(evidence.question_number)
             quarantined = replace(
@@ -355,6 +684,10 @@ def _ingest_extraction(config: ChapterConfig, results: Path) -> int:
 
 
 def _build(config: ChapterConfig) -> int:
+    if not _candidate_cache_is_current(config):
+        resumed = _ingest_extraction(config, _chapter_root(config) / "extraction-results")
+        if resumed != SUCCESS_EXIT:
+            return resumed
     records = _candidates(config)
     if not records:
         raise PipelineBlocked("Build requires extracted candidates.")
@@ -371,6 +704,10 @@ def _viewports(config: ChapterConfig) -> tuple[tuple[int, int], ...]:
 
 
 def _render(config: ChapterConfig) -> int:
+    if not _candidate_cache_is_current(config):
+        resumed = _ingest_extraction(config, _chapter_root(config) / "extraction-results")
+        if resumed != SUCCESS_EXIT:
+            return resumed
     ledger = AuditLedger(_work_root(config), config.chapter)
     rendered_records: list[dict[str, Any]] = []
     for candidate in _candidates(config):
@@ -379,6 +716,7 @@ def _render(config: ChapterConfig) -> int:
         state_hashes = tuple(
             [f"unanswered.{key.removeprefix('question.')}:{value}" for key, value in rendered.screenshot_hashes.items() if key.startswith("question.")]
             + [f"submitted.{key.removeprefix('solution.')}:{value}" for key, value in rendered.screenshot_hashes.items() if key.startswith("solution.")]
+            + [value for key, value in rendered.screenshot_hashes.items() if key.startswith("field.")]
         )
         current = ledger.record(candidate.question_number)
         ledger.merge_record(replace(
@@ -394,6 +732,10 @@ def _render(config: ChapterConfig) -> int:
 
 
 def _verify(config: ChapterConfig, results_dir: Path | None = None) -> int:
+    if not _candidate_cache_is_current(config):
+        resumed = _ingest_extraction(config, _chapter_root(config) / "extraction-results")
+        if resumed != SUCCESS_EXIT:
+            return resumed
     evidence = {item.question_number: item for item in _evidence(config)}
     renders = _renders(config)
     jobs: list[VisionJob] = []
@@ -401,11 +743,11 @@ def _verify(config: ChapterConfig, results_dir: Path | None = None) -> int:
     default_results = results_dir or (_chapter_root(config) / "verification-results")
     for candidate in _candidates(config):
         source = evidence[candidate.question_number]
-        job = create_verification_job(
+        job = _verification_job(
             candidate, source.question_crops + source.answer_key_crops + source.solution_crops, renders[candidate.question_number]
         )
         jobs.append(job)
-        if not (default_results / f"{job.job_id}.json").is_file():
+        if not _result_is_current(default_results / f"{job.job_id}.json", job):
             pending.append(job)
     queue = _chapter_root(config) / "verification-jobs.jsonl"
     _atomic_jsonl(queue, (_job_payload(job) for job in jobs))
@@ -413,16 +755,20 @@ def _verify(config: ChapterConfig, results_dir: Path | None = None) -> int:
 
 
 def _ingest_verification(config: ChapterConfig, results: Path) -> int:
+    if not _candidate_cache_is_current(config):
+        resumed = _ingest_extraction(config, _chapter_root(config) / "extraction-results")
+        if resumed != SUCCESS_EXIT:
+            return resumed
     evidence = {item.question_number: item for item in _evidence(config)}
     renders = _renders(config)
     ledger = AuditLedger(_work_root(config), config.chapter)
     failed = 0
     for candidate in _candidates(config):
         source = evidence[candidate.question_number]
-        job = create_verification_job(candidate, source.question_crops + source.answer_key_crops + source.solution_crops,
-                                      renders[candidate.question_number])
+        job = _verification_job(candidate, source.question_crops + source.answer_key_crops + source.solution_crops,
+                                renders[candidate.question_number])
         result_path = results / f"{job.job_id}.json"
-        if not result_path.is_file():
+        if not _result_is_current(result_path, job):
             return _write_pending("verify", 1, _chapter_root(config) / "verification-jobs.jsonl")
         result = ingest_verification_result(job, result_path)
         current = ledger.record(candidate.question_number)
@@ -445,8 +791,14 @@ def _ingest_verification(config: ChapterConfig, results: Path) -> int:
 
 
 def _package(config: ChapterConfig) -> int:
+    if not _evidence_is_current(config):
+        raise PipelineBlocked("Package gate requires current source/config/evidence fingerprints; run prepare and extraction again.")
     summary = AuditLedger(_work_root(config), config.chapter).validate_release_gate(config)
-    result = build_candidate_package(config, _candidates(config), summary, _candidate_path(config))
+    approved_numbers = {int(record["question_number"]) for record in summary["approved_records"]}
+    approved_candidates = tuple(
+        candidate for candidate in _candidates(config) if candidate.question_number in approved_numbers
+    )
+    result = build_candidate_package(config, approved_candidates, summary, _candidate_path(config))
     _atomic_json(_chapter_root(config) / "package-result.json", {
         "path": str(result.path), "sha256": result.sha256, "question_count": result.question_count,
         "rejected_count": result.rejected_count, "audit_sha256": summary["audit_sha256"],
@@ -460,6 +812,8 @@ def _package(config: ChapterConfig) -> int:
 
 
 def _promote(config: ChapterConfig) -> int:
+    if not _evidence_is_current(config):
+        raise PipelineBlocked("Promotion gate requires current source/config/evidence fingerprints.")
     summary = AuditLedger(_work_root(config), config.chapter).validate_release_gate(config)
     receipt = promote_candidate(_candidate_path(config), _published_path(config), summary)
     print(json.dumps({"status": "promoted", "destination": str(receipt.destination), "sha256": receipt.candidate_sha256}))
@@ -467,7 +821,7 @@ def _promote(config: ChapterConfig) -> int:
 
 
 def _run(config: ChapterConfig) -> int:
-    if not (_chapter_root(config) / "state" / "evidence.json").is_file():
+    if not _evidence_is_current(config):
         _prepare(config)
     pending = _extract(config)
     if pending:

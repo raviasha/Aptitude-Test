@@ -13,7 +13,8 @@ DATA_ENGINEERING = PROJECT_ROOT / "data-engineering"
 if str(DATA_ENGINEERING) not in sys.path:
     sys.path.insert(0, str(DATA_ENGINEERING))
 
-from python_vision_calibration.baseline import build_raw_baseline_from_fixture
+from python_vision_calibration.baseline import _raw_config, build_raw_baseline_from_fixture
+from textbook_chapters import build as legacy_build
 
 
 class RawBaselineTests(unittest.TestCase):
@@ -101,6 +102,53 @@ class RawBaselineTests(unittest.TestCase):
                 raw_records=(raw,),
                 legacy_review={},
             )
+
+    def test_real_chapter_two_q64_empty_solution_is_preserved_for_vision(self) -> None:
+        raw = legacy_build.source_questions(
+            PROJECT_ROOT / "question-banks" / "quantitative_aptitude_complete_extended.json",
+            "HCF and LCM",
+        )[63]
+        self.assertEqual(raw["solution_steps"], [])
+        record = {**raw, "record_id": "ch02-q0064", "source_association": {
+            "question": ["q64-question"],
+            "answer": ["q64-answer"],
+            "solution": ["q64-solution"],
+        }}
+
+        records = build_raw_baseline_from_fixture(
+            chapter=2,
+            source_pdf=self.pdf,
+            work_root=self.work_root,
+            raw_records=(record,),
+            legacy_review={"questions": {"64": {"solution_steps": ["reviewed repair"]}}},
+        )
+
+        self.assertEqual(records[0].candidate["solution_steps"], [])
+        self.assertIn("missing_solution_steps", records[0].candidate["baseline_failures"])
+
+    def test_review_exceptions_cannot_influence_raw_association_config(self) -> None:
+        raw = {
+            "chapter": 2,
+            "chapter_name": "HCF and LCM",
+            "printed_question_count": 130,
+            "question_pages": [64, 70],
+            "answer_pages": [71],
+            "solution_pages": [71, 77],
+        }
+        reviewed = {
+            **raw,
+            "source_only_question_numbers": [64],
+            "allowed_missing_solution_markers": [65],
+            "question_marker_overrides": {"64": {"page": 999, "x0": 1, "top": 1}},
+            "solution_marker_overrides": {"64": {"page": 999, "x0": 1, "top": 1}},
+            "answer_key_overrides": {"64": "D"},
+            "questions": {"64": {"question_text": "reviewed repair"}},
+            "rejections": {"64": {"reason": "reviewed"}},
+        }
+
+        self.assertEqual(_raw_config(raw), _raw_config(reviewed))
+        self.assertNotIn("source_only_question_numbers", _raw_config(reviewed))
+        self.assertNotIn("allowed_missing_solution_markers", _raw_config(reviewed))
 
 
 if __name__ == "__main__":

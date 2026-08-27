@@ -82,8 +82,6 @@ def _raw_config(review: Mapping[str, Any]) -> dict[str, object]:
         "question_pages",
         "answer_pages",
         "solution_pages",
-        "source_only_question_numbers",
-        "allowed_missing_solution_markers",
     )
     return {key: deepcopy(review[key]) for key in keys if key in review}
 
@@ -114,15 +112,29 @@ def _validate_association(record: Mapping[str, object]) -> dict[str, tuple[str, 
 
 def _candidate_from_raw(record: Mapping[str, object]) -> dict[str, object]:
     candidate = {field: deepcopy(record[field]) for field in _CANDIDATE_FIELDS if field in record}
-    required = ("question_text", "options", "correct_answer", "solution_steps")
-    missing = [field for field in required if field not in candidate]
-    if missing:
-        raise ValueError(f"{record.get('record_id', record.get('key', 'record'))} is missing raw candidate fields: {missing}")
+    failures: list[str] = []
+    defaults: dict[str, object] = {
+        "question_text": "",
+        "options": {},
+        "correct_answer": "",
+        "solution_steps": [],
+    }
+    for field, default in defaults.items():
+        if field not in candidate:
+            candidate[field] = default
+            failures.append(f"missing_{field}")
+    if not isinstance(candidate["question_text"], str) or not str(candidate["question_text"]).strip():
+        failures.append("missing_question_text")
     if not isinstance(candidate["options"], dict) or not candidate["options"]:
-        raise ValueError(f"{record.get('record_id', record.get('key', 'record'))} has no raw options.")
+        failures.append("missing_options")
+    if not isinstance(candidate["correct_answer"], str) or not str(candidate["correct_answer"]).strip():
+        failures.append("missing_correct_answer")
     if not isinstance(candidate["solution_steps"], list) or not candidate["solution_steps"]:
-        raise ValueError(f"{record.get('record_id', record.get('key', 'record'))} has no raw solution.")
-    return legacy_build.normalize_record_text(candidate)
+        failures.append("missing_solution_steps")
+    candidate = legacy_build.normalize_record_text(candidate)
+    if failures:
+        candidate["baseline_failures"] = sorted(set(failures))
+    return candidate
 
 
 def _records_from_fixture(
@@ -212,8 +224,7 @@ def _raw_legacy_records(chapter: int, source_pdf: Path) -> tuple[dict[str, objec
     raw = legacy_build.source_questions(SOURCE_BANK_PATH, chapter_name)
     # Do not substitute review-only records.  Their absence is evidence that raw
     # Python has no candidate and must be reported rather than repaired here.
-    source_only_numbers = {int(value) for value in raw_config.get("source_only_question_numbers", [])}
-    aligned = legacy_build.align_raw_records(raw, total, source_only_numbers)
+    aligned = legacy_build.align_raw_records(raw, total, set())
     question_candidates = legacy_build._marker_candidates(
         source_pdf,
         range(int(raw_config["question_pages"][0]), int(raw_config["question_pages"][1]) + 1),
@@ -232,7 +243,6 @@ def _raw_legacy_records(chapter: int, source_pdf: Path) -> tuple[dict[str, objec
     solutions = legacy_build._select_markers(
         solution_candidates,
         total,
-        allowed_missing={int(value) for value in raw_config.get("allowed_missing_solution_markers", [])},
     )
     answers = legacy_build.parse_answer_key(
         source_pdf,

@@ -24,6 +24,7 @@ from textbook_chapters_v2.candidates import assemble_candidate
 from textbook_chapters_v2.config import ChapterConfig
 from textbook_chapters_v2.models import CropBox, PipelineBlocked, RecordEvidence, SourceCrop
 from textbook_chapters_v2.package import build_candidate_package
+from textbook_chapters_v2.vision import extraction_job_fingerprint
 
 
 _PNG = (
@@ -81,18 +82,19 @@ class CandidatePackageTests(unittest.TestCase):
         )
 
     def _extraction(self, **changes: object) -> dict[str, object]:
+        fingerprint = extraction_job_fingerprint(self.evidence)
         extraction: dict[str, object] = {
             "question_text": "The remainder when 7⁸⁴ is divided by 342 is",
             "options": {"A": "0", "B": "1", "C": "49", "D": "341"},
             "correct_answer": "B",
-            "answer_key": {"correct_answer": "B", "crop_sha256": self.answer_crop.sha256, "job_fingerprint": "d" * 64},
+            "answer_key": {"correct_answer": "B", "crop_sha256": self.answer_crop.sha256, "job_fingerprint": fingerprint},
             "solution_steps": ["7⁸⁴ = (7³)²⁸ = 343²⁸.", "Therefore, the remainder is 1."],
             "representation": {
                 "question": "text",
                 "options": {"A": "text", "B": "text", "C": "text", "D": "text"},
                 "solution": "text",
             },
-            "source_fingerprint": "d" * 64,
+            "source_fingerprint": fingerprint,
         }
         extraction.update(changes)
         return extraction
@@ -113,11 +115,12 @@ class CandidatePackageTests(unittest.TestCase):
         self.assertEqual(candidate.correct_answer, "B")
         self.assertIn("7⁸⁴", " ".join(candidate.solution_steps))
 
-        disagreeing = self._extraction(answer_key={"correct_answer": "D", "crop_sha256": self.answer_crop.sha256, "job_fingerprint": "d" * 64})
+        fingerprint = extraction_job_fingerprint(self.evidence)
+        disagreeing = self._extraction(answer_key={"correct_answer": "D", "crop_sha256": self.answer_crop.sha256, "job_fingerprint": fingerprint})
         with self.assertRaisesRegex(PipelineBlocked, "answer-key"):
             assemble_candidate(self.evidence, disagreeing, [])
 
-        wrong_crop = self._extraction(answer_key={"correct_answer": "B", "crop_sha256": "0" * 64, "job_fingerprint": "d" * 64})
+        wrong_crop = self._extraction(answer_key={"correct_answer": "B", "crop_sha256": "0" * 64, "job_fingerprint": fingerprint})
         with self.assertRaisesRegex(PipelineBlocked, "answer-key crop"):
             assemble_candidate(self.evidence, wrong_crop, [])
 

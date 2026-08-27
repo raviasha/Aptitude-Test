@@ -9,6 +9,7 @@ from typing import Any, Mapping, Sequence
 from .models import CandidateRecord, PipelineBlocked, RecordEvidence, SourceCrop
 from .rules import Finding, choose_representation, normalize_candidate_text
 from .store import dependency_fingerprint
+from .vision import extraction_job_fingerprint
 
 
 _OPTION_LABELS = ("A", "B", "C", "D", "E")
@@ -169,6 +170,9 @@ def assemble_candidate(evidence: RecordEvidence, extraction: Any, findings: Sequ
     if not isinstance(evidence, RecordEvidence):
         raise TypeError("evidence must be a RecordEvidence value.")
     record, attached = _accepted_payload(extraction)
+    expected_extraction_fingerprint = extraction_job_fingerprint(evidence)
+    if record.get("source_fingerprint") != expected_extraction_fingerprint:
+        raise PipelineBlocked("Accepted extraction fingerprint does not match the supplied record evidence.")
     question_text = _non_empty_text(record.get("question_text"), "question_text")
     options = _options(record.get("options"))
     correct_answer = record.get("correct_answer")

@@ -208,6 +208,28 @@ def _candidate_sha256(candidate: CandidateRecord) -> str:
     return candidate.sha256 or dependency_fingerprint(_candidate_payload(candidate))
 
 
+def extraction_job_fingerprint(evidence: RecordEvidence) -> str:
+    """Derive the immutable extraction-job fingerprint for one record's full evidence."""
+    if not isinstance(evidence, RecordEvidence):
+        raise TypeError("evidence must be a RecordEvidence value.")
+    if evidence.chapter <= 0 or evidence.question_number <= 0:
+        raise ValueError("evidence must identify one positive chapter and question number.")
+    crops = tuple(evidence.question_crops + evidence.answer_key_crops + evidence.solution_crops)
+    if not crops:
+        raise ValueError("Extraction requires at least one source crop.")
+    sources = tuple(_crop_source(crop) for crop in crops)
+    return dependency_fingerprint(
+        "extraction",
+        POLICY_VERSION,
+        evidence.chapter,
+        evidence.question_number,
+        evidence.source_pdf_sha256,
+        evidence.dependency_fingerprint,
+        sources,
+        "extraction-result.schema.json",
+    )
+
+
 def create_extraction_job(evidence: RecordEvidence, output_path: Path) -> VisionJob:
     """Emit one durable extraction work item bound to immutable source crops."""
     if not isinstance(evidence, RecordEvidence):
@@ -218,16 +240,7 @@ def create_extraction_job(evidence: RecordEvidence, output_path: Path) -> Vision
     if not crops:
         raise ValueError("Extraction requires at least one source crop.")
     sources = tuple(_crop_source(crop) for crop in crops)
-    fingerprint = dependency_fingerprint(
-        "extraction",
-        POLICY_VERSION,
-        evidence.chapter,
-        evidence.question_number,
-        evidence.source_pdf_sha256,
-        evidence.dependency_fingerprint,
-        sources,
-        "extraction-result.schema.json",
-    )
+    fingerprint = extraction_job_fingerprint(evidence)
     job = VisionJob(
         job_id=f"extract-ch{evidence.chapter:02d}-q{evidence.question_number:04d}",
         stage="extraction",

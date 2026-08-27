@@ -3,11 +3,13 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 from textbook_chapters_v2.models import (
     CandidateRecord,
     CropBox,
+    PipelineBlocked,
     RecordEvidence,
     RenderArtifacts,
     SourceCrop,
@@ -140,6 +142,19 @@ class VisionProtocolTests(unittest.TestCase):
         self.assertEqual(assembled.question_text, "The remainder when 7⁸⁴ is divided by 342 is")
         self.assertEqual(assembled.answer_key_crop_sha256, self.answer_crop.sha256)
         self.assertEqual(assembled.answer_key_job_fingerprint, self.extraction_job.fingerprint)
+
+    def test_accepted_candidate_cannot_be_assembled_against_changed_non_answer_evidence(self) -> None:
+        accepted = ingest_extraction_result(
+            self.extraction_job, self._write_result("old-evidence-extraction.json", self._extraction_result())
+        )
+        altered_evidence = replace(
+            self.evidence,
+            source_pdf_sha256="a" * 64,
+            dependency_fingerprint="b" * 64,
+        )
+
+        with self.assertRaisesRegex(PipelineBlocked, "extraction fingerprint"):
+            assemble_candidate(altered_evidence, accepted, [])
 
     def test_extraction_ingestion_rejects_answer_key_crop_or_job_binding_mismatch(self) -> None:
         wrong_crop = self._extraction_result(

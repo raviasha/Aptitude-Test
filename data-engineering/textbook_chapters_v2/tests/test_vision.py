@@ -119,6 +119,28 @@ class VisionProtocolTests(unittest.TestCase):
         self.assertEqual(persisted["sources"][2]["sha256"], "8270f2824111e04d9278c01a92b388147d9d02e0b50d946d25d00db375ff1282")
         self.assertEqual(persisted["job_fingerprint"], self.extraction_job.fingerprint)
 
+    def test_source_issue_is_fingerprinted_and_instructs_both_vision_stages(self) -> None:
+        source_issue = replace(
+            self.evidence,
+            source_status="incomplete_solution",
+            source_reasons=("textbook_solution_incomplete: The beginning of the solution is absent.",),
+            requires_reviewed_rejection=True,
+        )
+        extraction = create_extraction_job(source_issue, self.root / "source-issue-extraction.json")
+        candidate = CandidateRecord(
+            chapter=1,
+            question_number=334,
+            question_text="Controlled candidate",
+            options={"A": "0", "B": "1", "C": "49", "D": "341"},
+        )
+        verification = create_verification_job(candidate, source_issue, self._renders())
+
+        self.assertNotEqual(extraction.fingerprint, self.extraction_job.fingerprint)
+        self.assertIn("incomplete_solution", extraction.prompt)
+        self.assertIn("The beginning of the solution is absent", extraction.prompt)
+        self.assertIn("incomplete_solution", verification.prompt)
+        self.assertIn("must not pass the solution", verification.prompt)
+
     def test_extraction_ingestion_returns_immutable_candidate_from_valid_local_json(self) -> None:
         result_path = self._write_result("extract-result.json", self._extraction_result())
 
@@ -142,6 +164,25 @@ class VisionProtocolTests(unittest.TestCase):
         self.assertEqual(assembled.question_text, "The remainder when 7⁸⁴ is divided by 342 is")
         self.assertEqual(assembled.answer_key_crop_sha256, self.answer_crop.sha256)
         self.assertEqual(assembled.answer_key_job_fingerprint, self.extraction_job.fingerprint)
+
+    def test_source_issue_cannot_be_assembled_into_a_candidate(self) -> None:
+        source_issue = replace(
+            self.evidence,
+            source_status="missing_solution",
+            source_reasons=("textbook_solution_missing: No numbered solution is printed.",),
+            requires_reviewed_rejection=True,
+        )
+        job = create_extraction_job(source_issue, self.root / "blocked-source-extraction.json")
+        result = self._extraction_result(job_id=job.job_id, job_fingerprint=job.fingerprint)
+        result["answer_key"] = {
+            "correct_answer": "B",
+            "crop_sha256": self.answer_crop.sha256,
+            "job_fingerprint": job.fingerprint,
+        }
+        accepted = ingest_extraction_result(job, self._write_result("blocked-source-result.json", result))
+
+        with self.assertRaisesRegex(PipelineBlocked, "reviewed rejection"):
+            assemble_candidate(source_issue, accepted, [])
 
     def test_accepted_candidate_cannot_be_assembled_against_changed_non_answer_evidence(self) -> None:
         accepted = ingest_extraction_result(

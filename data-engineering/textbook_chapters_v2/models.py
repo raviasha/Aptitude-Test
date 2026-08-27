@@ -85,12 +85,18 @@ class RecordEvidence:
     question_crops: tuple[SourceCrop, ...] = ()
     answer_key_crops: tuple[SourceCrop, ...] = ()
     solution_crops: tuple[SourceCrop, ...] = ()
+    source_status: str = "complete"
+    source_reasons: tuple[str, ...] = ()
+    requires_reviewed_rejection: bool = False
+    boundary_review: Mapping[str, Any] = field(default_factory=frozen_mapping)
     dependency_fingerprint: str = ""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "question_crops", tuple(self.question_crops))
         object.__setattr__(self, "answer_key_crops", tuple(self.answer_key_crops))
         object.__setattr__(self, "solution_crops", tuple(self.solution_crops))
+        object.__setattr__(self, "source_reasons", tuple(self.source_reasons))
+        object.__setattr__(self, "boundary_review", frozen_mapping(self.boundary_review))
 
 
 @dataclass(frozen=True)

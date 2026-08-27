@@ -65,13 +65,17 @@
       "reason": "question_layout_unresolved",
       "detail": "The List I/List II layout requires a reviewed structured table or crop."
     },
-    "365": {
-      "reason": "textbook_solution_missing",
-      "detail": "The textbook does not print a complete numbered solution for this question."
-    },
-    "366": {
-      "reason": "textbook_solution_incomplete",
-      "detail": "Only an unnumbered continuation is printed; the beginning of the textbook solution is missing."
+      "365": {
+        "status": "missing_solution",
+        "reason": "textbook_solution_missing",
+        "detail": "The textbook does not print a complete numbered solution for this question.",
+        "requires_reviewed_rejection": true
+      },
+      "366": {
+        "status": "incomplete_solution",
+        "reason": "textbook_solution_incomplete",
+        "detail": "Only an unnumbered continuation is printed; the beginning of the textbook solution is missing.",
+        "requires_reviewed_rejection": true
     },
     "368": {
       "reason": "textbook_solution_mismatch",
@@ -101,6 +105,42 @@
       "reason": "textbook_solution_mismatch",
       "detail": "The numbered textbook solution solves a polynomial problem rather than summing 1 through 100."
     }
+  },
+  "boundary_reviews": {
+    "question:11": {"first_visible_content": "11. Consider the following statements about natural numbers", "last_visible_content": "(d) 2 and 3", "crop_sha256s": ["43974ffe9bb804df53aa93cfabd2428769a4ee3d12d4f0ab23cc58eb1a54dece", "1d5624a2c801363cf734388f310f0f16e7f2e2460f8df953c79adb8c52438551"]},
+    "question:22": {"first_visible_content": "22. If the numbers from 1 to 24", "last_visible_content": "(d) 18", "crop_sha256s": ["6267359259cb6137231d0ee0b2b5bd5a2c8cb6877fa076ab83d521abd42783e4", "1c3e3a6ad610e3efa91c3a0de756b7552b0fb84438cb3c589dfdc4f8946e5287"]},
+    "question:123": {"first_visible_content": "123. {(476 + 424)^2 - 4 x 476 x 424}", "last_visible_content": "(e) None of these", "crop_sha256s": ["279ad230a8174d1c73ab27a694826b35922e79d0f5844a91b7257b8fb5e4a642", "7a308363dd80e32fd048dae2e0ef703d6d610d98051afa8e010118263680651f"]},
+    "question:136": {"first_visible_content": "136. ((963 + 476)^2 + (963 - 476)^2) / (963 x 963 + 476 x 476)", "last_visible_content": "(e) None of these", "crop_sha256s": ["c9cf79ea841a66b376cc81bdd9d0f69e3362ef615d2401182d100c968197ecf4", "fd559fdb4b3b916e2a58394baa4106e8eba8f60ed58124dcddd6074e3ed7f526"]},
+    "question:137": {"first_visible_content": "768 x 768 x 768 + 232 x 232 x 232", "last_visible_content": "(e) None of these", "crop_sha256s": ["3f24a80773e57b43bc4aec551d4e7d07ec3ff7df8384260f51d21c8feddb0677"]},
+    "question:138": {"first_visible_content": "854 x 854 x 854 - 276 x 276 x 276", "last_visible_content": "(e) None of these", "crop_sha256s": ["daf5795c20725d5d7fa08b25025b4cbf11694c8c10708713ee8a1b077eb064b9"]},
+    "question:139": {"first_visible_content": "753 x 753 + 247 x 247 - 753 x 247", "last_visible_content": "(d) None of these", "crop_sha256s": ["4d9826bf171ac6c54a60d95e0bb1d8e72eecb4399e63ac68d065d3994bd7d0fe"]},
+    "question:140": {"first_visible_content": "(256 x 256 - 144 x 144) / 112", "last_visible_content": "(d) 320", "crop_sha256s": ["8b88388625803ed6eb8ae4e9704727d64d64804945bb4c406d1ac50e290a005a"]},
+    "question:165": {"first_visible_content": "165. What number multiplied by 48", "last_visible_content": "(d) 865", "crop_sha256s": ["34109ebfdaf4c144172d69297c41ca73953d57d3a973961a769d04b197a4af49", "ae3caec4854973129e5d1ed83fc70495e9e675d41cae3d527b59ab818dd82b0a"]},
+    "question:219": {"first_visible_content": "219. An integer is divisible by 16", "last_visible_content": "(d) 6", "crop_sha256s": ["b2fbc1a96a7fd513834b08f5b96797be2d6b63b5d8de620b9015ca0fd3f4fbbd", "e81dbd5c6da2e44ec971f7d4981f66c7f17dc50b2b0cf724efb07b31d3cdd555"]},
+    "question:278": {"first_visible_content": "278. The smallest number by which 66", "last_visible_content": "(d) 18", "crop_sha256s": ["844bc38627b02c4ca2a62370b37901132a9e068a4afb519094a83bcfcccb01e7", "8a4845e4608f7f3be3265cca0a77eefcc2a96e348778eb9bffd3ebb86a00bf2a"]},
+    "question:309": {"first_visible_content": "309. When a number is divided by 13", "last_visible_content": "(e) None of these", "crop_sha256s": ["1c2cefe0cbc180561e35134a988cf8a399b7fcdb898b5c0b64109912943cdaab", "72809347e8fb09cc04724488e3097531724723800131b69eae652d2026e9090c"]},
+    "question:318": {"first_visible_content": "318. A number when divided by 3", "last_visible_content": "(d) 5", "crop_sha256s": ["c30c49c045fa806a706806a7f022cd62dd5689a9363bfd695223c4793de421f3", "571d7c3d547af7f9d0bbdbd03185629fba7075d23463b4ddecb37e073e853521"]},
+    "solution:26": {"first_visible_content": "26. Let the thousand's, hundred's, ten's and one's digits be x, y, z, w", "last_visible_content": "10^2 y + 10 z + w", "crop_sha256s": ["3136a76d87b32bd1d2c9315418f98e894627df3bc5b24924cdbd30cfe80910b1", "721726e6a8adda48d668a388a5cd5714c7c4a8556a49737018fa80d44fe96f29"]},
+    "solution:40": {"first_visible_content": "40. (a) Let x = 0 and y = sqrt(2)", "last_visible_content": "Hence, (d) is true", "crop_sha256s": ["0bd8844f15052f57bb4e1e80771c7de7c5e1c2f6f750083c12765082147aa46d", "0fa80cd3ff3375ab70ad8359a2b163d6cd04ec1233a82156077b792411c0ad6e"]},
+    "solution:44": {"first_visible_content": "44. 0 < x < 1", "last_visible_content": "Hence, 1/x^2 is the greatest", "crop_sha256s": ["daf3dfd2ba0b1a42d8fb04ba948c91be004510f3f534e73884b71c42887cc5f5"]},
+    "solution:45": {"first_visible_content": "45. p < 1", "last_visible_content": "Hence, (2/p - p) is a positive number", "crop_sha256s": ["1556da087a42dab9e73cb71ef9f3ce4aac247900ff3aa5d4b62ade1b530ed700"]},
+    "solution:46": {"first_visible_content": "46. (x^2 + x + 1)", "last_visible_content": "Hence, (x^2 + x + 1) is greater than or equal to 3/4", "crop_sha256s": ["e8936a2bb6c587a0e1a05781842e67254620807fb1f013f79e3c104a24abe8d6"]},
+    "solution:52": {"first_visible_content": "(a - b) / 3.5 = 4/7", "last_visible_content": "b < a", "crop_sha256s": ["4c4dd6c547cf01fcc6c26dcbc77d66cf9ea48fe00ecdf0717ab089e07843aa38", "2fe68264013170048eac56b7af1076c50f48d040f25bd24b046657fcd7057fc5"]},
+    "solution:90": {"first_visible_content": "90. Let 8888 + 848 + 88 - x", "last_visible_content": "9824 arithmetic working", "crop_sha256s": ["532aaed3c19110eaf27f515cd154da8bb80070de18a8317e8ccb8f52c0f76592", "d19400946ed0a68493cc5bd4506708264a60f7e197348a348e4af8d8c929fab8"]},
+    "solution:170": {"first_visible_content": "170. Number on thumbs = 1, 9, 17, 25", "last_visible_content": "1993 lies on thumb and 1994 on index finger", "crop_sha256s": ["6d76eab0cea4d89dd2b659bd3b66ce6aa44b9065bfb8c0e6daa0da9590fe0a2e", "c7011a6f52e149c435bb74a4678edd03863960ae0a9c0e35eabb3bcfb8ac139c"]},
+    "solution:200": {"first_visible_content": "200. In 5^n we have 5 as unit digit", "last_visible_content": "Unit digit in 11 = 1", "crop_sha256s": ["7d3e0b294adac813284d5bc0c00d987d6451eafc99c731f72263449fa0ce1b43", "cd400d86ece960692ef87919482d85f3465661a3deeb9a000da48cb834882baf"]},
+    "solution:214": {"first_visible_content": "214. Given number is 7386038", "last_visible_content": "given number is divisible by 11", "crop_sha256s": ["5634600f2c31b7062672da3696c0b3726bf16a398f75ec1453903e45e9ae2cae", "931bf6ac4832b5e40f4be65bd0ab5c85c187fd5cb8d2f0f59568d42528390512"]},
+    "solution:226": {"first_visible_content": "226. Sum of the digits of the given number", "last_visible_content": "divisible by neither 3 nor 11", "crop_sha256s": ["acfef82253c6b04e27ecb01f054ec038594e7f73bf725698b1137d5439c13559", "84e428a9db95cfe354d482150cd1919ebd9fc8d1d1eba27bb395ce39ee0692b5"]},
+    "solution:234": {"first_visible_content": "234. Let the unit's digit be x and ten's digit be y", "last_visible_content": "required number is 342221319", "crop_sha256s": ["4a60f057769513da8e2637ac80d2524e4f31106fccc3e324001ec909d69fdcd5", "25780285a3cba6ab8d5e343a7a2f317997439c0dcfb74d4337c9eb794cf66213"]},
+    "solution:294": {"first_visible_content": "294. four division layouts", "last_visible_content": "A -> 4, B -> 1, C -> 3, D -> 2", "crop_sha256s": ["61761261eed2750b7321c64da35ceaac64548ff8357447947d36d89a1a668c5f", "2648000d12947f2a20b73f644dba34b900ec684eeb39c59fdb0bd8ddbd5c9a2a"]},
+    "solution:304": {"first_visible_content": "304. Let the number be x and quotient be q", "last_visible_content": "divided by 15 gives 2 as remainder", "crop_sha256s": ["a72d15946e85be175002a98d86dbbf995da08662d33b8d65b79fb213c60292de", "6ca7e8ae93b460b8d22992094e09ce1c28912aec48a8a386c31ded7cecba18d6"]},
+    "solution:315": {"first_visible_content": "315. division working", "last_visible_content": "Respective remainders are 10, 1 and 6", "crop_sha256s": ["2800b4434aac23178d040085400b1b562ce6c606d68b5a3020e2f12a65164078", "2df38b7648ce72659c05a5940f39e3656b3574bbddc2b447757666c2723a3699"]},
+    "solution:325": {"first_visible_content": "325. (10^12 + 25^2) - (10^12 - 25^2)", "last_visible_content": "n = 14", "crop_sha256s": ["88cd64b11f3eec2319be9881d8e5876a829942ef83e7ae31f0952974ad1e0ddd", "38e483375ef5639a92d5d8751a5277ed2011f08b6691c58e5376116488ff96c0"]},
+    "solution:337": {"first_visible_content": "337. (x^n + a^n) is divisible by (x + a)", "last_visible_content": "remainder is 8", "crop_sha256s": ["b1560a347b7ea2184b6748bccb047cad49133b3df963d332534fd579a30df04b", "22ea0472ca057901028af8ee460d6b69d5936e0ea3667e9b7a57c50c4d2db332"]},
+    "solution:352": {"first_visible_content": "352. Let N = 1^5 + 2^5 + ...", "last_visible_content": "unit digit in N = 0", "crop_sha256s": ["e74a5e577a2f9bb7e0404b2144ea151ef6ee74b21196c2661774c27841967682", "4d5d26c8f0ee6267e99aadaf8e0dbd730e517b8cb56bfcd10bc6dfb045a34db8"]},
+    "solution:360": {"first_visible_content": "360. Given a + b + c = 6 and ab + bc + ca = 10", "last_visible_content": "a^3 + b^3 + c^3 - 3abc = 36", "crop_sha256s": ["255c1eddf4c9380cf77bed8f08eed6000d5c9b4b3b19e2d13592dda5eb2f0fd4", "c764e8379a2e0974619343baa7df0a488bd68dc309dc2d47b4e66dbc68fb83e2"]},
+    "solution:377": {"first_visible_content": "377. Maximum daily wages of an officer", "last_visible_content": "Number of absent days = 3 days", "crop_sha256s": ["0f9ea696ec4358e158a734b24dc4cba6b5d47885f7099ab5a7a8b523af20deb3", "9903bfe1b29a47bad4dddbe1772d4b937e12dde1130d0fb3588e19ea4aed660f"]},
+    "solution:378": {"first_visible_content": "378. Let the two natural numbers be a and b", "last_visible_content": "a = 10", "crop_sha256s": ["29f8034c02da107f76902a8c765bcd0051fce27e66eb18aa4469bb0157442bbe", "e112291d2a826c8b427b0fb6897ae0d6d0182be1b37fcf3a839a161fcb82dee4"]}
   },
   "marker_overrides": {
     "question": {
@@ -226,7 +266,7 @@
           {
             "page": 23,
             "left": 775,
-            "top": 160,
+            "top": 265,
             "right": 1435,
             "bottom": 334
           }
@@ -354,7 +394,7 @@
           {
             "page": 24,
             "left": 95,
-            "top": 160,
+            "top": 170,
             "right": 760,
             "bottom": 235
           }
@@ -1472,7 +1512,7 @@
           {
             "page": 28,
             "left": 775,
-            "top": 160,
+            "top": 170,
             "right": 1435,
             "bottom": 238
           }
@@ -1622,9 +1662,9 @@
           {
             "page": 29,
             "left": 95,
-            "top": 160,
+            "top": 170,
             "right": 760,
-            "bottom": 274
+            "bottom": 250
           }
         ]
       },
@@ -1633,9 +1673,9 @@
           {
             "page": 29,
             "left": 95,
-            "top": 274,
+            "top": 250,
             "right": 760,
-            "bottom": 453
+            "bottom": 432
           }
         ]
       },
@@ -1644,9 +1684,9 @@
           {
             "page": 29,
             "left": 95,
-            "top": 453,
+            "top": 432,
             "right": 760,
-            "bottom": 637
+            "bottom": 615
           }
         ]
       },
@@ -1655,9 +1695,9 @@
           {
             "page": 29,
             "left": 95,
-            "top": 637,
+            "top": 615,
             "right": 760,
-            "bottom": 851
+            "bottom": 829
           }
         ]
       },
@@ -1666,7 +1706,7 @@
           {
             "page": 29,
             "left": 95,
-            "top": 851,
+            "top": 829,
             "right": 760,
             "bottom": 969
           }
@@ -1948,7 +1988,7 @@
           {
             "page": 30,
             "left": 775,
-            "top": 160,
+            "top": 170,
             "right": 1435,
             "bottom": 235
           }
@@ -2549,7 +2589,7 @@
           {
             "page": 33,
             "left": 95,
-            "top": 160,
+            "top": 170,
             "right": 760,
             "bottom": 235
           }
@@ -3205,7 +3245,7 @@
           {
             "page": 35,
             "left": 775,
-            "top": 160,
+            "top": 170,
             "right": 1435,
             "bottom": 235
           }
@@ -3553,7 +3593,7 @@
           {
             "page": 37,
             "left": 95,
-            "top": 160,
+            "top": 170,
             "right": 760,
             "bottom": 267
           }
@@ -3659,7 +3699,7 @@
           {
             "page": 37,
             "left": 775,
-            "top": 160,
+            "top": 170,
             "right": 1435,
             "bottom": 297
           }
@@ -8818,7 +8858,7 @@
           {
             "page": 42,
             "left": 775,
-            "top": 160,
+            "top": 230,
             "right": 1435,
             "bottom": 286
           }
@@ -8979,7 +9019,7 @@
           {
             "page": 43,
             "left": 95,
-            "top": 160,
+            "top": 175,
             "right": 760,
             "bottom": 424
           }
@@ -9025,7 +9065,7 @@
             "left": 95,
             "top": 761,
             "right": 760,
-            "bottom": 935
+            "bottom": 915
           }
         ]
       },
@@ -9034,9 +9074,9 @@
           {
             "page": 43,
             "left": 95,
-            "top": 935,
+            "top": 915,
             "right": 760,
-            "bottom": 1097
+            "bottom": 1070
           }
         ]
       },
@@ -9045,7 +9085,7 @@
           {
             "page": 43,
             "left": 95,
-            "top": 1097,
+            "top": 1070,
             "right": 760,
             "bottom": 1344
           }
@@ -9118,7 +9158,7 @@
           {
             "page": 43,
             "left": 775,
-            "top": 160,
+            "top": 175,
             "right": 1435,
             "bottom": 195
           }
@@ -9543,7 +9583,7 @@
           {
             "page": 45,
             "left": 95,
-            "top": 160,
+            "top": 170,
             "right": 760,
             "bottom": 336
           }
@@ -10430,7 +10470,7 @@
           {
             "page": 48,
             "left": 95,
-            "top": 160,
+            "top": 170,
             "right": 760,
             "bottom": 277
           }
@@ -10767,7 +10807,7 @@
           {
             "page": 49,
             "left": 775,
-            "top": 160,
+            "top": 170,
             "right": 1435,
             "bottom": 223
           }
@@ -10928,7 +10968,7 @@
           {
             "page": 50,
             "left": 95,
-            "top": 160,
+            "top": 170,
             "right": 760,
             "bottom": 223
           }
@@ -11067,7 +11107,7 @@
           {
             "page": 50,
             "left": 775,
-            "top": 160,
+            "top": 170,
             "right": 1435,
             "bottom": 304
           }
@@ -11162,7 +11202,7 @@
           {
             "page": 51,
             "left": 95,
-            "top": 160,
+            "top": 170,
             "right": 760,
             "bottom": 524
           }
@@ -11829,7 +11869,7 @@
           {
             "page": 54,
             "left": 95,
-            "top": 160,
+            "top": 170,
             "right": 760,
             "bottom": 301
           }
@@ -11946,7 +11986,7 @@
           {
             "page": 54,
             "left": 775,
-            "top": 160,
+            "top": 170,
             "right": 1435,
             "bottom": 229
           }
@@ -12074,7 +12114,7 @@
           {
             "page": 55,
             "left": 95,
-            "top": 160,
+            "top": 170,
             "right": 760,
             "bottom": 349
           }
@@ -12191,7 +12231,7 @@
           {
             "page": 55,
             "left": 775,
-            "top": 160,
+            "top": 170,
             "right": 1435,
             "bottom": 238
           }
@@ -12330,7 +12370,7 @@
           {
             "page": 56,
             "left": 95,
-            "top": 160,
+            "top": 170,
             "right": 760,
             "bottom": 238
           }
@@ -12502,7 +12542,7 @@
           {
             "page": 57,
             "left": 95,
-            "top": 160,
+            "top": 170,
             "right": 760,
             "bottom": 283
           }
@@ -12597,7 +12637,7 @@
           {
             "page": 57,
             "left": 775,
-            "top": 160,
+            "top": 170,
             "right": 1435,
             "bottom": 647
           }
@@ -12784,7 +12824,7 @@
           {
             "page": 59,
             "left": 95,
-            "top": 160,
+            "top": 170,
             "right": 760,
             "bottom": 358
           }
@@ -12802,7 +12842,7 @@
           {
             "page": 59,
             "left": 775,
-            "top": 160,
+            "top": 170,
             "right": 1435,
             "bottom": 289
           }

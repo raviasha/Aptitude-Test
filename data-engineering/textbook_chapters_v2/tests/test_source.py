@@ -95,6 +95,14 @@ class SourceEvidenceTests(unittest.TestCase):
                 "answer_pages": [3, 3],
                 "solution_pages": [4, 5],
                 "question_numbers": [1, 2],
+                "boundary_reviews": {
+                    "question:1": {
+                        "first_visible_content": "first controlled band",
+                        "last_visible_content": "last controlled band",
+                        "segments": [{"page": 1, "left": 0, "top": 60, "right": 50, "bottom": 120}],
+                        "crop_sha256s": ["reviewed-at-source-stage"],
+                    }
+                },
                 "marker_overrides": {
                     "question": {"1": {"page": 1, "top": 0}, "2": {"page": 1, "top": 100}},
                     "answer_key": {"1": {"page": 3, "top": 0}, "2": {"page": 3, "top": 100}},
@@ -122,6 +130,10 @@ class SourceEvidenceTests(unittest.TestCase):
         self.assertEqual([crop.page_number for crop in first.solution_crops], [4, 5])
         self.assertTrue(all(crop.path.is_file() for crop in first.solution_crops))
         self.assertEqual(first.source_pdf_sha256, hashlib.sha256(pdf_path.read_bytes()).hexdigest())
+        self.assertEqual(
+            first.boundary_review["question:1"]["first_visible_content"],
+            "first controlled band",
+        )
 
     def test_explicit_bottom_ends_a_multi_page_crop_before_the_next_marker_page(self) -> None:
         pages = {
@@ -169,6 +181,14 @@ class SourceEvidenceTests(unittest.TestCase):
                 "answer_pages": [2, 2],
                 "solution_pages": [3, 3],
                 "question_numbers": [1, 2],
+                "known_source_issues": {
+                    "2": {
+                        "status": "missing_solution",
+                        "reason": "textbook_solution_missing",
+                        "detail": "The source prints no numbered solution.",
+                        "requires_reviewed_rejection": True,
+                    }
+                },
                 "marker_overrides": {
                     "question": {
                         "1": {"segments": [{"page": 1, "left": 0, "top": 60, "right": 50, "bottom": 120}]},
@@ -203,6 +223,17 @@ class SourceEvidenceTests(unittest.TestCase):
             [(3, CropBox(0, 60, 50, 200)), (3, CropBox(50, 0, 100, 60))],
         )
         self.assertEqual(evidence[1].solution_crops, ())
+        self.assertEqual(evidence[1].source_status, "missing_solution")
+        self.assertEqual(
+            evidence[1].source_reasons,
+            ("textbook_solution_missing: The source prints no numbered solution.",),
+        )
+        self.assertTrue(evidence[1].requires_reviewed_rejection)
+        manifest = json.loads(
+            (self.root / "work" / "source-evidence" / "ch011-q0002.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(manifest["payload"]["source_status"], "missing_solution")
+        self.assertEqual(manifest["payload"]["source_reasons"], list(evidence[1].source_reasons))
 
     def test_prepare_rejects_a_source_pdf_that_does_not_match_the_pinned_hash(self) -> None:
         page = self._page(1, [(0, 100, "red")])

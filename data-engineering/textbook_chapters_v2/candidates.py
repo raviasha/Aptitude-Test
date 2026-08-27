@@ -169,6 +169,8 @@ def assemble_candidate(evidence: RecordEvidence, extraction: Any, findings: Sequ
     """Fail closed while turning one accepted extraction into an immutable candidate."""
     if not isinstance(evidence, RecordEvidence):
         raise TypeError("evidence must be a RecordEvidence value.")
+    if evidence.requires_reviewed_rejection:
+        raise PipelineBlocked("Source evidence requires reviewed rejection and cannot be assembled into a candidate.")
     record, attached = _accepted_payload(extraction)
     expected_extraction_fingerprint = extraction_job_fingerprint(evidence)
     if record.get("source_fingerprint") != expected_extraction_fingerprint:

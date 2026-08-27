@@ -426,6 +426,10 @@ def _evidence_payload(evidence: RecordEvidence) -> dict[str, Any]:
         "question_crops": [_crop_payload(item) for item in evidence.question_crops],
         "answer_key_crops": [_crop_payload(item) for item in evidence.answer_key_crops],
         "solution_crops": [_crop_payload(item) for item in evidence.solution_crops],
+        "source_status": evidence.source_status,
+        "source_reasons": list(evidence.source_reasons),
+        "requires_reviewed_rejection": evidence.requires_reviewed_rejection,
+        "boundary_review": dict(evidence.boundary_review),
         "dependency_fingerprint": evidence.dependency_fingerprint,
     }
 
@@ -437,6 +441,10 @@ def _evidence_from_payload(raw: Mapping[str, Any]) -> RecordEvidence:
         question_crops=tuple(_crop_from_payload(item) for item in raw["question_crops"]),
         answer_key_crops=tuple(_crop_from_payload(item) for item in raw["answer_key_crops"]),
         solution_crops=tuple(_crop_from_payload(item) for item in raw["solution_crops"]),
+        source_status=str(raw.get("source_status", "complete")),
+        source_reasons=tuple(str(item) for item in raw.get("source_reasons", ())),
+        requires_reviewed_rejection=bool(raw.get("requires_reviewed_rejection", False)),
+        boundary_review=raw.get("boundary_review", {}),
         dependency_fingerprint=str(raw["dependency_fingerprint"]),
     )
 
@@ -659,10 +667,10 @@ def _render_asset_hashes(rendered: RenderArtifacts) -> tuple[str, ...]:
 
 def _verification_job(
     candidate: CandidateRecord,
-    source_crops: Iterable[SourceCrop],
+    source_evidence: RecordEvidence | Iterable[SourceCrop],
     rendered: RenderArtifacts,
 ) -> VisionJob:
-    base = create_verification_job(candidate, source_crops, rendered)
+    base = create_verification_job(candidate, source_evidence, rendered)
     field_sources: list[dict[str, Any]] = []
     for key, path in sorted(getattr(rendered, "field_screenshots", {}).items()):
         expected_key = f"field.{key}"
@@ -740,23 +748,36 @@ def _prepare(config: ChapterConfig) -> int:
     )
     ledger = AuditLedger(_work_root(config), config.chapter)
     for evidence in records:
+        source_blocked = evidence.requires_reviewed_rejection
         try:
             current = ledger.record(evidence.question_number)
             incoming = replace(
                 current,
+                status=BLOCKED if source_blocked else current.status,
                 source_crop_hashes=tuple(crop.sha256 for crop in evidence.question_crops + evidence.answer_key_crops + evidence.solution_crops)
                 + (evidence.dependency_fingerprint,),
+                candidate_sha256="" if source_blocked else current.candidate_sha256,
+                asset_hashes=() if source_blocked else current.asset_hashes,
                 policy_version=POLICY_VERSION,
                 extractor_schema_version=EXTRACTOR_SCHEMA_VERSION,
+                reviewer="" if source_blocked else current.reviewer,
+                rejection_reason="" if source_blocked else current.rejection_reason,
+                dependency_fingerprint="" if source_blocked else current.dependency_fingerprint,
+                findings=evidence.source_reasons if source_blocked else current.findings,
+                field_verdicts={} if source_blocked else current.field_verdicts,
             )
         except KeyError:
             incoming = AuditRecord(
-                chapter=config.chapter, question_number=evidence.question_number, status=PENDING_EXTRACTION,
+                chapter=config.chapter, question_number=evidence.question_number,
+                status=BLOCKED if source_blocked else PENDING_EXTRACTION,
                 source_crop_hashes=tuple(crop.sha256 for crop in evidence.question_crops + evidence.answer_key_crops + evidence.solution_crops)
                 + (evidence.dependency_fingerprint,),
                 policy_version=POLICY_VERSION, extractor_schema_version=EXTRACTOR_SCHEMA_VERSION,
+                findings=evidence.source_reasons if source_blocked else (),
             )
         ledger.merge_record(incoming)
+        if source_blocked and ledger.record(evidence.question_number).status != BLOCKED:
+            ledger.merge_record(incoming)
     print(json.dumps({"status": "prepared", "records": len(records)}))
     return SUCCESS_EXIT
 
@@ -830,6 +851,8 @@ def _ingest_extraction(config: ChapterConfig, results: Path) -> int:
     records: list[CandidateRecord] = []
     ledger = AuditLedger(_work_root(config), config.chapter)
     for evidence in _evidence(config):
+        if evidence.requires_reviewed_rejection:
+            continue
         try:
             if ledger.record(evidence.question_number).status == REVIEWED_REJECTION:
                 continue
@@ -949,9 +972,7 @@ def _verify(config: ChapterConfig, results_dir: Path | None = None) -> int:
     default_results = results_dir or (_chapter_root(config) / "verification-results")
     for candidate in _candidates(config):
         source = evidence[candidate.question_number]
-        job = _verification_job(
-            candidate, source.question_crops + source.answer_key_crops + source.solution_crops, renders[candidate.question_number]
-        )
+        job = _verification_job(candidate, source, renders[candidate.question_number])
         jobs.append(job)
         if not _result_is_current(default_results / f"{job.job_id}.json", job):
             pending.append(job)
@@ -976,8 +997,7 @@ def _ingest_verification(config: ChapterConfig, results: Path) -> int:
     failed = 0
     for candidate in _candidates(config):
         source = evidence[candidate.question_number]
-        job = _verification_job(candidate, source.question_crops + source.answer_key_crops + source.solution_crops,
-                                renders[candidate.question_number])
+        job = _verification_job(candidate, source, renders[candidate.question_number])
         result_path = results / f"{job.job_id}.json"
         if not _result_is_current(result_path, job):
             return _write_pending("verify", 1, _chapter_root(config) / "verification-jobs.jsonl")

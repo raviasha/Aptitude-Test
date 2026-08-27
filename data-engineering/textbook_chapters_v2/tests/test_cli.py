@@ -262,6 +262,25 @@ class WorkflowCliTests(unittest.TestCase):
         self.assertTrue(queue.is_file())
         self.assertFalse(self.published.exists())
 
+    def test_prepare_quarantines_source_issue_and_persists_reasoned_evidence(self) -> None:
+        source_issue = replace(
+            self._prepared_evidence()[0],
+            source_status="missing_solution",
+            source_reasons=("textbook_solution_missing: No numbered solution is printed.",),
+            requires_reviewed_rejection=True,
+        )
+        with patch("textbook_chapters_v2.cli.prepare_source_evidence", return_value=[source_issue]):
+            self.assertEqual(main(["prepare", "--config", str(self.config_path)]), 0)
+
+        evidence_payload = json.loads(
+            (self.work_root / "chapter-007" / "state" / "evidence.json").read_text(encoding="utf-8")
+        )[0]
+        record = AuditLedger(self.work_root, 7).record(84)
+        self.assertEqual(evidence_payload["source_status"], "missing_solution")
+        self.assertEqual(evidence_payload["source_reasons"], list(source_issue.source_reasons))
+        self.assertEqual(record.status, "blocked")
+        self.assertEqual(record.findings, source_issue.source_reasons)
+
     def test_manifest_hashes_validation_imports_and_exact_rendered_browser_identity(self) -> None:
         with patch(
             "textbook_chapters_v2.render._launch_browser",

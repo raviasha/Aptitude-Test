@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
+import tempfile
 import unittest
 from pathlib import Path
 
 from textbook_chapters_v2.config import ChapterConfig
+from textbook_chapters_v2.models import CropBox
+from textbook_chapters_v2.source import crop_region, render_page
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -54,6 +58,59 @@ class Chapter001PreflightTests(unittest.TestCase):
             self.assertTrue(raw["marker_overrides"]["question"][key]["segments"])
             self.assertTrue(raw["marker_overrides"]["answer_key"][key]["segments"])
             self.assertTrue(raw["marker_overrides"]["solution"][key]["segments"])
+
+    def test_every_cross_boundary_record_has_human_reviewed_source_image_anchors(self) -> None:
+        raw = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+        reviews = raw["boundary_reviews"]
+        expected = {
+            *(f"question:{number}" for number in (11, 22, 123, 136, 165, 219, 278, 309, 318)),
+            *(f"solution:{number}" for number in (26, 40, 52, 90, 170, 200, 214, 226, 234, 294, 304, 315, 325, 337, 352, 360, 377, 378)),
+            "solution:44",
+            "solution:45",
+            "solution:46",
+            *(f"question:{number}" for number in (137, 138, 139, 140)),
+        }
+
+        self.assertEqual(set(reviews), expected)
+        for key, review in reviews.items():
+            with self.subTest(key=key):
+                self.assertTrue(review["first_visible_content"].strip())
+                self.assertTrue(review["last_visible_content"].strip())
+                self.assertTrue(review["crop_sha256s"])
+                role, number = key.split(":")
+                self.assertEqual(
+                    len(review["crop_sha256s"]),
+                    len(raw["marker_overrides"][role][number]["segments"]),
+                )
+
+    def test_boundary_reviews_pin_actual_source_crop_bytes_and_boxes(self) -> None:
+        raw = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+        source_pdf = ROOT / raw["source_pdf"]
+        rendered: dict[int, object] = {}
+        work = Path(tempfile.mkdtemp(prefix="ksat-boundary-crops-"))
+        try:
+            for key, review in raw["boundary_reviews"].items():
+                role, number = key.split(":")
+                configured = raw["marker_overrides"][role][number]["segments"]
+                actual_hashes = []
+                for index, segment in enumerate(configured):
+                    page_number = segment["page"]
+                    if page_number not in rendered:
+                        rendered[page_number] = render_page(
+                            source_pdf,
+                            page_number,
+                            raw["source_dpi"],
+                            work / f"page-{page_number:03d}.png",
+                        )
+                    crop = crop_region(
+                        rendered[page_number],
+                        CropBox(segment["left"], segment["top"], segment["right"], segment["bottom"]),
+                        work / f"{role}-q{int(number):04d}-s{index:02d}.png",
+                    )
+                    actual_hashes.append(crop.sha256)
+                self.assertEqual(actual_hashes, review["crop_sha256s"], key)
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
 
 
 if __name__ == "__main__":

@@ -15,7 +15,7 @@ from typing import Any, Mapping
 from PIL import Image
 
 from .config import ChapterConfig
-from .models import CropBox, RecordEvidence, SourceCrop, SourceImage
+from .models import CropBox, RecordEvidence, SourceCrop, SourceImage, frozen_mapping
 from .store import ArtifactStore, dependency_fingerprint
 
 
@@ -388,8 +388,44 @@ def _evidence_payload(evidence: RecordEvidence) -> dict[str, Any]:
         "question_crops": [crop_value(crop) for crop in evidence.question_crops],
         "answer_key_crops": [crop_value(crop) for crop in evidence.answer_key_crops],
         "solution_crops": [crop_value(crop) for crop in evidence.solution_crops],
+        "source_status": evidence.source_status,
+        "source_reasons": list(evidence.source_reasons),
+        "requires_reviewed_rejection": evidence.requires_reviewed_rejection,
+        "boundary_review": dict(evidence.boundary_review),
         "dependency_fingerprint": evidence.dependency_fingerprint,
     }
+
+
+def _source_issue(config: ChapterConfig, number: int) -> tuple[str, tuple[str, ...], bool]:
+    issues = config.extras.get("known_source_issues", {})
+    if not isinstance(issues, Mapping):
+        raise ValueError("known_source_issues must be an object keyed by question number.")
+    raw = issues.get(str(number), issues.get(number))
+    if raw is None or not isinstance(raw, Mapping) or "status" not in raw:
+        return "complete", (), False
+    status = raw.get("status")
+    if status not in {"missing_solution", "incomplete_solution"}:
+        raise ValueError(f"Unsupported source status for question {number}: {status!r}.")
+    reason = raw.get("reason")
+    detail = raw.get("detail")
+    if not isinstance(reason, str) or not reason.strip() or not isinstance(detail, str) or not detail.strip():
+        raise ValueError(f"Source issue for question {number} requires reason and detail.")
+    requires_rejection = raw.get("requires_reviewed_rejection")
+    if requires_rejection is not True:
+        raise ValueError(f"Source issue for question {number} must require reviewed rejection.")
+    return status, (f"{reason.strip()}: {detail.strip()}",), True
+
+
+def _boundary_review(config: ChapterConfig, number: int) -> Mapping[str, Any]:
+    reviews = config.extras.get("boundary_reviews", {})
+    if not isinstance(reviews, Mapping):
+        raise ValueError("boundary_reviews must be an object keyed by role and question number.")
+    selected = {
+        key: value
+        for key, value in reviews.items()
+        if isinstance(key, str) and key.rsplit(":", 1)[-1] == str(number)
+    }
+    return frozen_mapping(selected)
 
 
 def prepare_source_evidence(config: ChapterConfig, pdf_path: Path, work_dir: Path) -> list[RecordEvidence]:
@@ -448,6 +484,8 @@ def prepare_source_evidence(config: ChapterConfig, pdf_path: Path, work_dir: Pat
             for role in ("question", "answer_key", "solution")
             for crop in role_crops[role][number]
         )
+        source_status, source_reasons, requires_reviewed_rejection = _source_issue(config, number)
+        boundary_review = _boundary_review(config, number)
         fingerprint = dependency_fingerprint(
             {
                 "chapter": config.chapter,
@@ -455,6 +493,10 @@ def prepare_source_evidence(config: ChapterConfig, pdf_path: Path, work_dir: Pat
                 "source_pdf_sha256": source_pdf_sha256,
                 "dpi": dpi,
                 "crop_provenance": crop_provenance,
+                "source_status": source_status,
+                "source_reasons": source_reasons,
+                "requires_reviewed_rejection": requires_reviewed_rejection,
+                "boundary_review": boundary_review,
             }
         )
         evidence = RecordEvidence(
@@ -465,6 +507,10 @@ def prepare_source_evidence(config: ChapterConfig, pdf_path: Path, work_dir: Pat
             question_crops=role_crops["question"][number],
             answer_key_crops=role_crops["answer_key"][number],
             solution_crops=role_crops["solution"][number],
+            source_status=source_status,
+            source_reasons=source_reasons,
+            requires_reviewed_rejection=requires_reviewed_rejection,
+            boundary_review=boundary_review,
             dependency_fingerprint=fingerprint,
         )
         store.write_json(

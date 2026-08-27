@@ -315,6 +315,9 @@ class AuditLedger:
         if not changed:
             return incoming
 
+        if previous.status == REVIEWED_REJECTION and incoming.status == "blocked":
+            return incoming
+
         extraction_dependencies = {"source_crop_hashes", "policy_version", "extractor_schema_version"}
         render_dependencies = {"candidate_sha256", "renderer_version", "application_asset_version"}
         if changed & extraction_dependencies:

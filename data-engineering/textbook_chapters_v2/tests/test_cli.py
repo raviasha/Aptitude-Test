@@ -181,10 +181,12 @@ class WorkflowCliTests(unittest.TestCase):
         self.config_path.write_text(json.dumps(raw), encoding="utf-8")
         self.config = ChapterConfig.load(self.config_path)
 
-    def _write_extraction_result(self, representation: dict[str, object]) -> Path:
+    def _write_extraction_result(
+        self, representation: dict[str, object], results: Path | None = None
+    ) -> Path:
         job = json.loads((self.work_root / "chapter-007" / "extraction-jobs" / "extract-ch07-q0084.json").read_text(encoding="utf-8"))
         answer_hash = next(item["sha256"] for item in job["sources"] if item["role"] == "answer_key")
-        results = self.root / "media-results"
+        results = results or (self.root / "media-results")
         results.mkdir(exist_ok=True)
         (results / "extract-ch07-q0084.json").write_text(json.dumps({
             "job_id": job["job_id"], "job_fingerprint": job["job_fingerprint"],
@@ -195,6 +197,53 @@ class WorkflowCliTests(unittest.TestCase):
             "representation": representation, "differences_from_legacy": [], "reviewer": "vision-extractor",
         }), encoding="utf-8")
         return results
+
+    def _evidence_for_question(
+        self,
+        question_number: int,
+        *,
+        source_status: str = "complete",
+        source_reasons: tuple[str, ...] = (),
+        requires_reviewed_rejection: bool = False,
+        dependency_fingerprint: str | None = None,
+    ) -> RecordEvidence:
+        original = self._prepared_evidence()[0]
+
+        def renumber(crops: tuple[SourceCrop, ...]) -> tuple[SourceCrop, ...]:
+            return tuple(replace(crop, question_number=question_number) for crop in crops)
+
+        return replace(
+            original,
+            question_number=question_number,
+            question_crops=renumber(original.question_crops),
+            answer_key_crops=renumber(original.answer_key_crops),
+            solution_crops=renumber(original.solution_crops),
+            source_status=source_status,
+            source_reasons=source_reasons,
+            requires_reviewed_rejection=requires_reviewed_rejection,
+            dependency_fingerprint=dependency_fingerprint or f"{question_number:064x}",
+        )
+
+    def _three_record_source_evidence(self) -> list[RecordEvidence]:
+        raw = json.loads(self.config_path.read_text(encoding="utf-8"))
+        raw["question_numbers"] = [84, 86]
+        self.config_path.write_text(json.dumps(raw), encoding="utf-8")
+        self.config = ChapterConfig.load(self.config_path)
+        return [
+            self._evidence_for_question(84),
+            self._evidence_for_question(
+                85,
+                source_status="missing_solution",
+                source_reasons=("textbook_solution_missing: No numbered solution is printed.",),
+                requires_reviewed_rejection=True,
+            ),
+            self._evidence_for_question(
+                86,
+                source_status="incomplete_solution",
+                source_reasons=("textbook_solution_incomplete: Only an unnumbered continuation is visible.",),
+                requires_reviewed_rejection=True,
+            ),
+        ]
 
     def _prepare_media_extraction(self, field_media: dict[str, object] | None = None) -> Path:
         if field_media is not None:
@@ -280,6 +329,106 @@ class WorkflowCliTests(unittest.TestCase):
         self.assertEqual(evidence_payload["source_reasons"], list(source_issue.source_reasons))
         self.assertEqual(record.status, "blocked")
         self.assertEqual(record.findings, source_issue.source_reasons)
+
+    def test_unchanged_prepare_preserves_reviewed_rejections_and_run_queues_only_actionable_records(self) -> None:
+        evidence = self._three_record_source_evidence()
+        with patch("textbook_chapters_v2.cli.prepare_source_evidence", return_value=evidence):
+            self.assertEqual(main(["prepare", "--config", str(self.config_path)]), 0)
+        self.assertEqual(main(["extract", "--config", str(self.config_path)]), PENDING_VISION_EXIT)
+        self.assertEqual(
+            main([
+                "reject", "--config", str(self.config_path), "--question", "85",
+                "--reviewer", "source-reviewer", "--reason", "The numbered textbook solution is absent.",
+            ]),
+            0,
+        )
+        self.assertEqual(
+            main([
+                "reject", "--config", str(self.config_path), "--question", "86",
+                "--reviewer", "source-reviewer", "--reason", "The textbook solution begins before the visible continuation.",
+            ]),
+            0,
+        )
+
+        with patch("textbook_chapters_v2.cli.prepare_source_evidence", return_value=evidence):
+            self.assertEqual(main(["prepare", "--config", str(self.config_path)]), 0)
+        self.assertEqual(main(["run", "--config", str(self.config_path)]), PENDING_VISION_EXIT)
+
+        ledger = AuditLedger(self.work_root, 7)
+        for number, reason in (
+            (85, "The numbered textbook solution is absent."),
+            (86, "The textbook solution begins before the visible continuation."),
+        ):
+            record = ledger.record(number)
+            self.assertEqual(record.status, "reviewed_rejection")
+            self.assertEqual(record.reviewer, "source-reviewer")
+            self.assertEqual(record.rejection_reason, reason)
+        queue = [
+            json.loads(line)
+            for line in (self.work_root / "chapter-007" / "extraction-jobs.jsonl").read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        self.assertEqual([item["job_id"] for item in queue], ["extract-ch07-q0084"])
+        job_files = sorted(path.name for path in (self.work_root / "chapter-007" / "extraction-jobs").glob("*.json"))
+        self.assertEqual(job_files, ["extract-ch07-q0084.json"])
+
+    def test_changed_source_evidence_reopens_reviewed_rejection_as_source_blocked(self) -> None:
+        evidence = [self._evidence_for_question(
+            84,
+            source_status="missing_solution",
+            source_reasons=("textbook_solution_missing: No numbered solution is printed.",),
+            requires_reviewed_rejection=True,
+        )]
+        with patch("textbook_chapters_v2.cli.prepare_source_evidence", return_value=evidence):
+            self.assertEqual(main(["prepare", "--config", str(self.config_path)]), 0)
+        self.assertEqual(main([
+            "reject", "--config", str(self.config_path), "--question", "84",
+            "--reviewer", "source-reviewer", "--reason", "The numbered textbook solution is absent.",
+        ]), 0)
+
+        changed = [replace(
+            evidence[0],
+            source_reasons=("textbook_solution_missing: The reviewed source evidence changed.",),
+            dependency_fingerprint="f" * 64,
+        )]
+        with patch("textbook_chapters_v2.cli.prepare_source_evidence", return_value=changed):
+            self.assertEqual(main(["prepare", "--config", str(self.config_path)]), 0)
+
+        record = AuditLedger(self.work_root, 7).record(84)
+        self.assertEqual(record.status, "blocked")
+        self.assertEqual(record.reviewer, "")
+        self.assertEqual(record.rejection_reason, "")
+        self.assertEqual(record.findings, changed[0].source_reasons)
+
+    def test_run_advances_after_every_actionable_extraction_result_is_current(self) -> None:
+        evidence = self._three_record_source_evidence()
+        with patch("textbook_chapters_v2.cli.prepare_source_evidence", return_value=evidence):
+            self.assertEqual(main(["prepare", "--config", str(self.config_path)]), 0)
+        for number, reason in (
+            (85, "The numbered textbook solution is absent."),
+            (86, "The textbook solution begins before the visible continuation."),
+        ):
+            self.assertEqual(main([
+                "reject", "--config", str(self.config_path), "--question", str(number),
+                "--reviewer", "source-reviewer", "--reason", reason,
+            ]), 0)
+        self.assertEqual(main(["extract", "--config", str(self.config_path)]), PENDING_VISION_EXIT)
+        self._write_extraction_result(
+            {"question": "text", "options": {label: "text" for label in "ABCD"}, "solution": "text"},
+            self.work_root / "chapter-007" / "extraction-results",
+        )
+
+        with (
+            patch("textbook_chapters_v2.cli._build", return_value=0),
+            patch("textbook_chapters_v2.cli._render", return_value=0),
+            patch("textbook_chapters_v2.cli._verify", return_value=PENDING_VISION_EXIT),
+        ):
+            self.assertEqual(main(["run", "--config", str(self.config_path)]), PENDING_VISION_EXIT)
+
+        candidates = json.loads(
+            (self.work_root / "chapter-007" / "state" / "candidates.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual([item["question_number"] for item in candidates], [84])
 
     def test_manifest_hashes_validation_imports_and_exact_rendered_browser_identity(self) -> None:
         with patch(

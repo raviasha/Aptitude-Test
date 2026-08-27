@@ -725,6 +725,13 @@ def _write_pending(stage: str, count: int, queue: Path) -> int:
     return PENDING_VISION_EXIT
 
 
+def _source_audit_hashes(evidence: RecordEvidence) -> tuple[str, ...]:
+    return tuple(
+        crop.sha256
+        for crop in evidence.question_crops + evidence.answer_key_crops + evidence.solution_crops
+    ) + (evidence.dependency_fingerprint,)
+
+
 def _prepare(config: ChapterConfig) -> int:
     input_fingerprint = _evidence_input_fingerprint(config)
     base_records = tuple(prepare_source_evidence(config, _path_value(config, "source_pdf"), _chapter_root(config)))
@@ -749,29 +756,39 @@ def _prepare(config: ChapterConfig) -> int:
     ledger = AuditLedger(_work_root(config), config.chapter)
     for evidence in records:
         source_blocked = evidence.requires_reviewed_rejection
+        source_hashes = _source_audit_hashes(evidence)
         try:
             current = ledger.record(evidence.question_number)
-            incoming = replace(
-                current,
-                status=BLOCKED if source_blocked else current.status,
-                source_crop_hashes=tuple(crop.sha256 for crop in evidence.question_crops + evidence.answer_key_crops + evidence.solution_crops)
-                + (evidence.dependency_fingerprint,),
-                candidate_sha256="" if source_blocked else current.candidate_sha256,
-                asset_hashes=() if source_blocked else current.asset_hashes,
-                policy_version=POLICY_VERSION,
-                extractor_schema_version=EXTRACTOR_SCHEMA_VERSION,
-                reviewer="" if source_blocked else current.reviewer,
-                rejection_reason="" if source_blocked else current.rejection_reason,
-                dependency_fingerprint="" if source_blocked else current.dependency_fingerprint,
-                findings=evidence.source_reasons if source_blocked else current.findings,
-                field_verdicts={} if source_blocked else current.field_verdicts,
+            unchanged_reviewed_rejection = (
+                source_blocked
+                and current.status == REVIEWED_REJECTION
+                and current.source_crop_hashes == source_hashes
+                and current.policy_version == POLICY_VERSION
+                and current.extractor_schema_version == EXTRACTOR_SCHEMA_VERSION
+                and current.findings == evidence.source_reasons
             )
+            if unchanged_reviewed_rejection:
+                incoming = current
+            else:
+                incoming = replace(
+                    current,
+                    status=BLOCKED if source_blocked else current.status,
+                    source_crop_hashes=source_hashes,
+                    candidate_sha256="" if source_blocked else current.candidate_sha256,
+                    asset_hashes=() if source_blocked else current.asset_hashes,
+                    policy_version=POLICY_VERSION,
+                    extractor_schema_version=EXTRACTOR_SCHEMA_VERSION,
+                    reviewer="" if source_blocked else current.reviewer,
+                    rejection_reason="" if source_blocked else current.rejection_reason,
+                    dependency_fingerprint="" if source_blocked else current.dependency_fingerprint,
+                    findings=evidence.source_reasons if source_blocked else current.findings,
+                    field_verdicts={} if source_blocked else current.field_verdicts,
+                )
         except KeyError:
             incoming = AuditRecord(
                 chapter=config.chapter, question_number=evidence.question_number,
                 status=BLOCKED if source_blocked else PENDING_EXTRACTION,
-                source_crop_hashes=tuple(crop.sha256 for crop in evidence.question_crops + evidence.answer_key_crops + evidence.solution_crops)
-                + (evidence.dependency_fingerprint,),
+                source_crop_hashes=source_hashes,
                 policy_version=POLICY_VERSION, extractor_schema_version=EXTRACTOR_SCHEMA_VERSION,
                 findings=evidence.source_reasons if source_blocked else (),
             )
@@ -788,12 +805,24 @@ def _extract(config: ChapterConfig, results_dir: Path | None = None) -> int:
     jobs: list[VisionJob] = []
     pending: list[VisionJob] = []
     default_results = results_dir or (_chapter_root(config) / "extraction-results")
+    ledger = AuditLedger(_work_root(config), config.chapter)
     for evidence in _evidence(config):
+        try:
+            if ledger.record(evidence.question_number).status == REVIEWED_REJECTION:
+                continue
+        except KeyError:
+            pass
         job_path = _chapter_root(config) / "extraction-jobs" / f"extract-ch{config.chapter:02d}-q{evidence.question_number:04d}.json"
         job = create_extraction_job(evidence, job_path)
         jobs.append(job)
         if not _result_is_current(default_results / f"{job.job_id}.json", job):
             pending.append(job)
+    active_job_names = {Path(job.output_path).name for job in jobs if job.output_path is not None}
+    job_directory = _chapter_root(config) / "extraction-jobs"
+    if job_directory.is_dir():
+        for stale_job in job_directory.glob(f"extract-ch{config.chapter:02d}-q*.json"):
+            if stale_job.name not in active_job_names:
+                stale_job.unlink()
     queue = _chapter_root(config) / "extraction-jobs.jsonl"
     _atomic_jsonl(queue, (_job_payload(job) for job in jobs))
     return _write_pending("extract", len(pending), queue) if pending else SUCCESS_EXIT

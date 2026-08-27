@@ -1,0 +1,7 @@
+[
+  {"id": "numeric-power-7-84", "candidate": "The remainder when 7 84 is divided by 342 is", "expected_rule": "math.detached_numeric_power"},
+  {"id": "reciprocal-square", "candidate": "2 1 x", "expected_rule": "math.flattened_fraction_power"},
+  {"id": "parenthesized-square", "candidate": "(80) 2 - (65) 2 + 81", "expected_rule": "math.detached_parenthesized_power"},
+  {"id": "option-spill", "candidate": "28700 ab 252 ba 24 12 12 ×", "expected_rule": "layout.option_spill"},
+  {"id": "valid-place-value", "candidate": "If p and q are digits, 5 p9 + 2 q8 = 817", "expected_rule": null}
+]

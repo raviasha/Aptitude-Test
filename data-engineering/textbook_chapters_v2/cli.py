@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.metadata
 import json
 import os
 import shutil
@@ -15,7 +16,7 @@ from typing import Any, Iterable, Mapping, Sequence
 
 from PIL import Image
 
-from .audit import AuditLedger, approval_dependency_fingerprint
+from .audit import AuditLedger, AuditSummary, approval_dependency_fingerprint
 from .candidates import assemble_candidate
 from .config import ChapterConfig
 from .models import (
@@ -24,6 +25,7 @@ from .models import (
     PENDING_EXTRACTION,
     PENDING_RENDER,
     PENDING_VISION,
+    REVIEWED_REJECTION,
     AuditRecord,
     CandidateRecord,
     CropBox,
@@ -55,6 +57,19 @@ ERROR_EXIT = 22
 EXTRACTOR_SCHEMA_VERSION = 1
 VERIFIER_SCHEMA_VERSION = 1
 DEFAULT_VIEWPORTS = ((1024, 768), (1600, 900))
+APPLICATION_ROOT = Path(__file__).resolve().parents[2]
+RENDER_CONTRACT_VERSION = "ksat-v2-real-frontend-contract-2"
+_RENDERER_CONTRACT_FILES = (
+    "data-engineering/textbook_chapters_v2/cli.py",
+    "data-engineering/textbook_chapters_v2/render.py",
+    "data-engineering/textbook_chapters_v2/models.py",
+    "data-engineering/textbook_chapters_v2/candidates.py",
+    "data-engineering/textbook_chapters_v2/package.py",
+    "data-engineering/textbook_chapters_v2/vision.py",
+    "data-engineering/textbook_chapters_v2/rules.py",
+    "data-engineering/textbook_chapters_v2/schemas/extraction-result.schema.json",
+    "data-engineering/textbook_chapters_v2/schemas/verification-result.schema.json",
+)
 
 
 def _atomic_json(path: Path, payload: Mapping[str, Any] | Sequence[Any]) -> None:
@@ -135,6 +150,51 @@ def _candidate_path(config: ChapterConfig) -> Path:
 
 def _published_path(config: ChapterConfig) -> Path:
     return _path_value(config, "published_path")
+
+
+def _application_renderer_manifest(config: ChapterConfig) -> dict[str, Any]:
+    root = APPLICATION_ROOT
+    static_root = root / "static"
+    if not (root / "app.py").is_file() or not static_root.is_dir():
+        raise PipelineBlocked(f"Application render contract is missing beneath {root}.")
+    application_paths = (root / "app.py", *sorted(path for path in static_root.rglob("*") if path.is_file()))
+    renderer_paths = tuple(root / relative for relative in _RENDERER_CONTRACT_FILES)
+    missing = [str(path) for path in renderer_paths if not path.is_file()]
+    if missing:
+        raise PipelineBlocked(f"Renderer contract files are missing: {missing}.")
+
+    def entries(paths: Iterable[Path]) -> list[dict[str, str]]:
+        return [
+            {"path": path.relative_to(root).as_posix(), "sha256": _sha256_path(path)}
+            for path in paths
+        ]
+
+    application_assets = entries(application_paths)
+    renderer_contract = entries(renderer_paths)
+    try:
+        playwright_version = importlib.metadata.version("playwright")
+    except importlib.metadata.PackageNotFoundError:
+        playwright_version = "unavailable"
+    runtime_policy = {
+        "python_abi": f"{sys.version_info.major}.{sys.version_info.minor}",
+        "playwright_version": playwright_version,
+        "browser_selection": ["system-edge", "playwright-chromium"],
+        "headless": True,
+        "validation_viewports": [list(viewport) for viewport in _viewports(config)],
+        "package_format_version": 3,
+        "render_contract_version": RENDER_CONTRACT_VERSION,
+    }
+    application_fingerprint = dependency_fingerprint("ksat-application-assets", application_assets)
+    renderer_fingerprint = dependency_fingerprint("ksat-renderer", renderer_contract, runtime_policy)
+    return {
+        "schema_version": 1,
+        "application_assets": application_assets,
+        "renderer_contract": renderer_contract,
+        "runtime_policy": runtime_policy,
+        "application_fingerprint": application_fingerprint,
+        "renderer_fingerprint": renderer_fingerprint,
+        "manifest_fingerprint": dependency_fingerprint(application_fingerprint, renderer_fingerprint),
+    }
 
 
 def _evidence_input_fingerprint(config: ChapterConfig) -> str:
@@ -461,9 +521,18 @@ def _candidate_cache_is_current(config: ChapterConfig) -> bool:
     try:
         evidence = {item.question_number: item for item in _evidence(config)}
         candidates = _candidates(config)
+        ledger = AuditLedger(_work_root(config), config.chapter)
     except (OSError, ValueError, TypeError, PipelineBlocked):
         return False
-    if {item.question_number for item in candidates} != set(evidence):
+    rejected: set[int] = set()
+    for number in evidence:
+        try:
+            if ledger.record(number).status == REVIEWED_REJECTION:
+                rejected.add(number)
+        except KeyError:
+            pass
+    expected = set(evidence) - rejected
+    if {item.question_number for item in candidates} != expected:
         return False
     return all(
         candidate.source_fingerprint == extraction_job_fingerprint(evidence[candidate.question_number])
@@ -472,9 +541,64 @@ def _candidate_cache_is_current(config: ChapterConfig) -> bool:
     )
 
 
+def _render_dependency_fingerprint(
+    candidates: Iterable[CandidateRecord], manifest: Mapping[str, Any]
+) -> str:
+    return dependency_fingerprint(
+        "render-state",
+        [(candidate.question_number, candidate.sha256) for candidate in sorted(candidates, key=lambda item: item.question_number)],
+        manifest,
+    )
+
+
+def _render_state(config: ChapterConfig) -> Mapping[str, Any]:
+    path = _chapter_root(config) / "state" / "renders.json"
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise PipelineBlocked(f"Required render state is unreadable: {path}") from error
+    if not isinstance(raw, dict) or not isinstance(raw.get("records"), list):
+        raise PipelineBlocked(f"Required render state is malformed: {path}")
+    return raw
+
+
 def _renders(config: ChapterConfig) -> dict[int, RenderArtifacts]:
-    return {int(item["question_number"]): _render_from_payload(item["artifacts"])
-            for item in _read_list(_chapter_root(config) / "state" / "renders.json")}
+    return {
+        int(item["question_number"]): _render_from_payload(item["artifacts"])
+        for item in _render_state(config)["records"]
+    }
+
+
+def _render_cache_is_current(config: ChapterConfig) -> bool:
+    if not _candidate_cache_is_current(config):
+        return False
+    try:
+        candidates = _candidates(config)
+        current_manifest = _application_renderer_manifest(config)
+        state = _render_state(config)
+        if state.get("application_renderer_manifest") != current_manifest:
+            return False
+        if state.get("dependency_fingerprint") != _render_dependency_fingerprint(candidates, current_manifest):
+            return False
+        renders = _renders(config)
+    except (OSError, ValueError, TypeError, KeyError, PipelineBlocked):
+        return False
+    if set(renders) != {candidate.question_number for candidate in candidates}:
+        return False
+    for rendered in renders.values():
+        declared_paths = {
+            **{f"question.{key}": value for key, value in rendered.question_screenshots.items()},
+            **{f"solution.{key}": value for key, value in rendered.solution_screenshots.items()},
+            **{f"field.{key}": value for key, value in getattr(rendered, "field_screenshots", {}).items()},
+        }
+        if set(declared_paths) != set(rendered.screenshot_hashes):
+            return False
+        if any(
+            not path.is_file() or _sha256_path(path) != rendered.screenshot_hashes[key]
+            for key, path in declared_paths.items()
+        ):
+            return False
+    return True
 
 
 def _verification_job(
@@ -650,6 +774,11 @@ def _ingest_extraction(config: ChapterConfig, results: Path) -> int:
     records: list[CandidateRecord] = []
     ledger = AuditLedger(_work_root(config), config.chapter)
     for evidence in _evidence(config):
+        try:
+            if ledger.record(evidence.question_number).status == REVIEWED_REJECTION:
+                continue
+        except KeyError:
+            pass
         job_file = _chapter_root(config) / "extraction-jobs" / f"extract-ch{config.chapter:02d}-q{evidence.question_number:04d}.json"
         job = create_extraction_job(evidence, job_file)
         result_path = results / f"{job.job_id}.json"
@@ -670,6 +799,11 @@ def _ingest_extraction(config: ChapterConfig, results: Path) -> int:
             ledger.merge_record(quarantined)
             if ledger.record(evidence.question_number).status != BLOCKED:
                 ledger.merge_record(quarantined)
+            if records:
+                _atomic_json(
+                    _chapter_root(config) / "state" / "candidates.json",
+                    [_candidate_payload(item) for item in records],
+                )
             raise
         records.append(candidate)
         current = ledger.record(evidence.question_number)
@@ -709,9 +843,12 @@ def _render(config: ChapterConfig) -> int:
         if resumed != SUCCESS_EXIT:
             return resumed
     ledger = AuditLedger(_work_root(config), config.chapter)
+    candidates = _candidates(config)
+    manifest = _application_renderer_manifest(config)
     rendered_records: list[dict[str, Any]] = []
-    for candidate in _candidates(config):
+    for candidate in candidates:
         rendered = render_candidate(candidate, {}, _viewports(config), _chapter_root(config) / "renders" / f"q{candidate.question_number:04d}")
+        rendered = replace(rendered, renderer_version=str(manifest["manifest_fingerprint"]))
         rendered_records.append({"question_number": candidate.question_number, "artifacts": _render_payload(rendered)})
         state_hashes = tuple(
             [f"unanswered.{key.removeprefix('question.')}:{value}" for key, value in rendered.screenshot_hashes.items() if key.startswith("question.")]
@@ -721,10 +858,16 @@ def _render(config: ChapterConfig) -> int:
         current = ledger.record(candidate.question_number)
         ledger.merge_record(replace(
             current, status=BLOCKED if rendered.findings else PENDING_VISION, asset_hashes=state_hashes,
-            renderer_version=rendered.renderer_version, application_asset_version=rendered.renderer_version,
+            renderer_version=str(manifest["renderer_fingerprint"]),
+            application_asset_version=str(manifest["application_fingerprint"]),
             findings=tuple(rendered.findings), reviewer="", dependency_fingerprint="", field_verdicts={},
         ))
-    _atomic_json(_chapter_root(config) / "state" / "renders.json", rendered_records)
+    _atomic_json(_chapter_root(config) / "state" / "application-renderer-manifest.json", manifest)
+    _atomic_json(_chapter_root(config) / "state" / "renders.json", {
+        "application_renderer_manifest": manifest,
+        "dependency_fingerprint": _render_dependency_fingerprint(candidates, manifest),
+        "records": rendered_records,
+    })
     if any(item["artifacts"]["findings"] for item in rendered_records):
         raise PipelineBlocked("Mechanical application rendering findings remain quarantined.")
     print(json.dumps({"status": "rendered", "records": len(rendered_records)}))
@@ -736,6 +879,10 @@ def _verify(config: ChapterConfig, results_dir: Path | None = None) -> int:
         resumed = _ingest_extraction(config, _chapter_root(config) / "extraction-results")
         if resumed != SUCCESS_EXIT:
             return resumed
+    if not _render_cache_is_current(config):
+        rendered = _render(config)
+        if rendered != SUCCESS_EXIT:
+            return rendered
     evidence = {item.question_number: item for item in _evidence(config)}
     renders = _renders(config)
     jobs: list[VisionJob] = []
@@ -759,6 +906,11 @@ def _ingest_verification(config: ChapterConfig, results: Path) -> int:
         resumed = _ingest_extraction(config, _chapter_root(config) / "extraction-results")
         if resumed != SUCCESS_EXIT:
             return resumed
+    if not _render_cache_is_current(config):
+        rendered = _render(config)
+        if rendered != SUCCESS_EXIT:
+            return rendered
+        return _verify(config, results)
     evidence = {item.question_number: item for item in _evidence(config)}
     renders = _renders(config)
     ledger = AuditLedger(_work_root(config), config.chapter)
@@ -790,10 +942,69 @@ def _ingest_verification(config: ChapterConfig, results: Path) -> int:
     return SUCCESS_EXIT
 
 
+def _release_summary(config: ChapterConfig) -> AuditSummary:
+    if not _evidence_is_current(config) or not _candidate_cache_is_current(config):
+        raise PipelineBlocked("Release gate requires current source, evidence, extraction, and candidate fingerprints.")
+    if not _render_cache_is_current(config):
+        raise PipelineBlocked("Release gate requires a fresh application render and independent vision verification.")
+    manifest = _application_renderer_manifest(config)
+    ledger = AuditLedger(_work_root(config), config.chapter)
+    included_numbers = set(range(config.question_numbers[0], config.question_numbers[1] + 1)) - set(config.intentional_exclusions)
+    for number in sorted(included_numbers):
+        try:
+            record = ledger.record(number)
+        except KeyError:
+            continue
+        if record.status == APPROVED_FOR_PUBLISH and (
+            record.renderer_version != manifest["renderer_fingerprint"]
+            or record.application_asset_version != manifest["application_fingerprint"]
+        ):
+            raise PipelineBlocked(
+                f"Question {number} approval is stale for the current application/renderer fingerprint; rerender and reverify."
+            )
+    return ledger.validate_release_gate(config)
+
+
+def _record_reviewed_rejection(
+    config: ChapterConfig, question_number: int, reviewer: str, reason: str
+) -> int:
+    reviewer = reviewer.strip()
+    reason = reason.strip()
+    included = set(range(config.question_numbers[0], config.question_numbers[1] + 1)) - set(config.intentional_exclusions)
+    if question_number not in included:
+        raise PipelineBlocked(f"Question {question_number} is not an included record in this chapter config.")
+    if not reviewer:
+        raise PipelineBlocked("A reviewed rejection requires a non-empty reviewer identity.")
+    if len(reason) < 12:
+        raise PipelineBlocked("A reviewed rejection requires a specific reason of at least 12 characters.")
+    ledger = AuditLedger(_work_root(config), config.chapter)
+    try:
+        current = ledger.record(question_number)
+    except KeyError as error:
+        raise PipelineBlocked(f"Question {question_number} has no pipeline audit record to reject.") from error
+    if current.status == REVIEWED_REJECTION:
+        if current.reviewer == reviewer and current.rejection_reason == reason:
+            print(json.dumps({"status": REVIEWED_REJECTION, "question_number": question_number}))
+            return SUCCESS_EXIT
+        raise PipelineBlocked("A reviewed rejection is already recorded; do not silently replace its review evidence.")
+    if current.status != BLOCKED:
+        raise PipelineBlocked(
+            f"Question {question_number} must first be quarantined by a field or vision gate; current status is {current.status}."
+        )
+    ledger.merge_record(replace(
+        current,
+        status=REVIEWED_REJECTION,
+        reviewer=reviewer,
+        rejection_reason=reason,
+        dependency_fingerprint="",
+        field_verdicts={},
+    ))
+    print(json.dumps({"status": REVIEWED_REJECTION, "question_number": question_number}))
+    return SUCCESS_EXIT
+
+
 def _package(config: ChapterConfig) -> int:
-    if not _evidence_is_current(config):
-        raise PipelineBlocked("Package gate requires current source/config/evidence fingerprints; run prepare and extraction again.")
-    summary = AuditLedger(_work_root(config), config.chapter).validate_release_gate(config)
+    summary = _release_summary(config)
     approved_numbers = {int(record["question_number"]) for record in summary["approved_records"]}
     approved_candidates = tuple(
         candidate for candidate in _candidates(config) if candidate.question_number in approved_numbers
@@ -812,9 +1023,7 @@ def _package(config: ChapterConfig) -> int:
 
 
 def _promote(config: ChapterConfig) -> int:
-    if not _evidence_is_current(config):
-        raise PipelineBlocked("Promotion gate requires current source/config/evidence fingerprints.")
-    summary = AuditLedger(_work_root(config), config.chapter).validate_release_gate(config)
+    summary = _release_summary(config)
     receipt = promote_candidate(_candidate_path(config), _published_path(config), summary)
     print(json.dumps({"status": "promoted", "destination": str(receipt.destination), "sha256": receipt.candidate_sha256}))
     return SUCCESS_EXIT
@@ -849,6 +1058,11 @@ def _parser() -> argparse.ArgumentParser:
         command.add_argument("--config", required=True, type=Path)
         command.add_argument("--results", required=True, type=Path)
         command.add_argument("--force", action="store_true")
+    reject = subcommands.add_parser("reject")
+    reject.add_argument("--config", required=True, type=Path)
+    reject.add_argument("--question", required=True, type=int)
+    reject.add_argument("--reviewer", required=True)
+    reject.add_argument("--reason", required=True)
     return parser
 
 
@@ -856,13 +1070,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         arguments = _parser().parse_args(argv)
         config = ChapterConfig.load(arguments.config)
-        if arguments.force:
+        if getattr(arguments, "force", False):
             _clear_cache(config, arguments.command)
         handlers = {
             "prepare": lambda: _prepare(config), "extract": lambda: _extract(config),
             "ingest-extraction": lambda: _ingest_extraction(config, arguments.results.resolve()),
             "build": lambda: _build(config), "render": lambda: _render(config), "verify": lambda: _verify(config),
             "ingest-verification": lambda: _ingest_verification(config, arguments.results.resolve()),
+            "reject": lambda: _record_reviewed_rejection(
+                config, arguments.question, arguments.reviewer, arguments.reason
+            ),
             "package": lambda: _package(config), "promote": lambda: _promote(config), "run": lambda: _run(config),
         }
         return handlers[arguments.command]()

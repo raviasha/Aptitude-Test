@@ -107,6 +107,27 @@ boundary. It prints a machine-readable summary such as:
 Resume `run` after the named results have been ingested. `run` packages an
 all-green chapter but deliberately does not promote it.
 
+## Recording a reviewed rejection
+
+A record can become a reviewed rejection only after deterministic field checks
+or vision verification have quarantined it with status `blocked`. An operator
+must then provide both their identity and a concrete reason:
+
+```powershell
+python -m textbook_chapters_v2 reject `
+  --config data-engineering/textbook_chapters_v2/configs/chapter-001.json `
+  --question 85 `
+  --reviewer "Ravi Asha" `
+  --reason "The source option diagram is clipped and cannot be represented faithfully."
+```
+
+The command refuses pending, rendered, or approved records, so it cannot be
+used to bypass extraction, field, or vision gates. Re-running the same command
+is idempotent; changing existing review evidence is blocked. After recording
+the rejection, resume `ingest-extraction` or `run`. The rejected record remains
+in the authoritative audit metadata while only approved candidates enter the
+question JSONL.
+
 ## Exit codes and safety gates
 
 - `0`: the requested deterministic stage completed.
@@ -126,6 +147,16 @@ dependency invalidates only the downstream cache and returns a
 Reviewed rejections remain documented in the package audit metadata, but only
 the authoritative ledger's `approved_records` are written to the published
 question JSONL.
+
+Every render also persists an application/renderer manifest. It hashes the real
+`app.py`, every static frontend asset, the V2 renderer and package/vision
+contract code, and both result schemas. Its deterministic runtime policy binds
+the Python ABI, Playwright version, browser-selection policy, viewports, package
+format, and render-contract version without recording machine-specific browser
+paths. `renders.json` is content-addressed to that manifest and the exact
+candidate hashes. A changed asset, renderer contract, runtime policy, candidate,
+or screenshot forces a fresh render and fresh vision result; `package` and
+`promote` refuse approvals made against an earlier fingerprint.
 
 `--force` only clears disposable cache entries under the configured chapter
 work directory. It cannot alter the audit ledger, turn a failed vision verdict

@@ -20,7 +20,7 @@ if str(WORKSPACE_ROOT) not in sys.path:
     sys.path.insert(0, str(WORKSPACE_ROOT))
 
 from textbook_chapters_v2.audit import AuditLedger, approval_dependency_fingerprint
-from textbook_chapters_v2.cli import BLOCKED_EXIT, PENDING_VISION_EXIT, main
+from textbook_chapters_v2.cli import BLOCKED_EXIT, PENDING_VISION_EXIT, _application_renderer_manifest, main
 from textbook_chapters_v2.config import ChapterConfig
 from textbook_chapters_v2.models import AuditRecord, CandidateRecord, CropBox, PipelineBlocked, RecordEvidence, RenderArtifacts, SourceCrop
 from textbook_chapters_v2.promote import promote_candidate
@@ -41,6 +41,26 @@ class WorkflowCliTests(unittest.TestCase):
         self.candidate = self.root / "staging" / "candidate.zip"
         self.source_pdf = self.root / "source.pdf"
         self.source_pdf.write_bytes(b"controlled-test-pdf")
+        self.application_root = self.root / "application"
+        application_files = (
+            "app.py", "static/index.html", "static/app.js", "static/styles.css",
+            "static/branding.css", "static/math.css",
+            "data-engineering/textbook_chapters_v2/cli.py",
+            "data-engineering/textbook_chapters_v2/render.py",
+            "data-engineering/textbook_chapters_v2/models.py",
+            "data-engineering/textbook_chapters_v2/candidates.py",
+            "data-engineering/textbook_chapters_v2/package.py",
+            "data-engineering/textbook_chapters_v2/vision.py",
+            "data-engineering/textbook_chapters_v2/rules.py",
+            "data-engineering/textbook_chapters_v2/schemas/extraction-result.schema.json",
+            "data-engineering/textbook_chapters_v2/schemas/verification-result.schema.json",
+        )
+        for relative in application_files:
+            path = self.application_root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(f"controlled {relative}\n", encoding="utf-8")
+        self.application_root_patch = patch("textbook_chapters_v2.cli.APPLICATION_ROOT", self.application_root)
+        self.application_root_patch.start()
         self.config_path = self.root / "chapter-007.json"
         self.config_path.write_text(
             json.dumps(
@@ -62,12 +82,14 @@ class WorkflowCliTests(unittest.TestCase):
         self.config = ChapterConfig.load(self.config_path)
 
     def tearDown(self) -> None:
+        self.application_root_patch.stop()
         self.temporary_directory.cleanup()
 
     def _pending_record(self) -> AuditRecord:
         return AuditRecord(chapter=7, question_number=84, status="pending_extraction")
 
     def _approved_record(self, candidate_sha256: str = "d" * 64) -> AuditRecord:
+        manifest = _application_renderer_manifest(self.config)
         record = AuditRecord(
             chapter=7,
             question_number=84,
@@ -78,8 +100,8 @@ class WorkflowCliTests(unittest.TestCase):
             policy_version=1,
             extractor_schema_version=1,
             verifier_schema_version=1,
-            renderer_version="renderer-1",
-            application_asset_version="application-1",
+            renderer_version=manifest["renderer_fingerprint"],
+            application_asset_version=manifest["application_fingerprint"],
             reviewer="independent-vision-reviewer",
             field_verdicts={
                 "question": "pass",
@@ -190,17 +212,17 @@ class WorkflowCliTests(unittest.TestCase):
             encoding="utf-8",
         )
 
-    def _text_candidate(self, question_number: int) -> CandidateRecord:
+    def _text_candidate(self, question_number: int, source_fingerprint: str = "b" * 64) -> CandidateRecord:
         payload = {
             "chapter": 7, "question_number": question_number, "question_text": f"Question {question_number}",
             "options": {"A": "1", "B": "2", "C": "3", "D": "4"}, "correct_answer": "B",
             "answer_key_answer": "B", "answer_key_crop_sha256": "a" * 64,
-            "answer_key_job_fingerprint": "b" * 64, "solution_steps": ["The answer is 2."],
+            "answer_key_job_fingerprint": source_fingerprint, "solution_steps": ["The answer is 2."],
             "representation": {
                 "question": "text", "options": {"A": "text", "B": "text", "C": "text", "D": "text"},
                 "solution": "text", "media": {},
             },
-            "source_fingerprint": "b" * 64,
+            "source_fingerprint": source_fingerprint,
         }
         return CandidateRecord(**payload, sha256=dependency_fingerprint(payload))
 
@@ -386,19 +408,67 @@ class WorkflowCliTests(unittest.TestCase):
         )
         with patch("textbook_chapters_v2.cli.prepare_source_evidence", return_value=[first, second]):
             self.assertEqual(main(["prepare", "--config", str(self.config_path)]), 0)
-        approved = self._text_candidate(84)
-        rejected = self._text_candidate(85)
-        state = self.work_root / "chapter-007" / "state"
-        state.mkdir(parents=True, exist_ok=True)
-        state.joinpath("candidates.json").write_bytes(canonical_json([
-            self._candidate_state(approved), self._candidate_state(rejected),
-        ]))
+        self.assertEqual(main(["extract", "--config", str(self.config_path)]), PENDING_VISION_EXIT)
+        jobs = {
+            int(path.stem.rsplit("q", 1)[1]): json.loads(path.read_text(encoding="utf-8"))
+            for path in (self.work_root / "chapter-007" / "extraction-jobs").glob("*.json")
+        }
+        results = self.root / "mixed-results"
+        results.mkdir()
+        for number, job in jobs.items():
+            answer_hash = next(source["sha256"] for source in job["sources"] if source["role"] == "answer_key")
+            (results / f"extract-ch07-q{number:04d}.json").write_text(json.dumps({
+                "job_id": job["job_id"], "job_fingerprint": job["job_fingerprint"],
+                "question_text": f"Question {number}", "options": {"A": "1", "B": "2", "C": "3", "D": "4"},
+                "correct_answer": "B",
+                "answer_key": {
+                    "correct_answer": "B" if number == 84 else "D", "crop_sha256": answer_hash,
+                    "job_fingerprint": job["job_fingerprint"],
+                },
+                "solution_steps": ["The textbook solution is reviewed."],
+                "representation": {
+                    "question": "text", "options": {label: "text" for label in "ABCD"}, "solution": "text",
+                },
+                "differences_from_legacy": [], "reviewer": "vision-extractor",
+            }), encoding="utf-8")
+        self.assertEqual(main([
+            "ingest-extraction", "--config", str(self.config_path), "--results", str(results),
+        ]), BLOCKED_EXIT)
         ledger = AuditLedger(self.work_root, 7)
-        ledger.merge_record(self._approved_record(approved.sha256))
-        ledger.merge_record(AuditRecord(
-            chapter=7, question_number=85, status="reviewed_rejection", reviewer="source-reviewer",
-            rejection_reason="The source record is intentionally excluded after review.",
-        ))
+        self.assertEqual(main([
+            "reject", "--config", str(self.config_path), "--question", "84",
+            "--reviewer", "source-reviewer", "--reason", "Cannot bypass an approved record.",
+        ]), BLOCKED_EXIT)
+        self.assertEqual(main([
+            "reject", "--config", str(self.config_path), "--question", "85",
+            "--reviewer", "source-reviewer",
+            "--reason", "The source layout is not safely representable after field-level review.",
+        ]), 0)
+        self.assertEqual(main([
+            "ingest-extraction", "--config", str(self.config_path), "--results", str(results),
+        ]), 0)
+        approved_sha256 = json.loads(
+            (self.work_root / "chapter-007" / "state" / "candidates.json").read_text(encoding="utf-8")
+        )[0]["sha256"]
+        unanswered = self.root / "mixed-unanswered.png"
+        submitted = self.root / "mixed-submitted.png"
+        field = self.root / "mixed-field.png"
+        unanswered.write_bytes(b"mixed-unanswered")
+        submitted.write_bytes(b"mixed-submitted")
+        field.write_bytes(b"mixed-field")
+        rendered = BrowserRenderArtifacts(
+            question_screenshots={"desktop": unanswered}, solution_screenshots={"desktop": submitted},
+            screenshot_hashes={
+                "question.desktop": _sha256(unanswered), "solution.desktop": _sha256(submitted),
+                "field.unanswered.desktop.question": _sha256(field),
+            },
+            renderer_version="controlled-mixed-renderer",
+            field_screenshots={"unanswered.desktop.question": field},
+        )
+        with patch("textbook_chapters_v2.cli.render_candidate", return_value=rendered):
+            self.assertEqual(main(["render", "--config", str(self.config_path)]), 0)
+        ledger = AuditLedger(self.work_root, 7)
+        ledger.merge_record(self._approved_record(approved_sha256))
 
         self.assertEqual(main(["package", "--config", str(self.config_path)]), 0)
         with zipfile.ZipFile(self.candidate) as archive:
@@ -525,6 +595,29 @@ class WorkflowCliTests(unittest.TestCase):
         )
         field_sources = [source for source in verification_job["sources"] if source["kind"] == "field_render"]
         self.assertEqual(field_sources[0]["sha256"], _sha256(question_field))
+        styles = self.application_root / "static" / "styles.css"
+        styles.write_text("controlled styles changed once\n", encoding="utf-8")
+        with patch("textbook_chapters_v2.cli.render_candidate", return_value=rendered) as rerender:
+            self.assertEqual(main(["verify", "--config", str(self.config_path)]), PENDING_VISION_EXIT)
+        self.assertEqual(rerender.call_count, 1)
+        changed_verification_job = json.loads(
+            (self.work_root / "chapter-007" / "verification-jobs.jsonl").read_text(encoding="utf-8").splitlines()[0]
+        )
+        self.assertNotEqual(changed_verification_job["job_fingerprint"], verification_job["job_fingerprint"])
+        verification_job = changed_verification_job
+        question_field.write_bytes(b"question-field-render-refreshed")
+        refreshed_render = replace(rendered, screenshot_hashes={
+            "question.desktop": _sha256(unanswered), "solution.desktop": _sha256(submitted),
+            "field.unanswered.desktop.question": _sha256(question_field),
+        })
+        with patch("textbook_chapters_v2.cli.render_candidate", return_value=refreshed_render) as rerender:
+            self.assertEqual(main(["verify", "--config", str(self.config_path)]), PENDING_VISION_EXIT)
+        self.assertEqual(rerender.call_count, 1)
+        refreshed_verification_job = json.loads(
+            (self.work_root / "chapter-007" / "verification-jobs.jsonl").read_text(encoding="utf-8").splitlines()[0]
+        )
+        self.assertNotEqual(refreshed_verification_job["job_fingerprint"], verification_job["job_fingerprint"])
+        verification_job = refreshed_verification_job
         verification_results = self.work_root / "chapter-007" / "verification-results"
         verification_results.mkdir()
         (verification_results / "verify-ch07-q0084.json").write_text(json.dumps({
@@ -539,8 +632,18 @@ class WorkflowCliTests(unittest.TestCase):
             "verdicts": verdicts, "differences": {}, "reviewer": "independent-vision-verifier",
         }), encoding="utf-8")
         self.assertEqual(main(["ingest-verification", "--config", str(self.config_path), "--results", str(verification_results)]), 0)
+        styles.write_text("controlled styles changed twice\n", encoding="utf-8")
+        self.assertEqual(main(["package", "--config", str(self.config_path)]), BLOCKED_EXIT)
+        self.assertFalse(self.candidate.exists())
+        styles.write_text("controlled styles changed once\n", encoding="utf-8")
         self.assertEqual(main(["package", "--config", str(self.config_path)]), 0)
         self.assertTrue(self.candidate.is_file())
+        renderer_contract = self.application_root / "data-engineering" / "textbook_chapters_v2" / "render.py"
+        original_renderer_contract = renderer_contract.read_text(encoding="utf-8")
+        renderer_contract.write_text("controlled renderer contract changed\n", encoding="utf-8")
+        self.assertEqual(main(["promote", "--config", str(self.config_path)]), BLOCKED_EXIT)
+        self.assertFalse(self.published.exists())
+        renderer_contract.write_text(original_renderer_contract, encoding="utf-8")
         self.assertEqual(main(["promote", "--config", str(self.config_path)]), 0)
         self.assertEqual(_sha256(self.published), _sha256(self.candidate))
 

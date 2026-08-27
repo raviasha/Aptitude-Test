@@ -37,7 +37,7 @@ from .models import (
 )
 from .package import build_candidate_package
 from .promote import promote_candidate
-from .render import RenderArtifacts as BrowserRenderArtifacts, render_candidate
+from .render import RenderArtifacts as BrowserRenderArtifacts, _launch_browser, render_candidate
 from .rules import POLICY_VERSION, validate_record
 from .source import prepare_source_evidence
 from .store import canonical_json, dependency_fingerprint
@@ -152,12 +152,38 @@ def _published_path(config: ChapterConfig) -> Path:
     return _path_value(config, "published_path")
 
 
+def _current_browser_identity() -> str:
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError as error:
+        raise PipelineBlocked("Playwright is required to fingerprint the selected validation browser runtime.") from error
+    try:
+        with sync_playwright() as playwright:
+            browser, selected = _launch_browser(playwright)
+            try:
+                version = " ".join(str(browser.version).split()).casefold()
+                engine = "microsoft-edge" if selected.startswith("Microsoft Edge") else "playwright-chromium"
+            finally:
+                browser.close()
+    except Exception as error:
+        if isinstance(error, PipelineBlocked):
+            raise
+        raise PipelineBlocked(f"Cannot fingerprint the selected validation browser runtime: {error}") from error
+    if not version:
+        raise PipelineBlocked("Selected validation browser did not report a version identity.")
+    return f"{engine}:{version}"
+
+
 def _application_renderer_manifest(config: ChapterConfig) -> dict[str, Any]:
     root = APPLICATION_ROOT
     static_root = root / "static"
     if not (root / "app.py").is_file() or not static_root.is_dir():
         raise PipelineBlocked(f"Application render contract is missing beneath {root}.")
-    application_paths = (root / "app.py", *sorted(path for path in static_root.rglob("*") if path.is_file()))
+    startup_paths = (root / "app.py", root / "question_media.py", root / "chapter_repairs.py")
+    missing_startup = [str(path) for path in startup_paths if not path.is_file()]
+    if missing_startup:
+        raise PipelineBlocked(f"Validation server startup/import files are missing: {missing_startup}.")
+    application_paths = (*startup_paths, *sorted(path for path in static_root.rglob("*") if path.is_file()))
     renderer_paths = tuple(root / relative for relative in _RENDERER_CONTRACT_FILES)
     missing = [str(path) for path in renderer_paths if not path.is_file()]
     if missing:
@@ -179,6 +205,7 @@ def _application_renderer_manifest(config: ChapterConfig) -> dict[str, Any]:
         "python_abi": f"{sys.version_info.major}.{sys.version_info.minor}",
         "playwright_version": playwright_version,
         "browser_selection": ["system-edge", "playwright-chromium"],
+        "selected_browser_identity": _current_browser_identity(),
         "headless": True,
         "validation_viewports": [list(viewport) for viewport in _viewports(config)],
         "package_format_version": 3,
@@ -542,12 +569,25 @@ def _candidate_cache_is_current(config: ChapterConfig) -> bool:
 
 
 def _render_dependency_fingerprint(
-    candidates: Iterable[CandidateRecord], manifest: Mapping[str, Any]
+    candidates: Iterable[CandidateRecord],
+    manifest: Mapping[str, Any],
+    rendered_records: Iterable[Mapping[str, Any]],
 ) -> str:
+    normalized_render_hashes: list[dict[str, Any]] = []
+    for item in sorted(rendered_records, key=lambda value: int(value["question_number"])):
+        artifacts = item.get("artifacts")
+        hashes = artifacts.get("screenshot_hashes") if isinstance(artifacts, Mapping) else None
+        if not isinstance(hashes, Mapping) or not hashes:
+            raise PipelineBlocked("Render state needs exact full-card and field screenshot hashes.")
+        normalized_render_hashes.append({
+            "question_number": int(item["question_number"]),
+            "screenshot_hashes": {str(key): str(value) for key, value in sorted(hashes.items())},
+        })
     return dependency_fingerprint(
         "render-state",
         [(candidate.question_number, candidate.sha256) for candidate in sorted(candidates, key=lambda item: item.question_number)],
         manifest,
+        normalized_render_hashes,
     )
 
 
@@ -578,7 +618,9 @@ def _render_cache_is_current(config: ChapterConfig) -> bool:
         state = _render_state(config)
         if state.get("application_renderer_manifest") != current_manifest:
             return False
-        if state.get("dependency_fingerprint") != _render_dependency_fingerprint(candidates, current_manifest):
+        if state.get("dependency_fingerprint") != _render_dependency_fingerprint(
+            candidates, current_manifest, state["records"]
+        ):
             return False
         renders = _renders(config)
     except (OSError, ValueError, TypeError, KeyError, PipelineBlocked):
@@ -599,6 +641,23 @@ def _render_cache_is_current(config: ChapterConfig) -> bool:
         ):
             return False
     return True
+
+
+def _render_asset_hashes(rendered: RenderArtifacts) -> tuple[str, ...]:
+    hashes = rendered.screenshot_hashes
+    return tuple(
+        [
+            f"unanswered.{key.removeprefix('question.')}:" + hashes[key]
+            for key in sorted(hashes)
+            if key.startswith("question.")
+        ]
+        + [
+            f"submitted.{key.removeprefix('solution.')}:" + hashes[key]
+            for key in sorted(hashes)
+            if key.startswith("solution.")
+        ]
+        + [hashes[key] for key in sorted(hashes) if key.startswith("field.")]
+    )
 
 
 def _verification_job(
@@ -850,11 +909,7 @@ def _render(config: ChapterConfig) -> int:
         rendered = render_candidate(candidate, {}, _viewports(config), _chapter_root(config) / "renders" / f"q{candidate.question_number:04d}")
         rendered = replace(rendered, renderer_version=str(manifest["manifest_fingerprint"]))
         rendered_records.append({"question_number": candidate.question_number, "artifacts": _render_payload(rendered)})
-        state_hashes = tuple(
-            [f"unanswered.{key.removeprefix('question.')}:{value}" for key, value in rendered.screenshot_hashes.items() if key.startswith("question.")]
-            + [f"submitted.{key.removeprefix('solution.')}:{value}" for key, value in rendered.screenshot_hashes.items() if key.startswith("solution.")]
-            + [value for key, value in rendered.screenshot_hashes.items() if key.startswith("field.")]
-        )
+        state_hashes = _render_asset_hashes(rendered)
         current = ledger.record(candidate.question_number)
         ledger.merge_record(replace(
             current, status=BLOCKED if rendered.findings else PENDING_VISION, asset_hashes=state_hashes,
@@ -865,7 +920,7 @@ def _render(config: ChapterConfig) -> int:
     _atomic_json(_chapter_root(config) / "state" / "application-renderer-manifest.json", manifest)
     _atomic_json(_chapter_root(config) / "state" / "renders.json", {
         "application_renderer_manifest": manifest,
-        "dependency_fingerprint": _render_dependency_fingerprint(candidates, manifest),
+        "dependency_fingerprint": _render_dependency_fingerprint(candidates, manifest, rendered_records),
         "records": rendered_records,
     })
     if any(item["artifacts"]["findings"] for item in rendered_records):
@@ -948,6 +1003,7 @@ def _release_summary(config: ChapterConfig) -> AuditSummary:
     if not _render_cache_is_current(config):
         raise PipelineBlocked("Release gate requires a fresh application render and independent vision verification.")
     manifest = _application_renderer_manifest(config)
+    renders = _renders(config)
     ledger = AuditLedger(_work_root(config), config.chapter)
     included_numbers = set(range(config.question_numbers[0], config.question_numbers[1] + 1)) - set(config.intentional_exclusions)
     for number in sorted(included_numbers):
@@ -961,6 +1017,10 @@ def _release_summary(config: ChapterConfig) -> AuditSummary:
         ):
             raise PipelineBlocked(
                 f"Question {number} approval is stale for the current application/renderer fingerprint; rerender and reverify."
+            )
+        if record.status == APPROVED_FOR_PUBLISH and record.asset_hashes != _render_asset_hashes(renders[number]):
+            raise PipelineBlocked(
+                f"Question {number} approval does not match the current exact full-card and field render evidence; reverify."
             )
     return ledger.validate_release_gate(config)
 

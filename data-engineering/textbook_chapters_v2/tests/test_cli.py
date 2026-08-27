@@ -20,7 +20,14 @@ if str(WORKSPACE_ROOT) not in sys.path:
     sys.path.insert(0, str(WORKSPACE_ROOT))
 
 from textbook_chapters_v2.audit import AuditLedger, approval_dependency_fingerprint
-from textbook_chapters_v2.cli import BLOCKED_EXIT, PENDING_VISION_EXIT, _application_renderer_manifest, main
+from textbook_chapters_v2.cli import (
+    BLOCKED_EXIT,
+    PENDING_VISION_EXIT,
+    _application_renderer_manifest,
+    _candidates,
+    _render_dependency_fingerprint,
+    main,
+)
 from textbook_chapters_v2.config import ChapterConfig
 from textbook_chapters_v2.models import AuditRecord, CandidateRecord, CropBox, PipelineBlocked, RecordEvidence, RenderArtifacts, SourceCrop
 from textbook_chapters_v2.promote import promote_candidate
@@ -43,7 +50,8 @@ class WorkflowCliTests(unittest.TestCase):
         self.source_pdf.write_bytes(b"controlled-test-pdf")
         self.application_root = self.root / "application"
         application_files = (
-            "app.py", "static/index.html", "static/app.js", "static/styles.css",
+            "app.py", "question_media.py", "chapter_repairs.py",
+            "static/index.html", "static/app.js", "static/styles.css",
             "static/branding.css", "static/math.css",
             "data-engineering/textbook_chapters_v2/cli.py",
             "data-engineering/textbook_chapters_v2/render.py",
@@ -61,6 +69,10 @@ class WorkflowCliTests(unittest.TestCase):
             path.write_text(f"controlled {relative}\n", encoding="utf-8")
         self.application_root_patch = patch("textbook_chapters_v2.cli.APPLICATION_ROOT", self.application_root)
         self.application_root_patch.start()
+        self.browser_identity_patch = patch(
+            "textbook_chapters_v2.cli._current_browser_identity", return_value="controlled-browser:1.0"
+        )
+        self.browser_identity = self.browser_identity_patch.start()
         self.config_path = self.root / "chapter-007.json"
         self.config_path.write_text(
             json.dumps(
@@ -82,6 +94,7 @@ class WorkflowCliTests(unittest.TestCase):
         self.config = ChapterConfig.load(self.config_path)
 
     def tearDown(self) -> None:
+        self.browser_identity_patch.stop()
         self.application_root_patch.stop()
         self.temporary_directory.cleanup()
 
@@ -245,6 +258,32 @@ class WorkflowCliTests(unittest.TestCase):
         queue = self.work_root / "chapter-007" / "extraction-jobs.jsonl"
         self.assertTrue(queue.is_file())
         self.assertFalse(self.published.exists())
+
+    def test_manifest_hashes_validation_imports_and_normalized_selected_browser_identity(self) -> None:
+        with patch(
+            "textbook_chapters_v2.cli._current_browser_identity", return_value="microsoft-edge:123.0.1"
+        ):
+            first = _application_renderer_manifest(self.config)
+        application_paths = {item["path"] for item in first["application_assets"]}
+        self.assertIn("question_media.py", application_paths)
+        self.assertIn("chapter_repairs.py", application_paths)
+        self.assertNotIn(str(self.application_root), json.dumps(first))
+
+        (self.application_root / "question_media.py").write_text("changed question media import\n", encoding="utf-8")
+        with patch(
+            "textbook_chapters_v2.cli._current_browser_identity", return_value="microsoft-edge:123.0.1"
+        ):
+            changed_import = _application_renderer_manifest(self.config)
+        self.assertNotEqual(changed_import["application_fingerprint"], first["application_fingerprint"])
+
+        with patch(
+            "textbook_chapters_v2.cli._current_browser_identity", return_value="playwright-chromium:124.0.2"
+        ):
+            changed_browser = _application_renderer_manifest(self.config)
+        self.assertNotEqual(changed_browser["renderer_fingerprint"], changed_import["renderer_fingerprint"])
+        self.assertEqual(
+            changed_browser["runtime_policy"]["selected_browser_identity"], "playwright-chromium:124.0.2"
+        )
 
     def test_changed_source_or_config_reprepares_and_invalidates_existing_extraction_result(self) -> None:
         evidence = self._prepared_evidence()
@@ -468,7 +507,21 @@ class WorkflowCliTests(unittest.TestCase):
         with patch("textbook_chapters_v2.cli.render_candidate", return_value=rendered):
             self.assertEqual(main(["render", "--config", str(self.config_path)]), 0)
         ledger = AuditLedger(self.work_root, 7)
-        ledger.merge_record(self._approved_record(approved_sha256))
+        approved_record = replace(
+            ledger.record(84),
+            status="approved_for_publish",
+            candidate_sha256=approved_sha256,
+            reviewer="independent-vision-reviewer",
+            findings=(),
+            field_verdicts={
+                "question": "pass", "options.A": "pass", "options.B": "pass", "options.C": "pass",
+                "options.D": "pass", "answer_mapping": "pass", "solution": "pass",
+                "readability": "pass", "clipping": "pass",
+            },
+        )
+        ledger.merge_record(replace(
+            approved_record, dependency_fingerprint=approval_dependency_fingerprint(approved_record)
+        ))
 
         self.assertEqual(main(["package", "--config", str(self.config_path)]), 0)
         with zipfile.ZipFile(self.candidate) as archive:
@@ -632,6 +685,46 @@ class WorkflowCliTests(unittest.TestCase):
             "verdicts": verdicts, "differences": {}, "reviewer": "independent-vision-verifier",
         }), encoding="utf-8")
         self.assertEqual(main(["ingest-verification", "--config", str(self.config_path), "--results", str(verification_results)]), 0)
+        (self.application_root / "static" / "branding.css").write_text(
+            "controlled branding changed after approval\n", encoding="utf-8"
+        )
+        unanswered.write_bytes(b"unanswered-render-after-approval")
+        question_field.write_bytes(b"question-field-render-after-approval")
+        post_approval_render = replace(refreshed_render, screenshot_hashes={
+            "question.desktop": _sha256(unanswered), "solution.desktop": _sha256(submitted),
+            "field.unanswered.desktop.question": _sha256(question_field),
+        })
+        with patch("textbook_chapters_v2.cli.render_candidate", return_value=post_approval_render):
+            self.assertEqual(main(["render", "--config", str(self.config_path)]), 0)
+        rerendered_record = AuditLedger(self.work_root, 7).record(84)
+        self.assertEqual(rerendered_record.status, "pending_vision")
+        self.assertIn(_sha256(question_field), rerendered_record.asset_hashes)
+        self.assertEqual(main(["verify", "--config", str(self.config_path)]), PENDING_VISION_EXIT)
+        verification_job = json.loads(
+            (self.work_root / "chapter-007" / "verification-jobs.jsonl").read_text(encoding="utf-8").splitlines()[0]
+        )
+        (verification_results / "verify-ch07-q0084.json").write_text(json.dumps({
+            "job_id": verification_job["job_id"], "job_fingerprint": verification_job["job_fingerprint"],
+            "verdicts": verdicts, "differences": {}, "reviewer": "independent-vision-verifier",
+        }), encoding="utf-8")
+        self.assertEqual(main([
+            "ingest-verification", "--config", str(self.config_path), "--results", str(verification_results),
+        ]), 0)
+        self.assertEqual(AuditLedger(self.work_root, 7).record(84).status, "approved_for_publish")
+        render_state_path = self.work_root / "chapter-007" / "state" / "renders.json"
+        original_render_state = render_state_path.read_bytes()
+        original_unanswered = unanswered.read_bytes()
+        mutated_state = json.loads(original_render_state)
+        unanswered.write_bytes(b"regenerated-unanswered-without-reverification")
+        mutated_state["records"][0]["artifacts"]["screenshot_hashes"]["question.desktop"] = _sha256(unanswered)
+        mutated_state["dependency_fingerprint"] = _render_dependency_fingerprint(
+            _candidates(self.config), mutated_state["application_renderer_manifest"], mutated_state["records"]
+        )
+        render_state_path.write_bytes(canonical_json(mutated_state))
+        self.assertEqual(main(["package", "--config", str(self.config_path)]), BLOCKED_EXIT)
+        self.assertFalse(self.candidate.exists())
+        unanswered.write_bytes(original_unanswered)
+        render_state_path.write_bytes(original_render_state)
         styles.write_text("controlled styles changed twice\n", encoding="utf-8")
         self.assertEqual(main(["package", "--config", str(self.config_path)]), BLOCKED_EXIT)
         self.assertFalse(self.candidate.exists())
@@ -644,6 +737,10 @@ class WorkflowCliTests(unittest.TestCase):
         self.assertEqual(main(["promote", "--config", str(self.config_path)]), BLOCKED_EXIT)
         self.assertFalse(self.published.exists())
         renderer_contract.write_text(original_renderer_contract, encoding="utf-8")
+        self.browser_identity.return_value = "controlled-browser:2.0"
+        self.assertEqual(main(["promote", "--config", str(self.config_path)]), BLOCKED_EXIT)
+        self.assertFalse(self.published.exists())
+        self.browser_identity.return_value = "controlled-browser:1.0"
         self.assertEqual(main(["promote", "--config", str(self.config_path)]), 0)
         self.assertEqual(_sha256(self.published), _sha256(self.candidate))
 

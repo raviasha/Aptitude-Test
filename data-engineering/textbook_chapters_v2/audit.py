@@ -15,6 +15,7 @@ from typing import Any, Iterator, Mapping
 from .config import ChapterConfig
 from .models import (
     APPROVED_FOR_PUBLISH,
+    PENDING_VISION,
     REVIEWED_REJECTION,
     AuditRecord,
     FailureClassification,
@@ -329,6 +330,16 @@ class AuditLedger:
                 field_verdicts={},
             )
         if changed & render_dependencies:
+            if incoming.status == PENDING_VISION and incoming.asset_hashes:
+                return replace(
+                    incoming,
+                    status=PENDING_VISION,
+                    reviewer="",
+                    rejection_reason="",
+                    dependency_fingerprint="",
+                    findings=tuple(incoming.findings),
+                    field_verdicts={},
+                )
             return replace(
                 incoming,
                 status="pending_render",

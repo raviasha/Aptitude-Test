@@ -248,6 +248,34 @@ class AuditLedgerTests(unittest.TestCase):
                 statuses = {item["question_number"]: item["status"] for item in persisted["records"]}
                 self.assertEqual(statuses, {84: expected_status, 85: "approved_for_publish"})
 
+    def test_completed_rerender_retains_new_assets_and_advances_directly_to_pending_vision(self) -> None:
+        ledger = AuditLedger(self.root / "one-cycle" / "work", 7)
+        previous = self._approved(84)
+        ledger.merge_record(previous)
+        fresh_assets = (
+            "unanswered.desktop:" + "3" * 64,
+            "submitted.desktop:" + "4" * 64,
+            "5" * 64,
+        )
+        rerendered = replace(
+            previous,
+            status="pending_vision",
+            asset_hashes=fresh_assets,
+            renderer_version="playwright-2",
+            application_asset_version="ksat-ui-2",
+            reviewer="",
+            dependency_fingerprint="",
+            field_verdicts={},
+        )
+
+        ledger.merge_record(rerendered)
+
+        current = ledger.record(84)
+        self.assertEqual(current.status, "pending_vision")
+        self.assertEqual(current.asset_hashes, fresh_assets)
+        self.assertEqual(current.renderer_version, "playwright-2")
+        self.assertEqual(current.application_asset_version, "ksat-ui-2")
+
 
 if __name__ == "__main__":
     unittest.main()

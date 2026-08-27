@@ -149,14 +149,18 @@ the authoritative ledger's `approved_records` are written to the published
 question JSONL.
 
 Every render also persists an application/renderer manifest. It hashes the real
-`app.py`, every static frontend asset, the V2 renderer and package/vision
-contract code, and both result schemas. Its deterministic runtime policy binds
-the Python ABI, Playwright version, browser-selection policy, viewports, package
-format, and render-contract version without recording machine-specific browser
-paths. `renders.json` is content-addressed to that manifest and the exact
-candidate hashes. A changed asset, renderer contract, runtime policy, candidate,
-or screenshot forces a fresh render and fresh vision result; `package` and
-`promote` refuse approvals made against an earlier fingerprint.
+`app.py`, its first-party `question_media.py` and `chapter_repairs.py` startup
+imports, every static frontend asset, the V2 renderer and package/vision contract
+code, and both result schemas. Its deterministic runtime data binds the Python
+ABI, Playwright version, browser-selection policy, the actually selected browser
+engine and version, viewports, package format, and render-contract version
+without recording machine-specific browser paths. `renders.json` is
+content-addressed to that manifest, the exact candidate hashes, and normalized
+per-record hashes for every full-card and field screenshot. Release validation
+also compares those hashes with each approved audit record. A changed asset,
+renderer contract, browser runtime, candidate, or screenshot therefore forces a
+fresh render and fresh vision result; `package` and `promote` refuse approvals
+made against earlier evidence.
 
 `--force` only clears disposable cache entries under the configured chapter
 work directory. It cannot alter the audit ledger, turn a failed vision verdict

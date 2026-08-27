@@ -37,7 +37,7 @@ from .models import (
 )
 from .package import build_candidate_package
 from .promote import promote_candidate
-from .render import RenderArtifacts as BrowserRenderArtifacts, _launch_browser, render_candidate
+from .render import RenderArtifacts as BrowserRenderArtifacts, render_candidate
 from .rules import POLICY_VERSION, validate_record
 from .source import prepare_source_evidence
 from .store import canonical_json, dependency_fingerprint
@@ -152,29 +152,9 @@ def _published_path(config: ChapterConfig) -> Path:
     return _path_value(config, "published_path")
 
 
-def _current_browser_identity() -> str:
-    try:
-        from playwright.sync_api import sync_playwright
-    except ImportError as error:
-        raise PipelineBlocked("Playwright is required to fingerprint the selected validation browser runtime.") from error
-    try:
-        with sync_playwright() as playwright:
-            browser, selected = _launch_browser(playwright)
-            try:
-                version = " ".join(str(browser.version).split()).casefold()
-                engine = "microsoft-edge" if selected.startswith("Microsoft Edge") else "playwright-chromium"
-            finally:
-                browser.close()
-    except Exception as error:
-        if isinstance(error, PipelineBlocked):
-            raise
-        raise PipelineBlocked(f"Cannot fingerprint the selected validation browser runtime: {error}") from error
-    if not version:
-        raise PipelineBlocked("Selected validation browser did not report a version identity.")
-    return f"{engine}:{version}"
-
-
-def _application_renderer_manifest(config: ChapterConfig) -> dict[str, Any]:
+def _application_renderer_manifest(
+    config: ChapterConfig, browser_identities: Iterable[str]
+) -> dict[str, Any]:
     root = APPLICATION_ROOT
     static_root = root / "static"
     if not (root / "app.py").is_file() or not static_root.is_dir():
@@ -201,23 +181,34 @@ def _application_renderer_manifest(config: ChapterConfig) -> dict[str, Any]:
         playwright_version = importlib.metadata.version("playwright")
     except importlib.metadata.PackageNotFoundError:
         playwright_version = "unavailable"
+    normalized_identities = tuple(sorted({" ".join(str(item).split()).casefold() for item in browser_identities}))
+    if len(normalized_identities) != 1:
+        raise PipelineBlocked(
+            "Release rendering requires one consistent actual browser runtime across every screenshot render."
+        )
+    browser_identity = normalized_identities[0]
+    if not browser_identity.startswith(("microsoft-edge:", "playwright-chromium:")) or not browser_identity.split(":", 1)[1]:
+        raise PipelineBlocked(f"Rendered browser runtime identity is malformed: {browser_identity!r}.")
     runtime_policy = {
         "python_abi": f"{sys.version_info.major}.{sys.version_info.minor}",
         "playwright_version": playwright_version,
         "browser_selection": ["system-edge", "playwright-chromium"],
-        "selected_browser_identity": _current_browser_identity(),
         "headless": True,
         "validation_viewports": [list(viewport) for viewport in _viewports(config)],
         "package_format_version": 3,
         "render_contract_version": RENDER_CONTRACT_VERSION,
     }
+    runtime_evidence = {"selected_browser_identity": browser_identity}
     application_fingerprint = dependency_fingerprint("ksat-application-assets", application_assets)
-    renderer_fingerprint = dependency_fingerprint("ksat-renderer", renderer_contract, runtime_policy)
+    renderer_fingerprint = dependency_fingerprint(
+        "ksat-renderer", renderer_contract, runtime_policy, runtime_evidence
+    )
     return {
         "schema_version": 1,
         "application_assets": application_assets,
         "renderer_contract": renderer_contract,
         "runtime_policy": runtime_policy,
+        "runtime_evidence": runtime_evidence,
         "application_fingerprint": application_fingerprint,
         "renderer_fingerprint": renderer_fingerprint,
         "manifest_fingerprint": dependency_fingerprint(application_fingerprint, renderer_fingerprint),
@@ -489,7 +480,7 @@ def _result_is_current(path: Path, job: VisionJob) -> bool:
     return isinstance(payload, dict) and payload.get("job_id") == job.job_id and payload.get("job_fingerprint") == job.fingerprint
 
 
-def _render_payload(rendered: RenderArtifacts) -> dict[str, Any]:
+def _render_payload(rendered: RenderArtifacts, manifest_fingerprint: str) -> dict[str, Any]:
     return {
         "question_screenshots": {key: str(value) for key, value in rendered.question_screenshots.items()},
         "solution_screenshots": {key: str(value) for key, value in rendered.solution_screenshots.items()},
@@ -497,7 +488,9 @@ def _render_payload(rendered: RenderArtifacts) -> dict[str, Any]:
             key: str(value) for key, value in getattr(rendered, "field_screenshots", {}).items()
         },
         "screenshot_hashes": dict(rendered.screenshot_hashes), "findings": list(rendered.findings),
-        "renderer_version": rendered.renderer_version,
+        "renderer_version": manifest_fingerprint,
+        "observed_renderer_version": rendered.renderer_version,
+        "browser_runtime": getattr(rendered, "browser_runtime", ""),
     }
 
 
@@ -507,6 +500,7 @@ def _render_from_payload(raw: Mapping[str, Any]) -> BrowserRenderArtifacts:
         solution_screenshots={key: Path(value) for key, value in raw["solution_screenshots"].items()},
         field_screenshots={key: Path(value) for key, value in raw.get("field_screenshots", {}).items()},
         screenshot_hashes=raw["screenshot_hashes"], findings=tuple(raw["findings"]), renderer_version=str(raw["renderer_version"]),
+        browser_runtime=str(raw.get("browser_runtime", "")),
     )
 
 
@@ -614,8 +608,11 @@ def _render_cache_is_current(config: ChapterConfig) -> bool:
         return False
     try:
         candidates = _candidates(config)
-        current_manifest = _application_renderer_manifest(config)
         state = _render_state(config)
+        browser_identities = tuple(
+            str(item["artifacts"].get("browser_runtime", "")) for item in state["records"]
+        )
+        current_manifest = _application_renderer_manifest(config, browser_identities)
         if state.get("application_renderer_manifest") != current_manifest:
             return False
         if state.get("dependency_fingerprint") != _render_dependency_fingerprint(
@@ -903,12 +900,19 @@ def _render(config: ChapterConfig) -> int:
             return resumed
     ledger = AuditLedger(_work_root(config), config.chapter)
     candidates = _candidates(config)
-    manifest = _application_renderer_manifest(config)
-    rendered_records: list[dict[str, Any]] = []
+    completed_renders: list[tuple[CandidateRecord, BrowserRenderArtifacts]] = []
     for candidate in candidates:
         rendered = render_candidate(candidate, {}, _viewports(config), _chapter_root(config) / "renders" / f"q{candidate.question_number:04d}")
-        rendered = replace(rendered, renderer_version=str(manifest["manifest_fingerprint"]))
-        rendered_records.append({"question_number": candidate.question_number, "artifacts": _render_payload(rendered)})
+        completed_renders.append((candidate, rendered))
+    manifest = _application_renderer_manifest(
+        config, (rendered.browser_runtime for _, rendered in completed_renders)
+    )
+    rendered_records: list[dict[str, Any]] = []
+    for candidate, rendered in completed_renders:
+        rendered_records.append({
+            "question_number": candidate.question_number,
+            "artifacts": _render_payload(rendered, str(manifest["manifest_fingerprint"])),
+        })
         state_hashes = _render_asset_hashes(rendered)
         current = ledger.record(candidate.question_number)
         ledger.merge_record(replace(
@@ -1002,7 +1006,10 @@ def _release_summary(config: ChapterConfig) -> AuditSummary:
         raise PipelineBlocked("Release gate requires current source, evidence, extraction, and candidate fingerprints.")
     if not _render_cache_is_current(config):
         raise PipelineBlocked("Release gate requires a fresh application render and independent vision verification.")
-    manifest = _application_renderer_manifest(config)
+    state = _render_state(config)
+    manifest = _application_renderer_manifest(
+        config, (str(item["artifacts"].get("browser_runtime", "")) for item in state["records"])
+    )
     renders = _renders(config)
     ledger = AuditLedger(_work_root(config), config.chapter)
     included_numbers = set(range(config.question_numbers[0], config.question_numbers[1] + 1)) - set(config.intentional_exclusions)

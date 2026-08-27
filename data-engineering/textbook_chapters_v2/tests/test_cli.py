@@ -69,10 +69,6 @@ class WorkflowCliTests(unittest.TestCase):
             path.write_text(f"controlled {relative}\n", encoding="utf-8")
         self.application_root_patch = patch("textbook_chapters_v2.cli.APPLICATION_ROOT", self.application_root)
         self.application_root_patch.start()
-        self.browser_identity_patch = patch(
-            "textbook_chapters_v2.cli._current_browser_identity", return_value="controlled-browser:1.0"
-        )
-        self.browser_identity = self.browser_identity_patch.start()
         self.config_path = self.root / "chapter-007.json"
         self.config_path.write_text(
             json.dumps(
@@ -94,7 +90,6 @@ class WorkflowCliTests(unittest.TestCase):
         self.config = ChapterConfig.load(self.config_path)
 
     def tearDown(self) -> None:
-        self.browser_identity_patch.stop()
         self.application_root_patch.stop()
         self.temporary_directory.cleanup()
 
@@ -102,7 +97,7 @@ class WorkflowCliTests(unittest.TestCase):
         return AuditRecord(chapter=7, question_number=84, status="pending_extraction")
 
     def _approved_record(self, candidate_sha256: str = "d" * 64) -> AuditRecord:
-        manifest = _application_renderer_manifest(self.config)
+        manifest = _application_renderer_manifest(self.config, ("playwright-chromium:124.0.2",))
         record = AuditRecord(
             chapter=7,
             question_number=84,
@@ -259,31 +254,31 @@ class WorkflowCliTests(unittest.TestCase):
         self.assertTrue(queue.is_file())
         self.assertFalse(self.published.exists())
 
-    def test_manifest_hashes_validation_imports_and_normalized_selected_browser_identity(self) -> None:
+    def test_manifest_hashes_validation_imports_and_exact_rendered_browser_identity(self) -> None:
         with patch(
-            "textbook_chapters_v2.cli._current_browser_identity", return_value="microsoft-edge:123.0.1"
-        ):
-            first = _application_renderer_manifest(self.config)
+            "textbook_chapters_v2.render._launch_browser",
+            return_value=(object(), "Microsoft Edge (detached probe)"),
+        ) as detached_probe:
+            first = _application_renderer_manifest(self.config, ("playwright-chromium:124.0.2",))
+        detached_probe.assert_not_called()
         application_paths = {item["path"] for item in first["application_assets"]}
         self.assertIn("question_media.py", application_paths)
         self.assertIn("chapter_repairs.py", application_paths)
         self.assertNotIn(str(self.application_root), json.dumps(first))
 
         (self.application_root / "question_media.py").write_text("changed question media import\n", encoding="utf-8")
-        with patch(
-            "textbook_chapters_v2.cli._current_browser_identity", return_value="microsoft-edge:123.0.1"
-        ):
-            changed_import = _application_renderer_manifest(self.config)
+        changed_import = _application_renderer_manifest(self.config, ("playwright-chromium:124.0.2",))
         self.assertNotEqual(changed_import["application_fingerprint"], first["application_fingerprint"])
 
-        with patch(
-            "textbook_chapters_v2.cli._current_browser_identity", return_value="playwright-chromium:124.0.2"
-        ):
-            changed_browser = _application_renderer_manifest(self.config)
+        changed_browser = _application_renderer_manifest(self.config, ("microsoft-edge:123.0.1",))
         self.assertNotEqual(changed_browser["renderer_fingerprint"], changed_import["renderer_fingerprint"])
         self.assertEqual(
-            changed_browser["runtime_policy"]["selected_browser_identity"], "playwright-chromium:124.0.2"
+            changed_browser["runtime_evidence"]["selected_browser_identity"], "microsoft-edge:123.0.1"
         )
+        with self.assertRaisesRegex(PipelineBlocked, "one consistent actual browser runtime"):
+            _application_renderer_manifest(
+                self.config, ("microsoft-edge:123.0.1", "playwright-chromium:124.0.2")
+            )
 
     def test_changed_source_or_config_reprepares_and_invalidates_existing_extraction_result(self) -> None:
         evidence = self._prepared_evidence()
@@ -503,6 +498,7 @@ class WorkflowCliTests(unittest.TestCase):
             },
             renderer_version="controlled-mixed-renderer",
             field_screenshots={"unanswered.desktop.question": field},
+            browser_runtime="playwright-chromium:124.0.2",
         )
         with patch("textbook_chapters_v2.cli.render_candidate", return_value=rendered):
             self.assertEqual(main(["render", "--config", str(self.config_path)]), 0)
@@ -638,9 +634,22 @@ class WorkflowCliTests(unittest.TestCase):
             },
             renderer_version="controlled-real-app-renderer",
             field_screenshots={"unanswered.desktop.question": question_field},
+            browser_runtime="playwright-chromium:124.0.2",
         )
         with patch("textbook_chapters_v2.cli.render_candidate", return_value=rendered):
             self.assertEqual(main(["render", "--config", str(self.config_path)]), 0)
+        render_state = json.loads(
+            (self.work_root / "chapter-007" / "state" / "renders.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            render_state["application_renderer_manifest"]["runtime_evidence"]["selected_browser_identity"],
+            "playwright-chromium:124.0.2",
+        )
+        self.assertEqual(render_state["records"][0]["artifacts"]["browser_runtime"], "playwright-chromium:124.0.2")
+        self.assertEqual(
+            render_state["records"][0]["artifacts"]["observed_renderer_version"],
+            "controlled-real-app-renderer",
+        )
         self.assertIn(_sha256(question_field), AuditLedger(self.work_root, 7).record(84).asset_hashes)
         self.assertEqual(main(["verify", "--config", str(self.config_path)]), PENDING_VISION_EXIT)
         verification_job = json.loads(
@@ -690,7 +699,7 @@ class WorkflowCliTests(unittest.TestCase):
         )
         unanswered.write_bytes(b"unanswered-render-after-approval")
         question_field.write_bytes(b"question-field-render-after-approval")
-        post_approval_render = replace(refreshed_render, screenshot_hashes={
+        post_approval_render = replace(refreshed_render, browser_runtime="microsoft-edge:125.0.1", screenshot_hashes={
             "question.desktop": _sha256(unanswered), "solution.desktop": _sha256(submitted),
             "field.unanswered.desktop.question": _sha256(question_field),
         })
@@ -699,6 +708,8 @@ class WorkflowCliTests(unittest.TestCase):
         rerendered_record = AuditLedger(self.work_root, 7).record(84)
         self.assertEqual(rerendered_record.status, "pending_vision")
         self.assertIn(_sha256(question_field), rerendered_record.asset_hashes)
+        self.assertEqual(main(["package", "--config", str(self.config_path)]), BLOCKED_EXIT)
+        self.assertFalse(self.candidate.exists())
         self.assertEqual(main(["verify", "--config", str(self.config_path)]), PENDING_VISION_EXIT)
         verification_job = json.loads(
             (self.work_root / "chapter-007" / "verification-jobs.jsonl").read_text(encoding="utf-8").splitlines()[0]
@@ -731,16 +742,29 @@ class WorkflowCliTests(unittest.TestCase):
         styles.write_text("controlled styles changed once\n", encoding="utf-8")
         self.assertEqual(main(["package", "--config", str(self.config_path)]), 0)
         self.assertTrue(self.candidate.is_file())
+        packaged_render_state = render_state_path.read_bytes()
+        runtime_changed_state = json.loads(packaged_render_state)
+        changed_runtime_manifest = _application_renderer_manifest(
+            self.config, ("playwright-chromium:126.0.3",)
+        )
+        runtime_changed_state["application_renderer_manifest"] = changed_runtime_manifest
+        runtime_changed_state["records"][0]["artifacts"]["browser_runtime"] = "playwright-chromium:126.0.3"
+        runtime_changed_state["records"][0]["artifacts"]["renderer_version"] = changed_runtime_manifest[
+            "manifest_fingerprint"
+        ]
+        runtime_changed_state["dependency_fingerprint"] = _render_dependency_fingerprint(
+            _candidates(self.config), changed_runtime_manifest, runtime_changed_state["records"]
+        )
+        render_state_path.write_bytes(canonical_json(runtime_changed_state))
+        self.assertEqual(main(["promote", "--config", str(self.config_path)]), BLOCKED_EXIT)
+        self.assertFalse(self.published.exists())
+        render_state_path.write_bytes(packaged_render_state)
         renderer_contract = self.application_root / "data-engineering" / "textbook_chapters_v2" / "render.py"
         original_renderer_contract = renderer_contract.read_text(encoding="utf-8")
         renderer_contract.write_text("controlled renderer contract changed\n", encoding="utf-8")
         self.assertEqual(main(["promote", "--config", str(self.config_path)]), BLOCKED_EXIT)
         self.assertFalse(self.published.exists())
         renderer_contract.write_text(original_renderer_contract, encoding="utf-8")
-        self.browser_identity.return_value = "controlled-browser:2.0"
-        self.assertEqual(main(["promote", "--config", str(self.config_path)]), BLOCKED_EXIT)
-        self.assertFalse(self.published.exists())
-        self.browser_identity.return_value = "controlled-browser:1.0"
         self.assertEqual(main(["promote", "--config", str(self.config_path)]), 0)
         self.assertEqual(_sha256(self.published), _sha256(self.candidate))
 

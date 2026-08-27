@@ -189,7 +189,7 @@ class RealRendererTests(unittest.TestCase):
             )
         )
         self.assertTrue(
-            artifacts.browser_runtime.startswith(("Microsoft Edge", "Playwright Chromium"))
+            artifacts.browser_runtime.startswith(("microsoft-edge:", "playwright-chromium:"))
         )
         self.assertFalse(artifacts.temporary_data_dir.exists())
         self._assert_server_stopped(artifacts.server_port)

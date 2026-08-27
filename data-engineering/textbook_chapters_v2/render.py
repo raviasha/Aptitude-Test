@@ -507,8 +507,13 @@ def render_candidate(
                         f"{CHROMIUM_INSTALL_COMMAND} if Chromium is needed."
                     ) from error
                 with sync_playwright() as playwright:
-                    browser, browser_runtime = _launch_browser(playwright)
+                    browser, selected_browser = _launch_browser(playwright)
                     try:
+                        version = " ".join(str(browser.version).split()).casefold()
+                        if not version:
+                            raise RuntimeError("Selected screenshot browser did not report its actual version identity.")
+                        engine = "microsoft-edge" if selected_browser.startswith("Microsoft Edge") else "playwright-chromium"
+                        browser_runtime = f"{engine}:{version}"
                         for width, height in validated_viewports:
                             viewport = _viewport_label((width, height))
                             context = browser.new_context(viewport={"width": width, "height": height})

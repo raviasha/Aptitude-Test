@@ -154,7 +154,10 @@ imports, every static frontend asset, the V2 renderer and package/vision contrac
 code, and both result schemas. Its deterministic runtime data binds the Python
 ABI, Playwright version, browser-selection policy, the actually selected browser
 engine and version, viewports, package format, and render-contract version
-without recording machine-specific browser paths. `renders.json` is
+without recording machine-specific browser paths. That identity comes from the
+same browser instance that produced each screenshot, not a separate capability
+probe, and a render fails closed if records report different runtimes.
+`renders.json` is
 content-addressed to that manifest, the exact candidate hashes, and normalized
 per-record hashes for every full-card and field screenshot. Release validation
 also compares those hashes with each approved audit record. A changed asset,

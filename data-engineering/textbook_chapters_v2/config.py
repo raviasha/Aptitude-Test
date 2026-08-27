@@ -25,16 +25,12 @@ def _question_range(raw: Any) -> tuple[int, int]:
     return _page_range(raw, "question_numbers")
 
 
-def _ranges_overlap(left: tuple[int, int], right: tuple[int, int]) -> bool:
-    return max(left[0], right[0]) <= min(left[1], right[1])
-
-
 @dataclass(frozen=True)
 class ChapterConfig:
     chapter: int
     bank_name: str
     question_pages: tuple[int, int]
-    answer_key_pages: tuple[int, int]
+    answer_pages: tuple[int, int]
     solution_pages: tuple[int, int]
     question_numbers: tuple[int, int]
     intentional_exclusions: tuple[int, ...] = ()
@@ -47,6 +43,11 @@ class ChapterConfig:
         object.__setattr__(self, "marker_overrides", frozen_mapping(self.marker_overrides))
         object.__setattr__(self, "layout_boundaries", frozen_mapping(self.layout_boundaries))
         object.__setattr__(self, "extras", frozen_mapping(self.extras))
+
+    @property
+    def answer_key_pages(self) -> tuple[int, int]:
+        """Compatibility alias for early V2 callers."""
+        return self.answer_pages
 
     @classmethod
     def load(cls, path: Path) -> "ChapterConfig":
@@ -65,12 +66,9 @@ class ChapterConfig:
             raise ValueError("chapter must be a positive integer.")
 
         question_pages = _page_range(raw.get("question_pages"), "question_pages")
-        answer_key_pages = _page_range(raw.get("answer_key_pages", raw.get("answer_pages")), "answer_key_pages")
+        answer_pages = _page_range(raw.get("answer_pages", raw.get("answer_key_pages")), "answer_pages")
         solution_pages = _page_range(raw.get("solution_pages"), "solution_pages")
         question_numbers = _question_range(raw.get("question_numbers", raw.get("expected_question_numbers")))
-        page_ranges = (question_pages, answer_key_pages, solution_pages)
-        if any(_ranges_overlap(page_ranges[index], page_ranges[other]) for index in range(3) for other in range(index + 1, 3)):
-            raise ValueError("question_pages, answer_key_pages, and solution_pages must not overlap.")
 
         exclusions = raw.get("intentional_exclusions", ())
         if not isinstance(exclusions, (list, tuple)) or any(isinstance(number, bool) or not isinstance(number, int) for number in exclusions):
@@ -86,7 +84,7 @@ class ChapterConfig:
             chapter=chapter,
             bank_name=str(raw.get("bank_name") or f"chapter-{chapter:03d}"),
             question_pages=question_pages,
-            answer_key_pages=answer_key_pages,
+            answer_pages=answer_pages,
             solution_pages=solution_pages,
             question_numbers=question_numbers,
             intentional_exclusions=tuple(exclusions),

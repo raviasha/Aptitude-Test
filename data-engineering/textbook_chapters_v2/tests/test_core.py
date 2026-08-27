@@ -83,19 +83,20 @@ class CoreContractTests(unittest.TestCase):
             {"options": {"A": "1"}},
         )
 
-    def test_chapter_config_rejects_overlapping_or_incomplete_ranges(self) -> None:
+    def test_chapter_config_allows_shared_boundary_and_rejects_incomplete_ranges(self) -> None:
+        config = ChapterConfig.from_dict(
+            {
+                "chapter": 1,
+                "question_pages": [23, 40],
+                "answer_pages": [40, 41],
+                "solution_pages": [42, 59],
+                "question_numbers": [1, 3],
+            }
+        )
+        self.assertEqual(config.question_pages, (23, 40))
+        self.assertEqual(config.answer_pages, (40, 41))
         with self.assertRaisesRegex(ValueError, "question_pages"):
             ChapterConfig.from_dict({"chapter": 1, "question_pages": [40, 23]})
-        with self.assertRaisesRegex(ValueError, "overlap"):
-            ChapterConfig.from_dict(
-                {
-                    "chapter": 1,
-                    "question_pages": [23, 40],
-                    "answer_key_pages": [40, 41],
-                    "solution_pages": [42, 59],
-                    "question_numbers": [1, 3],
-                }
-            )
 
     def test_chapter_config_is_frozen_and_exposes_immutable_collections(self) -> None:
         config = ChapterConfig.from_dict(
@@ -103,7 +104,7 @@ class CoreContractTests(unittest.TestCase):
                 "chapter": 1,
                 "bank_name": "Number System",
                 "question_pages": [23, 40],
-                "answer_key_pages": [41, 41],
+                "answer_pages": [41, 41],
                 "solution_pages": [42, 59],
                 "question_numbers": [1, 3],
                 "intentional_exclusions": [2],

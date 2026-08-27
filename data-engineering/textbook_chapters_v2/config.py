@@ -49,6 +49,21 @@ class ChapterConfig:
         """Compatibility alias for early V2 callers."""
         return self.answer_pages
 
+    @property
+    def chapter_name(self) -> str:
+        """Return the human-readable chapter name used by release metadata."""
+        return str(self.extras.get("chapter_name", self.bank_name))
+
+    @property
+    def printed_question_count(self) -> int:
+        """Return the reviewed printed total, defaulting to the configured range."""
+        return int(
+            self.extras.get(
+                "printed_question_count",
+                self.question_numbers[1] - self.question_numbers[0] + 1,
+            )
+        )
+
     @classmethod
     def load(cls, path: Path) -> "ChapterConfig":
         try:
@@ -69,6 +84,19 @@ class ChapterConfig:
         answer_pages = _page_range(raw.get("answer_pages", raw.get("answer_key_pages")), "answer_pages")
         solution_pages = _page_range(raw.get("solution_pages"), "solution_pages")
         question_numbers = _question_range(raw.get("question_numbers", raw.get("expected_question_numbers")))
+
+        chapter_name = raw.get("chapter_name")
+        if chapter_name is not None and (not isinstance(chapter_name, str) or not chapter_name.strip()):
+            raise ValueError("chapter_name must be a non-empty string when provided.")
+        printed_question_count = raw.get("printed_question_count")
+        expected_count = question_numbers[1] - question_numbers[0] + 1
+        if printed_question_count is not None:
+            if (
+                isinstance(printed_question_count, bool)
+                or not isinstance(printed_question_count, int)
+                or printed_question_count != expected_count
+            ):
+                raise ValueError("printed_question_count must match the configured question number range.")
 
         exclusions = raw.get("intentional_exclusions", ())
         if not isinstance(exclusions, (list, tuple)) or any(isinstance(number, bool) or not isinstance(number, int) for number in exclusions):

@@ -46,6 +46,25 @@ class SourceEvidenceTests(unittest.TestCase):
         with Image.open(output_path) as result:
             self.assertEqual(result.getpixel((50, 40)), (0, 128, 0))
 
+    def test_sha256_path_retries_a_transient_permission_denied_from_a_synced_worktree(self) -> None:
+        path = self.root / "source.bin"
+        path.write_bytes(b"stable source bytes")
+        real_open = Path.open
+        attempts = 0
+
+        def transient_open(candidate: Path, *args: object, **kwargs: object):
+            nonlocal attempts
+            if candidate == path and attempts == 0:
+                attempts += 1
+                raise PermissionError(13, "transient sync lock", str(candidate))
+            return real_open(candidate, *args, **kwargs)
+
+        with patch("pathlib.Path.open", new=transient_open):
+            digest = sha256_path(path)
+
+        self.assertEqual(digest, hashlib.sha256(b"stable source bytes").hexdigest())
+        self.assertEqual(attempts, 1)
+
     def test_render_page_rejects_a_stale_output_when_renderer_writes_nothing(self) -> None:
         pdf_path = self.root / "source.pdf"
         pdf_path.write_bytes(b"synthetic source")
@@ -135,6 +154,79 @@ class SourceEvidenceTests(unittest.TestCase):
         self.assertEqual([(crop.page_number, crop.box) for crop in evidence[0].solution_crops], [
             (4, CropBox(0, 0, 100, 100)),
         ])
+
+    def test_explicit_segments_support_grid_order_and_reviewed_missing_role_evidence(self) -> None:
+        pages = {
+            1: self._page(1, [(0, 60, "red"), (60, 200, "green")]),
+            2: self._page(2, [(0, 60, "yellow"), (60, 200, "purple")]),
+            3: self._page(3, [(0, 60, "orange"), (60, 200, "blue")]),
+        }
+        config = ChapterConfig.from_dict(
+            {
+                "chapter": 11,
+                "bank_name": "explicit-grid",
+                "question_pages": [1, 1],
+                "answer_pages": [2, 2],
+                "solution_pages": [3, 3],
+                "question_numbers": [1, 2],
+                "marker_overrides": {
+                    "question": {
+                        "1": {"segments": [{"page": 1, "left": 0, "top": 60, "right": 50, "bottom": 120}]},
+                        "2": {"segments": [{"page": 1, "left": 50, "top": 0, "right": 100, "bottom": 60}]},
+                    },
+                    "answer_key": {
+                        "1": {"segments": [{"page": 2, "left": 0, "top": 0, "right": 50, "bottom": 60}]},
+                        "2": {"segments": [{"page": 2, "left": 50, "top": 0, "right": 100, "bottom": 60}]},
+                    },
+                    "solution": {
+                        "1": {
+                            "segments": [
+                                {"page": 3, "left": 0, "top": 60, "right": 50, "bottom": 200},
+                                {"page": 3, "left": 50, "top": 0, "right": 100, "bottom": 60},
+                            ]
+                        },
+                        "2": {"missing": True, "reason": "The source prints no numbered solution."},
+                    },
+                },
+            }
+        )
+        pdf_path = self.root / "source.pdf"
+        pdf_path.write_bytes(b"reviewed source bytes")
+
+        with patch("textbook_chapters_v2.source.render_page", side_effect=lambda _pdf, page, _dpi, _output: pages[page]):
+            evidence = prepare_source_evidence(config, pdf_path, self.root / "work")
+
+        self.assertEqual(evidence[0].question_crops[0].box, CropBox(0, 60, 50, 120))
+        self.assertEqual(evidence[1].question_crops[0].box, CropBox(50, 0, 100, 60))
+        self.assertEqual(
+            [(crop.page_number, crop.box) for crop in evidence[0].solution_crops],
+            [(3, CropBox(0, 60, 50, 200)), (3, CropBox(50, 0, 100, 60))],
+        )
+        self.assertEqual(evidence[1].solution_crops, ())
+
+    def test_prepare_rejects_a_source_pdf_that_does_not_match_the_pinned_hash(self) -> None:
+        page = self._page(1, [(0, 100, "red")])
+        config = ChapterConfig.from_dict(
+            {
+                "chapter": 12,
+                "bank_name": "hash-pinned",
+                "question_pages": [1, 1],
+                "answer_pages": [1, 1],
+                "solution_pages": [1, 1],
+                "question_numbers": [1, 1],
+                "source_pdf_sha256": "0" * 64,
+                "marker_overrides": {
+                    role: {"1": {"page": 1, "top": 0, "bottom": 100}}
+                    for role in ("question", "answer_key", "solution")
+                },
+            }
+        )
+        pdf_path = self.root / "source.pdf"
+        pdf_path.write_bytes(b"different source bytes")
+
+        with patch("textbook_chapters_v2.source.render_page", return_value=page):
+            with self.assertRaisesRegex(ValueError, "does not match configured SHA-256"):
+                prepare_source_evidence(config, pdf_path, self.root / "work")
 
     def test_excluded_marker_bounds_the_prior_record_without_creating_excluded_artifacts(self) -> None:
         page = self._page(1, [(0, 100, "red"), (100, 200, "green")])

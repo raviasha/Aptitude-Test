@@ -133,7 +133,7 @@ def _path_value(config: ChapterConfig, key: str, default: str | None = None) -> 
     raw = config.extras.get(key, default)
     if not isinstance(raw, str) or not raw.strip():
         raise PipelineBlocked(f"Chapter config requires a non-empty {key} path.")
-    return Path(raw).resolve()
+    return Path(raw).expanduser().resolve()
 
 
 def _work_root(config: ChapterConfig) -> Path:

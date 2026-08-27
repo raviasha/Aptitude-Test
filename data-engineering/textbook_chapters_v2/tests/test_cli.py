@@ -25,6 +25,7 @@ from textbook_chapters_v2.cli import (
     PENDING_VISION_EXIT,
     _application_renderer_manifest,
     _candidates,
+    _path_value,
     _render_dependency_fingerprint,
     main,
 )
@@ -95,6 +96,13 @@ class WorkflowCliTests(unittest.TestCase):
 
     def _pending_record(self) -> AuditRecord:
         return AuditRecord(chapter=7, question_number=84, status="pending_extraction")
+
+    def test_configured_work_paths_expand_the_user_home_before_resolving(self) -> None:
+        raw = json.loads(self.config_path.read_text(encoding="utf-8"))
+        raw["work_root"] = "~/.ksat/textbook-v2"
+        config = ChapterConfig.from_dict(raw)
+
+        self.assertEqual(_path_value(config, "work_root"), (Path.home() / ".ksat" / "textbook-v2").resolve())
 
     def _approved_record(self, candidate_sha256: str = "d" * 64) -> AuditRecord:
         manifest = _application_renderer_manifest(self.config, ("playwright-chromium:124.0.2",))

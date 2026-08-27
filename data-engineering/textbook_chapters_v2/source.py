@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Mapping
@@ -20,15 +21,23 @@ from .store import ArtifactStore, dependency_fingerprint
 
 DEFAULT_DPI = 180
 PNG_COMPRESSION_LEVEL = 9
+PERMISSION_RETRY_DELAYS = (0.05, 0.1, 0.2, 0.4)
 
 
 def sha256_path(path: Path) -> str:
     """Return the SHA-256 digest of a filesystem artifact."""
-    digest = hashlib.sha256()
-    with Path(path).open("rb") as source:
-        for chunk in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    for attempt in range(len(PERMISSION_RETRY_DELAYS) + 1):
+        try:
+            digest = hashlib.sha256()
+            with Path(path).open("rb") as source:
+                for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            return digest.hexdigest()
+        except PermissionError:
+            if attempt == len(PERMISSION_RETRY_DELAYS):
+                raise
+            time.sleep(PERMISSION_RETRY_DELAYS[attempt])
+    raise AssertionError("unreachable")
 
 
 def locate_pdftoppm() -> Path:
@@ -207,6 +216,39 @@ def _marker(raw: Any, role: str, question_number: int) -> Mapping[str, int]:
     return result
 
 
+def _explicit_segments(raw: Any, role: str, question_number: int) -> tuple[Mapping[str, int], ...] | None:
+    """Return reviewed self-bounded segments, or ``None`` for legacy adjacent markers."""
+    if not isinstance(raw, Mapping):
+        return None
+    if raw.get("missing") is True:
+        reason = raw.get("reason")
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError(
+                f"Reviewed missing {role} evidence for question {question_number} requires a reason."
+            )
+        if any(key in raw for key in ("segments", "page", "top", "bottom", "left", "right")):
+            raise ValueError(
+                f"Reviewed missing {role} evidence for question {question_number} cannot also define crop coordinates."
+            )
+        return ()
+    if "segments" not in raw:
+        return None
+    segments = raw.get("segments")
+    if not isinstance(segments, (list, tuple)) or not segments:
+        raise ValueError(
+            f"Reviewed {role} segments for question {question_number} must be a non-empty list."
+        )
+    reviewed: list[Mapping[str, int]] = []
+    for index, segment in enumerate(segments):
+        parsed = _marker(segment, role, question_number)
+        if not all(coordinate in parsed for coordinate in ("left", "right", "bottom")):
+            raise ValueError(
+                f"Reviewed {role} segment {index} for question {question_number} must define left, right, and bottom."
+            )
+        reviewed.append(parsed)
+    return tuple(reviewed)
+
+
 def _role_boundaries(config: ChapterConfig, role: str) -> Mapping[str, int]:
     raw = config.layout_boundaries.get(role, config.layout_boundaries.get(f"{role}_crops", {}))
     if not isinstance(raw, Mapping):
@@ -237,14 +279,50 @@ def _crop_role(
 ) -> Mapping[int, tuple[SourceCrop, ...]]:
     markers = _marker_mapping(config, role)
     numbers = list(range(config.question_numbers[0], config.question_numbers[1] + 1))
-    reviewed = {number: _marker(markers.get(str(number)), role, number) for number in numbers}
+    explicit = {
+        number: _explicit_segments(markers.get(str(number)), role, number)
+        for number in numbers
+    }
+    reviewed = {
+        number: _marker(markers.get(str(number)), role, number)
+        for number in numbers
+        if explicit[number] is None
+    }
     start_page, last_page = _role_range(config, role)
     boundaries = _role_boundaries(config, role)
     result: dict[int, tuple[SourceCrop, ...]] = {}
 
     for index, number in enumerate(numbers):
+        segments = explicit[number]
+        if segments is not None:
+            if number in config.intentional_exclusions:
+                continue
+            crops: list[SourceCrop] = []
+            for segment_index, segment in enumerate(segments):
+                page_number = segment["page"]
+                if page_number < start_page or page_number > last_page:
+                    raise ValueError(
+                        f"Reviewed {role} segment for question {number} is outside the configured page range."
+                    )
+                page = pages[page_number]
+                box = CropBox(segment["left"], segment["top"], segment["right"], segment["bottom"])
+                output_path = (
+                    work_dir
+                    / "crops"
+                    / f"ch{config.chapter:03d}-q{number:04d}-{role}-s{segment_index:02d}-p{page_number:03d}.png"
+                )
+                crop = crop_region(page, box, output_path)
+                crops.append(replace(crop, role=role, question_number=number))
+            result[number] = tuple(crops)
+            continue
+
         current = reviewed[number]
-        next_marker = reviewed[numbers[index + 1]] if index + 1 < len(numbers) else None
+        next_number = numbers[index + 1] if index + 1 < len(numbers) else None
+        if next_number is not None and explicit[next_number] is not None:
+            raise ValueError(
+                f"Reviewed adjacent {role} marker for question {number} cannot be bounded by an explicit segment."
+            )
+        next_marker = reviewed[next_number] if next_number is not None else None
         if current["page"] < start_page or current["page"] > last_page:
             raise ValueError(f"Reviewed {role} marker for question {number} is outside the configured page range.")
         if next_marker is not None and (next_marker["page"], next_marker["top"]) <= (current["page"], current["top"]):
@@ -321,6 +399,19 @@ def prepare_source_evidence(config: ChapterConfig, pdf_path: Path, work_dir: Pat
     if not pdf_path.is_file():
         raise FileNotFoundError(f"Source PDF does not exist: {pdf_path}")
     source_pdf_sha256 = sha256_path(pdf_path)
+    configured_sha256 = config.extras.get("source_pdf_sha256")
+    if configured_sha256 is not None:
+        if (
+            not isinstance(configured_sha256, str)
+            or len(configured_sha256) != 64
+            or any(character not in "0123456789abcdefABCDEF" for character in configured_sha256)
+        ):
+            raise ValueError("source_pdf_sha256 must be a 64-character hexadecimal digest.")
+        if source_pdf_sha256 != configured_sha256.lower():
+            raise ValueError(
+                f"Source PDF does not match configured SHA-256: expected {configured_sha256.lower()}, "
+                f"got {source_pdf_sha256}."
+            )
     dpi = _configured_dpi(config)
     all_pages = sorted(
         set(range(config.question_pages[0], config.question_pages[1] + 1))

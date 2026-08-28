@@ -4,6 +4,8 @@ import hashlib
 import json
 import sys
 import tempfile
+import threading
+import time
 import unittest
 import warnings
 import zipfile
@@ -134,28 +136,65 @@ class PilotPackageTests(unittest.TestCase):
                 self.build()
         self.assertFalse(self.output.exists())
 
-    def test_post_link_guard_failure_does_not_delete_a_replacement_destination(self) -> None:
-        from python_vision_calibration.pilot_package import PublishedPackageGuard
+    def test_post_write_guard_failure_deletes_the_owned_candidate(self) -> None:
+        import python_vision_calibration.pilot_package as package_module
 
-        real_verify = PublishedPackageGuard.verify
-        calls = 0
-        competitor = b"competitor-replaced-the-linked-candidate"
+        real_publish = package_module._publish_exclusively
+        def fail_guard_after_write(source, destination, post_write_check):
+            return real_publish(
+                source,
+                destination,
+                post_write_check,
+                before_commit=lambda: self.published.write_bytes(b"published-changed-after-write"),
+            )
 
-        def replace_then_verify(guard):
-            nonlocal calls
-            calls += 1
-            if calls == 3:
-                self.output.unlink()
-                self.output.write_bytes(competitor)
-                self.published.write_bytes(b"published-changed-after-link")
-            return real_verify(guard)
-
-        with patch.object(PublishedPackageGuard, "verify", autospec=True, side_effect=replace_then_verify):
+        with patch.object(package_module, "_publish_exclusively", side_effect=fail_guard_after_write):
             with self.assertRaisesRegex(PipelineBlocked, "published"):
                 self.build()
-        self.assertEqual(calls, 3)
-        self.assertTrue(self.output.exists())
-        self.assertEqual(self.output.read_bytes(), competitor)
+        self.assertFalse(self.output.exists())
+
+    def test_pinned_failure_cleanup_never_deletes_a_waiting_replacement(self) -> None:
+        import python_vision_calibration.pilot_package as package_module
+
+        real_publish = package_module._publish_exclusively
+        competitor = self.root / "competitor.tmp"
+        competitor_bytes = b"competitor-replaced-the-failed-candidate"
+        competitor.write_bytes(competitor_bytes)
+        start_replacement = threading.Event()
+        replacement_done = threading.Event()
+        replacement_error: list[BaseException] = []
+
+        def replace_when_the_pinned_handle_releases() -> None:
+            start_replacement.wait(timeout=5)
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                try:
+                    competitor.replace(self.output)
+                    replacement_done.set()
+                    return
+                except (FileNotFoundError, PermissionError, OSError):
+                    time.sleep(0.005)
+            replacement_error.append(RuntimeError("competitor could not replace the released destination"))
+
+        worker = threading.Thread(target=replace_when_the_pinned_handle_releases, daemon=True)
+        worker.start()
+
+        def after_candidate_bytes_are_pinned() -> None:
+            start_replacement.set()
+            self.published.write_bytes(b"published-changed-with-candidate-pinned")
+
+        def publish_with_waiting_competitor(source, destination, post_write_check):
+            return real_publish(
+                source, destination, post_write_check, before_commit=after_candidate_bytes_are_pinned
+            )
+
+        with patch.object(package_module, "_publish_exclusively", side_effect=publish_with_waiting_competitor):
+            with self.assertRaisesRegex(PipelineBlocked, "published"):
+                self.build()
+        worker.join(timeout=6)
+        self.assertFalse(replacement_error)
+        self.assertTrue(replacement_done.is_set())
+        self.assertEqual(self.output.read_bytes(), competitor_bytes)
 
     def test_stale_screenshot_or_forged_audit_blocks_packaging(self) -> None:
         screenshot = Path(self.manifest["screenshots"]["1024x768"]["submitted"]["path"])
@@ -181,13 +220,13 @@ class PilotPackageTests(unittest.TestCase):
 
     def test_destination_created_at_publish_race_is_preserved(self) -> None:
         import python_vision_calibration.pilot_package as package_module
-        real_link = package_module.os.link
+        real_publish = package_module._publish_exclusively
 
-        def competing(source, destination):
+        def competing(source, destination, post_write_check):
             Path(destination).write_bytes(b"")
-            return real_link(source, destination)
+            return real_publish(source, destination, post_write_check)
 
-        with patch.object(package_module.os, "link", side_effect=competing):
+        with patch.object(package_module, "_publish_exclusively", side_effect=competing):
             with self.assertRaisesRegex(PipelineBlocked, "overwrite|existing"):
                 self.build()
         self.assertTrue(self.output.exists())

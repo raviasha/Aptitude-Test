@@ -9,7 +9,7 @@ import tempfile
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 from textbook_chapters_v2.config import ChapterConfig
 from textbook_chapters_v2.models import CandidateRecord, PackageResult, PipelineBlocked
@@ -54,21 +54,106 @@ class PublishedPackageGuard:
             raise PipelineBlocked("The published Chapter 1 ZIP changed during candidate packaging.")
 
 
-def _unlink_owned_publication(destination: Path, source: Path, expected_sha256: str) -> bool:
-    """Remove only the still-owned hard link; preserve a path replaced by another writer."""
+def _publish_exclusively(
+    source: Path,
+    destination: Path,
+    post_write_check: Callable[[], None],
+    *,
+    before_commit: Callable[[], None] | None = None,
+) -> None:
+    """Create a pinned Windows destination and delete that handle's file on failure."""
+    if os.name != "nt":
+        raise PipelineBlocked("Pilot publication requires the Windows pinned-handle primitive.")
+    import ctypes
+    from ctypes import wintypes
+
+    delete_access = 0x00010000
+    generic_read = 0x80000000
+    generic_write = 0x40000000
+    create_new = 1
+    file_attribute_normal = 0x00000080
+    file_disposition_info = 4
+    error_file_exists = {80, 183}
+
+    class FileDispositionInfo(ctypes.Structure):
+        _fields_ = [("DeleteFile", wintypes.BOOL)]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.argtypes = (
+        wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+        wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE,
+    )
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.WriteFile.argtypes = (
+        wintypes.HANDLE, wintypes.LPCVOID, wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD), wintypes.LPVOID,
+    )
+    kernel32.WriteFile.restype = wintypes.BOOL
+    kernel32.FlushFileBuffers.argtypes = (wintypes.HANDLE,)
+    kernel32.FlushFileBuffers.restype = wintypes.BOOL
+    kernel32.SetFileInformationByHandle.argtypes = (
+        wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD,
+    )
+    kernel32.SetFileInformationByHandle.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    handle = kernel32.CreateFileW(
+        str(Path(destination).resolve()),
+        delete_access | generic_read | generic_write,
+        0,
+        None,
+        create_new,
+        file_attribute_normal,
+        None,
+    )
+    invalid_handle = wintypes.HANDLE(-1).value
+    if handle == invalid_handle:
+        error_code = ctypes.get_last_error()
+        if error_code in error_file_exists:
+            raise PipelineBlocked("Pilot packaging refuses to overwrite an existing candidate ZIP.")
+        raise PipelineBlocked(f"Pilot packaging could not pin its exclusive destination (Windows error {error_code}).")
+
+    committed = False
+    pending_error: BaseException | None = None
     try:
-        if (
-            not destination.is_file()
-            or not source.is_file()
-            or not os.path.samefile(destination, source)
-            or _sha256_path(destination) != expected_sha256
-            or not os.path.samefile(destination, source)
-        ):
-            return False
-        destination.unlink()
-        return True
-    except (FileNotFoundError, OSError):
-        return False
+        with Path(source).open("rb") as source_file:
+            for block in iter(lambda: source_file.read(1024 * 1024), b""):
+                buffer = ctypes.create_string_buffer(block)
+                written = wintypes.DWORD()
+                if not kernel32.WriteFile(handle, buffer, len(block), ctypes.byref(written), None):
+                    raise PipelineBlocked(
+                        f"Pilot packaging could not write its pinned destination (Windows error {ctypes.get_last_error()})."
+                    )
+                if written.value != len(block):
+                    raise PipelineBlocked("Pilot packaging wrote a partial pinned destination.")
+        if not kernel32.FlushFileBuffers(handle):
+            raise PipelineBlocked(
+                f"Pilot packaging could not flush its pinned destination (Windows error {ctypes.get_last_error()})."
+            )
+        if before_commit is not None:
+            before_commit()
+        post_write_check()
+        committed = True
+    except BaseException as error:
+        pending_error = error
+    finally:
+        if not committed:
+            disposition = FileDispositionInfo(True)
+            if not kernel32.SetFileInformationByHandle(
+                handle, file_disposition_info, ctypes.byref(disposition), ctypes.sizeof(disposition)
+            ):
+                pending_error = PipelineBlocked(
+                    f"Pilot packaging could not delete its failed pinned destination (Windows error {ctypes.get_last_error()})."
+                )
+        if not kernel32.CloseHandle(handle) and pending_error is None:
+            pending_error = PipelineBlocked(
+                f"Pilot packaging could not close its pinned destination (Windows error {ctypes.get_last_error()})."
+            )
+    if pending_error is not None:
+        raise pending_error
+    if not committed:
+        raise PipelineBlocked("Pilot packaging did not commit its pinned destination.")
 
 
 def _write_member(archive: zipfile.ZipFile, name: str, content: bytes) -> None:
@@ -366,17 +451,8 @@ def build_pilot_candidate_package(
             for name in sorted(members):
                 _write_member(archive, name, members[name])
         _validate_written_package(temporary_path, manifest, len(entries), set(assets))
-        temporary_sha256 = _sha256_path(temporary_path)
         guard.verify()
-        try:
-            os.link(temporary_path, output)
-        except FileExistsError as error:
-            raise PipelineBlocked("Pilot packaging refuses to overwrite an existing candidate ZIP.") from error
-        try:
-            guard.verify()
-        except BaseException:
-            _unlink_owned_publication(output, temporary_path, temporary_sha256)
-            raise
+        _publish_exclusively(temporary_path, output, guard.verify)
         temporary_path.unlink()
         temporary_name = None
     finally:

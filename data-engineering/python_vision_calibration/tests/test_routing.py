@@ -16,7 +16,7 @@ if str(DATA_ENGINEERING) not in sys.path:
 
 from python_vision_calibration.agent_review import create_agent_review_job
 from python_vision_calibration.diagnostics import hard_warning_codes
-from python_vision_calibration.models import AgentReviewResult, RawBaselineRecord
+from python_vision_calibration.models import AgentReviewJob, AgentReviewResult, RawBaselineRecord
 from python_vision_calibration.routing import ingest_agent_review_directory, resolve_agent_route
 
 
@@ -167,6 +167,36 @@ class RoutingTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "baseline"):
             resolve_agent_route(self.clean_record, stale_review)
 
+    def test_lone_surrogate_forces_hashable_and_persisted_vision_route(self) -> None:
+        original_text = "Bad" + chr(0xD800) + " text"
+        record = self.record(question_text=original_text)
+        route = resolve_agent_route(record, self.review_result(record))
+
+        self.assertEqual(route.decision, "VISION_REQUIRED")
+        self.assertIn("INVALID_UNICODE", route.reason_codes)
+        self.assertEqual(route.candidate["question_text"], original_text)
+        job = AgentReviewJob(
+            record_id=record.record_id,
+            baseline_sha256=record.baseline_sha256,
+            prompt_version="test",
+            prompt_sha256="a" * 64,
+            payload_sha256="b" * 64,
+            output_schema="test.json",
+            output_path=self.root / "agent-review" / "jobs" / "ch01-q0044.json",
+            job_sha256="c" * 64,
+        )
+        results_dir = self.root / "agent-review-results"
+        results_dir.mkdir()
+        (results_dir / "ch01-q0044.json").write_text(
+            canonical_json(self.valid_result_payload(job)), encoding="utf-8"
+        )
+
+        summary = ingest_agent_review_directory((record,), (job,), results_dir, self.root)
+        persisted = (self.root / "routing" / "agent-routes.jsonl").read_text(encoding="utf-8")
+        self.assertEqual(summary["vision_required"], 1)
+        self.assertIn("\\ud800", persisted)
+        self.assertEqual(json.loads(persisted)["candidate"]["question_text"], original_text)
+
     def test_directory_ingestion_is_resumable_and_writes_only_complete_routes(self) -> None:
         later = replace(self.clean_record, record_id="ch01-q0045")
         jobs_root = self.root / "agent-review"
@@ -218,6 +248,31 @@ class RoutingTests(unittest.TestCase):
         (results_dir / "ch01-q0044.json").write_text(canonical_json(stale), encoding="utf-8")
 
         with self.assertRaisesRegex(ValueError, "stale"):
+            ingest_agent_review_directory((self.clean_record,), (job,), results_dir, self.root)
+
+    def test_directory_ingestion_rejects_noncanonical_extension_case(self) -> None:
+        job = create_agent_review_job(self.clean_record, self.root / "agent-review" / "jobs" / "ch01-q0044.json")
+        results_dir = self.root / "agent-review-results"
+        results_dir.mkdir()
+        (results_dir / "ch01-q0044.JSON").write_text(
+            canonical_json(self.valid_result_payload(job)), encoding="utf-8"
+        )
+
+        with self.assertRaisesRegex(ValueError, "noncanonical"):
+            ingest_agent_review_directory((self.clean_record,), (job,), results_dir, self.root)
+
+    def test_directory_ingestion_rejects_case_variant_duplicate_result_files(self) -> None:
+        job = create_agent_review_job(self.clean_record, self.root / "agent-review" / "jobs" / "ch01-q0044.json")
+        results_dir = self.root / "agent-review-results"
+        results_dir.mkdir()
+        lower = results_dir / "ch01-q0044.json"
+        upper = results_dir / "ch01-q0044.JSON"
+        lower.write_text(canonical_json(self.valid_result_payload(job)), encoding="utf-8")
+        upper.write_text(canonical_json(self.valid_result_payload(job)), encoding="utf-8")
+        if len([path for path in results_dir.iterdir() if path.is_file()]) != 2:
+            self.skipTest("The current filesystem cannot represent case-variant filenames separately.")
+
+        with self.assertRaisesRegex(ValueError, "duplicate|noncanonical"):
             ingest_agent_review_directory((self.clean_record,), (job,), results_dir, self.root)
 
 

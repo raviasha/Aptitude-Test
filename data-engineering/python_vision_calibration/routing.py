@@ -35,7 +35,7 @@ def _json_value(value: Any) -> Any:
 
 def _canonical_bytes(value: Any) -> bytes:
     return json.dumps(
-        _json_value(value), ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False
+        _json_value(value), ensure_ascii=True, sort_keys=True, separators=(",", ":"), allow_nan=False
     ).encode("utf-8")
 
 
@@ -160,6 +160,41 @@ def _queue_path(jobs: Mapping[str, AgentReviewJob], work_root: Path) -> Path:
     return work_root / "agent-review" / "agent-review-jobs.jsonl"
 
 
+def _result_inventory(directory: Path, expected_ids: set[str]) -> dict[str, Path]:
+    """Require exactly one canonical `<record_id>.json` result file per observed ID."""
+    if not directory.exists():
+        return {}
+
+    expected_filenames = {f"{record_id}.json".casefold(): record_id for record_id in expected_ids}
+    observed: dict[str, list[Path]] = {}
+    unexpected: list[str] = []
+    for path in sorted(directory.iterdir(), key=lambda item: item.name):
+        if not path.is_file():
+            continue
+        record_id = expected_filenames.get(path.name.casefold())
+        if record_id is not None:
+            observed.setdefault(record_id, []).append(path)
+        elif path.suffix.lower() == ".json":
+            unexpected.append(path.name)
+    if unexpected:
+        raise ValueError(f"Agent review results contain unexpected result files: {', '.join(unexpected)}.")
+
+    inventory: dict[str, Path] = {}
+    for record_id, paths in sorted(observed.items()):
+        if len(paths) != 1:
+            names = ", ".join(path.name for path in paths)
+            raise ValueError(f"Agent review results contain duplicate evidence for {record_id}: {names}.")
+        path = paths[0]
+        canonical_name = f"{record_id}.json"
+        if path.name != canonical_name:
+            raise ValueError(
+                f"Agent review result filename is noncanonical for {record_id}: "
+                f"expected {canonical_name}, found {path.name}."
+            )
+        inventory[record_id] = path
+    return inventory
+
+
 def ingest_agent_review_directory(
     records: Iterable[RawBaselineRecord],
     jobs: Iterable[AgentReviewJob],
@@ -173,20 +208,13 @@ def ingest_agent_review_directory(
     if directory.exists() and not directory.is_dir():
         raise ValueError("Agent review results path must be a directory.")
 
-    expected_ids = set(jobs_by_id)
-    if directory.exists():
-        unexpected = sorted(
-            path.name for path in directory.iterdir()
-            if path.is_file() and path.suffix.lower() == ".json" and path.stem not in expected_ids
-        )
-        if unexpected:
-            raise ValueError(f"Agent review results contain unexpected result files: {', '.join(unexpected)}.")
+    inventory = _result_inventory(directory, set(jobs_by_id))
 
     routes: list[RouteDecision] = []
     pending = 0
     for record in ordered_records:
-        result_path = directory / f"{record.record_id}.json"
-        if not result_path.is_file():
+        result_path = inventory.get(record.record_id)
+        if result_path is None:
             pending += 1
             continue
         review = ingest_agent_review_result(jobs_by_id[record.record_id], result_path)

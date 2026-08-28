@@ -27,6 +27,29 @@ from textbook_chapters_v2.config import ChapterConfig
 from textbook_chapters_v2.models import PipelineBlocked
 
 
+class _Win32FunctionProxy:
+    def __init__(self, real_function, override=None) -> None:
+        object.__setattr__(self, "_real_function", real_function)
+        object.__setattr__(self, "_override", override)
+
+    def __call__(self, *args):
+        if self._override is not None:
+            return self._override(self._real_function, *args)
+        return self._real_function(*args)
+
+    def __setattr__(self, name, value) -> None:
+        setattr(self._real_function, name, value)
+
+
+class _Kernel32Proxy:
+    def __init__(self, real_kernel32, **overrides) -> None:
+        self._real_kernel32 = real_kernel32
+        self._overrides = overrides
+
+    def __getattr__(self, name):
+        return _Win32FunctionProxy(getattr(self._real_kernel32, name), self._overrides.get(name))
+
+
 class PilotPackageTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
@@ -142,12 +165,13 @@ class PilotPackageTests(unittest.TestCase):
         import python_vision_calibration.pilot_package as package_module
 
         real_publish = package_module._publish_exclusively
-        def fail_guard_after_write(source, destination, post_write_check):
+        def fail_guard_after_write(source, destination, post_write_check, **kwargs):
             return real_publish(
                 source,
                 destination,
                 post_write_check,
                 before_commit=lambda: self.published.write_bytes(b"published-changed-after-write"),
+                **kwargs,
             )
 
         with patch.object(package_module, "_publish_exclusively", side_effect=fail_guard_after_write):
@@ -155,7 +179,7 @@ class PilotPackageTests(unittest.TestCase):
                 self.build()
         self.assertFalse(self.output.exists())
 
-    def test_crashed_process_removes_its_armed_destination(self) -> None:
+    def test_crashed_process_removes_delete_on_close_staging_without_publishing(self) -> None:
         source = self.root / "crash-source.zip"
         destination = self.root / "crash-candidate.zip"
         source.write_bytes(b"validated-candidate-bytes")
@@ -185,8 +209,9 @@ class PilotPackageTests(unittest.TestCase):
         while destination.exists() and time.monotonic() < deadline:
             time.sleep(0.01)
         self.assertFalse(destination.exists())
+        self.assertEqual(list(self.root.glob(f".{destination.name}.*.publishing")), [])
 
-    def test_success_clears_delete_disposition_and_preserves_exact_bytes(self) -> None:
+    def test_successful_atomic_link_preserves_exact_bytes_and_removes_staging(self) -> None:
         from python_vision_calibration.pilot_package import _publish_exclusively
 
         source = self.root / "success-source.zip"
@@ -195,6 +220,74 @@ class PilotPackageTests(unittest.TestCase):
         source.write_bytes(expected)
         _publish_exclusively(source, destination, lambda: None)
         self.assertEqual(destination.read_bytes(), expected)
+        self.assertEqual(list(self.root.glob(f".{destination.name}.*.publishing")), [])
+
+    def test_initial_disposition_failure_removes_real_delete_on_close_staging(self) -> None:
+        import ctypes
+        from python_vision_calibration.pilot_package import _publish_exclusively
+
+        source = self.root / "arm-failure-source.zip"
+        destination = self.root / "arm-failure-candidate.zip"
+        source.write_bytes(b"bytes-that-must-never-be-written")
+        real_kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        disposition_calls = 0
+
+        def fail_initial_disposition(real_function, *args):
+            nonlocal disposition_calls
+            disposition_calls += 1
+            ctypes.set_last_error(5)
+            return False
+
+        proxy = _Kernel32Proxy(real_kernel32, SetFileInformationByHandle=fail_initial_disposition)
+        with patch.object(ctypes, "WinDLL", return_value=proxy):
+            with self.assertRaisesRegex(PipelineBlocked, "arm"):
+                _publish_exclusively(source, destination, lambda: None)
+        self.assertEqual(disposition_calls, 1)
+        self.assertFalse(destination.exists())
+        self.assertEqual(list(self.root.glob(f".{destination.name}.*.publishing")), [])
+
+    def test_pinned_destination_hash_mismatch_is_never_committed(self) -> None:
+        from python_vision_calibration.pilot_package import _publish_exclusively
+
+        source = self.root / "corrupt-source.zip"
+        destination = self.root / "corrupt-candidate.zip"
+        validated = b"validated-temporary-zip"
+        source.write_bytes(b"corrupted-after-validation")
+        with self.assertRaisesRegex(PipelineBlocked, "hash|bytes"):
+            _publish_exclusively(
+                source,
+                destination,
+                lambda: None,
+                expected_sha256=hashlib.sha256(validated).hexdigest(),
+            )
+        self.assertFalse(destination.exists())
+        self.assertEqual(list(self.root.glob(f".{destination.name}.*.publishing")), [])
+
+    def test_close_failures_are_never_reported_as_success(self) -> None:
+        import ctypes
+        from python_vision_calibration.pilot_package import _publish_exclusively
+
+        source = self.root / "close-failure-source.zip"
+        destination = self.root / "close-failure-candidate.zip"
+        expected = b"valid-bytes-committed-before-close"
+        source.write_bytes(expected)
+        real_kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        close_calls = 0
+
+        def close_then_report_failure(real_function, *args):
+            nonlocal close_calls
+            close_calls += 1
+            self.assertTrue(real_function(*args))
+            ctypes.set_last_error(6)
+            return False
+
+        proxy = _Kernel32Proxy(real_kernel32, CloseHandle=close_then_report_failure)
+        with patch.object(ctypes, "WinDLL", return_value=proxy):
+            with self.assertRaisesRegex(PipelineBlocked, "close"):
+                _publish_exclusively(source, destination, lambda: None)
+        self.assertEqual(close_calls, 2)
+        self.assertEqual(destination.read_bytes(), expected)
+        self.assertEqual(list(self.root.glob(f".{destination.name}.*.publishing")), [])
 
     def test_pinned_failure_cleanup_never_deletes_a_waiting_replacement(self) -> None:
         import python_vision_calibration.pilot_package as package_module
@@ -226,9 +319,13 @@ class PilotPackageTests(unittest.TestCase):
             start_replacement.set()
             self.published.write_bytes(b"published-changed-with-candidate-pinned")
 
-        def publish_with_waiting_competitor(source, destination, post_write_check):
+        def publish_with_waiting_competitor(source, destination, post_write_check, **kwargs):
             return real_publish(
-                source, destination, post_write_check, before_commit=after_candidate_bytes_are_pinned
+                source,
+                destination,
+                post_write_check,
+                before_commit=after_candidate_bytes_are_pinned,
+                **kwargs,
             )
 
         with patch.object(package_module, "_publish_exclusively", side_effect=publish_with_waiting_competitor):
@@ -238,6 +335,52 @@ class PilotPackageTests(unittest.TestCase):
         self.assertFalse(replacement_error)
         self.assertTrue(replacement_done.is_set())
         self.assertEqual(self.output.read_bytes(), competitor_bytes)
+
+    def test_published_package_is_pinned_through_the_atomic_candidate_commit(self) -> None:
+        import python_vision_calibration.pilot_package as package_module
+
+        real_publish = package_module._publish_exclusively
+        begin_mutation = threading.Event()
+        mutation_was_blocked = threading.Event()
+        mutation_done = threading.Event()
+        output_existed_at_mutation: list[bool] = []
+
+        def mutate_published_when_guard_is_pinned() -> None:
+            begin_mutation.wait(timeout=5)
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                try:
+                    self.published.write_bytes(b"published-changed-after-candidate-commit")
+                    output_existed_at_mutation.append(self.output.exists())
+                    mutation_done.set()
+                    return
+                except (PermissionError, OSError):
+                    mutation_was_blocked.set()
+                    time.sleep(0.005)
+
+        worker = threading.Thread(target=mutate_published_when_guard_is_pinned, daemon=True)
+        worker.start()
+
+        def start_waiting_mutation() -> None:
+            begin_mutation.set()
+            if not mutation_was_blocked.wait(timeout=2):
+                raise AssertionError("published mutation was not blocked by the pinned guard")
+
+        def publish_with_waiting_mutation(source, destination, post_write_check, **kwargs):
+            return real_publish(
+                source,
+                destination,
+                post_write_check,
+                after_published_guard=start_waiting_mutation,
+                **kwargs,
+            )
+
+        with patch.object(package_module, "_publish_exclusively", side_effect=publish_with_waiting_mutation):
+            result = self.build()
+        worker.join(timeout=6)
+        self.assertEqual(result.path, self.output)
+        self.assertTrue(mutation_done.is_set())
+        self.assertEqual(output_existed_at_mutation, [True])
 
     def test_stale_screenshot_or_forged_audit_blocks_packaging(self) -> None:
         screenshot = Path(self.manifest["screenshots"]["1024x768"]["submitted"]["path"])
@@ -265,9 +408,9 @@ class PilotPackageTests(unittest.TestCase):
         import python_vision_calibration.pilot_package as package_module
         real_publish = package_module._publish_exclusively
 
-        def competing(source, destination, post_write_check):
+        def competing(source, destination, post_write_check, **kwargs):
             Path(destination).write_bytes(b"")
-            return real_publish(source, destination, post_write_check)
+            return real_publish(source, destination, post_write_check, **kwargs)
 
         with patch.object(package_module, "_publish_exclusively", side_effect=competing):
             with self.assertRaisesRegex(PipelineBlocked, "overwrite|existing"):

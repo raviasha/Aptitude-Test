@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import secrets
 import tempfile
 import zipfile
 from dataclasses import dataclass
@@ -60,8 +61,11 @@ def _publish_exclusively(
     post_write_check: Callable[[], None],
     *,
     before_commit: Callable[[], None] | None = None,
+    expected_sha256: str | None = None,
+    protected_source: PublishedPackageGuard | None = None,
+    after_published_guard: Callable[[], None] | None = None,
 ) -> None:
-    """Publish through a pinned Windows handle with crash-safe delete disposition."""
+    """Validate a delete-on-close staging object, then atomically link it into place."""
     if os.name != "nt":
         raise PipelineBlocked("Pilot publication requires the Windows pinned-handle primitive.")
     import ctypes
@@ -70,8 +74,11 @@ def _publish_exclusively(
     delete_access = 0x00010000
     generic_read = 0x80000000
     generic_write = 0x40000000
+    file_share_read = 0x00000001
     create_new = 1
+    open_existing = 3
     file_attribute_normal = 0x00000080
+    file_flag_delete_on_close = 0x04000000
     file_disposition_info = 4
     error_file_exists = {80, 183}
 
@@ -91,74 +98,202 @@ def _publish_exclusively(
     kernel32.WriteFile.restype = wintypes.BOOL
     kernel32.FlushFileBuffers.argtypes = (wintypes.HANDLE,)
     kernel32.FlushFileBuffers.restype = wintypes.BOOL
+    kernel32.SetFilePointerEx.argtypes = (
+        wintypes.HANDLE, ctypes.c_longlong, ctypes.POINTER(ctypes.c_longlong), wintypes.DWORD,
+    )
+    kernel32.SetFilePointerEx.restype = wintypes.BOOL
+    kernel32.ReadFile.argtypes = (
+        wintypes.HANDLE, wintypes.LPVOID, wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD), wintypes.LPVOID,
+    )
+    kernel32.ReadFile.restype = wintypes.BOOL
     kernel32.SetFileInformationByHandle.argtypes = (
         wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD,
     )
     kernel32.SetFileInformationByHandle.restype = wintypes.BOOL
+    kernel32.CreateHardLinkW.argtypes = (
+        wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.LPVOID,
+    )
+    kernel32.CreateHardLinkW.restype = wintypes.BOOL
     kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
     kernel32.CloseHandle.restype = wintypes.BOOL
 
-    handle = kernel32.CreateFileW(
-        str(Path(destination).resolve()),
-        delete_access | generic_read | generic_write,
-        0,
-        None,
-        create_new,
-        file_attribute_normal,
-        None,
-    )
+    source = Path(source).resolve()
+    destination = Path(destination).resolve()
+    pinned_expected_sha256 = expected_sha256 or _sha256_path(source)
     invalid_handle = wintypes.HANDLE(-1).value
-    if handle == invalid_handle:
+
+    staging_path: Path | None = None
+    handle = invalid_handle
+    for _ in range(32):
+        candidate = destination.with_name(f".{destination.name}.{secrets.token_hex(16)}.publishing")
+        handle = kernel32.CreateFileW(
+            str(candidate),
+            delete_access | generic_read | generic_write,
+            0,
+            None,
+            create_new,
+            file_attribute_normal | file_flag_delete_on_close,
+            None,
+        )
+        if handle != invalid_handle:
+            staging_path = candidate
+            break
         error_code = ctypes.get_last_error()
-        if error_code in error_file_exists:
-            raise PipelineBlocked("Pilot packaging refuses to overwrite an existing candidate ZIP.")
-        raise PipelineBlocked(f"Pilot packaging could not pin its exclusive destination (Windows error {error_code}).")
+        if error_code not in error_file_exists:
+            raise PipelineBlocked(
+                f"Pilot packaging could not create its delete-on-close staging file (Windows error {error_code})."
+            )
+    if staging_path is None:
+        raise PipelineBlocked("Pilot packaging could not allocate a unique delete-on-close staging file.")
+
+    def close_pinned_handle(target_handle) -> int | None:
+        if kernel32.CloseHandle(target_handle):
+            return None
+        return ctypes.get_last_error()
 
     delete_disposition = FileDispositionInfo(True)
     if not kernel32.SetFileInformationByHandle(
         handle, file_disposition_info, ctypes.byref(delete_disposition), ctypes.sizeof(delete_disposition)
     ):
         error_code = ctypes.get_last_error()
-        kernel32.CloseHandle(handle)
+        close_error = close_pinned_handle(handle)
+        if close_error is not None:
+            raise PipelineBlocked(
+                "Pilot packaging could not arm crash-safe cleanup before writing "
+                f"(Windows error {error_code}) and could not close the pinned handle "
+                f"(Windows error {close_error})."
+            )
         raise PipelineBlocked(
             f"Pilot packaging could not arm crash-safe cleanup before writing (Windows error {error_code})."
         )
 
+    def sha256_pinned_handle(target_handle, description: str) -> str:
+        if not kernel32.SetFilePointerEx(target_handle, 0, None, 0):
+            raise PipelineBlocked(
+                f"Pilot packaging could not rewind its pinned {description} "
+                f"(Windows error {ctypes.get_last_error()})."
+            )
+        digest = hashlib.sha256()
+        read_buffer = ctypes.create_string_buffer(1024 * 1024)
+        while True:
+            read_count = wintypes.DWORD()
+            if not kernel32.ReadFile(
+                target_handle, read_buffer, len(read_buffer), ctypes.byref(read_count), None
+            ):
+                raise PipelineBlocked(
+                    f"Pilot packaging could not hash its pinned {description} "
+                    f"(Windows error {ctypes.get_last_error()})."
+                )
+            if read_count.value == 0:
+                return digest.hexdigest()
+            digest.update(read_buffer.raw[:read_count.value])
+
     committed = False
+    source_handle = invalid_handle
+    protected_handle = invalid_handle
     pending_error: BaseException | None = None
     try:
-        with Path(source).open("rb") as source_file:
-            for block in iter(lambda: source_file.read(1024 * 1024), b""):
-                buffer = ctypes.create_string_buffer(block)
-                written = wintypes.DWORD()
-                if not kernel32.WriteFile(handle, buffer, len(block), ctypes.byref(written), None):
-                    raise PipelineBlocked(
-                        f"Pilot packaging could not write its pinned destination (Windows error {ctypes.get_last_error()})."
-                    )
-                if written.value != len(block):
-                    raise PipelineBlocked("Pilot packaging wrote a partial pinned destination.")
+        source_handle = kernel32.CreateFileW(
+            str(source),
+            generic_read,
+            file_share_read,
+            None,
+            open_existing,
+            file_attribute_normal,
+            None,
+        )
+        if source_handle == invalid_handle:
+            raise PipelineBlocked(
+                f"Pilot packaging could not pin its validated temporary ZIP (Windows error {ctypes.get_last_error()})."
+        )
+        if sha256_pinned_handle(source_handle, "validated temporary ZIP") != pinned_expected_sha256:
+            raise PipelineBlocked("Pilot packaging validated temporary ZIP hash changed before publication.")
+        if not kernel32.SetFilePointerEx(source_handle, 0, None, 0):
+            raise PipelineBlocked(
+                f"Pilot packaging could not rewind its validated temporary ZIP (Windows error {ctypes.get_last_error()})."
+            )
+        copy_buffer = ctypes.create_string_buffer(1024 * 1024)
+        while True:
+            read_count = wintypes.DWORD()
+            if not kernel32.ReadFile(
+                source_handle, copy_buffer, len(copy_buffer), ctypes.byref(read_count), None
+            ):
+                raise PipelineBlocked(
+                    f"Pilot packaging could not read its validated temporary ZIP (Windows error {ctypes.get_last_error()})."
+                )
+            if read_count.value == 0:
+                break
+            written = wintypes.DWORD()
+            if not kernel32.WriteFile(
+                handle, copy_buffer, read_count.value, ctypes.byref(written), None
+            ):
+                raise PipelineBlocked(
+                    f"Pilot packaging could not write its pinned staging file (Windows error {ctypes.get_last_error()})."
+                )
+            if written.value != read_count.value:
+                raise PipelineBlocked("Pilot packaging wrote a partial pinned staging file.")
         if not kernel32.FlushFileBuffers(handle):
             raise PipelineBlocked(
                 f"Pilot packaging could not flush its pinned destination (Windows error {ctypes.get_last_error()})."
             )
+        if sha256_pinned_handle(handle, "staging file") != pinned_expected_sha256:
+            raise PipelineBlocked("Pilot packaging pinned destination bytes do not match the validated ZIP hash.")
         if before_commit is not None:
             before_commit()
+        if protected_source is not None:
+            protected_handle = kernel32.CreateFileW(
+                str(protected_source.path),
+                generic_read,
+                file_share_read,
+                None,
+                open_existing,
+                file_attribute_normal,
+                None,
+            )
+            if protected_handle == invalid_handle:
+                raise PipelineBlocked(
+                    "Pilot packaging could not pin the published Chapter 1 ZIP against mutation "
+                    f"(Windows error {ctypes.get_last_error()})."
+                )
+            if sha256_pinned_handle(protected_handle, "published ZIP") != protected_source.sha256:
+                raise PipelineBlocked("The published Chapter 1 ZIP changed during candidate packaging.")
         post_write_check()
-        keep_disposition = FileDispositionInfo(False)
-        if not kernel32.SetFileInformationByHandle(
-            handle, file_disposition_info, ctypes.byref(keep_disposition), ctypes.sizeof(keep_disposition)
-        ):
+        if after_published_guard is not None:
+            after_published_guard()
+        if not kernel32.CreateHardLinkW(str(destination), str(source), None):
+            error_code = ctypes.get_last_error()
+            if error_code in error_file_exists:
+                raise PipelineBlocked("Pilot packaging refuses to overwrite an existing candidate ZIP.")
             raise PipelineBlocked(
-                f"Pilot packaging could not commit its pinned destination (Windows error {ctypes.get_last_error()})."
+                f"Pilot packaging could not atomically publish its candidate ZIP (Windows error {error_code})."
             )
         committed = True
     except BaseException as error:
         pending_error = error
     finally:
-        if not kernel32.CloseHandle(handle) and pending_error is None:
-            pending_error = PipelineBlocked(
-                f"Pilot packaging could not close its pinned destination (Windows error {ctypes.get_last_error()})."
-            )
+        close_errors: list[str] = []
+        if protected_handle != invalid_handle:
+            protected_close_error = close_pinned_handle(protected_handle)
+            if protected_close_error is not None:
+                close_errors.append(f"published guard Windows error {protected_close_error}")
+        if source_handle != invalid_handle:
+            source_close_error = close_pinned_handle(source_handle)
+            if source_close_error is not None:
+                close_errors.append(f"validated source Windows error {source_close_error}")
+        staging_close_error = close_pinned_handle(handle)
+        if staging_close_error is not None:
+            close_errors.append(f"staging Windows error {staging_close_error}")
+        if close_errors:
+            close_detail = ", ".join(close_errors)
+            if pending_error is None:
+                pending_error = PipelineBlocked(
+                    f"Pilot packaging could not close its pinned handles ({close_detail})."
+                )
+            else:
+                pending_error = PipelineBlocked(
+                    f"{pending_error} Pilot packaging also could not close its pinned handles ({close_detail})."
+                )
     if pending_error is not None:
         raise pending_error
     if not committed:
@@ -460,8 +595,15 @@ def build_pilot_candidate_package(
             for name in sorted(members):
                 _write_member(archive, name, members[name])
         _validate_written_package(temporary_path, manifest, len(entries), set(assets))
+        temporary_sha256 = _sha256_path(temporary_path)
         guard.verify()
-        _publish_exclusively(temporary_path, output, guard.verify)
+        _publish_exclusively(
+            temporary_path,
+            output,
+            guard.verify,
+            expected_sha256=temporary_sha256,
+            protected_source=guard,
+        )
         temporary_path.unlink()
         temporary_name = None
     finally:

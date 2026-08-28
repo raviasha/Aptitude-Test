@@ -203,7 +203,28 @@ def _evidence_index(values: Iterable[RecordEvidence], field: str) -> dict[int, R
     return {item.question_number: item for item in evidence_values}
 
 
-def _persisted_crop(value: Any, role: str, number: int) -> SourceCrop:
+def _canonical_crop_path(
+    value: Any, crops_root: Path, role: str, number: int, page_number: Any, label: str
+) -> Path:
+    """Validate crop location and name without touching a target outside the authoritative root."""
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{label} path is missing or invalid.")
+    if isinstance(page_number, bool) or not isinstance(page_number, int) or page_number < 1:
+        raise ValueError(f"{label} page number is missing or invalid.")
+    root = safe_descendant(crops_root, crops_root, f"{label} root")
+    path = safe_descendant(root, Path(value), label)
+    if path.parent != root:
+        raise ValueError(f"{label} must be directly below its authoritative crops root.")
+    pattern = re.compile(
+        rf"^ch001-q{number:04d}-{re.escape(role)}"
+        rf"(?:-context-[A-Za-z0-9_.-]+-s[0-9]{{2}}|-s[0-9]{{2}})?-p{page_number:03d}\.png$"
+    )
+    if pattern.fullmatch(path.name) is None:
+        raise ValueError(f"{label} filename is noncanonical.")
+    return path
+
+
+def _persisted_crop(value: Any, role: str, number: int, crops_root: Path) -> SourceCrop:
     if not isinstance(value, Mapping):
         raise ValueError("Persisted source crop is malformed.")
     required = {
@@ -215,8 +236,12 @@ def _persisted_crop(value: Any, role: str, number: int) -> SourceCrop:
     box = value["box"]
     if not isinstance(box, Mapping) or set(box) != {"left", "top", "right", "bottom"}:
         raise ValueError("Persisted source crop box is malformed.")
-    path = Path(value["path"])
-    if value["role"] != role or value["question_number"] != number or not path.is_file():
+    if value["role"] != role or value["question_number"] != number:
+        raise ValueError("Persisted source crop identity or path is stale.")
+    path = _canonical_crop_path(
+        value["path"], crops_root, role, number, value["page_number"], "Persisted source crop"
+    )
+    if not path.is_file():
         raise ValueError("Persisted source crop identity or path is stale.")
     digest = _require_hash(value["sha256"], "persisted source crop hash")
     if _sha256_path(path) != digest:
@@ -239,7 +264,7 @@ def _persisted_crop(value: Any, role: str, number: int) -> SourceCrop:
 def load_persisted_vision_evidence(
     work_root: Path, question_numbers: Iterable[int]
 ) -> tuple[RecordEvidence, ...]:
-    """Read and authenticate the exact persisted source-evidence inventory without rendering."""
+    """Authenticate exact persisted evidence via fresh scoped rendering in a temporary root."""
     numbers = tuple(question_numbers)
     if any(isinstance(number, bool) or not isinstance(number, int) for number in numbers) or len(set(numbers)) != len(numbers):
         raise ValueError("Persisted evidence question inventory is invalid.")
@@ -274,8 +299,8 @@ def load_persisted_vision_evidence(
     configured_source = Path(configured_source_raw) if isinstance(configured_source_raw, str) else Path()
     if configured_source_raw and not configured_source.is_absolute():
         configured_source = _PROJECT_ROOT / configured_source
-    crops_root = (evidence_root / "crops").resolve(strict=False)
-    rendered_root = (evidence_root / "rendered").resolve(strict=False)
+    crops_root = safe_descendant(Path(work_root), evidence_root / "crops", "Persisted crops root")
+    rendered_root = safe_descendant(Path(work_root), evidence_root / "rendered", "Persisted rendered root")
     expected_crop_paths: set[Path] = set()
     expected_rendered: dict[Path, str] = {}
     loaded: list[RecordEvidence] = []
@@ -301,8 +326,8 @@ def load_persisted_vision_evidence(
         source_pdf = Path(payload["source_pdf"])
         source_hash = _require_hash(payload["source_pdf_sha256"], "persisted source PDF hash")
         if (
-            not source_pdf.is_file()
-            or source_pdf.resolve() != configured_source.resolve()
+            Path(os.path.abspath(source_pdf)) != Path(os.path.abspath(configured_source))
+            or not source_pdf.is_file()
             or _sha256_path(source_pdf) != source_hash
         ):
             raise ValueError("Persisted source evidence source PDF is stale.")
@@ -311,9 +336,9 @@ def load_persisted_vision_evidence(
             question_number=payload["question_number"],
             source_pdf=source_pdf,
             source_pdf_sha256=source_hash,
-            question_crops=tuple(_persisted_crop(item, "question", number) for item in payload["question_crops"]),
-            answer_key_crops=tuple(_persisted_crop(item, "answer_key", number) for item in payload["answer_key_crops"]),
-            solution_crops=tuple(_persisted_crop(item, "solution", number) for item in payload["solution_crops"]),
+            question_crops=tuple(_persisted_crop(item, "question", number, crops_root) for item in payload["question_crops"]),
+            answer_key_crops=tuple(_persisted_crop(item, "answer_key", number, crops_root) for item in payload["answer_key_crops"]),
+            solution_crops=tuple(_persisted_crop(item, "solution", number, crops_root) for item in payload["solution_crops"]),
             source_status=payload["source_status"],
             source_reasons=tuple(payload["source_reasons"]),
             requires_reviewed_rejection=payload["requires_reviewed_rejection"],
@@ -332,7 +357,7 @@ def load_persisted_vision_evidence(
             raise ValueError("Persisted source evidence policy is stale against current configuration.")
         for crop in evidence.question_crops + evidence.answer_key_crops + evidence.solution_crops:
             try:
-                crop_path = crop.path.resolve()
+                crop_path = Path(os.path.abspath(crop.path))
                 crop_path.relative_to(crops_root)
             except ValueError as error:
                 raise ValueError("Persisted source crop path escapes the authoritative evidence root.") from error
@@ -343,7 +368,7 @@ def load_persisted_vision_evidence(
             if not crop_name.fullmatch(crop.path.name):
                 raise ValueError("Persisted source crop output path is noncanonical.")
             expected_crop_paths.add(crop_path)
-            rendered_path = (rendered_root / f"page-{crop.page_number:03d}-{crop.source_dpi}dpi.png").resolve()
+            rendered_path = rendered_root / f"page-{crop.page_number:03d}-{crop.source_dpi}dpi.png"
             prior_rendered_hash = expected_rendered.setdefault(rendered_path, crop.source_image_sha256)
             if prior_rendered_hash != crop.source_image_sha256:
                 raise ValueError("Persisted source crops disagree about rendered-page provenance.")
@@ -380,10 +405,10 @@ def load_persisted_vision_evidence(
         if envelope["dependency_fingerprint"] != expected_envelope_dependency:
             raise ValueError("Persisted source evidence envelope dependency is stale.")
         loaded.append(evidence)
-    crop_entries = {entry.resolve() for entry in crops_root.iterdir()} if crops_root.is_dir() else set()
+    crop_entries = {Path(os.path.abspath(entry)) for entry in crops_root.iterdir()} if crops_root.is_dir() else set()
     if crop_entries != expected_crop_paths or any(not entry.is_file() for entry in crop_entries):
         raise ValueError("Persisted source crop inventory is missing, extra, or noncanonical.")
-    rendered_entries = {entry.resolve() for entry in rendered_root.iterdir()} if rendered_root.is_dir() else set()
+    rendered_entries = {Path(os.path.abspath(entry)) for entry in rendered_root.iterdir()} if rendered_root.is_dir() else set()
     if rendered_entries != set(expected_rendered) or any(not entry.is_file() for entry in rendered_entries):
         raise ValueError("Persisted rendered-page inventory is missing, extra, or noncanonical.")
     for path, digest in expected_rendered.items():
@@ -944,6 +969,12 @@ def _validate_job(job: VisionFallbackJob) -> None:
     if job.output_schema != _SCHEMA_NAME:
         raise ValueError("Vision fallback job names a stale output schema.")
 
+    work_root = _job_work_root(job)
+    crops_root = safe_descendant(
+        work_root,
+        work_root / "vision" / "source-evidence" / "crops",
+        "Vision fallback source crops root",
+    )
     ordered_hashes: list[str] = []
     role_hashes: dict[str, list[str]] = {"question": [], "answer_key": [], "solution": []}
     for source in job.sources:
@@ -955,10 +986,13 @@ def _validate_job(job: VisionFallbackJob) -> None:
         if source.get("printed_question_number") != job.question_number:
             raise ValueError("Vision fallback job source crop has the wrong printed question number.")
         declared_hash = _require_hash(source.get("sha256"), "source crop hash")
-        source_path = source.get("path")
-        if not isinstance(source_path, str) or not Path(source_path).is_file():
+        source_path = _canonical_crop_path(
+            source.get("path"), crops_root, role, job.question_number, source.get("page_number"),
+            "Vision fallback job source crop",
+        )
+        if not source_path.is_file():
             raise ValueError("Vision fallback job source crop path is missing or invalid.")
-        if _sha256_path(Path(source_path)) != declared_hash:
+        if _sha256_path(source_path) != declared_hash:
             raise ValueError(f"Vision fallback source crop hash does not match file: {source_path}")
         _require_hash(source.get("source_image_sha256"), "source image hash")
         ordered_hashes.append(declared_hash)
@@ -979,10 +1013,17 @@ def _validate_job_against_current_evidence(job: VisionFallbackJob, current: Reco
 
 
 def _job_work_root(job: VisionFallbackJob) -> Path:
-    parent = job.output_path.parent
-    if parent.name == "jobs" and parent.parent.name == "vision":
-        return parent.parent.parent
-    return parent
+    output = Path(os.path.abspath(job.output_path))
+    parent = output.parent
+    if (
+        output.name != f"{job.record_id}.json"
+        or parent.name != "jobs"
+        or parent.parent.name != "vision"
+    ):
+        raise ValueError("Vision fallback job output path is noncanonical.")
+    work_root = parent.parent.parent
+    safe_descendant(work_root, output, "Vision fallback job output path")
+    return work_root
 
 
 def _ingest_result_against_current(

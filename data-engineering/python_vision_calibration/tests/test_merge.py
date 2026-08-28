@@ -169,7 +169,8 @@ class MergeFinalCandidatesTests(unittest.TestCase):
         )
 
     def make_crop(self, role: str) -> SourceCrop:
-        path = self.root / f"{role}.png"
+        path = self.root / "vision/source-evidence/crops" / f"ch001-q0044-{role}-p025.png"
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(f"{role}:44".encode("ascii"))
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
         return SourceCrop(
@@ -286,7 +287,7 @@ class MergeFinalCandidatesTests(unittest.TestCase):
             job = create_vision_fallback_job(
                 self.vision_route,
                 evidence,
-                self.root / "vision" / "jobs" / "restricted-ch01-q0044.json",
+                self.root / "vision" / "jobs" / "ch01-q0044.json",
             )
         return evidence, job
 

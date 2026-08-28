@@ -44,8 +44,8 @@ class VisionFallbackTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_directory = tempfile.TemporaryDirectory()
         self.root = Path(self.temp_directory.name)
-        self.crop_root = self.root / "crops"
-        self.crop_root.mkdir()
+        self.crop_root = self.root / "vision/source-evidence/crops"
+        self.crop_root.mkdir(parents=True)
         self.evidence = (self.record_evidence(44),)
         self.prepare_source_patcher = patch(
             "python_vision_calibration.vision_fallback.prepare_source_evidence",
@@ -102,7 +102,7 @@ class VisionFallbackTests(unittest.TestCase):
         )
 
     def crop(self, role: str, number: int, suffix: str) -> SourceCrop:
-        path = self.crop_root / f"q{number:04d}-{suffix}.png"
+        path = self.crop_root / f"ch001-q{number:04d}-{role}-p025.png"
         path.write_bytes(f"{role}:{number}:{suffix}".encode("ascii"))
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
         return SourceCrop(
@@ -267,6 +267,67 @@ class VisionFallbackTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "unexpected"):
                     vision_protocol._result_inventory(results, {"ch01-q0044"})
 
+    def test_persisted_crop_rejects_outside_path_before_any_target_stat_or_open(self) -> None:
+        crops_root = self.root / "authoritative/vision/source-evidence/crops"
+        crops_root.mkdir(parents=True)
+        outside = self.root / "outside-sentinel.png"
+        outside.write_bytes(b"outside sentinel must never be inspected")
+        crop = self.evidence[0].question_crops[0]
+        payload = {
+            "role": "question",
+            "question_number": 44,
+            "page_number": crop.page_number,
+            "box": {"left": 10, "top": 20, "right": 100, "bottom": 120},
+            "path": str(outside),
+            "width": 90,
+            "height": 100,
+            "sha256": hashlib.sha256(outside.read_bytes()).hexdigest(),
+            "source_image_sha256": "4" * 64,
+            "source_dpi": 180,
+        }
+        original_stat = Path.stat
+        original_open = Path.open
+
+        def guarded_stat(path: Path, *args, **kwargs):
+            if Path(path) == outside:
+                raise AssertionError("outside sentinel was statted")
+            return original_stat(path, *args, **kwargs)
+
+        def guarded_open(path: Path, *args, **kwargs):
+            if Path(path) == outside:
+                raise AssertionError("outside sentinel was opened")
+            return original_open(path, *args, **kwargs)
+
+        with patch.object(Path, "stat", guarded_stat), patch.object(Path, "open", guarded_open):
+            with self.assertRaisesRegex(ValueError, "authoritative|canonical|contain"):
+                vision_protocol._persisted_crop(payload, "question", 44, crops_root)
+
+    def test_job_source_rejects_outside_path_before_any_target_stat_or_open(self) -> None:
+        outside = self.root / "outside-job-sentinel.png"
+        outside.write_bytes(self.evidence[0].question_crops[0].path.read_bytes())
+        forged_source = {**self.job.sources[0], "path": str(outside)}
+        provisional = replace(self.job, sources=(forged_source, *self.job.sources[1:]), job_sha256="")
+        forged = replace(
+            provisional,
+            job_sha256=vision_protocol._sha256(vision_protocol._job_hash_payload(provisional)),
+        )
+        original_stat = Path.stat
+        original_open = Path.open
+
+        def guarded_stat(path: Path, *args, **kwargs):
+            if Path(path) == outside:
+                raise AssertionError("outside job source was statted")
+            return original_stat(path, *args, **kwargs)
+
+        def guarded_open(path: Path, *args, **kwargs):
+            if Path(path) == outside:
+                raise AssertionError("outside job source was opened")
+            return original_open(path, *args, **kwargs)
+
+        with patch.object(Path, "stat", guarded_stat), patch.object(Path, "open", guarded_open):
+            with self.assertRaisesRegex(ValueError, "authoritative|canonical|contain"):
+                vision_protocol._validate_job(forged)
+
     def test_persisted_evidence_loader_reconstructs_only_exact_current_inventory(self) -> None:
         root = self.root / "persisted"
         authoritative_crops = root / "vision/source-evidence/crops"
@@ -358,6 +419,32 @@ class VisionFallbackTests(unittest.TestCase):
         self.assertEqual(call.kwargs["question_numbers"], (44,))
         self.assertNotEqual(Path(call.args[2]).resolve(), (root / "vision/source-evidence").resolve())
         self.assertEqual({path: path.read_bytes() for path in root.rglob("*") if path.is_file()}, before)
+
+        envelope_path = root / "vision/source-evidence/source-evidence/ch001-q0044.json"
+        original_envelope = envelope_path.read_bytes()
+        forged_envelope = json.loads(original_envelope)
+        outside = self.root / "loader-outside-sentinel.png"
+        outside.write_bytes(evidence.question_crops[0].path.read_bytes())
+        forged_envelope["payload"]["question_crops"][0]["path"] = str(outside)
+        forged_envelope["payload_sha256"] = dependency_fingerprint(forged_envelope["payload"])
+        envelope_path.write_text(canonical_json(forged_envelope), encoding="utf-8")
+        original_stat = Path.stat
+        original_open = Path.open
+
+        def guarded_stat(path: Path, *args, **kwargs):
+            if Path(path) == outside:
+                raise AssertionError("loader statted the outside sentinel")
+            return original_stat(path, *args, **kwargs)
+
+        def guarded_open(path: Path, *args, **kwargs):
+            if Path(path) == outside:
+                raise AssertionError("loader opened the outside sentinel")
+            return original_open(path, *args, **kwargs)
+
+        with patch.object(Path, "stat", guarded_stat), patch.object(Path, "open", guarded_open):
+            with self.assertRaisesRegex(ValueError, "authoritative|canonical|contain"):
+                load_persisted_vision_evidence(root, (44,))
+        envelope_path.write_bytes(original_envelope)
 
         forged_current = replace(
             evidence,
@@ -475,7 +562,9 @@ class VisionFallbackTests(unittest.TestCase):
             requires_reviewed_rejection=True,
         )
         self.prepare_source.return_value = [incomplete]
-        job = create_vision_fallback_job(self.vision_route, incomplete, self.root / "incomplete-job.json")
+        job = create_vision_fallback_job(
+            self.vision_route, incomplete, self.root / "vision/jobs/ch01-q0044.json"
+        )
         payload = self.valid_vision_result()
         payload.update({
             "source_evidence_sha256s": list(job.source_evidence_sha256s),

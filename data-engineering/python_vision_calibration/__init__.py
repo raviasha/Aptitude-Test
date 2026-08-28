@@ -4,6 +4,14 @@ This package is deliberately separate from the legacy chapter builder and from
 the V2 textbook pipeline.  Its outputs are calibration evidence only.
 """
 
-from .models import RawBaselineRecord
+from .agent_review import create_agent_review_job, create_agent_review_queue, ingest_agent_review_result
+from .models import AgentReviewJob, AgentReviewResult, RawBaselineRecord
 
-__all__ = ["RawBaselineRecord"]
+__all__ = [
+    "AgentReviewJob",
+    "AgentReviewResult",
+    "RawBaselineRecord",
+    "create_agent_review_job",
+    "create_agent_review_queue",
+    "ingest_agent_review_result",
+]

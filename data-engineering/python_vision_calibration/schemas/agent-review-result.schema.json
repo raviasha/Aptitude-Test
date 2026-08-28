@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "record_id",
+    "decision",
+    "confidence",
+    "checks",
+    "reason_codes",
+    "explanation",
+    "reviewer",
+    "baseline_sha256",
+    "job_sha256",
+    "result_sha256"
+  ],
+  "properties": {
+    "record_id": {"type": "string", "minLength": 1},
+    "decision": {"type": "string", "enum": ["ACCEPT_PYTHON", "VISION_REQUIRED"]},
+    "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+    "checks": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rendering", "structure", "logic", "cross_field_consistency"],
+      "properties": {
+        "rendering": {"type": "string", "enum": ["PASS", "SUSPECT"]},
+        "structure": {"type": "string", "enum": ["PASS", "SUSPECT"]},
+        "logic": {"type": "string", "enum": ["PASS", "SUSPECT"]},
+        "cross_field_consistency": {"type": "string", "enum": ["PASS", "SUSPECT"]}
+      }
+    },
+    "reason_codes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "LOST_SUPERSCRIPT",
+          "AMBIGUOUS_NOTATION",
+          "MALFORMED_OPTION",
+          "ANSWER_MISMATCH",
+          "SOLUTION_MISMATCH",
+          "TRUNCATED_TEXT",
+          "POSSIBLE_NEIGHBOUR_CONTENT",
+          "OTHER"
+        ]
+      }
+    },
+    "explanation": {"type": "string"},
+    "reviewer": {"type": "string", "minLength": 1},
+    "baseline_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "job_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "result_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

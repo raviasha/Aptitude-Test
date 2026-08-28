@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Chapter 1 full-record vision fallback result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "record_id",
+    "decision",
+    "question_text",
+    "options",
+    "correct_answer",
+    "solution_steps",
+    "representation",
+    "media",
+    "source_evidence_sha256s",
+    "quarantine_reason",
+    "reviewer",
+    "route_sha256",
+    "job_sha256",
+    "result_sha256"
+  ],
+  "properties": {
+    "record_id": {"type": "string", "pattern": "^ch01-q[0-9]{4}$"},
+    "decision": {"type": "string", "enum": ["VISION_ACCEPTED", "QUARANTINE"]},
+    "question_text": {"type": "string"},
+    "options": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 5,
+      "properties": {
+        "A": {"type": "string"},
+        "B": {"type": "string"},
+        "C": {"type": "string"},
+        "D": {"type": "string"},
+        "E": {"type": "string"}
+      }
+    },
+    "correct_answer": {"type": "string"},
+    "solution_steps": {"type": "array", "items": {"type": "string"}},
+    "representation": {"type": "object"},
+    "media": {"type": "object"},
+    "source_evidence_sha256s": {
+      "type": "array",
+      "items": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+    },
+    "quarantine_reason": {"type": "string"},
+    "reviewer": {"type": "string", "minLength": 1},
+    "route_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "job_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "result_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

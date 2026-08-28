@@ -75,3 +75,61 @@ class RouteDecision:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "reason_codes", tuple(self.reason_codes))
+
+
+@dataclass(frozen=True)
+class VisionFallbackJob:
+    """One full-record vision request bound only to current source evidence."""
+
+    record_id: str
+    question_number: int
+    route_sha256: str
+    baseline_sha256: str
+    source_pdf_sha256: str
+    source_dependency_fingerprint: str
+    config_sha256: str
+    schema_sha256: str
+    prompt: str
+    prompt_sha256: str
+    sources: tuple[Mapping[str, object], ...]
+    source_evidence_sha256s: tuple[str, ...]
+    role_sha256s: Mapping[str, tuple[str, ...]]
+    output_schema: str
+    output_path: Path
+    requires_quarantine: bool
+    source_reasons: tuple[str, ...]
+    job_sha256: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "sources", tuple(_freeze_value(dict(source)) for source in self.sources))
+        object.__setattr__(self, "source_evidence_sha256s", tuple(self.source_evidence_sha256s))
+        object.__setattr__(self, "role_sha256s", _freeze_value(dict(self.role_sha256s)))
+        object.__setattr__(self, "output_path", Path(self.output_path))
+        object.__setattr__(self, "source_reasons", tuple(self.source_reasons))
+
+
+@dataclass(frozen=True)
+class VisionFallbackResult:
+    """A terminal full-record vision result validated against one fallback job."""
+
+    record_id: str
+    decision: str
+    question_text: str
+    options: Mapping[str, str]
+    correct_answer: str
+    solution_steps: tuple[str, ...]
+    representation: Mapping[str, object]
+    media: Mapping[str, object]
+    source_evidence_sha256s: tuple[str, ...]
+    quarantine_reason: str
+    reviewer: str
+    route_sha256: str
+    job_sha256: str
+    result_sha256: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "options", _freeze_value(dict(self.options)))
+        object.__setattr__(self, "solution_steps", tuple(self.solution_steps))
+        object.__setattr__(self, "representation", _freeze_value(dict(self.representation)))
+        object.__setattr__(self, "media", _freeze_value(dict(self.media)))
+        object.__setattr__(self, "source_evidence_sha256s", tuple(self.source_evidence_sha256s))

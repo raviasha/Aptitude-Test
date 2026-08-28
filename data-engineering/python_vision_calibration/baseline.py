@@ -5,12 +5,12 @@ import json
 import os
 import re
 import tempfile
-from collections import Counter
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 import pdfplumber
+from pypdf import PdfReader
 
 from textbook_chapters import build as legacy_build
 
@@ -19,8 +19,7 @@ from .models import RawBaselineRecord
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 LEGACY_ROOT = PROJECT_ROOT / "data-engineering" / "textbook_chapters"
-SOURCE_BANK_PATH = PROJECT_ROOT / "question-banks" / "quantitative_aptitude_complete_extended.json"
-RAW_EXTRACTOR_VERSION = "legacy-python-raw-v1"
+RAW_EXTRACTOR_VERSION = "source-region-python-raw-v2"
 
 _CANDIDATE_FIELDS = (
     "key",
@@ -117,11 +116,13 @@ def _validate_association(record: Mapping[str, object]) -> dict[str, tuple[str, 
 def _with_missing_raw_candidate(
     *,
     record_id: str,
+    source_identity: Mapping[str, object],
     source_association: Mapping[str, object],
 ) -> dict[str, object]:
-    """Represent a source-backed record absent from the raw Python source bank."""
+    """Represent a source-backed record whose raw Python region parse is absent."""
     return {
         "record_id": record_id,
+        "source_identity": deepcopy(dict(source_identity)),
         "question_text": "",
         "options": {},
         "correct_answer": "",
@@ -131,142 +132,176 @@ def _with_missing_raw_candidate(
     }
 
 
-def _identity_tokens(value: object) -> tuple[str, ...]:
-    if not isinstance(value, str):
-        return ()
-    return tuple(re.findall(r"[a-z]+|\d+(?:\.\d+)?", value.casefold()))
-
-
-def _candidate_identity_text(record: Mapping[str, object]) -> str:
-    material = [record.get("question_text", "")]
-    options = record.get("options")
-    if isinstance(options, Mapping):
-        material.extend(options.values())
-    return " ".join(str(value) for value in material if isinstance(value, str))
-
-
-def _identity_score(candidate_text: str, source_text: str) -> float:
-    candidate = Counter(_identity_tokens(candidate_text))
-    if sum(candidate.values()) < 4:
-        return 0.0
-    source = Counter(_identity_tokens(source_text))
-    return sum((candidate & source).values()) / sum(candidate.values())
-
-
-def _associate_raw_candidates_by_identity(
+def _validated_source_identity(
+    identity: object,
     *,
     chapter: int,
-    raw_records: Iterable[Mapping[str, object]],
-    identity_regions: Mapping[int, Mapping[str, object]],
-) -> dict[int, dict[str, object]]:
-    """Associate raw candidates only through hash-bound printed identities.
-
-    A raw extractor may supply its own ``source_identity`` object. Otherwise a
-    candidate must uniquely match one numbered source region through its own
-    text anchor. Candidate order is validated after identity resolution so a
-    reordered input cannot silently change which printed record it represents.
-    """
-    records = [deepcopy(dict(record)) for record in raw_records]
-    expected = set(identity_regions)
-    if expected != set(range(1, len(identity_regions) + 1)) or len(records) != len(expected):
-        raise ValueError(
-            f"unresolved raw/source identity for chapter {chapter}: "
-            f"{len(records)} raw candidates for {len(expected)} numbered source regions."
-        )
-
-    resolved: list[tuple[int, dict[str, object]]] = []
-    for raw in records:
-        explicit = raw.get("source_identity")
-        if explicit is not None:
-            if not isinstance(explicit, Mapping):
-                raise ValueError(f"unresolved raw/source identity for chapter {chapter}: malformed explicit identity.")
-            number = explicit.get("number")
-            declared_hash = explicit.get("question_region_sha256")
-            region = identity_regions.get(number) if isinstance(number, int) and not isinstance(number, bool) else None
-            if (
-                region is None
-                or not isinstance(declared_hash, str)
-                or declared_hash != region.get("sha256")
-            ):
-                raise ValueError(
-                    f"unresolved raw/source identity for chapter {chapter}: "
-                    "explicit identity is not bound to the numbered question region."
-                )
-            explicit_score = _identity_score(
-                _candidate_identity_text(raw),
-                str(region.get("anchor_text", "")),
-            )
-            if explicit_score < 0.75:
-                raise ValueError(
-                    f"unresolved raw/source identity for chapter {chapter}: "
-                    f"explicit identity does not match its candidate anchor (score={explicit_score:.3f})."
-                )
-        else:
-            candidate_text = _candidate_identity_text(raw)
-            scores = sorted(
-                (
-                    (_identity_score(candidate_text, str(region.get("anchor_text", ""))), number)
-                    for number, region in identity_regions.items()
-                ),
-                reverse=True,
-            )
-            best_score, number = scores[0]
-            second_score = scores[1][0] if len(scores) > 1 else 0.0
-            if best_score < 0.75 or best_score - second_score < 0.15:
-                key = raw.get("key", "candidate")
-                raise ValueError(
-                    f"unresolved raw/source identity for chapter {chapter}: {key!r} has no unique "
-                    f"numbered source anchor (best={best_score:.3f}, margin={best_score - second_score:.3f})."
-                )
-        resolved.append((number, raw))
-
-    numbers = [number for number, _ in resolved]
-    if numbers != sorted(numbers):
-        raise ValueError(f"unresolved raw/source identity for chapter {chapter}: reordered raw candidate identity.")
-    if set(numbers) != expected or len(set(numbers)) != len(numbers):
-        missing = sorted(expected - set(numbers))
-        duplicates = sorted(number for number in set(numbers) if numbers.count(number) > 1)
-        raise ValueError(
-            f"unresolved raw/source identity for chapter {chapter}: "
-            f"missing={missing}; duplicate={duplicates}."
-        )
-    return {number: raw for number, raw in resolved}
+    record_id: str,
+    expected_pdf_sha256: str | None = None,
+) -> dict[str, object]:
+    if not isinstance(identity, Mapping):
+        raise ValueError(f"{record_id} requires an explicit source_identity.")
+    required = {"number", "question_region_sha256", "pdf_sha256", "page", "box"}
+    if set(identity) != required:
+        raise ValueError(f"{record_id} requires an explicit source_identity with {sorted(required)}.")
+    number = identity["number"]
+    page = identity["page"]
+    region_hash = identity["question_region_sha256"]
+    pdf_hash = identity["pdf_sha256"]
+    box = identity["box"]
+    if not isinstance(number, int) or isinstance(number, bool) or number < 1:
+        raise ValueError(f"{record_id} has an invalid source question number.")
+    if record_id != f"ch{chapter:02d}-q{number:04d}":
+        raise ValueError(f"{record_id} does not match its explicit source_identity number.")
+    if not isinstance(page, int) or isinstance(page, bool) or page < 1:
+        raise ValueError(f"{record_id} has an invalid source page.")
+    if not isinstance(region_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", region_hash):
+        raise ValueError(f"{record_id} has an invalid question_region_sha256.")
+    if not isinstance(pdf_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", pdf_hash):
+        raise ValueError(f"{record_id} has an invalid pdf_sha256.")
+    if expected_pdf_sha256 is not None and pdf_hash != expected_pdf_sha256:
+        raise ValueError(f"{record_id} source_identity does not match the source PDF.")
+    if (
+        not isinstance(box, (list, tuple))
+        or len(box) != 4
+        or any(not isinstance(value, (int, float)) or isinstance(value, bool) for value in box)
+        or not (float(box[0]) < float(box[2]) and float(box[1]) < float(box[3]))
+    ):
+        raise ValueError(f"{record_id} has an invalid source box.")
+    return {
+        "number": number,
+        "question_region_sha256": region_hash,
+        "pdf_sha256": pdf_hash,
+        "page": page,
+        "box": [round(float(value), 3) for value in box],
+    }
 
 
-def _question_identity_regions(
-    source_pdf: Path,
-    question_markers: Mapping[int, tuple[int, float, float]],
-    source_pdf_hash: str,
-) -> dict[int, dict[str, object]]:
-    """Extract independently hash-bound text regions for printed questions."""
-    regions: dict[int, dict[str, object]] = {}
-    with pdfplumber.open(source_pdf) as document:
-        for number, (page_number, x0, top) in question_markers.items():
-            page = document.pages[page_number - 1]
-            left_column = x0 < page.width / 2
-            following = [
-                marker_top
-                for later_number, (marker_page, marker_x0, marker_top) in question_markers.items()
-                if later_number > number
-                and marker_page == page_number
-                and (marker_x0 < page.width / 2) == left_column
-                and marker_top > top
-            ]
-            bottom = min(following) if following else page.height - 20
-            left = 20 if left_column else page.width / 2 - 8
-            right = page.width / 2 + 8 if left_column else page.width - 20
-            box = (left, max(0.0, top - 2), right, min(page.height, bottom))
-            anchor_text = page.crop(box).extract_text() or ""
-            region_hash = _canonical_hash({
-                "source_pdf_sha256": source_pdf_hash,
-                "role": "question_identity",
-                "number": number,
-                "page": page_number,
-                "box": [round(value, 3) for value in box],
-                "anchor_text": anchor_text,
-            })
-            regions[number] = {"sha256": region_hash, "anchor_text": anchor_text}
-    return regions
+def _candidate_from_question_region(
+    *,
+    chapter: int,
+    chapter_name: str,
+    identity: Mapping[str, object],
+    region_text: str,
+) -> dict[str, object]:
+    """Parse one PDF region while retaining the identity created with it."""
+    number = identity.get("number")
+    record_id = f"ch{chapter:02d}-q{number:04d}" if isinstance(number, int) else f"ch{chapter:02d}-invalid"
+    source_identity = _validated_source_identity(identity, chapter=chapter, record_id=record_id)
+    text = legacy_build.normalize_extracted_text(region_text)
+    text = re.sub(rf"^\s*{number}\s*\.\s*", "", text, count=1)
+    labels = list(re.finditer(r"\(\s*([a-eA-E])\s*\)", text))
+    failures: list[str] = []
+    if "\ufffd" in text:
+        failures.append("replacement_character")
+    if re.search(r"(?m)^\s*[A-Za-z?]\s*$", text):
+        failures.append("isolated_gutter_glyph")
+    if labels:
+        question_text = text[:labels[0].start()].strip()
+        options: dict[str, str] = {}
+        for index, match in enumerate(labels):
+            end = labels[index + 1].start() if index + 1 < len(labels) else len(text)
+            label = match.group(1).upper()
+            if label in options:
+                failures.append("duplicate_option_label")
+            options[label] = text[match.end():end].strip()
+    else:
+        question_text = text.strip()
+        options = {}
+        failures.append("missing_options")
+    raw: dict[str, object] = {
+        "record_id": record_id,
+        "source_identity": source_identity,
+        "key": record_id,
+        "question_text": question_text,
+        "category": "Arithmetical Ability",
+        "difficulty": "Medium",
+        "options": options,
+        "correct_answer": "",
+        "explanation": "",
+        "solution_steps": [],
+        "option_explanations": {},
+        "chapter": chapter_name,
+    }
+    if failures:
+        raw["baseline_failures"] = failures
+    return raw
+
+
+def _region_box(
+    page: pdfplumber.page.Page,
+    *,
+    number: int,
+    marker: tuple[int, float, float],
+    markers: Mapping[int, tuple[int, float, float]],
+    stop_at_answers: bool,
+) -> tuple[float, float, float, float]:
+    page_number, x0, top = marker
+    left_column = x0 < page.width / 2
+    following = [
+        marker_top
+        for later_number, (marker_page, marker_x0, marker_top) in markers.items()
+        if later_number > number
+        and marker_page == page_number
+        and (marker_x0 < page.width / 2) == left_column
+        and marker_top > top
+    ]
+    bottom = min(following) - 0.5 if following else page.height - 20
+    if stop_at_answers:
+        answer_tops = [
+            float(word["top"])
+            for word in page.extract_words(extra_attrs=["size"])
+            if str(word["text"]).upper() == "ANSWERS" and float(word["size"]) >= 11.5
+        ]
+        if answer_tops:
+            bottom = min(bottom, min(answer_tops) - 0.5)
+    left = 20.0 if left_column else float(page.width / 2 - 8)
+    right = float(page.width / 2 + 8) if left_column else float(page.width - 20)
+    return (left, max(0.0, top - 2), right, min(float(page.height), bottom))
+
+
+def _source_region(
+    document: pdfplumber.PDF,
+    *,
+    number: int,
+    marker: tuple[int, float, float],
+    markers: Mapping[int, tuple[int, float, float]],
+    pdf_sha256: str,
+    role: str,
+    stop_at_answers: bool,
+) -> dict[str, object]:
+    page_number = marker[0]
+    page = document.pages[page_number - 1]
+    box = _region_box(
+        page,
+        number=number,
+        marker=marker,
+        markers=markers,
+        stop_at_answers=stop_at_answers,
+    )
+    crop = page.crop(box)
+    text = crop.extract_text(x_tolerance=2, y_tolerance=3) or ""
+    words = [
+        {
+            "text": str(word["text"]),
+            "x0": round(float(word["x0"]), 3),
+            "top": round(float(word["top"]), 3),
+            "x1": round(float(word["x1"]), 3),
+            "bottom": round(float(word["bottom"]), 3),
+        }
+        for word in crop.extract_words()
+    ]
+    rounded_box = [round(float(value), 3) for value in box]
+    digest = _canonical_hash({
+        "pdf_sha256": pdf_sha256,
+        "role": role,
+        "number": number,
+        "page": page_number,
+        "box": rounded_box,
+        "text": text,
+        "words": words,
+    })
+    return {"page": page_number, "box": rounded_box, "text": text, "sha256": digest}
 
 
 def _candidate_from_raw(record: Mapping[str, object]) -> dict[str, object]:
@@ -326,10 +361,16 @@ def _records_from_fixture(
 ) -> tuple[RawBaselineRecord, ...]:
     source_pdf_hash = _sha256_path(source_pdf)
     output: list[RawBaselineRecord] = []
-    for position, raw in enumerate(raw_records, start=1):
+    for raw in raw_records:
         record_id = raw.get("record_id")
         if not isinstance(record_id, str) or not record_id:
-            record_id = f"ch{chapter:02d}-q{position:04d}"
+            raise ValueError("Calibration fixtures require an explicit record_id.")
+        source_identity = _validated_source_identity(
+            raw.get("source_identity"),
+            chapter=chapter,
+            record_id=record_id,
+            expected_pdf_sha256=source_pdf_hash,
+        )
         association_hashes = _validate_association({**raw, "record_id": record_id})
         candidate = _candidate_from_raw(raw)
         source_hashes = {
@@ -339,16 +380,13 @@ def _records_from_fixture(
             "question": association_hashes["question"],
             "answer": association_hashes["answer"],
             "solution": association_hashes["solution"],
+            "question_identity": (str(source_identity["question_region_sha256"]),),
         }
-        question_identity = raw.get("source_identity_sha256")
-        if question_identity is not None:
-            if not isinstance(question_identity, str) or not re.fullmatch(r"[0-9a-f]{64}", question_identity):
-                raise ValueError(f"{record_id} has an invalid raw question identity hash.")
-            source_hashes["question_identity"] = (question_identity,)
         fingerprint_input = {
             "record_id": record_id,
             "chapter": chapter,
             "source_hashes": source_hashes,
+            "source_identity": source_identity,
             "candidate": candidate,
         }
         output.append(RawBaselineRecord(
@@ -357,6 +395,7 @@ def _records_from_fixture(
             source_hashes=source_hashes,
             candidate=candidate,
             baseline_sha256=_canonical_hash(fingerprint_input),
+            source_identity=source_identity,
         ))
     return tuple(output)
 
@@ -366,6 +405,7 @@ def _write_baseline(records: tuple[RawBaselineRecord, ...], chapter: int, work_r
         "record_id": record.record_id,
         "chapter": record.chapter,
         "source_hashes": record.source_hashes,
+        "source_identity": record.source_identity,
         "candidate": record.candidate,
         "baseline_sha256": record.baseline_sha256,
     }) + b"\n" for record in records)
@@ -397,80 +437,128 @@ def build_raw_baseline_from_fixture(
     return records
 
 
-def _raw_legacy_records(chapter: int, source_pdf: Path) -> tuple[dict[str, object], ...]:
-    """Associate raw legacy records without reading any review-provided fields."""
+def _answer_key_source_evidence(
+    source_pdf: Path,
+    *,
+    answer_pages: tuple[int, ...],
+    total: int,
+    pdf_sha256: str,
+    chapter: int,
+) -> dict[int, dict[str, object]]:
+    reader = PdfReader(str(source_pdf))
+    found: dict[int, dict[str, object]] = {}
+    for page_number in answer_pages:
+        page_text = reader.pages[page_number - 1].extract_text() or ""
+        for match in re.finditer(r"(?<!\d)(\d+)\.\s*\(\s*([a-eA-E])\s*\)", page_text):
+            number = int(match.group(1))
+            if not 1 <= number <= total or number in found:
+                continue
+            answer = match.group(2).upper()
+            found[number] = {
+                "answer": answer,
+                "page": page_number,
+                "sha256": _canonical_hash({
+                    "pdf_sha256": pdf_sha256,
+                    "role": "answer_key",
+                    "number": number,
+                    "page": page_number,
+                    "literal": match.group(0),
+                    "page_text_sha256": _sha256_bytes(page_text.encode("utf-8")),
+                }),
+            }
+    missing = sorted(set(range(1, total + 1)) - set(found))
+    if missing:
+        raise ValueError(
+            f"source-association blocker for chapter {chapter}: "
+            f"answer-key source is missing numbered records {missing}."
+        )
+    return found
+
+
+def _raw_source_records(chapter: int, source_pdf: Path) -> tuple[dict[str, object], ...]:
+    """Extract candidates and provenance together from numbered PDF regions."""
     review = legacy_build.load_json(_review_path(chapter))
     raw_config = _raw_config(review)
     if int(raw_config.get("chapter", 0)) != chapter:
         raise ValueError(f"Chapter review/config mismatch for chapter {chapter}.")
     total = int(raw_config["printed_question_count"])
-    chapter_name = str(raw_config["source_chapter_name"] if "source_chapter_name" in raw_config else raw_config["chapter_name"])
-    raw = legacy_build.source_questions(SOURCE_BANK_PATH, chapter_name)
-    if len(raw) != total:
-        raise ValueError(
-            f"unresolved raw/source alignment for chapter {chapter}: "
-            f"{len(raw)} raw records for {total} printed records; positional association "
-            "is unsafe without independent raw candidate identifiers."
+    chapter_name = str(raw_config["chapter_name"])
+    try:
+        question_candidates = legacy_build._marker_candidates(
+            source_pdf,
+            range(int(raw_config["question_pages"][0]), int(raw_config["question_pages"][1]) + 1),
+            minimum_size=8.5,
+            maximum_size=11.5,
+            stop_at_answers=True,
         )
-    # Do not substitute review-only records.  Their absence is evidence that raw
-    # Python has no candidate and must be reported rather than repaired here.
-    question_candidates = legacy_build._marker_candidates(
-        source_pdf,
-        range(int(raw_config["question_pages"][0]), int(raw_config["question_pages"][1]) + 1),
-        minimum_size=8.5,
-        maximum_size=11.5,
-        stop_at_answers=True,
-    )
-    questions = legacy_build._select_markers(question_candidates, total)
+        questions = legacy_build._select_markers(question_candidates, total)
+    except ValueError as error:
+        raise ValueError(f"source-association blocker for chapter {chapter}: question markers: {error}") from error
     source_pdf_hash = _sha256_path(source_pdf)
-    identity_regions = _question_identity_regions(source_pdf, questions, source_pdf_hash)
-    raw_by_number = _associate_raw_candidates_by_identity(
+    try:
+        solution_candidates = legacy_build._marker_candidates(
+            source_pdf,
+            range(int(raw_config["solution_pages"][0]), int(raw_config["solution_pages"][1]) + 1),
+            minimum_size=7.5,
+            maximum_size=10.5,
+            stop_at_answers=False,
+        )
+        solutions = legacy_build._select_markers(solution_candidates, total)
+    except ValueError as error:
+        raise ValueError(f"source-association blocker for chapter {chapter}: solution markers: {error}") from error
+    answers = _answer_key_source_evidence(
+        source_pdf,
+        answer_pages=tuple(int(page) for page in raw_config["answer_pages"]),
+        total=total,
+        pdf_sha256=source_pdf_hash,
         chapter=chapter,
-        raw_records=raw,
-        identity_regions=identity_regions,
-    )
-    solution_candidates = legacy_build._marker_candidates(
-        source_pdf,
-        range(int(raw_config["solution_pages"][0]), int(raw_config["solution_pages"][1]) + 1),
-        minimum_size=7.5,
-        maximum_size=10.5,
-        stop_at_answers=False,
-    )
-    solutions = legacy_build._select_markers(
-        solution_candidates,
-        total,
-    )
-    answers = legacy_build.parse_answer_key(
-        source_pdf,
-        [int(page) for page in raw_config["answer_pages"]],
-        total,
     )
     records: list[dict[str, object]] = []
-    for number in range(1, total + 1):
-        if number not in questions or number not in solutions:
-            raise ValueError(f"ch{chapter:02d}-q{number:04d} lacks raw source/answer/solution association.")
-        solution_pages = legacy_build.inferred_solution_pages(number, solutions, total)
-        question_page, question_x0, question_top = questions[number]
-        solution_page, solution_x0, solution_top = solutions[number]
-        source_association = {
-            "question": [_association_hash(source_pdf_hash, "question", {
-                    "page": question_page, "x0": question_x0, "top": question_top,
-            })],
-            "answer": [_association_hash(source_pdf_hash, "answer", {
-                    "pages": [int(page) for page in raw_config["answer_pages"]], "number": number,
-            })],
-            "solution": [_association_hash(source_pdf_hash, "solution", {
-                    "page": solution_page, "x0": solution_x0, "top": solution_top, "pages": solution_pages,
-            })],
-        }
-        raw_record = deepcopy(raw_by_number[number])
-        raw_record.update({
-            "record_id": f"ch{chapter:02d}-q{number:04d}",
-            "correct_answer": answers[number],
-            "source_association": source_association,
-            "source_identity_sha256": identity_regions[number]["sha256"],
-        })
-        records.append(raw_record)
+    with pdfplumber.open(source_pdf) as document:
+        for number in range(1, total + 1):
+            question_region = _source_region(
+                document,
+                number=number,
+                marker=questions[number],
+                markers=questions,
+                pdf_sha256=source_pdf_hash,
+                role="question",
+                stop_at_answers=True,
+            )
+            solution_region = _source_region(
+                document,
+                number=number,
+                marker=solutions[number],
+                markers=solutions,
+                pdf_sha256=source_pdf_hash,
+                role="solution",
+                stop_at_answers=False,
+            )
+            identity = {
+                "number": number,
+                "question_region_sha256": question_region["sha256"],
+                "pdf_sha256": source_pdf_hash,
+                "page": question_region["page"],
+                "box": question_region["box"],
+            }
+            raw_record = _candidate_from_question_region(
+                chapter=chapter,
+                chapter_name=chapter_name,
+                identity=identity,
+                region_text=str(question_region["text"]),
+            )
+            solution_text = legacy_build.normalize_extracted_text(str(solution_region["text"]))
+            solution_text = re.sub(rf"^\s*{number}\s*\.\s*", "", solution_text, count=1)
+            raw_record.update({
+                "correct_answer": answers[number]["answer"],
+                "solution_steps": [line.strip() for line in solution_text.splitlines() if line.strip()],
+                "source_association": {
+                    "question": [question_region["sha256"]],
+                    "answer": [answers[number]["sha256"]],
+                    "solution": [solution_region["sha256"]],
+                },
+            })
+            records.append(raw_record)
     return tuple(records)
 
 
@@ -489,7 +577,7 @@ def build_raw_baseline(chapter: int, source_pdf: Path, work_root: Path) -> tuple
     records = _records_from_fixture(
         chapter=chapter,
         source_pdf=source_pdf,
-        raw_records=_raw_legacy_records(chapter, source_pdf),
+        raw_records=_raw_source_records(chapter, source_pdf),
         config_hash=config_hash,
         extractor_hash=_extractor_hash(),
     )

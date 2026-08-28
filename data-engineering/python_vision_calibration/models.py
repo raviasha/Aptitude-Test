@@ -13,3 +13,4 @@ class RawBaselineRecord:
     source_hashes: dict[str, tuple[str, ...]]
     candidate: dict[str, object]
     baseline_sha256: str
+    source_identity: dict[str, object]

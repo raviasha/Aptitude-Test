@@ -1,0 +1,10 @@
+{
+  "fixture_version": 1,
+  "cases": [
+    {"id": "lost-square", "field": "question_text", "text": "(80) 2 - (65) 2 + 81 = ?", "warning": "AMBIGUOUS_DETACHED_DIGITS"},
+    {"id": "lost-power", "field": "question_text", "text": "The remainder when 7 84 is divided by 342 is", "warning": "AMBIGUOUS_DETACHED_DIGITS"},
+    {"id": "flattened-fraction", "field": "options.D", "text": "2 1 x", "warning": "AMBIGUOUS_NOTATION"},
+    {"id": "ocr-garbage-option", "field": "options.D", "text": "28700 ab 252 ba 24 12 12 ×", "warning": "SUSPICIOUS_TOKEN_CHAIN"},
+    {"id": "empty-solution", "field": "solution_steps", "text": "", "warning": "MISSING_SOLUTION"}
+  ]
+}

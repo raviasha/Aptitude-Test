@@ -59,3 +59,19 @@ class AgentReviewResult:
     def __post_init__(self) -> None:
         object.__setattr__(self, "checks", _freeze_value(dict(self.checks)))
         object.__setattr__(self, "reason_codes", tuple(self.reason_codes))
+
+
+@dataclass(frozen=True)
+class RouteDecision:
+    """The terminal deterministic route for one immutable Python baseline."""
+
+    record_id: str
+    decision: str
+    candidate: dict[str, object]
+    baseline_sha256: str
+    review_result_sha256: str
+    reason_codes: tuple[str, ...]
+    route_sha256: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "reason_codes", tuple(self.reason_codes))

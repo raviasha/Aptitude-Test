@@ -131,21 +131,25 @@ def _candidate_for_source_position(
     *,
     chapter: int,
     source_number: int,
+    printed_total: int,
     raw_records: list[dict[str, object]],
-    source_association: Mapping[str, object],
 ) -> dict[str, object]:
-    """Return the positional raw candidate or a source-backed missing marker.
-
-    The raw source bank has no trustworthy reviewed exception map.  Its order is
-    therefore the only raw association available here; any missing tail record
-    is preserved as a placeholder for mandatory source comparison.
-    """
+    """Return a positional candidate only after chapter coverage was proven complete."""
+    if len(raw_records) != printed_total:
+        raise ValueError(
+            f"unresolved raw/source alignment for chapter {chapter}: "
+            f"{len(raw_records)} raw records for {printed_total} printed records; positional association "
+            "is unsafe without independent raw candidate identifiers."
+        )
     record_id = f"ch{chapter:02d}-q{source_number:04d}"
-    if source_number <= len(raw_records):
-        raw = deepcopy(raw_records[source_number - 1])
-        raw["record_id"] = record_id
-        return raw
-    return _with_missing_raw_candidate(record_id=record_id, source_association=source_association)
+    if source_number > len(raw_records):
+        raise ValueError(
+            f"unresolved raw/source alignment for chapter {chapter}: "
+            f"no independently identified raw candidate for printed record {source_number}."
+        )
+    raw = deepcopy(raw_records[source_number - 1])
+    raw["record_id"] = record_id
+    return raw
 
 
 def _candidate_from_raw(record: Mapping[str, object]) -> dict[str, object]:
@@ -280,6 +284,12 @@ def _raw_legacy_records(chapter: int, source_pdf: Path) -> tuple[dict[str, objec
     total = int(raw_config["printed_question_count"])
     chapter_name = str(raw_config["source_chapter_name"] if "source_chapter_name" in raw_config else raw_config["chapter_name"])
     raw = legacy_build.source_questions(SOURCE_BANK_PATH, chapter_name)
+    if len(raw) != total:
+        raise ValueError(
+            f"unresolved raw/source alignment for chapter {chapter}: "
+            f"{len(raw)} raw records for {total} printed records; positional association "
+            "is unsafe without independent raw candidate identifiers."
+        )
     # Do not substitute review-only records.  Their absence is evidence that raw
     # Python has no candidate and must be reported rather than repaired here.
     question_candidates = legacy_build._marker_candidates(
@@ -328,8 +338,8 @@ def _raw_legacy_records(chapter: int, source_pdf: Path) -> tuple[dict[str, objec
         raw_record = _candidate_for_source_position(
             chapter=chapter,
             source_number=number,
+            printed_total=total,
             raw_records=raw,
-            source_association=source_association,
         )
         raw_record.update({
             "record_id": f"ch{chapter:02d}-q{number:04d}",

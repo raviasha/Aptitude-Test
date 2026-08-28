@@ -14,9 +14,9 @@ if str(DATA_ENGINEERING) not in sys.path:
     sys.path.insert(0, str(DATA_ENGINEERING))
 
 from python_vision_calibration.baseline import (
-    _candidate_for_source_position,
     _raw_config,
     _with_missing_raw_candidate,
+    build_raw_baseline,
     build_raw_baseline_from_fixture,
 )
 from textbook_chapters import build as legacy_build
@@ -178,26 +178,35 @@ class RawBaselineTests(unittest.TestCase):
         self.assertEqual(records[0].source_hashes["question"], ("q142-question",))
         self.assertNotEqual(records[0].baseline_sha256, "")
 
-    def test_real_chapter_four_missing_raw_candidate_becomes_placeholder(self) -> None:
-        raw = legacy_build.source_questions(
-            PROJECT_ROOT / "question-banks" / "quantitative_aptitude_complete_extended.json",
-            "Simplification",
-        )
-        self.assertEqual(len(raw), 542)
-
-        record = _candidate_for_source_position(
-            chapter=4,
-            source_number=543,
-            raw_records=raw,
-            source_association={
-                "question": ["q543-question"],
-                "answer": ["q543-answer"],
-                "solution": ["q543-solution"],
-            },
+    def test_real_chapter_one_q142_and_q374_omissions_block_unresolved_alignment(self) -> None:
+        source_pdf = (
+            PROJECT_ROOT
+            / "data-engineering"
+            / "dokumen.pub_quantitative-aptitude-for-competitive-examinations-by-rs-aggarwal-reprint-2017nbsped-9352534026-9789352534029.pdf"
         )
 
-        self.assertEqual(record["record_id"], "ch04-q0543")
-        self.assertEqual(record["baseline_failures"], ["missing_raw_candidate"])
+        with self.assertRaisesRegex(
+            ValueError,
+            r"unresolved raw/source alignment.*chapter 1.*378 raw records.*380 printed records",
+        ):
+            build_raw_baseline(1, source_pdf, self.work_root)
+
+        self.assertFalse((self.work_root / "baseline" / "chapter-001.jsonl").exists())
+
+    def test_real_chapter_four_q94_omission_blocks_unresolved_alignment(self) -> None:
+        source_pdf = (
+            PROJECT_ROOT
+            / "data-engineering"
+            / "dokumen.pub_quantitative-aptitude-for-competitive-examinations-by-rs-aggarwal-reprint-2017nbsped-9352534026-9789352534029.pdf"
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            r"unresolved raw/source alignment.*chapter 4.*542 raw records.*545 printed records",
+        ):
+            build_raw_baseline(4, source_pdf, self.work_root)
+
+        self.assertFalse((self.work_root / "baseline" / "chapter-004.jsonl").exists())
 
     def test_malformed_nonempty_raw_fields_are_explicit_baseline_failures(self) -> None:
         raw = dict(self.raw_records[0])

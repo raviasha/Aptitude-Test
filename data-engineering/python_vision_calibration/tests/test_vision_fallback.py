@@ -102,13 +102,14 @@ class VisionFallbackTests(unittest.TestCase):
         )
 
     def crop(self, role: str, number: int, suffix: str) -> SourceCrop:
-        path = self.crop_root / f"ch001-q{number:04d}-{role}-p025.png"
+        page_number = {"question": 25, "answer_key": 40, "solution": 42}[role]
+        path = self.crop_root / f"ch001-q{number:04d}-{role}-p{page_number:03d}.png"
         path.write_bytes(f"{role}:{number}:{suffix}".encode("ascii"))
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
         return SourceCrop(
             role=role,
             question_number=number,
-            page_number=25,
+            page_number=page_number,
             box=CropBox(10, 20, 100, 120),
             path=path,
             width=90,
@@ -192,6 +193,120 @@ class VisionFallbackTests(unittest.TestCase):
 
         self.assertEqual(tuple(jobs), ("ch01-q0044",))
 
+    def test_single_public_create_never_reads_caller_evidence_paths_and_uses_fresh_sources(self) -> None:
+        outside = self.root / "outside-single-caller.png"
+        outside.write_bytes(self.evidence[0].question_crops[0].path.read_bytes())
+        supplied = replace(
+            self.evidence[0],
+            question_crops=(replace(self.evidence[0].question_crops[0], path=outside),),
+        )
+        original_stat = Path.stat
+        original_open = Path.open
+
+        def guarded_stat(path: Path, *args, **kwargs):
+            if Path(path) == outside:
+                raise AssertionError("single create statted caller evidence")
+            return original_stat(path, *args, **kwargs)
+
+        def guarded_open(path: Path, *args, **kwargs):
+            if Path(path) == outside:
+                raise AssertionError("single create opened caller evidence")
+            return original_open(path, *args, **kwargs)
+
+        with patch.object(Path, "stat", guarded_stat), patch.object(Path, "open", guarded_open):
+            job = create_vision_fallback_job(
+                self.vision_route, supplied, self.root / "vision/jobs/ch01-q0044.json"
+            )
+
+        self.assertEqual(Path(job.sources[0]["path"]), self.evidence[0].question_crops[0].path)
+        self.assertNotEqual(Path(job.sources[0]["path"]), outside)
+
+    def test_plural_public_create_never_reads_caller_evidence_paths_and_uses_fresh_sources(self) -> None:
+        outside = self.root / "outside-plural-caller.png"
+        outside.write_bytes(self.evidence[0].question_crops[0].path.read_bytes())
+        supplied = replace(
+            self.evidence[0],
+            question_crops=(replace(self.evidence[0].question_crops[0], path=outside),),
+        )
+        original_stat = Path.stat
+        original_open = Path.open
+
+        def guarded_stat(path: Path, *args, **kwargs):
+            if Path(path) == outside:
+                raise AssertionError("plural create statted caller evidence")
+            return original_stat(path, *args, **kwargs)
+
+        def guarded_open(path: Path, *args, **kwargs):
+            if Path(path) == outside:
+                raise AssertionError("plural create opened caller evidence")
+            return original_open(path, *args, **kwargs)
+
+        with patch.object(Path, "stat", guarded_stat), patch.object(Path, "open", guarded_open):
+            jobs = create_vision_fallback_jobs((self.vision_route,), (supplied,), self.root)
+
+        self.assertEqual(Path(jobs["ch01-q0044"].sources[0]["path"]), self.evidence[0].question_crops[0].path)
+        self.assertNotEqual(Path(jobs["ch01-q0044"].sources[0]["path"]), outside)
+
+    def test_single_create_rejects_noncanonical_output_before_preparation_or_write(self) -> None:
+        self.prepare_source.reset_mock()
+        output = self.root / "noncanonical-job.json"
+
+        with self.assertRaisesRegex(ValueError, "output path|canonical"):
+            create_vision_fallback_job(self.vision_route, self.evidence[0], output)
+
+        self.prepare_source.assert_not_called()
+        self.assertFalse(output.exists())
+
+    def test_single_public_create_rejects_source_evidence_reparse_before_outside_write(self) -> None:
+        root = self.root / "single-reparse"
+        outside = self.root / "outside-single-evidence"
+        self.directory_junction(root / "vision/source-evidence", outside)
+        self.prepare_source.reset_mock()
+
+        with self.assertRaisesRegex(ValueError, "reparse|symlink"):
+            create_vision_fallback_job(
+                self.vision_route,
+                self.evidence[0],
+                root / "vision/jobs/ch01-q0044.json",
+            )
+
+        self.prepare_source.assert_not_called()
+        self.assertEqual(list(outside.iterdir()), [])
+
+    def test_current_source_pdf_reparse_is_rejected_before_target_access(self) -> None:
+        project = self.root / "project"
+        outside = self.root / "outside-pdf"
+        filename = self.evidence[0].source_pdf.name
+        sentinel = outside / filename
+        outside.mkdir()
+        sentinel.write_bytes(b"outside PDF sentinel")
+        self.directory_junction(project / "data-engineering", outside)
+        config = ChapterConfig.load(DATA_ENGINEERING / "textbook_chapters_v2/configs/chapter-001.json")
+        config = replace(config, extras={**dict(config.extras), "source_pdf": f"data-engineering/{filename}"})
+        original_stat = Path.stat
+        original_open = Path.open
+
+        def guarded_stat(path: Path, *args, **kwargs):
+            if Path(path) == sentinel:
+                raise AssertionError("source PDF sentinel was statted")
+            return original_stat(path, *args, **kwargs)
+
+        def guarded_open(path: Path, *args, **kwargs):
+            if Path(path) == sentinel:
+                raise AssertionError("source PDF sentinel was opened")
+            return original_open(path, *args, **kwargs)
+
+        self.prepare_source.reset_mock()
+        with (
+            patch.object(vision_protocol, "_PROJECT_ROOT", project),
+            patch.object(vision_protocol, "_current_config", return_value=(config, "a" * 64)),
+            patch.object(Path, "stat", guarded_stat),
+            patch.object(Path, "open", guarded_open),
+        ):
+            with self.assertRaisesRegex(ValueError, "source PDF|reparse|symlink|canonical"):
+                vision_protocol._current_prepared_evidence(self.root / "pdf-work", (44,))
+        self.prepare_source.assert_not_called()
+
     def test_combined_preparation_scopes_source_once_to_only_vision_routes(self) -> None:
         self.prepare_source.reset_mock()
 
@@ -214,6 +329,16 @@ class VisionFallbackTests(unittest.TestCase):
         self.assertEqual(jobs, {})
         self.prepare_source.assert_not_called()
         self.assertTrue((root / "vision/jobs").is_dir())
+        self.assertEqual((root / "vision/vision-jobs.jsonl").read_bytes(), b"")
+
+    def test_plural_public_create_with_no_vision_routes_does_no_image_work(self) -> None:
+        self.prepare_source.reset_mock()
+        root = self.root / "public-zero"
+
+        jobs = create_vision_fallback_jobs((self.accept_route,), (), root)
+
+        self.assertEqual(jobs, {})
+        self.prepare_source.assert_not_called()
         self.assertEqual((root / "vision/vision-jobs.jsonl").read_bytes(), b"")
 
     def test_combined_preparation_rejects_descendant_jobs_reparse_before_outside_write(self) -> None:
@@ -302,6 +427,37 @@ class VisionFallbackTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "authoritative|canonical|contain"):
                 vision_protocol._persisted_crop(payload, "question", 44, crops_root)
 
+    def test_persisted_crop_rejects_malicious_dpi_and_page_before_crop_access(self) -> None:
+        crops_root = self.root / "metadata/vision/source-evidence/crops"
+        crops_root.mkdir(parents=True)
+        for label, page_number, dpi in (("DPI", 25, "180"), ("page", 999, 180)):
+            with self.subTest(label=label):
+                crop_path = crops_root / f"ch001-q0044-question-p{page_number:03d}.png"
+                crop_path.write_bytes(b"must not be inspected before metadata validation")
+                payload = {
+                    "role": "question", "question_number": 44, "page_number": page_number,
+                    "box": {"left": 10, "top": 20, "right": 100, "bottom": 120},
+                    "path": str(crop_path), "width": 90, "height": 100,
+                    "sha256": hashlib.sha256(crop_path.read_bytes()).hexdigest(),
+                    "source_image_sha256": "4" * 64, "source_dpi": dpi,
+                }
+                original_stat = Path.stat
+                original_open = Path.open
+
+                def guarded_stat(path: Path, *args, **kwargs):
+                    if Path(path) == crop_path:
+                        raise AssertionError("crop was statted before metadata rejection")
+                    return original_stat(path, *args, **kwargs)
+
+                def guarded_open(path: Path, *args, **kwargs):
+                    if Path(path) == crop_path:
+                        raise AssertionError("crop was opened before metadata rejection")
+                    return original_open(path, *args, **kwargs)
+
+                with patch.object(Path, "stat", guarded_stat), patch.object(Path, "open", guarded_open):
+                    with self.assertRaisesRegex(ValueError, label):
+                        vision_protocol._persisted_crop(payload, "question", 44, crops_root)
+
     def test_job_source_rejects_outside_path_before_any_target_stat_or_open(self) -> None:
         outside = self.root / "outside-job-sentinel.png"
         outside.write_bytes(self.evidence[0].question_crops[0].path.read_bytes())
@@ -332,10 +488,12 @@ class VisionFallbackTests(unittest.TestCase):
         root = self.root / "persisted"
         authoritative_crops = root / "vision/source-evidence/crops"
         authoritative_crops.mkdir(parents=True)
-        rendered_page = root / "vision/source-evidence/rendered/page-025-180dpi.png"
-        rendered_page.parent.mkdir(parents=True)
-        rendered_page.write_bytes(b"authoritative rendered source page")
-        rendered_sha256 = hashlib.sha256(rendered_page.read_bytes()).hexdigest()
+        rendered_root = root / "vision/source-evidence/rendered"
+        rendered_root.mkdir(parents=True)
+        rendered_bytes = b"authoritative rendered source page"
+        rendered_sha256 = hashlib.sha256(rendered_bytes).hexdigest()
+        for page_number in (25, 40, 42):
+            (rendered_root / f"page-{page_number:03d}-180dpi.png").write_bytes(rendered_bytes)
         moved_crops = []
         for crop in (
             self.evidence[0].question_crops
@@ -582,14 +740,20 @@ class VisionFallbackTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "duplicate"):
             create_vision_fallback_jobs((self.vision_route,), self.evidence * 2, self.root)
         with self.assertRaisesRegex(ValueError, "question number"):
-            create_vision_fallback_job(self.vision_route, self.record_evidence(45), self.root / "mismatch.json")
+            create_vision_fallback_job(
+                self.vision_route,
+                self.record_evidence(45),
+                self.root / "vision/jobs/ch01-q0044.json",
+            )
 
     def test_job_rejects_crop_whose_declared_hash_does_not_match_bytes(self) -> None:
         stale_crop = replace(self.evidence[0].question_crops[0], sha256="0" * 64)
         evidence = replace(self.evidence[0], question_crops=(stale_crop,))
 
-        with self.assertRaisesRegex(ValueError, "crop hash"):
-            create_vision_fallback_job(self.vision_route, evidence, self.root / "stale.json")
+        with self.assertRaisesRegex(ValueError, "current source evidence"):
+            create_vision_fallback_job(
+                self.vision_route, evidence, self.root / "vision/jobs/ch01-q0044.json"
+            )
 
     def test_configured_missing_or_incomplete_source_cannot_be_forged_complete(self) -> None:
         config = ChapterConfig.load(
@@ -622,7 +786,7 @@ class VisionFallbackTests(unittest.TestCase):
                     create_vision_fallback_job(
                         self.route("VISION_REQUIRED", record_id=f"ch01-q{number:04d}"),
                         forged,
-                        self.root / f"q{number:04d}.json",
+                        self.root / "vision/jobs" / f"ch01-q{number:04d}.json",
                     )
 
     def test_wrong_pdf_and_forged_provenance_or_fingerprint_are_rejected(self) -> None:
@@ -638,7 +802,11 @@ class VisionFallbackTests(unittest.TestCase):
         for supplied in cases:
             with self.subTest(supplied=supplied):
                 with self.assertRaisesRegex(ValueError, "current source evidence"):
-                    create_vision_fallback_job(self.vision_route, supplied, self.root / "forged.json")
+                    create_vision_fallback_job(
+                        self.vision_route,
+                        supplied,
+                        self.root / "vision/jobs/ch01-q0044.json",
+                    )
 
     def test_ingestion_rechecks_job_against_fresh_current_source_evidence(self) -> None:
         changed = replace(

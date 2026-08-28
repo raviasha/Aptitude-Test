@@ -25,6 +25,10 @@ from .path_safety import safe_descendant, safe_directory, safe_tree
 _DATA_ENGINEERING = Path(__file__).resolve().parents[1]
 _PROJECT_ROOT = _DATA_ENGINEERING.parent
 _CONFIG_PATH = _DATA_ENGINEERING / "textbook_chapters_v2" / "configs" / "chapter-001.json"
+_APPROVED_SOURCE_RELATIVE = Path(
+    "data-engineering/dokumen.pub_quantitative-aptitude-for-competitive-examinations-by-rs-aggarwal-"
+    "reprint-2017nbsped-9352534026-9789352534029.pdf"
+)
 _SCHEMA_PATH = Path(__file__).with_name("schemas") / "vision-fallback-result.schema.json"
 _SCHEMA_NAME = _SCHEMA_PATH.name
 _HASH = re.compile(r"^[0-9a-f]{64}$")
@@ -122,22 +126,88 @@ def _current_config() -> tuple[ChapterConfig, str]:
     return config, _sha256_path(_CONFIG_PATH)
 
 
+def _approved_source_pdf(config: ChapterConfig) -> Path:
+    """Return the exact reparse-free approved source path before any PDF file access."""
+    raw = config.extras.get("source_pdf")
+    if not isinstance(raw, str) or not raw.strip():
+        raise RuntimeError("The Chapter 1 configuration does not name its source PDF.")
+    candidate = Path(raw)
+    if not candidate.is_absolute():
+        candidate = _PROJECT_ROOT / candidate
+    candidate = Path(os.path.abspath(candidate))
+    approved = Path(os.path.abspath(_PROJECT_ROOT / _APPROVED_SOURCE_RELATIVE))
+    if candidate != approved:
+        raise ValueError("The Chapter 1 source PDF path is not the approved canonical path.")
+    safe_descendant(_PROJECT_ROOT, candidate, "Chapter 1 source PDF")
+    return candidate
+
+
+def _configured_source_dpi(config: ChapterConfig) -> int:
+    value = config.extras.get("source_dpi", config.extras.get("render_dpi", 180))
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError("The configured source DPI must be a positive integer.")
+    return value
+
+
+def _validate_source_coordinates(
+    config: ChapterConfig, role: str, page_number: Any, source_dpi: Any, label: str
+) -> None:
+    page_ranges = {
+        "question": config.question_pages,
+        "answer_key": config.answer_pages,
+        "solution": config.solution_pages,
+    }
+    if role not in page_ranges:
+        raise ValueError(f"{label} role is invalid.")
+    if isinstance(page_number, bool) or not isinstance(page_number, int):
+        raise ValueError(f"{label} page number is invalid.")
+    first, last = page_ranges[role]
+    if not first <= page_number <= last:
+        raise ValueError(f"{label} page number is outside the configured {role} page inventory.")
+    if (
+        isinstance(source_dpi, bool)
+        or not isinstance(source_dpi, int)
+        or source_dpi != _configured_source_dpi(config)
+    ):
+        raise ValueError(f"{label} source DPI is stale against the current configuration.")
+
+
+def _canonical_rendered_path(
+    rendered_root: Path,
+    config: ChapterConfig,
+    role: str,
+    page_number: Any,
+    source_dpi: Any,
+    label: str,
+) -> Path:
+    _validate_source_coordinates(config, role, page_number, source_dpi, label)
+    root = safe_descendant(rendered_root, rendered_root, f"{label} root")
+    path = safe_descendant(
+        root, root / f"page-{page_number:03d}-{source_dpi}dpi.png", label
+    )
+    if path.parent != root:
+        raise ValueError(f"{label} must be directly below its authoritative rendered root.")
+    return path
+
+
 def _current_prepared_evidence(
     work_root: Path, question_numbers: Iterable[int] | None = None
 ) -> tuple[RecordEvidence, ...]:
+    root = Path(work_root)
+    safe_tree(root, "Vision work root")
+    evidence_root = safe_directory(
+        root, root / "vision" / "source-evidence", "Vision source-evidence directory"
+    )
     config, _ = _current_config()
-    source_pdf_value = config.extras.get("source_pdf")
-    if not isinstance(source_pdf_value, str) or not source_pdf_value.strip():
-        raise RuntimeError("The Chapter 1 configuration does not name its source PDF.")
-    source_pdf = Path(source_pdf_value)
-    if not source_pdf.is_absolute():
-        source_pdf = _PROJECT_ROOT / source_pdf
-    return tuple(prepare_source_evidence(
+    source_pdf = _approved_source_pdf(config)
+    evidence = tuple(prepare_source_evidence(
         config,
         source_pdf,
-        Path(work_root) / "vision" / "source-evidence",
+        evidence_root,
         question_numbers=question_numbers,
     ))
+    safe_tree(root, "Vision work root")
+    return evidence
 
 
 @contextmanager
@@ -172,7 +242,7 @@ def _crop_evidence_value(crop: SourceCrop) -> dict[str, object]:
 
 
 def _evidence_value(evidence: RecordEvidence) -> dict[str, object]:
-    source_pdf = None if evidence.source_pdf is None else str(Path(evidence.source_pdf).resolve())
+    source_pdf = None if evidence.source_pdf is None else str(Path(os.path.abspath(evidence.source_pdf)))
     return {
         "chapter": evidence.chapter,
         "question_number": evidence.question_number,
@@ -224,7 +294,13 @@ def _canonical_crop_path(
     return path
 
 
-def _persisted_crop(value: Any, role: str, number: int, crops_root: Path) -> SourceCrop:
+def _persisted_crop(
+    value: Any,
+    role: str,
+    number: int,
+    crops_root: Path,
+    config: ChapterConfig | None = None,
+) -> SourceCrop:
     if not isinstance(value, Mapping):
         raise ValueError("Persisted source crop is malformed.")
     required = {
@@ -238,6 +314,11 @@ def _persisted_crop(value: Any, role: str, number: int, crops_root: Path) -> Sou
         raise ValueError("Persisted source crop box is malformed.")
     if value["role"] != role or value["question_number"] != number:
         raise ValueError("Persisted source crop identity or path is stale.")
+    if config is None:
+        config, _ = _current_config()
+    _validate_source_coordinates(
+        config, role, value["page_number"], value["source_dpi"], "Persisted source crop"
+    )
     path = _canonical_crop_path(
         value["path"], crops_root, role, number, value["page_number"], "Persisted source crop"
     )
@@ -295,10 +376,7 @@ def load_persisted_vision_evidence(
     if not directory.is_dir() or {entry.name for entry in directory.iterdir()} != set(expected):
         raise ValueError("Persisted source-evidence inventory is missing, extra, or noncanonical.")
     config, _ = _current_config()
-    configured_source_raw = config.extras.get("source_pdf")
-    configured_source = Path(configured_source_raw) if isinstance(configured_source_raw, str) else Path()
-    if configured_source_raw and not configured_source.is_absolute():
-        configured_source = _PROJECT_ROOT / configured_source
+    configured_source = _approved_source_pdf(config)
     crops_root = safe_descendant(Path(work_root), evidence_root / "crops", "Persisted crops root")
     rendered_root = safe_descendant(Path(work_root), evidence_root / "rendered", "Persisted rendered root")
     expected_crop_paths: set[Path] = set()
@@ -336,9 +414,9 @@ def load_persisted_vision_evidence(
             question_number=payload["question_number"],
             source_pdf=source_pdf,
             source_pdf_sha256=source_hash,
-            question_crops=tuple(_persisted_crop(item, "question", number, crops_root) for item in payload["question_crops"]),
-            answer_key_crops=tuple(_persisted_crop(item, "answer_key", number, crops_root) for item in payload["answer_key_crops"]),
-            solution_crops=tuple(_persisted_crop(item, "solution", number, crops_root) for item in payload["solution_crops"]),
+            question_crops=tuple(_persisted_crop(item, "question", number, crops_root, config) for item in payload["question_crops"]),
+            answer_key_crops=tuple(_persisted_crop(item, "answer_key", number, crops_root, config) for item in payload["answer_key_crops"]),
+            solution_crops=tuple(_persisted_crop(item, "solution", number, crops_root, config) for item in payload["solution_crops"]),
             source_status=payload["source_status"],
             source_reasons=tuple(payload["source_reasons"]),
             requires_reviewed_rejection=payload["requires_reviewed_rejection"],
@@ -368,7 +446,10 @@ def load_persisted_vision_evidence(
             if not crop_name.fullmatch(crop.path.name):
                 raise ValueError("Persisted source crop output path is noncanonical.")
             expected_crop_paths.add(crop_path)
-            rendered_path = rendered_root / f"page-{crop.page_number:03d}-{crop.source_dpi}dpi.png"
+            rendered_path = _canonical_rendered_path(
+                rendered_root, config, crop.role, crop.page_number, crop.source_dpi,
+                "Persisted rendered page",
+            )
             prior_rendered_hash = expected_rendered.setdefault(rendered_path, crop.source_image_sha256)
             if prior_rendered_hash != crop.source_image_sha256:
                 raise ValueError("Persisted source crops disagree about rendered-page provenance.")
@@ -584,6 +665,20 @@ def _write_jsonl(path: Path, payloads: Iterable[Mapping[str, object]]) -> None:
     _atomic_write(path, (_canonical_bytes(payload) + b"\n" for payload in payloads))
 
 
+def _validated_job_output_path(output_path: Path, record_id: str) -> tuple[Path, Path]:
+    output = Path(os.path.abspath(output_path))
+    parent = output.parent
+    if (
+        output.name != f"{record_id}.json"
+        or parent.name != "jobs"
+        or parent.parent.name != "vision"
+    ):
+        raise ValueError("Vision fallback job output path is noncanonical.")
+    work_root = parent.parent.parent
+    safe_descendant(work_root, output, "Vision fallback job output path")
+    return work_root, output
+
+
 def _create_vision_fallback_job_from_current(
     route: RouteDecision,
     evidence: RecordEvidence,
@@ -592,6 +687,7 @@ def _create_vision_fallback_job_from_current(
     config_sha256: str,
 ) -> VisionFallbackJob:
     number = _validate_vision_route(route)
+    _, canonical_output = _validated_job_output_path(output_path, route.record_id)
     if evidence.chapter != 1 or evidence.question_number != number:
         raise ValueError("RecordEvidence chapter or question number does not match the fallback route.")
     if number < config.question_numbers[0] or number > config.question_numbers[1] or number in config.intentional_exclusions:
@@ -625,7 +721,7 @@ def _create_vision_fallback_job_from_current(
         source_evidence_sha256s=source_hashes,
         role_sha256s=role_hashes,
         output_schema=_SCHEMA_NAME,
-        output_path=Path(output_path),
+        output_path=canonical_output,
         requires_quarantine=requires_quarantine,
         source_reasons=source_reasons,
         job_sha256="",
@@ -644,18 +740,21 @@ def create_vision_fallback_job(
 ) -> VisionFallbackJob:
     """Write one candidate-free job after matching supplied evidence to a fresh V2 preparation."""
     number = _validate_vision_route(route)
+    work_root, canonical_output = _validated_job_output_path(output_path, route.record_id)
     if not isinstance(evidence, RecordEvidence):
         raise TypeError("evidence must be a RecordEvidence value.")
     if evidence.chapter != 1 or evidence.question_number != number:
         raise ValueError("RecordEvidence chapter or question number does not match the fallback route.")
-    _source_payload(evidence, number)
     config, config_sha256 = _current_config()
-    with _isolated_current_evidence((number,)) as current_evidence:
-        current = _evidence_index(current_evidence, "current source evidence").get(number)
-        if current is None:
-            raise ValueError(f"Current source evidence is missing question number {number}.")
-        _require_current_evidence(evidence, current)
-    return _create_vision_fallback_job_from_current(route, evidence, output_path, config, config_sha256)
+    current = _evidence_index(
+        _current_prepared_evidence(work_root, (number,)), "current source evidence"
+    ).get(number)
+    if current is None:
+        raise ValueError(f"Current source evidence is missing question number {number}.")
+    _require_current_evidence(evidence, current)
+    return _create_vision_fallback_job_from_current(
+        route, current, canonical_output, config, config_sha256
+    )
 
 
 def create_vision_fallback_jobs(
@@ -681,27 +780,30 @@ def create_vision_fallback_jobs(
     if vision_routes and supplied_by_number is None:
         raise ValueError("Vision fallback jobs require persisted caller evidence after current-PDF verification.")
     numbers = tuple(_question_number(route.record_id) for route in vision_routes)
+    jobs_dir = safe_directory(root, root / "vision" / "jobs", "Vision jobs directory")
+    index_path = safe_descendant(root, root / "vision" / "vision-jobs.jsonl", "Vision jobs index")
+    current_by_number = (
+        _evidence_index(_current_prepared_evidence(root, numbers), "current source evidence")
+        if numbers
+        else {}
+    )
     jobs: dict[str, VisionFallbackJob] = {}
-    with _isolated_current_evidence(numbers) as current_evidence:
-        current_by_number = _evidence_index(current_evidence, "current source evidence")
-        for route in sorted(vision_routes, key=lambda item: item.record_id):
-            number = _question_number(route.record_id)
-            current = current_by_number.get(number)
-            supplied = None if supplied_by_number is None else supplied_by_number.get(number)
-            if current is None:
-                raise ValueError(f"Vision fallback is missing current source evidence for {route.record_id}.")
-            if supplied is None:
-                raise ValueError(f"Vision fallback is missing caller-supplied evidence for {route.record_id}.")
-            _source_payload(supplied, number)
-            _require_current_evidence(supplied, current)
-            jobs[route.record_id] = _create_vision_fallback_job_from_current(
-                route,
-                supplied,
-                root / "vision" / "jobs" / f"{route.record_id}.json",
-                config,
-                config_sha256,
-            )
-    _write_jsonl(root / "vision" / "vision-jobs.jsonl", (_job_payload(job) for job in jobs.values()))
+    for route in sorted(vision_routes, key=lambda item: item.record_id):
+        number = _question_number(route.record_id)
+        current = current_by_number.get(number)
+        supplied = None if supplied_by_number is None else supplied_by_number.get(number)
+        if current is None:
+            raise ValueError(f"Vision fallback is missing current source evidence for {route.record_id}.")
+        if supplied is None:
+            raise ValueError(f"Vision fallback is missing caller-supplied evidence for {route.record_id}.")
+        _require_current_evidence(supplied, current)
+        _, output = _validated_job_output_path(
+            jobs_dir / f"{route.record_id}.json", route.record_id
+        )
+        jobs[route.record_id] = _create_vision_fallback_job_from_current(
+            route, current, output, config, config_sha256
+        )
+    _write_jsonl(index_path, (_job_payload(job) for job in jobs.values()))
     return jobs
 
 
@@ -732,12 +834,7 @@ def prepare_vision_fallback_jobs(
         return (), {}
 
     config, config_sha256 = _current_config()
-    source_pdf_value = config.extras.get("source_pdf")
-    if not isinstance(source_pdf_value, str) or not source_pdf_value.strip():
-        raise RuntimeError("The Chapter 1 configuration does not name its source PDF.")
-    source_pdf = Path(source_pdf_value)
-    if not source_pdf.is_absolute():
-        source_pdf = _PROJECT_ROOT / source_pdf
+    source_pdf = _approved_source_pdf(config)
     numbers = tuple(_question_number(route.record_id) for route in vision_routes)
     evidence_root = safe_directory(
         root, root / "vision" / "source-evidence", "Vision source-evidence directory"
@@ -963,7 +1060,7 @@ def _validate_job(job: VisionFallbackJob) -> None:
         raise ValueError("Vision fallback job prompt hash is stale.")
     if job.schema_sha256 != _sha256_path(_SCHEMA_PATH):
         raise ValueError("Vision fallback job schema hash is stale.")
-    _, current_config_sha256 = _current_config()
+    config, current_config_sha256 = _current_config()
     if job.config_sha256 != current_config_sha256:
         raise ValueError("Vision fallback job configuration hash is stale.")
     if job.output_schema != _SCHEMA_NAME:
@@ -985,6 +1082,10 @@ def _validate_job(job: VisionFallbackJob) -> None:
             raise ValueError("Vision fallback job contains an unknown source crop role.")
         if source.get("printed_question_number") != job.question_number:
             raise ValueError("Vision fallback job source crop has the wrong printed question number.")
+        _validate_source_coordinates(
+            config, role, source.get("page_number"), source.get("source_dpi"),
+            "Vision fallback job source crop",
+        )
         declared_hash = _require_hash(source.get("sha256"), "source crop hash")
         source_path = _canonical_crop_path(
             source.get("path"), crops_root, role, job.question_number, source.get("page_number"),
@@ -1013,16 +1114,7 @@ def _validate_job_against_current_evidence(job: VisionFallbackJob, current: Reco
 
 
 def _job_work_root(job: VisionFallbackJob) -> Path:
-    output = Path(os.path.abspath(job.output_path))
-    parent = output.parent
-    if (
-        output.name != f"{job.record_id}.json"
-        or parent.name != "jobs"
-        or parent.parent.name != "vision"
-    ):
-        raise ValueError("Vision fallback job output path is noncanonical.")
-    work_root = parent.parent.parent
-    safe_descendant(work_root, output, "Vision fallback job output path")
+    work_root, _ = _validated_job_output_path(job.output_path, job.record_id)
     return work_root
 
 

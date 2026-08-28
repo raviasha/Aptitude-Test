@@ -169,14 +169,18 @@ class MergeFinalCandidatesTests(unittest.TestCase):
         )
 
     def make_crop(self, role: str) -> SourceCrop:
-        path = self.root / "vision/source-evidence/crops" / f"ch001-q0044-{role}-p025.png"
+        page_number = {"question": 25, "answer_key": 40, "solution": 42}[role]
+        path = (
+            self.root / "vision/source-evidence/crops"
+            / f"ch001-q0044-{role}-p{page_number:03d}.png"
+        )
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(f"{role}:44".encode("ascii"))
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
         return SourceCrop(
             role=role,
             question_number=44,
-            page_number=25,
+            page_number=page_number,
             box=CropBox(10, 20, 100, 120),
             path=path,
             width=90,

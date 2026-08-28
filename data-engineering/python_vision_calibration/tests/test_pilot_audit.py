@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sys
@@ -17,7 +18,7 @@ if str(DATA_ENGINEERING) not in sys.path:
 from python_vision_calibration.audit import write_pilot_audit
 from python_vision_calibration.merge import merge_final_candidates
 from python_vision_calibration.tests import test_merge as merge_tests
-from textbook_chapters_v2.models import PipelineBlocked
+from textbook_chapters_v2.models import CropBox, PipelineBlocked
 from textbook_chapters_v2.store import dependency_fingerprint
 
 
@@ -36,6 +37,12 @@ class PilotAuditTests(unittest.TestCase):
         return getattr(fixture, name)
 
     def write_audit(self, route, results, candidates, renders=()):
+        review = self.accept_review if route.decision == "ACCEPT_PYTHON" else self.vision_review
+        vision_jobs = (
+            {self.vision_job.record_id: self.vision_job}
+            if route.decision == "VISION_REQUIRED"
+            else {}
+        )
         return write_pilot_audit(
             (self.baseline,),
             (route,),
@@ -43,9 +50,48 @@ class PilotAuditTests(unittest.TestCase):
             candidates,
             renders,
             self.root,
+            agent_jobs={self.agent_job.record_id: self.agent_job},
+            agent_results={review.record_id: review},
+            vision_jobs=vision_jobs,
             evidence=self.evidence,
             expected_record_ids=self.expected_ids,
         )
+
+    def with_manifest_hashes(self, manifest: dict[str, object]) -> dict[str, object]:
+        core = {
+            key: value
+            for key, value in manifest.items()
+            if key not in {"dependency_fingerprint", "manifest_sha256"}
+        }
+        dependency = dependency_fingerprint(core)
+        with_dependency = {**core, "dependency_fingerprint": dependency}
+        return {**with_dependency, "manifest_sha256": dependency_fingerprint(with_dependency)}
+
+    def make_render_manifest(self, candidate, *, complete: bool = True) -> dict[str, object]:
+        screenshots: dict[str, dict[str, dict[str, str]]] = {}
+        for width, height in ((1024, 768), (1600, 900)):
+            viewport = f"{width}x{height}"
+            screenshots[viewport] = {}
+            for state in ("unanswered", "submitted"):
+                path = self.root / "renders" / f"{viewport}-{state}.png"
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(f"{viewport}:{state}".encode("ascii"))
+                screenshots[viewport][state] = {
+                    "path": str(path),
+                    "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                }
+        return self.with_manifest_hashes({
+            "record_id": self.baseline.record_id,
+            "candidate_sha256": candidate.sha256,
+            "complete": complete,
+            "renderer_fingerprint": "6" * 64,
+            "application_fingerprint": "7" * 64,
+            "browser_fingerprint": "8" * 64,
+            "browser_identity": "playwright-chromium:124.0.2",
+            "viewports": [[1024, 768], [1600, 900]],
+            "screenshots": screenshots,
+            "findings": [],
+        })
 
     def test_quarantine_is_excluded_but_audited(self) -> None:
         candidates = self.merge(self.vision_route, (self.quarantine_result,))
@@ -56,12 +102,17 @@ class PilotAuditTests(unittest.TestCase):
             candidates,
             (),
             self.root,
+            agent_jobs={self.agent_job.record_id: self.agent_job},
+            agent_results={self.vision_review.record_id: self.vision_review},
+            vision_jobs={self.vision_job.record_id: self.vision_job},
         )
 
         self.assertEqual(candidates, ())
         self.assertEqual(audit.records[0]["status"], "QUARANTINED")
         self.assertEqual(audit.records[0]["final_candidate"], None)
         self.assertEqual(audit.records[0]["vision_result"]["result_sha256"], self.quarantine_result.result_sha256)
+        self.assertEqual(audit.records[0]["vision_job"]["job_sha256"], self.vision_job.job_sha256)
+        self.assertEqual(audit.records[0]["agent_result"]["confidence"], self.vision_review.confidence)
         self.assertTrue(audit.path.is_file())
 
     def test_audit_is_one_canonical_hash_bound_object(self) -> None:
@@ -77,38 +128,25 @@ class PilotAuditTests(unittest.TestCase):
         self.assertEqual(audit.records[0]["status"], "PENDING_RENDER")
         self.assertEqual(audit.records[0]["prompt"]["version"], "chapter1-agent-triage-v1")
         self.assertEqual(audit.records[0]["agent_result"]["result_sha256"], self.accept_route.review_result_sha256)
+        self.assertEqual(audit.records[0]["agent_job"]["job_sha256"], self.agent_job.job_sha256)
+        self.assertEqual(audit.records[0]["agent_result"]["checks"]["logic"], "PASS")
 
     def test_render_manifests_are_the_single_input_that_advances_status(self) -> None:
         candidates = self.merge(self.accept_route)
         pending = self.write_audit(self.accept_route, (), candidates)
-        manifest = {
-            "record_id": self.baseline.record_id,
-            "candidate_sha256": candidates[0].sha256,
-            "complete": True,
-            "screenshot_hashes": {
-                "unanswered-1024x768": "6" * 64,
-                "submitted-1024x768": "7" * 64,
-            },
-            "findings": [],
-            "renderer_fingerprint": "8" * 64,
-        }
+        manifest = self.make_render_manifest(candidates[0])
 
         rendered = self.write_audit(self.accept_route, (), candidates, (manifest,))
 
         self.assertEqual(pending.records[0]["status"], "PENDING_RENDER")
         self.assertEqual(rendered.records[0]["status"], "PYTHON_ACCEPTED")
-        self.assertEqual(dict(rendered.records[0]["render_hashes"]), manifest["screenshot_hashes"])
+        self.assertEqual(len(rendered.records[0]["render_hashes"]), 4)
         self.assertEqual(merge_tests.json_value(rendered.records[0]["render_manifest"]), manifest)
         self.assertNotEqual(rendered.dependency_fingerprint, pending.dependency_fingerprint)
 
     def test_hash_bearing_manifest_without_completion_remains_pending(self) -> None:
         candidates = self.merge(self.accept_route)
-        incomplete = {
-            "record_id": self.baseline.record_id,
-            "candidate_sha256": candidates[0].sha256,
-            "screenshot_hashes": {"unanswered-1024x768": "6" * 64},
-            "findings": [],
-        }
+        incomplete = self.make_render_manifest(candidates[0], complete=False)
 
         audit = self.write_audit(self.accept_route, (), candidates, (incomplete,))
 
@@ -144,12 +182,9 @@ class PilotAuditTests(unittest.TestCase):
         with self.assertRaisesRegex(PipelineBlocked, "candidate"):
             self.write_audit(self.accept_route, (), (stale_candidate,))
 
-        stale_render = {
-            "record_id": self.baseline.record_id,
-            "candidate_sha256": "9" * 64,
-            "screenshot_hashes": {"unanswered": "6" * 64, "submitted": "7" * 64},
-            "findings": [],
-        }
+        stale_render = self.make_render_manifest(candidate)
+        stale_render["candidate_sha256"] = "9" * 64
+        stale_render = self.with_manifest_hashes(stale_render)
         with self.assertRaisesRegex(PipelineBlocked, "render"):
             self.write_audit(self.accept_route, (), (candidate,), (stale_render,))
 
@@ -171,17 +206,114 @@ class PilotAuditTests(unittest.TestCase):
                 (),
                 (),
                 self.root,
+                agent_jobs={self.agent_job.record_id: self.agent_job},
+                agent_results={self.accept_review.record_id: self.accept_review},
+                vision_jobs={},
                 evidence=self.evidence,
                 expected_record_ids=self.expected_ids,
             )
         extra = {
             "record_id": "ch01-q0045",
             "candidate_sha256": candidates[0].sha256,
-            "screenshot_hashes": {"unanswered": "6" * 64, "submitted": "7" * 64},
+            "complete": True,
+            "screenshots": {},
             "findings": [],
         }
         with self.assertRaisesRegex(PipelineBlocked, "extra render"):
             self.write_audit(self.accept_route, (), candidates, (extra,))
+
+    def test_audit_rejects_missing_or_stale_full_review_dependencies(self) -> None:
+        candidates = self.merge(self.accept_route)
+        with self.assertRaisesRegex(PipelineBlocked, "agent job"):
+            write_pilot_audit(
+                (self.baseline,),
+                (self.accept_route,),
+                (),
+                candidates,
+                (),
+                self.root,
+                agent_jobs={},
+                agent_results={self.accept_review.record_id: self.accept_review},
+                vision_jobs={},
+                evidence=self.evidence,
+                expected_record_ids=self.expected_ids,
+            )
+
+        stale_review = replace(self.accept_review, confidence=0.50)
+        with self.assertRaisesRegex(PipelineBlocked, "agent result"):
+            write_pilot_audit(
+                (self.baseline,),
+                (self.accept_route,),
+                (),
+                candidates,
+                (),
+                self.root,
+                agent_jobs={self.agent_job.record_id: self.agent_job},
+                agent_results={stale_review.record_id: stale_review},
+                vision_jobs={},
+                evidence=self.evidence,
+                expected_record_ids=self.expected_ids,
+            )
+
+    def test_render_manifest_requires_exact_current_inventory_and_hash_binding(self) -> None:
+        candidates = self.merge(self.accept_route)
+        manifest = self.make_render_manifest(candidates[0])
+        one_viewport = dict(manifest)
+        one_viewport["viewports"] = [[1024, 768]]
+        one_viewport = self.with_manifest_hashes(one_viewport)
+        with self.assertRaisesRegex(PipelineBlocked, "viewport"):
+            self.write_audit(self.accept_route, (), candidates, (one_viewport,))
+
+        screenshot_path = Path(manifest["screenshots"]["1024x768"]["unanswered"]["path"])
+        screenshot_path.write_bytes(b"changed after manifest")
+        with self.assertRaisesRegex(PipelineBlocked, "screenshot"):
+            self.write_audit(self.accept_route, (), candidates, (manifest,))
+
+    def test_audit_rejects_substituted_vision_evidence_with_unchanged_crop_bytes(self) -> None:
+        candidates = self.merge(self.vision_route, (self.vision_result,))
+        original = self.evidence[0].question_crops[0]
+        substituted_crop = replace(
+            original,
+            page_number=999,
+            box=CropBox(11, 21, 101, 121),
+            source_image_sha256="9" * 64,
+            source_dpi=181,
+        )
+        substituted = self.with_evidence_fingerprint(
+            replace(self.evidence[0], question_crops=(substituted_crop,))
+        )
+
+        with self.assertRaisesRegex(PipelineBlocked, "vision job|current source evidence"):
+            write_pilot_audit(
+                (self.baseline,),
+                (self.vision_route,),
+                (self.vision_result,),
+                candidates,
+                (),
+                self.root,
+                agent_jobs={self.agent_job.record_id: self.agent_job},
+                agent_results={self.vision_review.record_id: self.vision_review},
+                vision_jobs={self.vision_job.record_id: self.vision_job},
+                evidence=(substituted,),
+                expected_record_ids=self.expected_ids,
+            )
+
+    def test_evidence_less_audit_rejects_quarantine_candidate_content(self) -> None:
+        malformed = self.with_result_hash(replace(self.quarantine_result, question_text="forbidden content"))
+
+        with self.assertRaisesRegex(PipelineBlocked, "quarantine.*candidate|candidate.*quarantine"):
+            write_pilot_audit(
+                (self.baseline,),
+                (self.vision_route,),
+                (malformed,),
+                (),
+                (),
+                self.root,
+                agent_jobs={self.agent_job.record_id: self.agent_job},
+                agent_results={self.vision_review.record_id: self.vision_review},
+                vision_jobs={self.vision_job.record_id: self.vision_job},
+                expected_record_ids=self.expected_ids,
+            )
 
 
 if __name__ == "__main__":

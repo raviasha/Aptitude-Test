@@ -8,6 +8,7 @@ import unittest
 from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -15,8 +16,16 @@ DATA_ENGINEERING = PROJECT_ROOT / "data-engineering"
 if str(DATA_ENGINEERING) not in sys.path:
     sys.path.insert(0, str(DATA_ENGINEERING))
 
+from python_vision_calibration.agent_review import create_agent_review_job
 from python_vision_calibration.merge import merge_final_candidates
-from python_vision_calibration.models import RawBaselineRecord, RouteDecision, VisionFallbackResult
+from python_vision_calibration.models import (
+    AgentReviewResult,
+    RawBaselineRecord,
+    RouteDecision,
+    VisionFallbackResult,
+)
+from python_vision_calibration.routing import resolve_agent_route
+from python_vision_calibration.vision_fallback import _job_hash_payload, create_vision_fallback_job
 from textbook_chapters_v2.models import CropBox, PipelineBlocked, RecordEvidence, SourceCrop
 from textbook_chapters_v2.store import dependency_fingerprint
 
@@ -40,9 +49,21 @@ class MergeFinalCandidatesTests(unittest.TestCase):
         self.temp_directory = tempfile.TemporaryDirectory()
         self.root = Path(self.temp_directory.name)
         self.baseline = self.make_baseline()
-        self.accept_route = self.make_route("ACCEPT_PYTHON")
-        self.vision_route = self.make_route("VISION_REQUIRED")
+        self.agent_job = create_agent_review_job(self.baseline, self.root / "agent-job.json")
+        self.accept_review = self.make_agent_result("ACCEPT_PYTHON")
+        self.vision_review = self.make_agent_result("VISION_REQUIRED")
+        self.accept_route = resolve_agent_route(self.baseline, self.accept_review)
+        self.vision_route = resolve_agent_route(self.baseline, self.vision_review)
         self.evidence = (self.make_evidence(),)
+        with patch(
+            "python_vision_calibration.vision_fallback.prepare_source_evidence",
+            return_value=list(self.evidence),
+        ):
+            self.vision_job = create_vision_fallback_job(
+                self.vision_route,
+                self.evidence[0],
+                self.root / "vision" / "jobs" / "ch01-q0044.json",
+            )
         self.vision_result = self.make_vision_result("VISION_ACCEPTED")
         self.quarantine_result = self.make_vision_result("QUARANTINE")
         self.expected_ids = {self.baseline.record_id}
@@ -51,8 +72,9 @@ class MergeFinalCandidatesTests(unittest.TestCase):
         self.temp_directory.cleanup()
 
     def make_baseline(self, **candidate_changes: object) -> RawBaselineRecord:
+        source_pdf_sha256 = "0723862418cd7b088341bcfc78a10745fd434b3f4db695986b1ff4f40a7223bf"
         source_hashes = {
-            "source_pdf": ("a" * 64,),
+            "source_pdf": (source_pdf_sha256,),
             "raw_extractor": ("b" * 64,),
             "config": ("c" * 64,),
             "question": ("d" * 64,),
@@ -63,7 +85,7 @@ class MergeFinalCandidatesTests(unittest.TestCase):
         source_identity = {
             "number": 44,
             "question_region_sha256": "0" * 64,
-            "pdf_sha256": "a" * 64,
+            "pdf_sha256": source_pdf_sha256,
             "page": 25,
             "box": [20.0, 100.0, 314.0, 160.0],
         }
@@ -89,6 +111,40 @@ class MergeFinalCandidatesTests(unittest.TestCase):
             candidate=candidate,
             baseline_sha256=canonical_sha256(payload),
             source_identity=source_identity,
+        )
+
+    def make_agent_result(self, decision: str) -> AgentReviewResult:
+        accepted = decision == "ACCEPT_PYTHON"
+        checks = {
+            "rendering": "PASS" if accepted else "SUSPECT",
+            "structure": "PASS",
+            "logic": "PASS",
+            "cross_field_consistency": "PASS",
+        }
+        reason_codes = () if accepted else ("OTHER",)
+        explanation = "The record is coherent." if accepted else "Notation needs source review."
+        payload = {
+            "record_id": self.baseline.record_id,
+            "decision": decision,
+            "confidence": 0.99 if accepted else 0.80,
+            "checks": checks,
+            "reason_codes": list(reason_codes),
+            "explanation": explanation,
+            "reviewer": "agent-test-reviewer",
+            "baseline_sha256": self.baseline.baseline_sha256,
+            "job_sha256": self.agent_job.job_sha256,
+        }
+        return AgentReviewResult(
+            record_id=self.baseline.record_id,
+            decision=decision,
+            confidence=payload["confidence"],
+            checks=checks,
+            reason_codes=reason_codes,
+            explanation=explanation,
+            reviewer="agent-test-reviewer",
+            baseline_sha256=self.baseline.baseline_sha256,
+            job_sha256=self.agent_job.job_sha256,
+            result_sha256=canonical_sha256(payload),
         )
 
     def make_route(self, decision: str, baseline: RawBaselineRecord | None = None) -> RouteDecision:
@@ -130,16 +186,91 @@ class MergeFinalCandidatesTests(unittest.TestCase):
         )
 
     def make_evidence(self) -> RecordEvidence:
+        question = (self.make_crop("question"),)
+        answer = (self.make_crop("answer_key"),)
+        solution = (self.make_crop("solution"),)
+        crop_provenance = tuple(
+            {
+                "role": crop.role,
+                "page_number": crop.page_number,
+                "box": [crop.box.left, crop.box.top, crop.box.right, crop.box.bottom],
+                "source_image_sha256": crop.source_image_sha256,
+                "source_dpi": crop.source_dpi,
+                "crop_sha256": crop.sha256,
+            }
+            for crops in (question, answer, solution)
+            for crop in crops
+        )
+        source_pdf_sha256 = "0723862418cd7b088341bcfc78a10745fd434b3f4db695986b1ff4f40a7223bf"
+        fingerprint = dependency_fingerprint({
+            "chapter": 1,
+            "question_number": 44,
+            "source_pdf_sha256": source_pdf_sha256,
+            "dpi": 180,
+            "crop_provenance": crop_provenance,
+            "source_status": "complete",
+            "source_reasons": (),
+            "requires_reviewed_rejection": False,
+            "boundary_review": {},
+        })
         return RecordEvidence(
             chapter=1,
             question_number=44,
-            source_pdf=self.root / "source.pdf",
-            source_pdf_sha256="a" * 64,
-            question_crops=(self.make_crop("question"),),
-            answer_key_crops=(self.make_crop("answer_key"),),
-            solution_crops=(self.make_crop("solution"),),
-            dependency_fingerprint="5" * 64,
+            source_pdf=PROJECT_ROOT
+            / "data-engineering"
+            / "dokumen.pub_quantitative-aptitude-for-competitive-examinations-by-rs-aggarwal-reprint-2017nbsped-9352534026-9789352534029.pdf",
+            source_pdf_sha256=source_pdf_sha256,
+            question_crops=question,
+            answer_key_crops=answer,
+            solution_crops=solution,
+            dependency_fingerprint=fingerprint,
         )
+
+    def with_evidence_fingerprint(self, evidence: RecordEvidence) -> RecordEvidence:
+        crops = (*evidence.question_crops, *evidence.answer_key_crops, *evidence.solution_crops)
+        dpi = {crop.source_dpi for crop in crops}.pop()
+        crop_provenance = tuple(
+            {
+                "role": crop.role,
+                "page_number": crop.page_number,
+                "box": [crop.box.left, crop.box.top, crop.box.right, crop.box.bottom],
+                "source_image_sha256": crop.source_image_sha256,
+                "source_dpi": crop.source_dpi,
+                "crop_sha256": crop.sha256,
+                **({"context_id": crop.context_id} if crop.context_id else {}),
+            }
+            for crop in crops
+        )
+        fingerprint = dependency_fingerprint({
+            "chapter": evidence.chapter,
+            "question_number": evidence.question_number,
+            "source_pdf_sha256": evidence.source_pdf_sha256,
+            "dpi": dpi,
+            "crop_provenance": crop_provenance,
+            "source_status": evidence.source_status,
+            "source_reasons": evidence.source_reasons,
+            "requires_reviewed_rejection": evidence.requires_reviewed_rejection,
+            "boundary_review": evidence.boundary_review,
+        })
+        return replace(evidence, dependency_fingerprint=fingerprint)
+
+    def with_result_hash(self, result: VisionFallbackResult) -> VisionFallbackResult:
+        payload = {
+            "record_id": result.record_id,
+            "decision": result.decision,
+            "question_text": result.question_text,
+            "options": dict(result.options),
+            "correct_answer": result.correct_answer,
+            "solution_steps": list(result.solution_steps),
+            "representation": json_value(result.representation),
+            "media": json_value(result.media),
+            "source_evidence_sha256s": list(result.source_evidence_sha256s),
+            "quarantine_reason": result.quarantine_reason,
+            "reviewer": result.reviewer,
+            "route_sha256": result.route_sha256,
+            "job_sha256": result.job_sha256,
+        }
+        return replace(result, result_sha256=canonical_sha256(payload))
 
     def make_vision_result(
         self,
@@ -195,7 +326,7 @@ class MergeFinalCandidatesTests(unittest.TestCase):
             "quarantine_reason": quarantine_reason,
             "reviewer": "vision-test-reviewer",
             "route_sha256": self.vision_route.route_sha256,
-            "job_sha256": "3" * 64,
+            "job_sha256": self.vision_job.job_sha256,
         }
         return VisionFallbackResult(
             record_id=self.baseline.record_id,
@@ -210,16 +341,18 @@ class MergeFinalCandidatesTests(unittest.TestCase):
             quarantine_reason=quarantine_reason,
             reviewer="vision-test-reviewer",
             route_sha256=self.vision_route.route_sha256,
-            job_sha256="3" * 64,
+            job_sha256=self.vision_job.job_sha256,
             result_sha256=canonical_sha256(payload),
         )
 
     def merge(self, route: RouteDecision, results: tuple[VisionFallbackResult, ...] = ()):
+        jobs = {self.vision_job.record_id: self.vision_job} if route.decision == "VISION_REQUIRED" else {}
         return merge_final_candidates(
             (self.baseline,),
             (route,),
             results,
             self.evidence,
+            vision_jobs=jobs,
             expected_record_ids=self.expected_ids,
         )
 
@@ -370,6 +503,79 @@ class MergeFinalCandidatesTests(unittest.TestCase):
         stale_result = replace(stale_result, result_sha256=canonical_sha256(stale_payload))
         with self.assertRaisesRegex(PipelineBlocked, "current source evidence"):
             self.merge(self.vision_route, (stale_result,))
+
+    def test_vision_route_requires_authoritative_job_and_result_job_linkage(self) -> None:
+        with self.assertRaisesRegex(PipelineBlocked, "vision job"):
+            merge_final_candidates(
+                (self.baseline,),
+                (self.vision_route,),
+                (self.vision_result,),
+                self.evidence,
+                vision_jobs={},
+                expected_record_ids=self.expected_ids,
+            )
+
+        stale_result = self.with_result_hash(replace(self.vision_result, job_sha256="9" * 64))
+        with self.assertRaisesRegex(PipelineBlocked, "vision job"):
+            self.merge(self.vision_route, (stale_result,))
+
+        forged_prompt = replace(
+            self.vision_job,
+            prompt="A substituted prompt bound to the same source evidence.",
+            prompt_sha256=hashlib.sha256(
+                b"A substituted prompt bound to the same source evidence."
+            ).hexdigest(),
+        )
+        forged_prompt = replace(
+            forged_prompt,
+            job_sha256=canonical_sha256(json_value(_job_hash_payload(forged_prompt))),
+        )
+        forged_result = self.with_result_hash(
+            replace(self.vision_result, job_sha256=forged_prompt.job_sha256)
+        )
+        with self.assertRaisesRegex(PipelineBlocked, "vision job"):
+            merge_final_candidates(
+                (self.baseline,),
+                (self.vision_route,),
+                (forged_result,),
+                self.evidence,
+                vision_jobs={forged_prompt.record_id: forged_prompt},
+                expected_record_ids=self.expected_ids,
+            )
+
+    def test_same_crop_bytes_cannot_authorize_substituted_evidence_metadata(self) -> None:
+        original = self.evidence[0].question_crops[0]
+        substituted_crop = replace(
+            original,
+            page_number=999,
+            box=CropBox(11, 21, 101, 121),
+            source_image_sha256="9" * 64,
+            source_dpi=181,
+        )
+        substituted = self.with_evidence_fingerprint(
+            replace(self.evidence[0], question_crops=(substituted_crop,))
+        )
+
+        with self.assertRaisesRegex(PipelineBlocked, "vision job|current source evidence"):
+            merge_final_candidates(
+                (self.baseline,),
+                (self.vision_route,),
+                (self.vision_result,),
+                (substituted,),
+                vision_jobs={self.vision_job.record_id: self.vision_job},
+                expected_record_ids=self.expected_ids,
+            )
+
+        forged_fingerprint = replace(self.evidence[0], dependency_fingerprint="9" * 64)
+        with self.assertRaisesRegex(PipelineBlocked, "dependency fingerprint"):
+            merge_final_candidates(
+                (self.baseline,),
+                (self.vision_route,),
+                (self.vision_result,),
+                (forged_fingerprint,),
+                vision_jobs={self.vision_job.record_id: self.vision_job},
+                expected_record_ids=self.expected_ids,
+            )
 
 
 if __name__ == "__main__":

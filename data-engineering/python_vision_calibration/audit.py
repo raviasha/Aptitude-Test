@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import tempfile
 from collections.abc import Iterable, Mapping
@@ -13,7 +14,17 @@ from typing import Any
 from textbook_chapters_v2.models import CandidateRecord, PipelineBlocked, RecordEvidence, freeze_value
 from textbook_chapters_v2.store import canonical_json, dependency_fingerprint
 
-from .agent_review import AGENT_REVIEW_PROMPT, AGENT_REVIEW_PROMPT_VERSION
+from .agent_review import (
+    AGENT_REVIEW_CHECKS,
+    AGENT_REVIEW_MIN_CONFIDENCE,
+    AGENT_REVIEW_PROMPT,
+    AGENT_REVIEW_PROMPT_VERSION,
+    _job_content as _agent_job_content,
+    _job_document as _agent_job_document,
+    _record_payload as _agent_record_payload,
+    _schema as _agent_result_schema,
+    _validate_schema as _validate_agent_result_schema,
+)
 from .merge import (
     _canonical_sha256,
     _expected_record_ids,
@@ -22,15 +33,43 @@ from .merge import (
     _record_number,
     _require_hash,
     _result_payload,
+    _sha256_path,
+    _validate_quarantine_shape,
     _validate_baseline,
     _validate_route,
+    _vision_job_index,
     merge_final_candidates,
 )
-from .models import RawBaselineRecord, RouteDecision, VisionFallbackResult
+from .models import (
+    AgentReviewJob,
+    AgentReviewResult,
+    RawBaselineRecord,
+    RouteDecision,
+    VisionFallbackJob,
+    VisionFallbackResult,
+)
+from .routing import resolve_agent_route
+from .vision_fallback import _validate_job as _validate_vision_job_object
 
 
 AUDIT_SCHEMA_VERSION = 1
 AUDIT_FILENAME = "chapter-001-agent-triage.json"
+_RENDER_VIEWPORTS = ((1024, 768), (1600, 900))
+_RENDER_STATES = ("unanswered", "submitted")
+_RENDER_FIELDS = {
+    "record_id",
+    "candidate_sha256",
+    "complete",
+    "renderer_fingerprint",
+    "application_fingerprint",
+    "browser_fingerprint",
+    "browser_identity",
+    "viewports",
+    "screenshots",
+    "findings",
+    "dependency_fingerprint",
+    "manifest_sha256",
+}
 
 
 @dataclass(frozen=True)
@@ -65,6 +104,124 @@ def _candidate_index(candidates: Iterable[CandidateRecord]) -> dict[str, Candida
     return dict(zip(ids, values))
 
 
+def _typed_mapping(
+    values: Mapping[str, Any] | None,
+    expected_type: type,
+    name: str,
+    expected_ids: tuple[str, ...],
+) -> dict[str, Any]:
+    if values is None:
+        supplied: Mapping[str, Any] = {}
+    elif not isinstance(values, Mapping):
+        raise TypeError(f"{name} must be a mapping keyed by record ID.")
+    else:
+        supplied = values
+    items: list[Any] = []
+    for key, item in supplied.items():
+        if not isinstance(key, str) or not isinstance(item, expected_type):
+            raise TypeError(f"{name} must map record IDs to {expected_type.__name__} values.")
+        if key != item.record_id:
+            raise PipelineBlocked(f"Pilot audit {name} mapping key is stale for {key}.")
+        items.append(item)
+    return _index_exact(items, expected_type, name, expected_ids, lambda item: item.record_id)
+
+
+def _agent_result_payload(result: AgentReviewResult) -> dict[str, Any]:
+    return {
+        "record_id": result.record_id,
+        "decision": result.decision,
+        "confidence": result.confidence,
+        "checks": dict(result.checks),
+        "reason_codes": list(result.reason_codes),
+        "explanation": result.explanation,
+        "reviewer": result.reviewer,
+        "baseline_sha256": result.baseline_sha256,
+        "job_sha256": result.job_sha256,
+    }
+
+
+def _validate_agent_dependencies(
+    baseline_by_id: Mapping[str, RawBaselineRecord],
+    route_by_id: Mapping[str, RouteDecision],
+    agent_jobs: Mapping[str, AgentReviewJob] | None,
+    agent_results: Mapping[str, AgentReviewResult] | None,
+    expected_ids: tuple[str, ...],
+) -> tuple[dict[str, AgentReviewJob], dict[str, AgentReviewResult]]:
+    job_by_id = _typed_mapping(agent_jobs, AgentReviewJob, "agent job", expected_ids)
+    result_by_id = _typed_mapping(agent_results, AgentReviewResult, "agent result", expected_ids)
+    prompt_sha256 = _canonical_sha256(AGENT_REVIEW_PROMPT, ensure_ascii=False)
+    for record_id in expected_ids:
+        baseline = baseline_by_id[record_id]
+        route = route_by_id[record_id]
+        job = job_by_id[record_id]
+        result = result_by_id[record_id]
+        record_payload = _agent_record_payload(baseline)
+        job_content = _agent_job_content(record_payload)
+        payload_sha256 = _canonical_sha256(job_content, ensure_ascii=False)
+        expected_job_hash = _canonical_sha256({
+            "record_id": record_id,
+            "baseline_sha256": baseline.baseline_sha256,
+            "prompt_version": AGENT_REVIEW_PROMPT_VERSION,
+            "prompt_sha256": prompt_sha256,
+            "payload_sha256": payload_sha256,
+            "output_schema": job.output_schema,
+        }, ensure_ascii=False)
+        if (
+            job.baseline_sha256 != baseline.baseline_sha256
+            or job.prompt_version != AGENT_REVIEW_PROMPT_VERSION
+            or job.prompt_sha256 != prompt_sha256
+            or job.payload_sha256 != payload_sha256
+            or job.output_schema != "agent-review-result.schema.json"
+            or job.job_sha256 != expected_job_hash
+        ):
+            raise PipelineBlocked(f"{record_id} authoritative agent job is missing or stale.")
+        if not job.output_path.is_file():
+            raise PipelineBlocked(f"{record_id} authoritative agent job file is missing.")
+        try:
+            persisted_job = json.loads(job.output_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise PipelineBlocked(f"{record_id} authoritative agent job file is invalid.") from error
+        if persisted_job != _json_value(_agent_job_document(job, record_payload)):
+            raise PipelineBlocked(f"{record_id} authoritative agent job file is stale.")
+
+        full_result_payload = {**_agent_result_payload(result), "result_sha256": result.result_sha256}
+        try:
+            _validate_agent_result_schema(full_result_payload, _agent_result_schema())
+        except (TypeError, ValueError, RuntimeError) as error:
+            raise PipelineBlocked(f"{record_id} authoritative agent result is malformed: {error}") from error
+        if (
+            result.baseline_sha256 != baseline.baseline_sha256
+            or result.job_sha256 != job.job_sha256
+            or route.review_result_sha256 != result.result_sha256
+            or not isinstance(result.confidence, float)
+            or not math.isfinite(result.confidence)
+            or not 0.0 <= result.confidence <= 1.0
+            or set(result.checks) != set(AGENT_REVIEW_CHECKS)
+            or any(value not in {"PASS", "SUSPECT"} for value in result.checks.values())
+            or not result.reviewer.strip()
+        ):
+            raise PipelineBlocked(f"{record_id} authoritative agent result is missing or stale.")
+        if result.decision == "ACCEPT_PYTHON":
+            if (
+                result.confidence < AGENT_REVIEW_MIN_CONFIDENCE
+                or set(result.checks.values()) != {"PASS"}
+                or result.reason_codes
+            ):
+                raise PipelineBlocked(f"{record_id} authoritative agent result cannot accept Python.")
+        elif result.decision == "VISION_REQUIRED":
+            if not result.reason_codes or not result.explanation.strip():
+                raise PipelineBlocked(f"{record_id} authoritative agent result lacks its vision reason.")
+        else:
+            raise PipelineBlocked(f"{record_id} authoritative agent result decision is invalid.")
+        if result.result_sha256 != _canonical_sha256(
+            _agent_result_payload(result), ensure_ascii=False
+        ):
+            raise PipelineBlocked(f"{record_id} authoritative agent result hash is stale.")
+        if _json_value(route) != _json_value(resolve_agent_route(baseline, result)):
+            raise PipelineBlocked(f"{record_id} route contradicts its authoritative agent result.")
+    return job_by_id, result_by_id
+
+
 def _manifest_values(render_manifests: Any) -> tuple[tuple[str | None, Any], ...]:
     if render_manifests is None:
         return ()
@@ -94,20 +251,53 @@ def _render_index(render_manifests: Any, candidate_by_id: Mapping[str, Candidate
         candidate = candidate_by_id.get(record_id)
         if candidate is None:
             raise PipelineBlocked(f"Pilot audit has an extra render manifest for {record_id}.")
+        if set(normalized) != _RENDER_FIELDS:
+            raise PipelineBlocked("Pilot audit render manifest has missing or extra fields.")
         if normalized.get("candidate_sha256") != candidate.sha256:
             raise PipelineBlocked(f"Pilot audit render manifest is stale against candidate {record_id}.")
-        hashes = normalized.get("screenshot_hashes", {})
-        if not isinstance(hashes, dict):
-            raise PipelineBlocked(f"Pilot audit render hashes are malformed for {record_id}.")
-        for name, digest in hashes.items():
-            if not isinstance(name, str) or not name:
-                raise PipelineBlocked(f"Pilot audit render hash name is malformed for {record_id}.")
-            _require_hash(digest, f"{record_id} render screenshot hash")
+        if not isinstance(normalized.get("complete"), bool):
+            raise PipelineBlocked(f"Pilot audit render completion flag is malformed for {record_id}.")
+        for field in ("renderer_fingerprint", "application_fingerprint", "browser_fingerprint"):
+            _require_hash(normalized.get(field), f"{record_id} render {field}")
+        if not isinstance(normalized.get("browser_identity"), str) or not normalized["browser_identity"].strip():
+            raise PipelineBlocked(f"Pilot audit browser identity is malformed for {record_id}.")
+        if normalized.get("viewports") != [list(viewport) for viewport in _RENDER_VIEWPORTS]:
+            raise PipelineBlocked(f"Pilot audit render viewport inventory is invalid for {record_id}.")
+        screenshots = normalized.get("screenshots")
+        expected_viewports = {f"{width}x{height}" for width, height in _RENDER_VIEWPORTS}
+        if not isinstance(screenshots, dict) or set(screenshots) != expected_viewports:
+            raise PipelineBlocked(f"Pilot audit render screenshot viewport inventory is invalid for {record_id}.")
+        for viewport in sorted(expected_viewports):
+            states = screenshots[viewport]
+            if not isinstance(states, dict) or set(states) != set(_RENDER_STATES):
+                raise PipelineBlocked(f"Pilot audit render screenshot state inventory is invalid for {record_id}.")
+            for state in _RENDER_STATES:
+                screenshot = states[state]
+                if not isinstance(screenshot, dict) or set(screenshot) != {"path", "sha256"}:
+                    raise PipelineBlocked(f"Pilot audit render screenshot entry is malformed for {record_id}.")
+                path_value = screenshot.get("path")
+                if not isinstance(path_value, str) or not path_value:
+                    raise PipelineBlocked(f"Pilot audit render screenshot path is malformed for {record_id}.")
+                screenshot_path = Path(path_value)
+                if not screenshot_path.is_file():
+                    raise PipelineBlocked(f"Pilot audit render screenshot is missing for {record_id}.")
+                digest = _require_hash(screenshot.get("sha256"), f"{record_id} render screenshot hash")
+                if _sha256_path(screenshot_path) != digest:
+                    raise PipelineBlocked(f"Pilot audit render screenshot hash is stale for {record_id}.")
         findings = normalized.get("findings", [])
         if not isinstance(findings, list) or any(not isinstance(item, str) for item in findings):
             raise PipelineBlocked(f"Pilot audit render findings are malformed for {record_id}.")
-        if "complete" in normalized and not isinstance(normalized["complete"], bool):
-            raise PipelineBlocked(f"Pilot audit render completion flag is malformed for {record_id}.")
+        core = {
+            key: value
+            for key, value in normalized.items()
+            if key not in {"dependency_fingerprint", "manifest_sha256"}
+        }
+        expected_dependency = dependency_fingerprint(core)
+        if normalized.get("dependency_fingerprint") != expected_dependency:
+            raise PipelineBlocked(f"Pilot audit render dependency fingerprint is stale for {record_id}.")
+        with_dependency = {**core, "dependency_fingerprint": expected_dependency}
+        if normalized.get("manifest_sha256") != dependency_fingerprint(with_dependency):
+            raise PipelineBlocked(f"Pilot audit render manifest hash is stale for {record_id}.")
         manifests[record_id] = normalized
     return manifests
 
@@ -115,12 +305,9 @@ def _render_index(render_manifests: Any, candidate_by_id: Mapping[str, Candidate
 def _render_is_complete(manifest: Mapping[str, Any] | None) -> bool:
     if manifest is None:
         return False
-    hashes = manifest.get("screenshot_hashes")
     findings = manifest.get("findings")
     return bool(
         manifest.get("complete") is True
-        and isinstance(hashes, Mapping)
-        and hashes
         and findings == []
     )
 
@@ -130,8 +317,9 @@ def _validate_quarantines_without_prepared_evidence(
     routes: tuple[RouteDecision, ...],
     results: tuple[VisionFallbackResult, ...],
     candidates: tuple[CandidateRecord, ...],
+    vision_jobs: Mapping[str, VisionFallbackJob] | None,
     expected_ids: tuple[str, ...],
-) -> None:
+) -> dict[str, VisionFallbackJob]:
     """Support the documented quarantine-only audit call without trusting candidate content."""
     baseline_by_id = _index_exact(
         baselines, RawBaselineRecord, "baseline", expected_ids, lambda item: item.record_id
@@ -140,6 +328,7 @@ def _validate_quarantines_without_prepared_evidence(
     result_by_id = _index_exact(
         results, VisionFallbackResult, "vision result", expected_ids, lambda item: item.record_id
     )
+    job_by_id = _vision_job_index(vision_jobs, expected_ids)
     if candidates:
         raise PipelineBlocked("Pilot audit needs prepared source evidence for supposedly accepted candidates.")
     for record_id in expected_ids:
@@ -148,22 +337,41 @@ def _validate_quarantines_without_prepared_evidence(
         route = route_by_id[record_id]
         _validate_route(route, baseline)
         result = result_by_id[record_id]
+        job = job_by_id[record_id]
         if route.decision != "VISION_REQUIRED" or result.decision != "QUARANTINE":
             raise PipelineBlocked("Pilot audit needs prepared source evidence for supposedly accepted records.")
-        if result.route_sha256 != route.route_sha256:
+        try:
+            _validate_vision_job_object(job)
+        except (TypeError, ValueError, RuntimeError, OSError) as error:
+            raise PipelineBlocked(f"{record_id} authoritative vision job is invalid: {error}") from error
+        if (
+            job.route_sha256 != route.route_sha256
+            or job.baseline_sha256 != baseline.baseline_sha256
+            or result.route_sha256 != route.route_sha256
+            or result.job_sha256 != job.job_sha256
+        ):
             raise PipelineBlocked(f"{record_id} quarantine is stale against its route.")
         _require_hash(result.job_sha256, f"{record_id} vision job hash")
         _require_hash(result.result_sha256, f"{record_id} vision result hash")
         if result.result_sha256 != _canonical_sha256(_result_payload(result)):
             raise PipelineBlocked(f"{record_id} quarantine result hash is stale.")
-        if not result.source_evidence_sha256s or any(
-            not isinstance(item, str) for item in result.source_evidence_sha256s
+        if not isinstance(result.reviewer, str) or not result.reviewer.strip():
+            raise PipelineBlocked(f"{record_id} quarantine reviewer is missing.")
+        if (
+            not result.source_evidence_sha256s
+            or len(set(result.source_evidence_sha256s)) != len(result.source_evidence_sha256s)
+            or any(
+                not isinstance(item, str) or item not in job.source_evidence_sha256s
+                for item in result.source_evidence_sha256s
+            )
         ):
             raise PipelineBlocked(f"{record_id} quarantine source evidence is missing.")
         for digest in result.source_evidence_sha256s:
             _require_hash(digest, f"{record_id} quarantine source evidence hash")
         if not result.quarantine_reason.strip():
             raise PipelineBlocked(f"{record_id} quarantine reason is missing.")
+        _validate_quarantine_shape(result)
+    return job_by_id
 
 
 def _record_source_evidence(
@@ -183,7 +391,10 @@ def _record_source_evidence(
 def _record_payload(
     record_id: str,
     baseline: RawBaselineRecord,
+    agent_job: AgentReviewJob,
+    agent_result: AgentReviewResult,
     route: RouteDecision,
+    vision_job: VisionFallbackJob | None,
     result: VisionFallbackResult | None,
     candidate: CandidateRecord | None,
     evidence_by_id: Mapping[str, RecordEvidence],
@@ -197,7 +408,11 @@ def _record_payload(
         status = "PYTHON_ACCEPTED"
     else:
         status = "VISION_ACCEPTED"
-    render_hashes = {} if manifest is None else dict(manifest.get("screenshot_hashes", {}))
+    render_hashes = {}
+    if manifest is not None:
+        for viewport, states in manifest["screenshots"].items():
+            for state, screenshot in states.items():
+                render_hashes[f"{viewport}-{state}"] = screenshot["sha256"]
     prompt_sha256 = _canonical_sha256(AGENT_REVIEW_PROMPT)
     core = {
         "record_id": record_id,
@@ -210,13 +425,10 @@ def _record_payload(
             "sha256": prompt_sha256,
             "text": AGENT_REVIEW_PROMPT,
         },
-        "agent_result": {"result_sha256": route.review_result_sha256},
+        "agent_job": _json_value(agent_job),
+        "agent_result": _json_value(agent_result),
         "route": _json_value(route),
-        "vision_job": (
-            None
-            if result is None
-            else {"job_sha256": result.job_sha256, "route_sha256": result.route_sha256}
-        ),
+        "vision_job": None if vision_job is None else _json_value(vision_job),
         "vision_result": None if result is None else _json_value(result),
         "final_candidate": None if candidate is None else _json_value(candidate),
         "source_evidence": _record_source_evidence(record_id, baseline, result, evidence_by_id),
@@ -362,6 +574,9 @@ def write_pilot_audit(
     render_manifests: Any,
     work_root: Path,
     *,
+    agent_jobs: Mapping[str, AgentReviewJob] | None = None,
+    agent_results: Mapping[str, AgentReviewResult] | None = None,
+    vision_jobs: Mapping[str, VisionFallbackJob] | None = None,
     evidence: Iterable[RecordEvidence] | None = None,
     expected_record_ids: Iterable[str] | None = None,
 ) -> PilotAuditSummary:
@@ -373,6 +588,21 @@ def write_pilot_audit(
     if any(not isinstance(record, RawBaselineRecord) for record in baseline_values):
         raise TypeError("baselines must contain RawBaselineRecord values.")
     expected_ids = _expected_record_ids(baseline_values, expected_record_ids)
+    baseline_by_id = _index_exact(
+        baseline_values, RawBaselineRecord, "baseline", expected_ids, lambda item: item.record_id
+    )
+    route_by_id = _index_exact(
+        route_values, RouteDecision, "route", expected_ids, lambda item: item.record_id
+    )
+    for record_id in expected_ids:
+        _validate_baseline(baseline_by_id[record_id])
+        _validate_route(route_by_id[record_id], baseline_by_id[record_id])
+    agent_job_by_id, agent_result_by_id = _validate_agent_dependencies(
+        baseline_by_id, route_by_id, agent_jobs, agent_results, expected_ids
+    )
+    vision_ids = tuple(
+        record_id for record_id in expected_ids if route_by_id[record_id].decision == "VISION_REQUIRED"
+    )
     evidence_values = tuple(evidence or ())
     if evidence_values:
         expected_candidates = merge_final_candidates(
@@ -380,11 +610,18 @@ def write_pilot_audit(
             route_values,
             result_values,
             evidence_values,
+            vision_jobs=vision_jobs,
             expected_record_ids=expected_ids,
         )
+        vision_job_by_id = _vision_job_index(vision_jobs, vision_ids)
     else:
-        _validate_quarantines_without_prepared_evidence(
-            baseline_values, route_values, result_values, candidate_values, expected_ids
+        vision_job_by_id = _validate_quarantines_without_prepared_evidence(
+            baseline_values,
+            route_values,
+            result_values,
+            candidate_values,
+            vision_jobs,
+            expected_ids,
         )
         expected_candidates = ()
     supplied_by_id = _candidate_index(candidate_values)
@@ -392,9 +629,13 @@ def write_pilot_audit(
     if supplied_by_id != expected_by_id:
         raise PipelineBlocked("Pilot audit final candidate set is missing, extra, or stale.")
 
-    baseline_by_id = {record.record_id: record for record in baseline_values}
-    route_by_id = {route.record_id: route for route in route_values}
-    result_by_id = {result.record_id: result for result in result_values}
+    result_by_id = _index_exact(
+        result_values,
+        VisionFallbackResult,
+        "vision result",
+        vision_ids,
+        lambda item: item.record_id,
+    )
     evidence_by_id = {
         f"ch{item.chapter:02d}-q{item.question_number:04d}": item for item in evidence_values
     }
@@ -403,7 +644,10 @@ def write_pilot_audit(
         _record_payload(
             record_id,
             baseline_by_id[record_id],
+            agent_job_by_id[record_id],
+            agent_result_by_id[record_id],
             route_by_id[record_id],
+            vision_job_by_id.get(record_id),
             result_by_id.get(record_id),
             supplied_by_id.get(record_id),
             evidence_by_id,

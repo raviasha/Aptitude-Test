@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from collections.abc import Iterable, Mapping
 from dataclasses import fields, is_dataclass
@@ -13,7 +14,14 @@ from typing import Any, TypeVar
 from textbook_chapters_v2.models import CandidateRecord, PipelineBlocked, RecordEvidence, SourceCrop
 from textbook_chapters_v2.store import dependency_fingerprint
 
-from .models import RawBaselineRecord, RouteDecision, VisionFallbackResult
+from .models import RawBaselineRecord, RouteDecision, VisionFallbackJob, VisionFallbackResult
+from .vision_fallback import (
+    _evidence_sha256 as _vision_evidence_sha256,
+    _prompt as _vision_prompt,
+    _source_payload as _vision_source_payload,
+    _source_reasons as _vision_source_reasons,
+    _validate_job as _validate_vision_job_object,
+)
 
 
 _HASH = re.compile(r"^[0-9a-f]{64}$")
@@ -183,13 +191,72 @@ def _ordered_crops(evidence: RecordEvidence) -> tuple[SourceCrop, ...]:
     return (*evidence.question_crops, *evidence.answer_key_crops, *evidence.solution_crops)
 
 
-def _validate_evidence(evidence: RecordEvidence, baseline: RawBaselineRecord, number: int) -> None:
+def _source_dependency_payload(evidence: RecordEvidence) -> dict[str, object]:
+    crops = _ordered_crops(evidence)
+    dpis = {crop.source_dpi for crop in crops}
+    if len(dpis) != 1:
+        raise PipelineBlocked(
+            f"ch01-q{evidence.question_number:04d} current source evidence must use one positive DPI."
+        )
+    dpi = next(iter(dpis))
+    if not isinstance(dpi, int) or isinstance(dpi, bool) or dpi < 1:
+        raise PipelineBlocked(
+            f"ch01-q{evidence.question_number:04d} current source evidence has an invalid DPI."
+        )
+    crop_provenance = tuple(
+        {
+            "role": crop.role,
+            "page_number": crop.page_number,
+            "box": [crop.box.left, crop.box.top, crop.box.right, crop.box.bottom],
+            "source_image_sha256": crop.source_image_sha256,
+            "source_dpi": crop.source_dpi,
+            "crop_sha256": crop.sha256,
+            **({"context_id": crop.context_id} if crop.context_id else {}),
+        }
+        for crop in crops
+    )
+    return {
+        "chapter": evidence.chapter,
+        "question_number": evidence.question_number,
+        "source_pdf_sha256": evidence.source_pdf_sha256,
+        "dpi": dpi,
+        "crop_provenance": crop_provenance,
+        "source_status": evidence.source_status,
+        "source_reasons": evidence.source_reasons,
+        "requires_reviewed_rejection": evidence.requires_reviewed_rejection,
+        "boundary_review": evidence.boundary_review,
+    }
+
+
+def _validate_evidence(
+    evidence: RecordEvidence,
+    baseline: RawBaselineRecord,
+    number: int,
+    pdf_hashes: dict[Path, str],
+) -> None:
     if evidence.chapter != 1 or evidence.question_number != number:
         raise PipelineBlocked(f"{baseline.record_id} current source evidence is cross-chapter or misassociated.")
     _require_hash(evidence.source_pdf_sha256, f"{baseline.record_id} source PDF hash")
     if evidence.source_pdf_sha256 not in baseline.source_hashes["source_pdf"]:
         raise PipelineBlocked(f"{baseline.record_id} current source evidence has mixed provenance.")
     _require_hash(evidence.dependency_fingerprint, f"{baseline.record_id} source dependency fingerprint")
+    if evidence.source_pdf is None:
+        raise PipelineBlocked(f"{baseline.record_id} current source evidence is missing its PDF path.")
+    source_pdf = Path(evidence.source_pdf).resolve()
+    if not source_pdf.is_file():
+        raise PipelineBlocked(f"{baseline.record_id} current source PDF is missing.")
+    current_pdf_hash = pdf_hashes.get(source_pdf)
+    if current_pdf_hash is None:
+        current_pdf_hash = _sha256_path(source_pdf)
+        pdf_hashes[source_pdf] = current_pdf_hash
+    if current_pdf_hash != evidence.source_pdf_sha256:
+        raise PipelineBlocked(f"{baseline.record_id} current source PDF bytes are stale.")
+    if not isinstance(evidence.source_status, str) or not evidence.source_status:
+        raise PipelineBlocked(f"{baseline.record_id} current source status is malformed.")
+    if any(not isinstance(reason, str) or not reason.strip() for reason in evidence.source_reasons):
+        raise PipelineBlocked(f"{baseline.record_id} current source reasons are malformed.")
+    if not isinstance(evidence.requires_reviewed_rejection, bool) or not isinstance(evidence.boundary_review, Mapping):
+        raise PipelineBlocked(f"{baseline.record_id} current source policy is malformed.")
     role_groups = (
         ("question", evidence.question_crops),
         ("answer_key", evidence.answer_key_crops),
@@ -202,6 +269,27 @@ def _validate_evidence(evidence: RecordEvidence, baseline: RawBaselineRecord, nu
                 raise TypeError("RecordEvidence crops must contain SourceCrop values.")
             if crop.role != role or crop.question_number != number:
                 raise PipelineBlocked(f"{baseline.record_id} current source crop has mixed provenance.")
+            if (
+                not isinstance(crop.page_number, int)
+                or isinstance(crop.page_number, bool)
+                or crop.page_number < 1
+                or not isinstance(crop.width, int)
+                or isinstance(crop.width, bool)
+                or crop.width < 1
+                or not isinstance(crop.height, int)
+                or isinstance(crop.height, bool)
+                or crop.height < 1
+                or any(
+                    not isinstance(value, int)
+                    or isinstance(value, bool)
+                    or not math.isfinite(value)
+                    for value in (crop.box.left, crop.box.top, crop.box.right, crop.box.bottom)
+                )
+                or crop.box.left >= crop.box.right
+                or crop.box.top >= crop.box.bottom
+                or not isinstance(crop.context_id, str)
+            ):
+                raise PipelineBlocked(f"{baseline.record_id} current source crop metadata is malformed.")
             _require_hash(crop.sha256, f"{baseline.record_id} {role} crop hash")
             _require_hash(crop.source_image_sha256, f"{baseline.record_id} {role} source image hash")
             if not crop.path.is_file() or _sha256_path(crop.path) != crop.sha256:
@@ -209,6 +297,65 @@ def _validate_evidence(evidence: RecordEvidence, baseline: RawBaselineRecord, nu
             hashes.append(crop.sha256)
     if len(set(hashes)) != len(hashes):
         raise PipelineBlocked(f"{baseline.record_id} current source evidence contains duplicate crop hashes.")
+    expected_dependency = dependency_fingerprint(_source_dependency_payload(evidence))
+    if evidence.dependency_fingerprint != expected_dependency:
+        raise PipelineBlocked(f"{baseline.record_id} current source dependency fingerprint is stale.")
+
+
+def _vision_job_index(
+    vision_jobs: Mapping[str, VisionFallbackJob] | None, expected_ids: tuple[str, ...]
+) -> dict[str, VisionFallbackJob]:
+    if vision_jobs is None:
+        values: Mapping[str, VisionFallbackJob] = {}
+    elif not isinstance(vision_jobs, Mapping):
+        raise TypeError("vision_jobs must be a mapping keyed by record ID.")
+    else:
+        values = vision_jobs
+    jobs: list[VisionFallbackJob] = []
+    for key, job in values.items():
+        if not isinstance(key, str) or not isinstance(job, VisionFallbackJob):
+            raise TypeError("vision_jobs must map record IDs to VisionFallbackJob values.")
+        if key != job.record_id:
+            raise PipelineBlocked(f"Vision job mapping key is stale for {key}.")
+        jobs.append(job)
+    return _index_exact(jobs, VisionFallbackJob, "vision job", expected_ids, lambda item: item.record_id)
+
+
+def _validate_vision_job(
+    job: VisionFallbackJob,
+    route: RouteDecision,
+    baseline: RawBaselineRecord,
+    evidence: RecordEvidence,
+    result: VisionFallbackResult,
+) -> None:
+    try:
+        _validate_vision_job_object(job)
+        sources, role_hashes = _vision_source_payload(evidence, evidence.question_number)
+        source_reasons = _vision_source_reasons(evidence, role_hashes)
+    except (TypeError, ValueError, RuntimeError, OSError) as error:
+        raise PipelineBlocked(f"{job.record_id} authoritative vision job is invalid: {error}") from error
+    expected_quarantine = bool(
+        evidence.requires_reviewed_rejection
+        or evidence.source_status != "complete"
+        or source_reasons
+    )
+    if (
+        job.question_number != evidence.question_number
+        or job.route_sha256 != route.route_sha256
+        or job.baseline_sha256 != baseline.baseline_sha256
+        or job.source_pdf_sha256 != evidence.source_pdf_sha256
+        or job.source_dependency_fingerprint != evidence.dependency_fingerprint
+        or job.evidence_sha256 != _vision_evidence_sha256(evidence)
+        or _json_value(job.sources) != _json_value(sources)
+        or tuple(job.source_evidence_sha256s) != tuple(crop.sha256 for crop in _ordered_crops(evidence))
+        or _json_value(job.role_sha256s) != _json_value(role_hashes)
+        or job.requires_quarantine != expected_quarantine
+        or tuple(job.source_reasons) != tuple(source_reasons)
+        or job.prompt != _vision_prompt(job.record_id, job.question_number, source_reasons)
+    ):
+        raise PipelineBlocked(f"{job.record_id} vision job is stale against current source evidence.")
+    if result.job_sha256 != job.job_sha256:
+        raise PipelineBlocked(f"{job.record_id} vision result is stale against its authoritative vision job.")
 
 
 def _options(value: Any, record_id: str) -> dict[str, str]:
@@ -261,6 +408,20 @@ def _result_payload(result: VisionFallbackResult) -> dict[str, object]:
     }
 
 
+def _validate_quarantine_shape(result: VisionFallbackResult) -> None:
+    if (
+        result.question_text != ""
+        or dict(result.options) != {}
+        or result.correct_answer != ""
+        or result.solution_steps != ()
+        or dict(result.representation) != {}
+        or dict(result.media) != {}
+    ):
+        raise PipelineBlocked(f"{result.record_id} quarantine contains candidate content.")
+    if not isinstance(result.quarantine_reason, str) or not result.quarantine_reason.strip():
+        raise PipelineBlocked(f"{result.record_id} quarantine reason is missing.")
+
+
 def _validate_result(
     result: VisionFallbackResult, route: RouteDecision, evidence: RecordEvidence
 ) -> None:
@@ -268,6 +429,8 @@ def _validate_result(
         raise PipelineBlocked(f"{result.record_id} vision result is not terminal.")
     if result.route_sha256 != route.route_sha256:
         raise PipelineBlocked(f"{result.record_id} vision result is stale against its route.")
+    if not isinstance(result.reviewer, str) or not result.reviewer.strip():
+        raise PipelineBlocked(f"{result.record_id} vision result reviewer is missing.")
     _require_hash(result.job_sha256, f"{result.record_id} vision job hash")
     _require_hash(result.result_sha256, f"{result.record_id} vision result hash")
     if result.result_sha256 != _canonical_sha256(_result_payload(result)):
@@ -286,19 +449,13 @@ def _validate_result(
         if result.quarantine_reason != "":
             raise PipelineBlocked(f"{result.record_id} accepted vision result has a quarantine reason.")
     else:
+        _validate_quarantine_shape(result)
         if (
-            result.question_text != ""
-            or dict(result.options) != {}
-            or result.correct_answer != ""
-            or result.solution_steps != ()
-            or dict(result.representation) != {}
-            or dict(result.media) != {}
-        ):
-            raise PipelineBlocked(f"{result.record_id} quarantine contains candidate content.")
-        if not result.quarantine_reason.strip():
-            raise PipelineBlocked(f"{result.record_id} quarantine reason is missing.")
-        if not result.source_evidence_sha256s or any(
+            not result.source_evidence_sha256s
+            or len(set(result.source_evidence_sha256s)) != len(result.source_evidence_sha256s)
+            or any(
             item not in current_hashes for item in result.source_evidence_sha256s
+            )
         ):
             raise PipelineBlocked(f"{result.record_id} quarantine does not match current source evidence.")
 
@@ -478,6 +635,7 @@ def merge_final_candidates(
     vision_results: Iterable[VisionFallbackResult],
     evidence: Iterable[RecordEvidence],
     *,
+    vision_jobs: Mapping[str, VisionFallbackJob] | None = None,
     expected_record_ids: Iterable[str] | None = None,
 ) -> tuple[CandidateRecord, ...]:
     """Return complete immutable candidates, excluding terminal quarantines."""
@@ -497,12 +655,13 @@ def merge_final_candidates(
         lambda item: f"ch{item.chapter:02d}-q{item.question_number:04d}",
     )
     numbers: dict[str, int] = {}
+    pdf_hashes: dict[Path, str] = {}
     for record_id in expected_ids:
         baseline = baseline_by_id[record_id]
         number = _validate_baseline(baseline)
         numbers[record_id] = number
         _validate_route(route_by_id[record_id], baseline)
-        _validate_evidence(evidence_by_id[record_id], baseline, number)
+        _validate_evidence(evidence_by_id[record_id], baseline, number, pdf_hashes)
 
     vision_ids = tuple(sorted(record_id for record_id in expected_ids if route_by_id[record_id].decision == "VISION_REQUIRED"))
     result_by_id = _index_exact(
@@ -512,6 +671,7 @@ def merge_final_candidates(
         vision_ids,
         lambda item: item.record_id,
     )
+    job_by_id = _vision_job_index(vision_jobs, vision_ids)
 
     candidates: list[CandidateRecord] = []
     for record_id in expected_ids:
@@ -520,6 +680,13 @@ def merge_final_candidates(
             candidates.append(_python_candidate(baseline_by_id[record_id], route, numbers[record_id]))
             continue
         result = result_by_id[record_id]
+        _validate_vision_job(
+            job_by_id[record_id],
+            route,
+            baseline_by_id[record_id],
+            evidence_by_id[record_id],
+            result,
+        )
         _validate_result(result, route, evidence_by_id[record_id])
         if result.decision == "VISION_ACCEPTED":
             candidates.append(_vision_candidate(result, evidence_by_id[record_id], numbers[record_id]))

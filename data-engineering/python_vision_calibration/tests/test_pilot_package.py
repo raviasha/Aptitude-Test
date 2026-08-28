@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import subprocess
 import sys
 import tempfile
 import threading
@@ -152,6 +154,47 @@ class PilotPackageTests(unittest.TestCase):
             with self.assertRaisesRegex(PipelineBlocked, "published"):
                 self.build()
         self.assertFalse(self.output.exists())
+
+    def test_crashed_process_removes_its_armed_destination(self) -> None:
+        source = self.root / "crash-source.zip"
+        destination = self.root / "crash-candidate.zip"
+        source.write_bytes(b"validated-candidate-bytes")
+        environment = os.environ.copy()
+        environment["PYTHONPATH"] = os.pathsep.join(
+            filter(None, (str(DATA_ENGINEERING), environment.get("PYTHONPATH", "")))
+        )
+        child = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import os, sys\n"
+                    "from pathlib import Path\n"
+                    "from python_vision_calibration.pilot_package import _publish_exclusively\n"
+                    "source, destination = map(Path, sys.argv[1:])\n"
+                    "_publish_exclusively(source, destination, lambda: os._exit(73))\n"
+                ),
+                str(source),
+                str(destination),
+            ],
+            env=environment,
+            check=False,
+        )
+        self.assertEqual(child.returncode, 73)
+        deadline = time.monotonic() + 5
+        while destination.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertFalse(destination.exists())
+
+    def test_success_clears_delete_disposition_and_preserves_exact_bytes(self) -> None:
+        from python_vision_calibration.pilot_package import _publish_exclusively
+
+        source = self.root / "success-source.zip"
+        destination = self.root / "success-candidate.zip"
+        expected = b"validated-candidate-bytes-that-must-survive-close"
+        source.write_bytes(expected)
+        _publish_exclusively(source, destination, lambda: None)
+        self.assertEqual(destination.read_bytes(), expected)
 
     def test_pinned_failure_cleanup_never_deletes_a_waiting_replacement(self) -> None:
         import python_vision_calibration.pilot_package as package_module

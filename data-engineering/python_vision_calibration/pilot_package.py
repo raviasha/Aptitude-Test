@@ -61,7 +61,7 @@ def _publish_exclusively(
     *,
     before_commit: Callable[[], None] | None = None,
 ) -> None:
-    """Create a pinned Windows destination and delete that handle's file on failure."""
+    """Publish through a pinned Windows handle with crash-safe delete disposition."""
     if os.name != "nt":
         raise PipelineBlocked("Pilot publication requires the Windows pinned-handle primitive.")
     import ctypes
@@ -114,6 +114,16 @@ def _publish_exclusively(
             raise PipelineBlocked("Pilot packaging refuses to overwrite an existing candidate ZIP.")
         raise PipelineBlocked(f"Pilot packaging could not pin its exclusive destination (Windows error {error_code}).")
 
+    delete_disposition = FileDispositionInfo(True)
+    if not kernel32.SetFileInformationByHandle(
+        handle, file_disposition_info, ctypes.byref(delete_disposition), ctypes.sizeof(delete_disposition)
+    ):
+        error_code = ctypes.get_last_error()
+        kernel32.CloseHandle(handle)
+        raise PipelineBlocked(
+            f"Pilot packaging could not arm crash-safe cleanup before writing (Windows error {error_code})."
+        )
+
     committed = False
     pending_error: BaseException | None = None
     try:
@@ -134,18 +144,17 @@ def _publish_exclusively(
         if before_commit is not None:
             before_commit()
         post_write_check()
+        keep_disposition = FileDispositionInfo(False)
+        if not kernel32.SetFileInformationByHandle(
+            handle, file_disposition_info, ctypes.byref(keep_disposition), ctypes.sizeof(keep_disposition)
+        ):
+            raise PipelineBlocked(
+                f"Pilot packaging could not commit its pinned destination (Windows error {ctypes.get_last_error()})."
+            )
         committed = True
     except BaseException as error:
         pending_error = error
     finally:
-        if not committed:
-            disposition = FileDispositionInfo(True)
-            if not kernel32.SetFileInformationByHandle(
-                handle, file_disposition_info, ctypes.byref(disposition), ctypes.sizeof(disposition)
-            ):
-                pending_error = PipelineBlocked(
-                    f"Pilot packaging could not delete its failed pinned destination (Windows error {ctypes.get_last_error()})."
-                )
         if not kernel32.CloseHandle(handle) and pending_error is None:
             pending_error = PipelineBlocked(
                 f"Pilot packaging could not close its pinned destination (Windows error {ctypes.get_last_error()})."

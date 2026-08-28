@@ -1,0 +1,13 @@
+{
+  "chapter": 1,
+  "source_pdf": "data-engineering/dokumen.pub_quantitative-aptitude-for-competitive-examinations-by-rs-aggarwal-reprint-2017nbsped-9352534026-9789352534029.pdf",
+  "source_pdf_sha256": "0723862418cd7b088341bcfc78a10745fd434b3f4db695986b1ff4f40a7223bf",
+  "question_numbers": [1, 380],
+  "v2_source_config": "data-engineering/textbook_chapters_v2/configs/chapter-001.json",
+  "work_root": "tmp/python-vision-calibration/chapter-001-agent-triage",
+  "candidate_path": "question-banks/candidates/agent-triage/ch01_number_system_candidate.zip",
+  "published_path": "question-banks/ch01_number_system_complete.zip",
+  "viewports": [[1024, 768], [1600, 900]],
+  "agent_prompt_version": "chapter1-agent-triage-v1",
+  "agent_accept_confidence": 0.95
+}

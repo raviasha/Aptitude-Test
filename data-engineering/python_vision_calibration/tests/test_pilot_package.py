@@ -134,6 +134,29 @@ class PilotPackageTests(unittest.TestCase):
                 self.build()
         self.assertFalse(self.output.exists())
 
+    def test_post_link_guard_failure_does_not_delete_a_replacement_destination(self) -> None:
+        from python_vision_calibration.pilot_package import PublishedPackageGuard
+
+        real_verify = PublishedPackageGuard.verify
+        calls = 0
+        competitor = b"competitor-replaced-the-linked-candidate"
+
+        def replace_then_verify(guard):
+            nonlocal calls
+            calls += 1
+            if calls == 3:
+                self.output.unlink()
+                self.output.write_bytes(competitor)
+                self.published.write_bytes(b"published-changed-after-link")
+            return real_verify(guard)
+
+        with patch.object(PublishedPackageGuard, "verify", autospec=True, side_effect=replace_then_verify):
+            with self.assertRaisesRegex(PipelineBlocked, "published"):
+                self.build()
+        self.assertEqual(calls, 3)
+        self.assertTrue(self.output.exists())
+        self.assertEqual(self.output.read_bytes(), competitor)
+
     def test_stale_screenshot_or_forged_audit_blocks_packaging(self) -> None:
         screenshot = Path(self.manifest["screenshots"]["1024x768"]["submitted"]["path"])
         screenshot.write_bytes(b"changed")

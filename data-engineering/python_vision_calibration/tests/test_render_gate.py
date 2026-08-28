@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import sys
 import tempfile
 import unittest
@@ -175,13 +176,48 @@ class RenderGateTests(unittest.TestCase):
             path.write_bytes(b"partial")
             raise RuntimeError("browser stopped")
 
-        manifest = self.render(renderer=broken)[0]
+        returned = self.render(renderer=broken)
+        self.assertEqual(returned, ())
+        manifest_path = self.root / "work" / "renders" / "ch01-q0044" / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         self.assertFalse(manifest["complete"])
         self.assertTrue(manifest["findings"])
-        self.assertTrue((self.root / "work" / "renders" / "ch01-q0044" / "manifest.json").is_file())
+        self.assertTrue(manifest_path.is_file())
 
-        from python_vision_calibration.render_gate import _manifest_is_current
-        self.assertFalse(_manifest_is_current(manifest, self.candidate))
+        from python_vision_calibration.audit import write_pilot_audit
+        audit = write_pilot_audit(
+            (self.fixture.baseline,), (self.fixture.accept_route,), (), (self.candidate,), returned,
+            self.root / "partial-audit",
+            agent_jobs={self.fixture.agent_job.record_id: self.fixture.agent_job},
+            agent_results={self.fixture.accept_review.record_id: self.fixture.accept_review},
+            vision_jobs={}, evidence=self.fixture.evidence, expected_record_ids=self.fixture.expected_ids,
+        )
+        self.assertEqual(audit.records[0]["status"], "PENDING_RENDER")
+
+    def test_successful_render_with_findings_remains_audit_compatible_and_pending(self) -> None:
+        def with_findings(candidate, assets, viewports, output_dir):
+            rendered = self.fake_renderer(candidate, assets, viewports, output_dir)
+            return RenderArtifacts(
+                question_screenshots=rendered.question_screenshots,
+                solution_screenshots=rendered.solution_screenshots,
+                screenshot_hashes=rendered.screenshot_hashes,
+                findings=("horizontal-overflow",),
+                renderer_version=rendered.renderer_version,
+            )
+
+        returned = self.render(renderer=with_findings)
+        self.assertEqual(len(returned), 1)
+        self.assertFalse(returned[0]["complete"])
+        self.assertEqual(returned[0]["findings"], ["horizontal-overflow"])
+        from python_vision_calibration.audit import write_pilot_audit
+        audit = write_pilot_audit(
+            (self.fixture.baseline,), (self.fixture.accept_route,), (), (self.candidate,), returned,
+            self.root / "findings-audit",
+            agent_jobs={self.fixture.agent_job.record_id: self.fixture.agent_job},
+            agent_results={self.fixture.accept_review.record_id: self.fixture.accept_review},
+            vision_jobs={}, evidence=self.fixture.evidence, expected_record_ids=self.fixture.expected_ids,
+        )
+        self.assertEqual(audit.records[0]["status"], "PENDING_RENDER")
 
     def test_renderer_output_with_missing_or_extra_viewport_is_incomplete(self) -> None:
         for mutation in ("missing", "extra"):
@@ -199,10 +235,9 @@ class RenderGateTests(unittest.TestCase):
                     findings=(),
                     renderer_version=rendered.renderer_version,
                 )
-            manifest = self.render(renderer=malformed)[0]
+            returned = self.render(renderer=malformed)
             with self.subTest(mutation=mutation):
-                self.assertFalse(manifest["complete"])
-                self.assertTrue(manifest["findings"])
+                self.assertEqual(returned, ())
 
 
 if __name__ == "__main__":

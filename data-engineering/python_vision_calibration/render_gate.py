@@ -114,13 +114,37 @@ def _manifest_is_current(
     browser_identity: str | None = None,
     browser_fingerprint: str | None = None,
 ) -> bool:
+    if not _manifest_is_audit_compatible(
+        raw,
+        candidate,
+        application_fingerprint=application_fingerprint,
+        renderer_fingerprint=renderer_fingerprint,
+        browser_identity=browser_identity,
+        browser_fingerprint=browser_fingerprint,
+    ):
+        return False
+    return raw["complete"] is True and raw["findings"] == []
+
+
+def _manifest_is_audit_compatible(
+    raw: Any,
+    candidate: CandidateRecord,
+    *,
+    application_fingerprint: str | None = None,
+    renderer_fingerprint: str | None = None,
+    browser_identity: str | None = None,
+    browser_fingerprint: str | None = None,
+) -> bool:
+    """Return whether Task 4 can consume this exact current manifest safely."""
     try:
         if not isinstance(raw, Mapping) or set(raw) != _MANIFEST_FIELDS:
             return False
         manifest = dict(raw)
         if manifest["record_id"] != _record_id(candidate) or manifest["candidate_sha256"] != candidate.sha256:
             return False
-        if manifest["complete"] is not True or manifest["findings"] != []:
+        if not isinstance(manifest["complete"], bool):
+            return False
+        if not isinstance(manifest["findings"], list) or any(not isinstance(item, str) for item in manifest["findings"]):
             return False
         if application_fingerprint is not None and manifest["application_fingerprint"] != application_fingerprint:
             return False
@@ -243,7 +267,15 @@ def render_all_candidates(
         }
         manifest = _with_hashes(core)
         _atomic_json(manifest_path, manifest)
-        manifests.append(manifest)
+        if _manifest_is_audit_compatible(
+            manifest,
+            candidate,
+            application_fingerprint=application,
+            renderer_fingerprint=renderer_hash,
+            browser_identity=identity,
+            browser_fingerprint=browser_hash,
+        ):
+            manifests.append(manifest)
     return tuple(manifests)
 
 

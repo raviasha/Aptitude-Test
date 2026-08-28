@@ -54,6 +54,23 @@ class PublishedPackageGuard:
             raise PipelineBlocked("The published Chapter 1 ZIP changed during candidate packaging.")
 
 
+def _unlink_owned_publication(destination: Path, source: Path, expected_sha256: str) -> bool:
+    """Remove only the still-owned hard link; preserve a path replaced by another writer."""
+    try:
+        if (
+            not destination.is_file()
+            or not source.is_file()
+            or not os.path.samefile(destination, source)
+            or _sha256_path(destination) != expected_sha256
+            or not os.path.samefile(destination, source)
+        ):
+            return False
+        destination.unlink()
+        return True
+    except (FileNotFoundError, OSError):
+        return False
+
+
 def _write_member(archive: zipfile.ZipFile, name: str, content: bytes) -> None:
     info = zipfile.ZipInfo(name, date_time=_ZIP_TIMESTAMP)
     info.compress_type = zipfile.ZIP_DEFLATED
@@ -349,6 +366,7 @@ def build_pilot_candidate_package(
             for name in sorted(members):
                 _write_member(archive, name, members[name])
         _validate_written_package(temporary_path, manifest, len(entries), set(assets))
+        temporary_sha256 = _sha256_path(temporary_path)
         guard.verify()
         try:
             os.link(temporary_path, output)
@@ -357,7 +375,7 @@ def build_pilot_candidate_package(
         try:
             guard.verify()
         except BaseException:
-            output.unlink(missing_ok=True)
+            _unlink_owned_publication(output, temporary_path, temporary_sha256)
             raise
         temporary_path.unlink()
         temporary_name = None

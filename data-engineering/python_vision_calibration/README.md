@@ -42,8 +42,10 @@ The authoritative work root is `tmp/python-vision-calibration/chapter-001-agent-
 
 Successful finalization also writes two canonical, reviewable repository artifacts:
 
-- `data-engineering/python_vision_calibration/audits/chapter-001-agent-triage.json` — an exact byte copy of the validated full audit; and
-- `data-engineering/python_vision_calibration/reports/chapter-001-agent-triage-summary.json` — compact terminal counts plus config, source, prompt, candidate, audit, application, renderer, browser, record/render, and protected-package hash bindings.
+- `data-engineering/python_vision_calibration/audits/chapter-001-agent-triage.json` — the compact portable 380-row audit: IDs, terminal statuses, baseline/source hashes, agent/route/vision decisions and hashes, candidate/render hashes, the transient full-audit SHA/dependency, and its own dependency hash. It contains no absolute machine paths or repeated prompt/job/candidate objects; and
+- `data-engineering/python_vision_calibration/reports/chapter-001-agent-triage-summary.json` — exact terminal counts (`total_baselines`, `agent_terminal`, `python_accepts`, `vision_required`, `vision_terminal`, `vision_accepts`, `quarantined`, `included`, and `pending_render`) plus config/source/prompt, candidate path/SHA/count, portable and full-audit path/SHA/dependency, application/renderer/browser, record/render, and protected `published_sha256_before`/`published_sha256_after` bindings, with its own dependency hash.
+
+The complete path-bearing audit remains only at `tmp/python-vision-calibration/chapter-001-agent-triage/audit/chapter-001-agent-triage.json` as transient authority. Repository evidence is regenerated only after that audit, the exact canonical candidate ZIP bytes, and every current dependency authenticate. Existing canonical evidence is reused byte-for-byte; stale or forged evidence blocks.
 
 `status` is strictly read-only. It creates no directory or artifact and does not rewrite timestamps.
 
@@ -88,7 +90,7 @@ A terminal result in `vision-results/ch01-qNNNN.json` must match `vision-fallbac
 - `VISION_ACCEPTED`, with complete `question_text`, labelled `options`, `correct_answer`, `solution_steps`, field representations/media, current source evidence hashes, reviewer, route/job hashes, and canonical result hash; or
 - `QUARANTINE`, with empty candidate fields/media, a concrete `quarantine_reason`, current source evidence hashes, reviewer, route/job hashes, and canonical result hash.
 
-If a job says `requires_quarantine: true`, acceptance is forbidden. Re-running vision commands validates current crop bytes, configuration/schema/prompt/job hashes, and reports only genuinely pending terminal results.
+If a job says `requires_quarantine: true`, acceptance is forbidden. Re-running vision commands validates current crop bytes, configuration/schema/prompt/job hashes, and reports only genuinely pending terminal results. Read-only authentication re-renders only the exact `VISION_REQUIRED` IDs from the current PDF/config into an isolated temporary directory, compares the complete page/crop bytes, metadata, inventory, provenance, and policy to persisted evidence/jobs, then removes the temporary artifacts. Zero vision routes perform zero image work.
 
 ## Final gate and exit codes
 

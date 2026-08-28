@@ -7,6 +7,7 @@ import json
 import os
 import re
 import tempfile
+from contextlib import contextmanager
 from collections.abc import Iterable, Mapping
 from dataclasses import fields, is_dataclass
 from pathlib import Path
@@ -18,6 +19,7 @@ from textbook_chapters_v2.source import _boundary_review, _source_issue, prepare
 from textbook_chapters_v2.store import canonical_json, dependency_fingerprint
 
 from .models import RouteDecision, VisionFallbackJob, VisionFallbackResult
+from .path_safety import safe_descendant, safe_directory, safe_tree
 
 
 _DATA_ENGINEERING = Path(__file__).resolve().parents[1]
@@ -120,7 +122,9 @@ def _current_config() -> tuple[ChapterConfig, str]:
     return config, _sha256_path(_CONFIG_PATH)
 
 
-def _current_prepared_evidence(work_root: Path) -> tuple[RecordEvidence, ...]:
+def _current_prepared_evidence(
+    work_root: Path, question_numbers: Iterable[int] | None = None
+) -> tuple[RecordEvidence, ...]:
     config, _ = _current_config()
     source_pdf_value = config.extras.get("source_pdf")
     if not isinstance(source_pdf_value, str) or not source_pdf_value.strip():
@@ -128,7 +132,23 @@ def _current_prepared_evidence(work_root: Path) -> tuple[RecordEvidence, ...]:
     source_pdf = Path(source_pdf_value)
     if not source_pdf.is_absolute():
         source_pdf = _PROJECT_ROOT / source_pdf
-    return tuple(prepare_source_evidence(config, source_pdf, Path(work_root) / "vision" / "source-evidence"))
+    return tuple(prepare_source_evidence(
+        config,
+        source_pdf,
+        Path(work_root) / "vision" / "source-evidence",
+        question_numbers=question_numbers,
+    ))
+
+
+@contextmanager
+def _isolated_current_evidence(question_numbers: Iterable[int]):
+    """Derive exact current source authority without touching the pilot workspace."""
+    numbers = tuple(question_numbers)
+    if not numbers:
+        yield ()
+        return
+    with tempfile.TemporaryDirectory(prefix="chapter1-source-authority-") as temporary:
+        yield _current_prepared_evidence(Path(temporary), numbers)
 
 
 def _crop_evidence_value(crop: SourceCrop) -> dict[str, object]:
@@ -223,7 +243,9 @@ def load_persisted_vision_evidence(
     numbers = tuple(question_numbers)
     if any(isinstance(number, bool) or not isinstance(number, int) for number in numbers) or len(set(numbers)) != len(numbers):
         raise ValueError("Persisted evidence question inventory is invalid.")
+    safe_tree(Path(work_root), "Vision work root")
     evidence_root = Path(work_root) / "vision" / "source-evidence"
+    safe_descendant(Path(work_root), evidence_root, "Persisted source evidence")
     directory = evidence_root / "source-evidence"
     expected = {f"ch001-q{number:04d}.json": number for number in numbers}
     if not evidence_root.exists():
@@ -243,6 +265,8 @@ def load_persisted_vision_evidence(
         return ()
     if set(root_entries) != expected_directories or any(not entry.is_dir() for entry in root_entries.values()):
         raise ValueError("Persisted source-evidence inventory is missing, extra, or noncanonical.")
+    for name in expected_directories:
+        safe_descendant(Path(work_root), evidence_root / name, f"Persisted source evidence {name}")
     if not directory.is_dir() or {entry.name for entry in directory.iterdir()} != set(expected):
         raise ValueError("Persisted source-evidence inventory is missing, extra, or noncanonical.")
     config, _ = _current_config()
@@ -365,7 +389,17 @@ def load_persisted_vision_evidence(
     for path, digest in expected_rendered.items():
         if _sha256_path(path) != digest:
             raise ValueError("Persisted rendered-page bytes are stale.")
-    return tuple(loaded)
+    persisted = tuple(loaded)
+    with _isolated_current_evidence(numbers) as current:
+        current_by_number = _evidence_index(current, "fresh current source evidence")
+        if set(current_by_number) != set(numbers):
+            raise ValueError("Fresh source evidence inventory does not match the requested vision routes.")
+        for evidence in persisted:
+            if _evidence_value(evidence) != _evidence_value(current_by_number[evidence.question_number]):
+                raise ValueError(
+                    f"Persisted source evidence is not derived from the current PDF for question {evidence.question_number}."
+                )
+    return persisted
 
 
 def _require_current_evidence(supplied: RecordEvidence, current: RecordEvidence) -> None:
@@ -591,14 +625,12 @@ def create_vision_fallback_job(
         raise ValueError("RecordEvidence chapter or question number does not match the fallback route.")
     _source_payload(evidence, number)
     config, config_sha256 = _current_config()
-    current_by_number = _evidence_index(
-        _current_prepared_evidence(Path(output_path).parent), "current source evidence"
-    )
-    current = current_by_number.get(number)
-    if current is None:
-        raise ValueError(f"Current source evidence is missing question number {number}.")
-    _require_current_evidence(evidence, current)
-    return _create_vision_fallback_job_from_current(route, current, output_path, config, config_sha256)
+    with _isolated_current_evidence((number,)) as current_evidence:
+        current = _evidence_index(current_evidence, "current source evidence").get(number)
+        if current is None:
+            raise ValueError(f"Current source evidence is missing question number {number}.")
+        _require_current_evidence(evidence, current)
+    return _create_vision_fallback_job_from_current(route, evidence, output_path, config, config_sha256)
 
 
 def create_vision_fallback_jobs(
@@ -608,6 +640,7 @@ def create_vision_fallback_jobs(
 ) -> dict[str, VisionFallbackJob]:
     """Create jobs for vision routes only, indexed by canonical record ID."""
     root = Path(work_root)
+    safe_tree(root, "Vision work root")
     route_values = tuple(routes)
     if any(not isinstance(route, RouteDecision) for route in route_values):
         raise TypeError("routes must contain RouteDecision values.")
@@ -620,27 +653,29 @@ def create_vision_fallback_jobs(
 
     supplied_by_number = None if evidence is None else _evidence_index(evidence, "Vision fallback source evidence")
     config, config_sha256 = _current_config()
-    current_by_number = _evidence_index(_current_prepared_evidence(root), "current source evidence")
-
+    if vision_routes and supplied_by_number is None:
+        raise ValueError("Vision fallback jobs require persisted caller evidence after current-PDF verification.")
+    numbers = tuple(_question_number(route.record_id) for route in vision_routes)
     jobs: dict[str, VisionFallbackJob] = {}
-    for route in sorted(vision_routes, key=lambda item: item.record_id):
-        number = _question_number(route.record_id)
-        current = current_by_number.get(number)
-        if current is None:
-            raise ValueError(f"Vision fallback is missing current source evidence for {route.record_id}.")
-        if supplied_by_number is not None:
-            supplied = supplied_by_number.get(number)
+    with _isolated_current_evidence(numbers) as current_evidence:
+        current_by_number = _evidence_index(current_evidence, "current source evidence")
+        for route in sorted(vision_routes, key=lambda item: item.record_id):
+            number = _question_number(route.record_id)
+            current = current_by_number.get(number)
+            supplied = None if supplied_by_number is None else supplied_by_number.get(number)
+            if current is None:
+                raise ValueError(f"Vision fallback is missing current source evidence for {route.record_id}.")
             if supplied is None:
                 raise ValueError(f"Vision fallback is missing caller-supplied evidence for {route.record_id}.")
             _source_payload(supplied, number)
             _require_current_evidence(supplied, current)
-        jobs[route.record_id] = _create_vision_fallback_job_from_current(
-            route,
-            current,
-            root / "vision" / "jobs" / f"{route.record_id}.json",
-            config,
-            config_sha256,
-        )
+            jobs[route.record_id] = _create_vision_fallback_job_from_current(
+                route,
+                supplied,
+                root / "vision" / "jobs" / f"{route.record_id}.json",
+                config,
+                config_sha256,
+            )
     _write_jsonl(root / "vision" / "vision-jobs.jsonl", (_job_payload(job) for job in jobs.values()))
     return jobs
 
@@ -665,9 +700,10 @@ def prepare_vision_fallback_jobs(
     if len(set(record_ids)) != len(record_ids):
         raise ValueError("Vision fallback routes contain duplicate record IDs.")
     jobs_dir = root / "vision" / "jobs"
-    jobs_dir.mkdir(parents=True, exist_ok=True)
+    safe_directory(root, jobs_dir, "Vision jobs directory")
     if not vision_routes:
-        _write_jsonl(root / "vision" / "vision-jobs.jsonl", ())
+        index_path = safe_descendant(root, root / "vision" / "vision-jobs.jsonl", "Vision jobs index")
+        _write_jsonl(index_path, ())
         return (), {}
 
     config, config_sha256 = _current_config()
@@ -678,12 +714,16 @@ def prepare_vision_fallback_jobs(
     if not source_pdf.is_absolute():
         source_pdf = _PROJECT_ROOT / source_pdf
     numbers = tuple(_question_number(route.record_id) for route in vision_routes)
+    evidence_root = safe_directory(
+        root, root / "vision" / "source-evidence", "Vision source-evidence directory"
+    )
     evidence = tuple(prepare_source_evidence(
         config,
         source_pdf,
-        root / "vision" / "source-evidence",
+        evidence_root,
         question_numbers=numbers,
     ))
+    safe_descendant(root, evidence_root, "Vision source-evidence directory")
     current_by_number = _evidence_index(evidence, "current source evidence")
     if set(current_by_number) != set(numbers):
         raise ValueError("Current source evidence inventory does not exactly match vision routes.")
@@ -698,9 +738,10 @@ def prepare_vision_fallback_jobs(
         for route in vision_routes
     }
     _write_jsonl(
-        root / "vision" / "vision-jobs.jsonl",
+        safe_descendant(root, root / "vision" / "vision-jobs.jsonl", "Vision jobs index"),
         (_job_payload(job) for job in jobs.values()),
     )
+    safe_tree(root, "Vision work root")
     return evidence, jobs
 
 
@@ -989,13 +1030,11 @@ def ingest_vision_fallback_result(job: VisionFallbackJob, result_path: Path) -> 
     """Validate one terminal local result against a freshly prepared source record."""
     if not isinstance(job, VisionFallbackJob):
         raise TypeError("job must be a VisionFallbackJob value.")
-    current_by_number = _evidence_index(
-        _current_prepared_evidence(_job_work_root(job)), "current source evidence"
-    )
-    current = current_by_number.get(job.question_number)
-    if current is None:
-        raise ValueError(f"Current source evidence is missing job {job.record_id}.")
-    return _ingest_result_against_current(job, result_path, current)
+    with _isolated_current_evidence((job.question_number,)) as current_evidence:
+        current = _evidence_index(current_evidence, "current source evidence").get(job.question_number)
+        if current is None:
+            raise ValueError(f"Current source evidence is missing job {job.record_id}.")
+        return _ingest_result_against_current(job, result_path, current)
 
 
 def _result_inventory(directory: Path, expected_ids: set[str]) -> dict[str, Path]:
@@ -1047,15 +1086,15 @@ def _result_payload(result: VisionFallbackResult) -> dict[str, object]:
     }
 
 
-def ingest_vision_fallback_results(
+def _ingest_vision_fallback_results_against_current(
     routes: Iterable[RouteDecision],
     jobs: Mapping[str, VisionFallbackJob] | Iterable[VisionFallbackJob],
     results_dir: Path,
     work_root: Path,
-    *,
-    refresh_source: bool = True,
+    current_evidence: Iterable[RecordEvidence],
 ) -> dict[str, object]:
     """Ingest resumable results and publish JSONL only at a complete terminal boundary."""
+    safe_tree(Path(work_root), "Vision work root")
     route_values = tuple(routes)
     if any(not isinstance(route, RouteDecision) for route in route_values):
         raise TypeError("routes must contain RouteDecision values.")
@@ -1088,13 +1127,6 @@ def ingest_vision_fallback_results(
     if set(job_ids) != set(route_ids):
         raise ValueError("Vision fallback requires exactly one current job per VISION_REQUIRED route.")
     jobs_by_id = {job.record_id: job for job in job_values}
-    current_evidence = (
-        _current_prepared_evidence(Path(work_root))
-        if refresh_source
-        else load_persisted_vision_evidence(
-            Path(work_root), tuple(job.question_number for job in job_values)
-        )
-    )
     current_by_number = _evidence_index(current_evidence, "current source evidence")
     for record_id, job in jobs_by_id.items():
         _validate_job(job)
@@ -1105,7 +1137,7 @@ def ingest_vision_fallback_results(
             raise ValueError(f"Current source evidence is missing job {record_id}.")
         _validate_job_against_current_evidence(job, current)
 
-    directory = Path(results_dir)
+    directory = safe_descendant(Path(work_root), Path(results_dir), "Vision results directory")
     inventory = _result_inventory(directory, set(job_ids))
     results: list[VisionFallbackResult] = []
     pending = 0
@@ -1122,9 +1154,13 @@ def ingest_vision_fallback_results(
 
     if pending == 0:
         _write_jsonl(
-            Path(work_root) / "vision" / "vision-results.jsonl",
+            safe_descendant(
+                Path(work_root), Path(work_root) / "vision" / "vision-results.jsonl",
+                "Vision results index",
+            ),
             (_result_payload(result) for result in results),
         )
+    safe_tree(Path(work_root), "Vision work root")
     return {
         "total": len(job_ids),
         "vision_accepted": sum(result.decision == "VISION_ACCEPTED" for result in results),
@@ -1133,3 +1169,22 @@ def ingest_vision_fallback_results(
         "jobs_path": str(Path(work_root) / "vision" / "vision-jobs.jsonl"),
         "results_path": str(directory),
     }
+
+
+def ingest_vision_fallback_results(
+    routes: Iterable[RouteDecision],
+    jobs: Mapping[str, VisionFallbackJob] | Iterable[VisionFallbackJob],
+    results_dir: Path,
+    work_root: Path,
+) -> dict[str, object]:
+    """Ingest results against source evidence freshly derived outside the pilot workspace."""
+    route_values = tuple(routes)
+    numbers = tuple(
+        _question_number(route.record_id)
+        for route in route_values
+        if isinstance(route, RouteDecision) and route.decision == "VISION_REQUIRED"
+    )
+    with _isolated_current_evidence(numbers) as current:
+        return _ingest_vision_fallback_results_against_current(
+            route_values, jobs, results_dir, work_root, current
+        )

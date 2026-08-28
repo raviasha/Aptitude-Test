@@ -21,7 +21,7 @@ from textbook_chapters_v2.package import (
 from textbook_chapters_v2.store import canonical_json, dependency_fingerprint
 
 from .agent_review import AGENT_REVIEW_PROMPT_VERSION
-from .audit import PilotAuditSummary, _render_index, _validate_persisted
+from .audit import PilotAuditSummary, _render_index, _validate_persisted, portable_pilot_audit
 from .render_gate import _current_fingerprints, _manifest_is_current
 
 
@@ -308,6 +308,12 @@ def _write_member(archive: zipfile.ZipFile, name: str, content: bytes) -> None:
     archive.writestr(info, content, compresslevel=9)
 
 
+def _write_canonical_archive(path: Path, members: Mapping[str, bytes]) -> None:
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
+        for name in sorted(members):
+            _write_member(archive, name, members[name])
+
+
 def _canonical_jsonl(values: Iterable[Mapping[str, Any]]) -> bytes:
     return b"".join(canonical_json(value) + b"\n" for value in values)
 
@@ -440,26 +446,7 @@ def _referenced_assets(entries: Iterable[Mapping[str, Any]]) -> set[str]:
 
 
 def _portable_audit(payload: Mapping[str, Any]) -> dict[str, Any]:
-    records = []
-    for record in payload["records"]:
-        records.append({
-            "record_id": record["record_id"],
-            "status": record["status"],
-            "record_sha256": record["record_sha256"],
-            "candidate_sha256": None if record["final_candidate"] is None else record["final_candidate"]["sha256"],
-            "agent_result_sha256": record["agent_result"]["result_sha256"],
-            "route_sha256": record["route"]["route_sha256"],
-            "vision_result_sha256": None if record["vision_result"] is None else record["vision_result"]["result_sha256"],
-            "render_manifest_sha256": None if record["render_manifest"] is None else record["render_manifest"]["manifest_sha256"],
-        })
-    return {
-        "schema_version": 1,
-        "chapter": 1,
-        "audit_sha256": payload["audit_sha256"],
-        "audit_dependency_fingerprint": payload["dependency_fingerprint"],
-        "counts": payload["counts"],
-        "records": records,
-    }
+    return portable_pilot_audit(payload)
 
 
 def _package_bindings(payload: Mapping[str, Any], assets: Mapping[str, bytes]) -> dict[str, Any]:
@@ -592,9 +579,7 @@ def build_pilot_candidate_package(
         with tempfile.NamedTemporaryFile(dir=output.parent, prefix=f".{output.stem}.", suffix=".tmp", delete=False) as temporary:
             temporary_name = temporary.name
         temporary_path = Path(temporary_name)
-        with zipfile.ZipFile(temporary_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
-            for name in sorted(members):
-                _write_member(archive, name, members[name])
+        _write_canonical_archive(temporary_path, members)
         _validate_written_package(temporary_path, manifest, len(entries), set(assets))
         temporary_sha256 = _sha256_path(temporary_path)
         guard.verify()
@@ -717,6 +702,11 @@ def authenticate_pilot_candidate_package(
             for name, expected in expected_members.items():
                 if archive.read(name) != expected:
                     raise PipelineBlocked(f"Pilot candidate member is stale: {name}.")
+        with tempfile.TemporaryDirectory(prefix="chapter1-candidate-auth-") as temporary:
+            canonical_path = Path(temporary) / "candidate.zip"
+            _write_canonical_archive(canonical_path, expected_members)
+            if output.read_bytes() != canonical_path.read_bytes():
+                raise PipelineBlocked("Pilot candidate archive bytes are noncanonical.")
     except PipelineBlocked:
         raise
     except Exception as error:

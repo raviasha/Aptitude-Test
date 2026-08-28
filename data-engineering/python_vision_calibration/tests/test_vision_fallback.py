@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -62,6 +63,17 @@ class VisionFallbackTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temp_directory.cleanup()
+
+    def directory_junction(self, link: Path, target: Path) -> None:
+        link.parent.mkdir(parents=True, exist_ok=True)
+        target.mkdir(parents=True, exist_ok=True)
+        completed = subprocess.run(
+            ["cmd.exe", "/c", "mklink", "/J", str(link), str(target)],
+            capture_output=True, text=True, check=False,
+        )
+        if completed.returncode != 0:
+            self.skipTest(f"Cannot create directory junction: {completed.stderr or completed.stdout}")
+        self.addCleanup(lambda: link.rmdir() if link.exists() else None)
 
     def route(self, decision: str, *, record_id: str = "ch01-q0044") -> RouteDecision:
         candidate = {
@@ -204,6 +216,40 @@ class VisionFallbackTests(unittest.TestCase):
         self.assertTrue((root / "vision/jobs").is_dir())
         self.assertEqual((root / "vision/vision-jobs.jsonl").read_bytes(), b"")
 
+    def test_combined_preparation_rejects_descendant_jobs_reparse_before_outside_write(self) -> None:
+        root = self.root / "reparse-work"
+        outside = self.root / "outside-jobs"
+        self.directory_junction(root / "vision/jobs", outside)
+
+        with self.assertRaisesRegex(ValueError, "reparse|symlink"):
+            prepare_vision_fallback_jobs((), root)
+
+        self.assertEqual(list(outside.iterdir()), [])
+
+    def test_combined_preparation_rejects_descendant_evidence_reparse_before_outside_write(self) -> None:
+        root = self.root / "reparse-evidence-work"
+        outside = self.root / "outside-evidence"
+        self.directory_junction(root / "vision/source-evidence", outside)
+
+        with self.assertRaisesRegex(ValueError, "reparse|symlink"):
+            prepare_vision_fallback_jobs((self.vision_route,), root)
+
+        self.assertEqual(list(outside.iterdir()), [])
+
+    def test_ingestion_rejects_descendant_results_reparse_before_outside_read(self) -> None:
+        root = self.root / "reparse-results-work"
+        outside = self.root / "outside-results"
+        self.directory_junction(root / "vision-results", outside)
+        (outside / "ch01-q0044.json").write_text("{}", encoding="utf-8")
+
+        with self.assertRaisesRegex(ValueError, "reparse|symlink"):
+            vision_protocol._ingest_vision_fallback_results_against_current(
+                (self.vision_route,), {self.job.record_id: self.job},
+                root / "vision-results", root, self.evidence,
+            )
+
+        self.assertEqual((outside / "ch01-q0044.json").read_text(encoding="utf-8"), "{}")
+
     def test_result_inventory_rejects_every_unexpected_entry_kind(self) -> None:
         results = self.root / "strict-results"
         results.mkdir()
@@ -301,11 +347,26 @@ class VisionFallbackTests(unittest.TestCase):
             {"fingerprint": evidence.dependency_fingerprint, "source_pdf_sha256": evidence.source_pdf_sha256},
         )
         before = {path: path.read_bytes() for path in root.rglob("*") if path.is_file()}
+        self.prepare_source.reset_mock()
+        self.prepare_source.return_value = [evidence]
 
         loaded = load_persisted_vision_evidence(root, (44,))
 
         self.assertEqual(loaded, (evidence,))
+        self.prepare_source.assert_called_once()
+        call = self.prepare_source.call_args
+        self.assertEqual(call.kwargs["question_numbers"], (44,))
+        self.assertNotEqual(Path(call.args[2]).resolve(), (root / "vision/source-evidence").resolve())
         self.assertEqual({path: path.read_bytes() for path in root.rglob("*") if path.is_file()}, before)
+
+        forged_current = replace(
+            evidence,
+            dependency_fingerprint="f" * 64,
+            question_crops=(replace(evidence.question_crops[0], sha256="e" * 64),),
+        )
+        self.prepare_source.return_value = [forged_current]
+        with self.assertRaisesRegex(ValueError, "current PDF|derived"):
+            load_persisted_vision_evidence(root, (44,))
 
         (authoritative_crops / "ch001-q0045-question-p025.png").write_bytes(b"stale direct accept")
         with self.assertRaisesRegex(ValueError, "inventory"):
@@ -319,18 +380,25 @@ class VisionFallbackTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "inventory"):
             load_persisted_vision_evidence(root, ())
 
-    def test_batch_ingest_can_validate_persisted_evidence_without_second_source_refresh(self) -> None:
+    def test_same_command_batch_ingest_reuses_only_freshly_prepared_evidence(self) -> None:
         self.prepare_source.reset_mock()
         with patch.object(
             vision_protocol, "load_persisted_vision_evidence", return_value=self.evidence
         ) as load:
-            summary = ingest_vision_fallback_results(
+            summary = vision_protocol._ingest_vision_fallback_results_against_current(
+                (self.vision_route,), {self.job.record_id: self.job},
+                self.root / "missing-results", self.root, self.evidence,
+            )
+        self.assertEqual(summary["pending"], 1)
+        load.assert_not_called()
+        self.prepare_source.assert_not_called()
+
+    def test_public_batch_ingest_rejects_removed_refresh_source_bypass(self) -> None:
+        with self.assertRaises(TypeError):
+            ingest_vision_fallback_results(
                 (self.vision_route,), {self.job.record_id: self.job},
                 self.root / "missing-results", self.root, refresh_source=False,
             )
-        self.assertEqual(summary["pending"], 1)
-        load.assert_called_once_with(self.root, (44,))
-        self.prepare_source.assert_not_called()
 
     def test_job_does_not_supply_a_proposed_correction(self) -> None:
         job = next(iter(create_vision_fallback_jobs((self.vision_route,), self.evidence, self.root).values()))

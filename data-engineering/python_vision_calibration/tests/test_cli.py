@@ -108,6 +108,17 @@ class CliWorkspaceTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
+    def directory_junction(self, link: Path, target: Path) -> None:
+        link.parent.mkdir(parents=True, exist_ok=True)
+        target.mkdir(parents=True, exist_ok=True)
+        completed = subprocess.run(
+            ["cmd.exe", "/c", "mklink", "/J", str(link), str(target)],
+            capture_output=True, text=True, check=False,
+        )
+        if completed.returncode != 0:
+            self.skipTest(f"Cannot create directory junction: {completed.stderr or completed.stdout}")
+        self.addCleanup(lambda: link.rmdir() if link.exists() else None)
+
     def invoke(self, command: str, config: Path | None = None) -> tuple[int, dict[str, object], str, str]:
         stdout = io.StringIO()
         stderr = io.StringIO()
@@ -381,11 +392,14 @@ class CliWorkspaceTests(unittest.TestCase):
         self.assertEqual(jobs, expected_jobs)
         prepare.assert_called_once_with(routes, self.work_root)
 
-    def test_cli_vision_ingest_reuses_the_single_persisted_evidence_pass(self) -> None:
+    def test_cli_vision_ingest_reuses_fresh_evidence_only_within_same_command(self) -> None:
         config = self._pilot_config()
         summary = {"total": 0, "vision_accepted": 0, "quarantined": 0, "pending": 0}
         with (
-            mock.patch.object(cli, "ingest_vision_fallback_results", return_value=summary) as ingest,
+            mock.patch.object(
+                cli._vision_protocol, "_ingest_vision_fallback_results_against_current",
+                return_value=summary,
+            ) as ingest,
             mock.patch.object(cli._vision_protocol, "_result_inventory", return_value={}),
         ):
             observed, results = cli._vision_progress(
@@ -394,8 +408,7 @@ class CliWorkspaceTests(unittest.TestCase):
         self.assertEqual(observed, summary)
         self.assertEqual(results, ())
         ingest.assert_called_once_with(
-            (), {}, config.work_root / "vision-results", config.work_root,
-            refresh_source=False,
+            (), {}, config.work_root / "vision-results", config.work_root, (),
         )
 
     def _pilot_config(self):
@@ -515,18 +528,32 @@ class CliWorkspaceTests(unittest.TestCase):
                 "records": [{"record_id": "ch01-q0001", "candidate_sha256": "2" * 64, "render_manifest_sha256": "3" * 64}],
             },
         )
+        portable = {
+            "schema_version": 2,
+            "chapter": 1,
+            "record_count": 380,
+            "expected_record_ids": list(cli.EXPECTED_RECORD_IDS),
+            "counts": dict(audit.counts),
+            "full_audit_sha256": audit.sha256,
+            "full_audit_dependency_fingerprint": audit.dependency_fingerprint,
+            "records": [],
+            "dependency_fingerprint": "9" * 64,
+        }
 
-        first = cli.write_completion_evidence(config, audit, package)
+        with mock.patch.object(cli, "portable_pilot_audit", return_value=portable):
+            first = cli.write_completion_evidence(config, audit, package)
         audit_copy = self.workspace / "data-engineering/python_vision_calibration/audits/chapter-001-agent-triage.json"
         summary_path = self.workspace / "data-engineering/python_vision_calibration/reports/chapter-001-agent-triage-summary.json"
         before = {
             path: (path.read_bytes(), path.stat().st_mtime_ns)
             for path in (audit_copy, summary_path)
         }
-        second = cli.write_completion_evidence(config, audit, package)
+        with mock.patch.object(cli, "portable_pilot_audit", return_value=portable):
+            second = cli.write_completion_evidence(config, audit, package)
 
         self.assertEqual(first, second)
-        self.assertEqual(audit_copy.read_bytes(), audit_path.read_bytes())
+        self.assertEqual(audit_copy.read_bytes(), cli.canonical_json_bytes(portable))
+        self.assertNotIn(str(self.workspace).encode("utf-8"), audit_copy.read_bytes())
         self.assertEqual(summary_path.read_bytes(), cli.canonical_json_bytes(first))
         self.assertEqual(
             {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in before}, before
@@ -539,10 +566,42 @@ class CliWorkspaceTests(unittest.TestCase):
         self.assertEqual(first["published_sha256_after"], cli.APPROVED_PUBLISHED_SHA256)
         self.assertEqual(first["candidate_sha256"], package.sha256)
         self.assertEqual(first["audit_sha256"], cli._sha256_path(audit_copy))
+        self.assertEqual(first["full_audit_sha256"], cli._sha256_path(audit_path))
+        self.assertEqual(first["full_audit_content_sha256"], audit.sha256)
+        self.assertEqual(first["full_audit_dependency_fingerprint"], audit.dependency_fingerprint)
         self.assertEqual(
             first["dependency_fingerprint"],
             cli.canonical_sha256({key: value for key, value in first.items() if key != "dependency_fingerprint"}),
         )
+
+    def test_completion_evidence_rejects_descendant_reparse_before_outside_write(self) -> None:
+        config = self._pilot_config()
+        audit_path = self.work_root / "audit/chapter-001-agent-triage.json"
+        audit_path.parent.mkdir(parents=True)
+        audit_path.write_bytes(cli.canonical_json_bytes({"records": []}))
+        audit = mock.Mock(
+            path=audit_path, sha256="a" * 64, dependency_fingerprint="b" * 64,
+            counts={
+                "total_baselines": 380, "python_accepts": 380, "vision_routes": 0,
+                "vision_accepts": 0, "quarantined": 0, "included": 380, "pending_render": 0,
+            },
+        )
+        package = PackageResult(
+            path=config.candidate_path, sha256="c" * 64, question_count=380,
+            manifest={"application_fingerprint": "d" * 64},
+        )
+        outside = self.workspace / "outside-completion"
+        audits = self.workspace / "data-engineering/python_vision_calibration/audits"
+        self.directory_junction(audits, outside)
+
+        with mock.patch.object(
+            cli, "portable_pilot_audit",
+            return_value={"schema_version": 2, "dependency_fingerprint": "e" * 64},
+        ):
+            with self.assertRaisesRegex((ValueError, PipelineBlocked), "reparse|symlink"):
+                cli.write_completion_evidence(config, audit, package)
+
+        self.assertEqual(list(outside.iterdir()), [])
 
     def test_completed_candidate_authentication_uses_current_audit_and_never_republishes(self) -> None:
         config = self._pilot_config()
@@ -618,7 +677,7 @@ class CliWorkspaceTests(unittest.TestCase):
         self.assertEqual(payload["candidate_sha256"], package.sha256)
         authenticate.assert_called_once()
         load_jobs.assert_called_once()
-        load_evidence.assert_called_once()
+        load_evidence.assert_not_called()
         recover.assert_called_once_with(config, audit, package)
         finalize.assert_not_called()
 
@@ -728,7 +787,7 @@ class CliWorkspaceTests(unittest.TestCase):
                     mock.patch.object(cli, "_load_vision_jobs", return_value={"ch01-q0001": fake_job}),
                     mock.patch.object(cli._vision_protocol, "load_persisted_vision_evidence", return_value=(fake_evidence,)),
                     mock.patch.object(cli, "_checkpoint"),
-                    mock.patch.object(cli, "ingest_vision_fallback_results", return_value={
+                    mock.patch.object(cli._vision_protocol, "_ingest_vision_fallback_results_against_current", return_value={
                         "total": 1, "pending": 0, "vision_accepted": 0, "quarantined": 0,
                     }),
                 ):

@@ -15,7 +15,7 @@ DATA_ENGINEERING = PROJECT_ROOT / "data-engineering"
 if str(DATA_ENGINEERING) not in sys.path:
     sys.path.insert(0, str(DATA_ENGINEERING))
 
-from python_vision_calibration.audit import write_pilot_audit
+from python_vision_calibration.audit import portable_pilot_audit, write_pilot_audit
 from python_vision_calibration.merge import merge_final_candidates
 from python_vision_calibration.tests import test_merge as merge_tests
 from textbook_chapters_v2.models import CropBox, PipelineBlocked
@@ -130,6 +130,27 @@ class PilotAuditTests(unittest.TestCase):
         self.assertEqual(audit.records[0]["agent_result"]["result_sha256"], self.accept_route.review_result_sha256)
         self.assertEqual(audit.records[0]["agent_job"]["job_sha256"], self.agent_job.job_sha256)
         self.assertEqual(audit.records[0]["agent_result"]["checks"]["logic"], "PASS")
+
+    def test_portable_audit_is_compact_path_free_and_hash_bound_to_full_authority(self) -> None:
+        candidates = self.merge(self.accept_route)
+        manifest = self.make_render_manifest(candidates[0])
+        audit = self.write_audit(self.accept_route, (), candidates, (manifest,))
+        full = json.loads(audit.path.read_text(encoding="utf-8"))
+
+        portable = portable_pilot_audit(full)
+        portable_bytes = json.dumps(
+            portable, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+        ).encode("ascii")
+
+        self.assertNotIn(str(self.root).encode("ascii"), portable_bytes)
+        self.assertLess(len(portable_bytes), len(audit.path.read_bytes()) // 3)
+        self.assertEqual(portable["full_audit_sha256"], audit.sha256)
+        self.assertEqual(portable["full_audit_dependency_fingerprint"], audit.dependency_fingerprint)
+        self.assertEqual(portable["records"][0]["record_id"], self.baseline.record_id)
+        self.assertEqual(portable["records"][0]["agent"]["confidence"], self.accept_review.confidence)
+        self.assertEqual(portable["records"][0]["render_manifest_sha256"], manifest["manifest_sha256"])
+        core = {key: value for key, value in portable.items() if key != "dependency_fingerprint"}
+        self.assertEqual(portable["dependency_fingerprint"], dependency_fingerprint(core))
 
     def test_python_only_audit_does_not_require_source_image_evidence(self) -> None:
         candidates = merge_final_candidates(

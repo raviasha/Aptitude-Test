@@ -185,6 +185,28 @@ class PilotPackageTests(unittest.TestCase):
                 self.config, (self.candidate,), self.audit, self.output
             )
 
+    def test_existing_candidate_authentication_rejects_semantically_equal_repacked_archive(self) -> None:
+        from python_vision_calibration.pilot_package import authenticate_pilot_candidate_package
+        self.build()
+        with zipfile.ZipFile(self.output) as archive:
+            members = {name: archive.read(name) for name in archive.namelist()}
+        repacked = self.root / "repacked.zip"
+        with zipfile.ZipFile(repacked, "w", compression=zipfile.ZIP_STORED) as archive:
+            for name in sorted(members):
+                info = zipfile.ZipInfo(name, date_time=(2026, 8, 28, 12, 0, 0))
+                info.compress_type = zipfile.ZIP_STORED
+                info.external_attr = 0o100600 << 16
+                archive.writestr(info, members[name])
+
+        with patch(
+            "python_vision_calibration.pilot_package._current_fingerprints",
+            return_value=("7" * 64, "6" * 64, "8" * 64),
+        ):
+            with self.assertRaisesRegex(PipelineBlocked, "canonical|bytes|archive"):
+                authenticate_pilot_candidate_package(
+                    self.config, (self.candidate,), self.audit, repacked
+                )
+
         self.output.unlink()
         self.build()
         with zipfile.ZipFile(self.output, "a") as archive:

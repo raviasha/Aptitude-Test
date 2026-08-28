@@ -497,6 +497,59 @@ def _validate_persisted(payload: Any) -> dict[str, Any]:
     return payload
 
 
+def portable_pilot_audit(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the compact, path-free repository/package audit bound to the full audit."""
+    current = _validate_persisted(dict(payload))
+    records: list[dict[str, Any]] = []
+    for record in current["records"]:
+        agent = record["agent_result"]
+        route = record["route"]
+        vision_job = record["vision_job"]
+        vision_result = record["vision_result"]
+        candidate = record["final_candidate"]
+        render = record["render_manifest"]
+        baseline_sources = record["baseline"]["source_hashes"]
+        records.append({
+            "record_id": record["record_id"],
+            "status": record["status"],
+            "record_sha256": record["record_sha256"],
+            "baseline_sha256": record["baseline"]["baseline_sha256"],
+            "baseline_source_hashes": baseline_sources,
+            "agent": {
+                "decision": agent["decision"],
+                "confidence": agent["confidence"],
+                "reason_codes": agent["reason_codes"],
+                "result_sha256": agent["result_sha256"],
+            },
+            "route": {
+                "decision": route["decision"],
+                "reason_codes": route["reason_codes"],
+                "route_sha256": route["route_sha256"],
+            },
+            "vision": None if vision_job is None else {
+                "job_sha256": vision_job["job_sha256"],
+                "evidence_sha256": vision_job["evidence_sha256"],
+                "source_dependency_fingerprint": vision_job["source_dependency_fingerprint"],
+                "source_evidence_sha256s": vision_job["source_evidence_sha256s"],
+                "decision": None if vision_result is None else vision_result["decision"],
+                "result_sha256": None if vision_result is None else vision_result["result_sha256"],
+            },
+            "candidate_sha256": None if candidate is None else candidate["sha256"],
+            "render_manifest_sha256": None if render is None else render["manifest_sha256"],
+        })
+    core = {
+        "schema_version": 2,
+        "chapter": 1,
+        "record_count": current["record_count"],
+        "expected_record_ids": current["expected_record_ids"],
+        "counts": current["counts"],
+        "full_audit_sha256": current["audit_sha256"],
+        "full_audit_dependency_fingerprint": current["dependency_fingerprint"],
+        "records": records,
+    }
+    return {**core, "dependency_fingerprint": dependency_fingerprint(core)}
+
+
 def _read_existing(path: Path) -> dict[str, Any] | None:
     if not path.exists():
         return None

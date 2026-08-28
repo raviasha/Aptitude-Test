@@ -36,9 +36,10 @@ from .routing import ingest_agent_review_directory, resolve_agent_route
 from .vision_fallback import ingest_vision_fallback_results, prepare_vision_fallback_jobs
 from . import vision_fallback as _vision_protocol
 from .merge import merge_final_candidates
-from .audit import PilotAuditSummary, write_pilot_audit
+from .audit import PilotAuditSummary, portable_pilot_audit, write_pilot_audit
 from . import audit as _audit_protocol
 from .render_gate import render_all_candidates
+from .path_safety import safe_descendant, safe_directory, safe_tree
 from textbook_chapters_v2.config import ChapterConfig
 from textbook_chapters_v2.models import PipelineBlocked
 
@@ -349,7 +350,10 @@ def _write_baselines(records: tuple[RawBaselineRecord, ...], path: Path) -> None
 
 
 def _load_baselines(config: PilotConfig) -> tuple[RawBaselineRecord, ...]:
-    path = config.work_root / "baseline" / "chapter-001.jsonl"
+    safe_tree(config.work_root, "Pilot work root")
+    path = safe_descendant(
+        config.work_root, config.work_root / "baseline" / "chapter-001.jsonl", "Baseline artifact"
+    )
     values = _read_jsonl(path)
     records: list[RawBaselineRecord] = []
     expected_fields = {"record_id", "chapter", "source_hashes", "source_identity", "candidate", "baseline_sha256"}
@@ -419,6 +423,7 @@ def _job_expected(record: RawBaselineRecord, path: Path) -> tuple[AgentReviewJob
 
 
 def _load_agent_jobs(config: PilotConfig, baselines: tuple[RawBaselineRecord, ...]) -> tuple[AgentReviewJob, ...]:
+    safe_tree(config.work_root, "Pilot work root")
     root = config.work_root / "agent-review"
     jobs_dir = root / "jobs"
     if not jobs_dir.is_dir():
@@ -485,6 +490,8 @@ def _agent_progress(
     *,
     mutate: bool,
 ) -> tuple[dict[str, object], dict[str, AgentReviewResult], tuple[RouteDecision, ...]]:
+    safe_tree(config.work_root, "Pilot work root")
+    results_dir = safe_descendant(config.work_root, results_dir, "Agent results directory")
     inventory = _agent_result_inventory(results_dir)
     jobs_by_id = {job.record_id: job for job in jobs}
     records_by_id = {record.record_id: record for record in baselines}
@@ -496,6 +503,7 @@ def _agent_progress(
         routes.append(resolve_agent_route(records_by_id[record_id], result))
     if mutate:
         summary = ingest_agent_review_directory(baselines, jobs, results_dir, config.work_root)
+        safe_tree(config.work_root, "Pilot work root")
     else:
         summary = {
             "total": len(baselines),
@@ -509,6 +517,7 @@ def _agent_progress(
 
 
 def _checkpoint(config: PilotConfig, stage: str, payload: Mapping[str, Any]) -> None:
+    safe_tree(config.work_root, "Pilot work root")
     core = {
         "schema_version": 1,
         "stage": stage,
@@ -518,10 +527,14 @@ def _checkpoint(config: PilotConfig, stage: str, payload: Mapping[str, Any]) -> 
         **dict(payload),
     }
     document = {**core, "dependency_fingerprint": canonical_sha256(core)}
-    _atomic_bytes(config.work_root / "state" / f"{stage}.json", canonical_json_bytes(document))
+    state = safe_directory(config.work_root, config.work_root / "state", "Pilot state directory")
+    path = safe_descendant(config.work_root, state / f"{stage}.json", "Pilot state checkpoint")
+    _atomic_bytes(path, canonical_json_bytes(document))
+    safe_tree(config.work_root, "Pilot work root")
 
 
 def _prepare(config: PilotConfig) -> tuple[tuple[RawBaselineRecord, ...], tuple[AgentReviewJob, ...]]:
+    safe_tree(config.work_root, "Pilot work root")
     baseline_path = config.work_root / "baseline" / "chapter-001.jsonl"
     if baseline_path.is_file():
         baselines = _load_baselines(config)
@@ -529,6 +542,7 @@ def _prepare(config: PilotConfig) -> tuple[tuple[RawBaselineRecord, ...], tuple[
         raise PipelineBlocked("The work root is non-empty without a canonical baseline.")
     else:
         baselines = tuple(build_raw_baseline(1, config.source_pdf, config.work_root))
+        safe_tree(config.work_root, "Pilot work root")
         _validate_baselines(baselines, config)
         _write_baselines(baselines, baseline_path)
     queue_index = config.work_root / "agent-review" / "agent-review-jobs.jsonl"
@@ -536,6 +550,7 @@ def _prepare(config: PilotConfig) -> tuple[tuple[RawBaselineRecord, ...], tuple[
         jobs = _load_agent_jobs(config, baselines)
     else:
         jobs = create_agent_review_queue(baselines, config.work_root / "agent-review")
+        safe_tree(config.work_root, "Pilot work root")
         jobs = _load_agent_jobs(config, baselines)
     _checkpoint(config, "prepared", {
         "baseline_sha256": _sha256_path(baseline_path),
@@ -587,7 +602,7 @@ def _prepared_payload(command: str, config: PilotConfig) -> dict[str, object]:
 def _validated_results_path(config: PilotConfig, supplied: Path | None, stage: str) -> Path:
     expected = config.work_root / ("agent-review-results" if stage == "agent" else "vision-results")
     if supplied is None:
-        return expected
+        return safe_descendant(config.work_root, expected, f"{stage} results directory")
     try:
         resolved = Path(supplied).resolve(strict=False)
         resolved.relative_to(config.workspace_root)
@@ -597,7 +612,7 @@ def _validated_results_path(config: PilotConfig, supplied: Path | None, stage: s
         raise InvalidPilotInput(f"{stage} results must use the authoritative results directory: {expected}")
     if resolved.exists() and _is_reparse(resolved):
         raise InvalidPilotInput("Results directory must not be a symlink or reparse point.")
-    return resolved
+    return safe_descendant(config.work_root, resolved, f"{stage} results directory")
 
 
 def prepare_source_and_vision_jobs(
@@ -605,7 +620,9 @@ def prepare_source_and_vision_jobs(
     v2_config: ChapterConfig,
     routes: tuple[RouteDecision, ...],
 ) -> tuple[tuple[Any, ...], dict[str, Any]]:
+    safe_tree(config.work_root, "Pilot work root")
     evidence, jobs = prepare_vision_fallback_jobs(routes, config.work_root)
+    safe_tree(config.work_root, "Pilot work root")
     expected = {route.record_id for route in routes if route.decision == "VISION_REQUIRED"}
     if set(jobs) != expected:
         raise PipelineBlocked("Vision job inventory does not exactly match the terminal vision routes.")
@@ -646,6 +663,7 @@ def finalize_stage(
     vision_jobs: Mapping[str, Any],
     vision_results: tuple[Any, ...],
 ) -> Any:
+    safe_tree(config.work_root, "Pilot work root")
     candidates = merge_final_candidates(
         baselines,
         routes,
@@ -666,11 +684,13 @@ def finalize_stage(
     write_pilot_audit(
         baselines, routes, vision_results, candidates, (), config.work_root, **authoritative
     )
+    safe_tree(config.work_root, "Pilot work root")
     manifests = render_all_candidates(
         candidates,
         config.work_root / "vision" / "source-evidence",
         config.work_root,
     )
+    safe_tree(config.work_root, "Pilot work root")
     audit = write_pilot_audit(
         baselines, routes, vision_results, candidates, manifests, config.work_root, **authoritative
     )
@@ -679,15 +699,20 @@ def finalize_stage(
     package = build_pilot_candidate_package(
         _package_config(config, v2_config), candidates, audit, config.candidate_path
     )
+    safe_tree(config.work_root, "Pilot work root")
     write_completion_evidence(config, audit, package)
+    safe_tree(config.work_root, "Pilot work root")
     return package
 
 
 def _completion_paths(config: PilotConfig) -> tuple[Path, Path]:
     base = config.workspace_root / "data-engineering" / "python_vision_calibration"
-    return (
-        base / "audits" / "chapter-001-agent-triage.json",
-        base / "reports" / "chapter-001-agent-triage-summary.json",
+    return tuple(
+        safe_descendant(config.workspace_root, path, "Completion evidence path")
+        for path in (
+            base / "audits" / "chapter-001-agent-triage.json",
+            base / "reports" / "chapter-001-agent-triage-summary.json",
+        )
     )
 
 
@@ -703,7 +728,12 @@ def validate_current_audit(
     candidates: tuple[Any, ...],
 ) -> PilotAuditSummary:
     """Reconstruct and authenticate the terminal full audit without writing it."""
-    path = config.work_root / "audit" / "chapter-001-agent-triage.json"
+    safe_tree(config.work_root, "Pilot work root")
+    path = safe_descendant(
+        config.work_root,
+        config.work_root / "audit" / "chapter-001-agent-triage.json",
+        "Terminal audit",
+    )
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
@@ -773,7 +803,15 @@ def _completion_document(
     published_before = _sha256_path(config.published_path)
     if published_before != APPROVED_PUBLISHED_SHA256:
         raise PipelineBlocked("The published Chapter 1 ZIP changed before evidence publication.")
-    audit_bytes = Path(audit.path).read_bytes()
+    safe_tree(config.work_root, "Pilot work root")
+    full_audit_path = safe_descendant(config.work_root, Path(audit.path), "Terminal full audit")
+    full_audit_bytes = full_audit_path.read_bytes()
+    try:
+        full_audit_payload = json.loads(full_audit_bytes)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise PipelineBlocked("The terminal full audit is unreadable during evidence publication.") from error
+    portable_audit = portable_pilot_audit(full_audit_payload)
+    audit_bytes = canonical_json_bytes(portable_audit)
     audit_copy, _ = _completion_paths(config)
     counts = dict(audit.counts)
     manifest = dict(package.manifest)
@@ -801,8 +839,12 @@ def _completion_document(
         "candidate_question_count": int(package.question_count),
         "audit_path": audit_copy.relative_to(config.workspace_root).as_posix(),
         "audit_sha256": hashlib.sha256(audit_bytes).hexdigest(),
-        "audit_content_sha256": audit.sha256,
-        "audit_dependency_fingerprint": audit.dependency_fingerprint,
+        "audit_content_sha256": portable_audit["dependency_fingerprint"],
+        "audit_dependency_fingerprint": portable_audit["dependency_fingerprint"],
+        "full_audit_path": full_audit_path.relative_to(config.workspace_root).as_posix(),
+        "full_audit_sha256": hashlib.sha256(full_audit_bytes).hexdigest(),
+        "full_audit_content_sha256": audit.sha256,
+        "full_audit_dependency_fingerprint": audit.dependency_fingerprint,
         "application_fingerprint": manifest.get("application_fingerprint"),
         "renderer_fingerprint": manifest.get("renderer_fingerprint"),
         "browser": manifest.get("browser"),
@@ -824,10 +866,13 @@ def write_completion_evidence(
     audit_copy, summary_path = _completion_paths(config)
     expected_summary = canonical_json_bytes(summary)
     for path, content in ((audit_copy, audit_bytes), (summary_path, expected_summary)):
+        safe_directory(config.workspace_root, path.parent, "Completion evidence directory")
+        safe_descendant(config.workspace_root, path, "Completion evidence path")
         if path.exists() and (not path.is_file() or path.read_bytes() != content):
             raise PipelineBlocked(f"Existing completion evidence is stale or forged: {path}")
         if not path.exists():
             _atomic_bytes(path, content)
+            safe_descendant(config.workspace_root, path, "Completion evidence path")
     return summary
 
 
@@ -840,6 +885,7 @@ def validate_completion_evidence(
     expected = ((audit_copy, audit_bytes), (summary_path, canonical_json_bytes(summary)))
     missing = False
     for path, content in expected:
+        safe_descendant(config.workspace_root, path, "Completion evidence path")
         if not path.exists():
             missing = True
         elif not path.is_file() or path.read_bytes() != content:
@@ -888,8 +934,10 @@ def _vision_progress(
     evidence: tuple[Any, ...],
     results_dir: Path,
 ) -> tuple[dict[str, object], tuple[Any, ...]]:
-    summary = ingest_vision_fallback_results(
-        routes, jobs, results_dir, config.work_root, refresh_source=False
+    safe_tree(config.work_root, "Pilot work root")
+    results_dir = safe_descendant(config.work_root, results_dir, "Vision results directory")
+    summary = _vision_protocol._ingest_vision_fallback_results_against_current(
+        routes, jobs, results_dir, config.work_root, evidence
     )
     inventory = _vision_protocol._result_inventory(results_dir, set(jobs))
     evidence_by_number = {item.question_number: item for item in evidence}
@@ -901,15 +949,21 @@ def _vision_progress(
     )
     if len(results) != int(summary["total"]) - int(summary["pending"]):
         raise PipelineBlocked("Vision result summary does not match its validated terminal inventory.")
+    safe_tree(config.work_root, "Pilot work root")
     return summary, results
 
 
 def _load_vision_jobs(
     config: PilotConfig,
     routes: tuple[RouteDecision, ...],
+    *,
+    current_evidence: tuple[Any, ...] | None = None,
 ) -> dict[str, VisionFallbackJob]:
+    safe_tree(config.work_root, "Pilot work root")
     expected_ids = {route.record_id for route in routes if route.decision == "VISION_REQUIRED"}
-    jobs_dir = config.work_root / "vision" / "jobs"
+    jobs_dir = safe_descendant(
+        config.work_root, config.work_root / "vision" / "jobs", "Vision jobs directory"
+    )
     if not jobs_dir.is_dir():
         raise PipelineBlocked("The canonical vision job directory is missing.")
     observed = list(jobs_dir.iterdir())
@@ -966,15 +1020,19 @@ def _load_vision_jobs(
         if payload != expected_payload or path.read_bytes() != canonical_json_bytes(expected_payload):
             raise InvalidPilotInput(f"Vision job is noncanonical: {record_id}.")
         jobs[record_id] = job
-    index_path = config.work_root / "vision" / "vision-jobs.jsonl"
+    index_path = safe_descendant(
+        config.work_root, config.work_root / "vision" / "vision-jobs.jsonl", "Vision jobs index"
+    )
     expected_index = b"".join(
         canonical_json_bytes(_vision_protocol._job_payload(job)) + b"\n" for job in jobs.values()
     )
     if not index_path.is_file() or index_path.read_bytes() != expected_index:
         raise InvalidPilotInput("Vision job index is stale or noncanonical.")
-    evidence = _vision_protocol.load_persisted_vision_evidence(
-        config.work_root, tuple(job.question_number for job in jobs.values())
-    )
+    evidence = current_evidence
+    if evidence is None:
+        evidence = _vision_protocol.load_persisted_vision_evidence(
+            config.work_root, tuple(job.question_number for job in jobs.values())
+        )
     evidence_by_number = {item.question_number: item for item in evidence}
     for record_id, job in jobs.items():
         current = evidence_by_number.get(job.question_number)
@@ -996,6 +1054,7 @@ def _load_vision_jobs(
             or job.source_reasons != source_reasons
         ):
             raise InvalidPilotInput(f"Vision job is stale against current evidence policy for {record_id}.")
+    safe_tree(config.work_root, "Pilot work root")
     return jobs
 
 
@@ -1051,11 +1110,11 @@ def _execute_vision_command(
     agent_summary: Mapping[str, Any],
     results_dir: Path,
 ) -> tuple[int, dict[str, object]]:
-    prepare_source_and_vision_jobs(config, v2_config, routes)
-    vision_jobs = _load_vision_jobs(config, routes)
-    evidence = _vision_protocol.load_persisted_vision_evidence(
-        config.work_root, tuple(job.question_number for job in vision_jobs.values())
-    )
+    safe_tree(config.work_root, "Pilot work root")
+    evidence, _prepared_jobs = prepare_source_and_vision_jobs(config, v2_config, routes)
+    safe_tree(config.work_root, "Pilot work root")
+    vision_jobs = _load_vision_jobs(config, routes, current_evidence=evidence)
+    safe_tree(config.work_root, "Pilot work root")
     job_index = config.work_root / "vision" / "vision-jobs.jsonl"
     _checkpoint(config, "vision-prepared", {
         "route_hashes": {route.record_id: route.route_sha256 for route in routes},
@@ -1097,6 +1156,7 @@ def _execute_vision_command(
         vision_jobs=vision_jobs,
         vision_results=vision_results,
     )
+    safe_tree(config.work_root, "Pilot work root")
     if completed is not None:
         package, audit, summary = completed
         if summary is None:
@@ -1120,6 +1180,7 @@ def _execute_vision_command(
         vision_jobs=vision_jobs,
         vision_results=vision_results,
     )
+    safe_tree(config.work_root, "Pilot work root")
     payload.update({
         "stage": "candidate_ready",
         "status": "complete",
@@ -1187,6 +1248,7 @@ def _artifact_paths(config: PilotConfig) -> dict[str, str]:
 
 
 def _status(config: PilotConfig) -> dict[str, object]:
+    safe_tree(config.work_root, "Pilot work root")
     baseline = config.work_root / "baseline" / "chapter-001.jsonl"
     if not config.work_root.exists():
         stage = "not_prepared"
@@ -1224,13 +1286,19 @@ def _status(config: PilotConfig) -> dict[str, object]:
         vision_index = config.work_root / "vision" / "vision-jobs.jsonl"
         if not vision_index.is_file():
             return {**base, "stage": "vision_preparation", "pending_jobs": 0}
-        vision_jobs = _load_vision_jobs(config, routes)
         evidence = _vision_protocol.load_persisted_vision_evidence(
-            config.work_root, tuple(job.question_number for job in vision_jobs.values())
+            config.work_root,
+            tuple(
+                int(route.record_id.rsplit("q", 1)[1])
+                for route in routes
+                if route.decision == "VISION_REQUIRED"
+            ),
         )
+        vision_jobs = _load_vision_jobs(config, routes, current_evidence=evidence)
         vision_results = _load_vision_results_read_only(
             vision_jobs, config.work_root / "vision-results", evidence
         )
+        safe_tree(config.work_root, "Pilot work root")
         vision_pending = len(vision_jobs) - len(vision_results)
         vision_accepted = sum(result.decision == "VISION_ACCEPTED" for result in vision_results)
         quarantined = sum(result.decision == "QUARANTINE" for result in vision_results)
@@ -1252,6 +1320,7 @@ def _status(config: PilotConfig) -> dict[str, object]:
             if completed is None:
                 raise PipelineBlocked("The existing candidate disappeared during authentication.")
             package, _audit, summary = completed
+            safe_tree(config.work_root, "Pilot work root")
             completion = {
                 "candidate_sha256": package.sha256,
                 "candidate_question_count": package.question_count,

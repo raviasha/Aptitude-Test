@@ -15,7 +15,12 @@ from typing import Any
 
 from textbook_chapters_v2.config import ChapterConfig
 from textbook_chapters_v2.models import CropBox, RecordEvidence, SourceCrop
-from textbook_chapters_v2.source import _boundary_review, _source_issue, prepare_source_evidence
+from textbook_chapters_v2.source import (
+    _boundary_review,
+    _source_issue,
+    canonical_source_pdf_text,
+    prepare_source_evidence,
+)
 from textbook_chapters_v2.store import canonical_json, dependency_fingerprint
 
 from .models import RouteDecision, VisionFallbackJob, VisionFallbackResult
@@ -401,18 +406,22 @@ def load_persisted_vision_evidence(
             raise ValueError("Persisted source evidence envelope is stale.")
         if envelope["payload_sha256"] != dependency_fingerprint(payload):
             raise ValueError("Persisted source evidence payload hash is stale.")
-        source_pdf = Path(payload["source_pdf"])
+        source_pdf_text = payload.get("source_pdf")
+        if (
+            not isinstance(source_pdf_text, str)
+            or source_pdf_text != canonical_source_pdf_text(configured_source)
+        ):
+            raise ValueError("Persisted source evidence source PDF path is noncanonical.")
         source_hash = _require_hash(payload["source_pdf_sha256"], "persisted source PDF hash")
         if (
-            Path(os.path.abspath(source_pdf)) != Path(os.path.abspath(configured_source))
-            or not source_pdf.is_file()
-            or _sha256_path(source_pdf) != source_hash
+            not configured_source.is_file()
+            or _sha256_path(configured_source) != source_hash
         ):
             raise ValueError("Persisted source evidence source PDF is stale.")
         evidence = RecordEvidence(
             chapter=payload["chapter"],
             question_number=payload["question_number"],
-            source_pdf=source_pdf,
+            source_pdf=configured_source,
             source_pdf_sha256=source_hash,
             question_crops=tuple(_persisted_crop(item, "question", number, crops_root, config) for item in payload["question_crops"]),
             answer_key_crops=tuple(_persisted_crop(item, "answer_key", number, crops_root, config) for item in payload["answer_key_crops"]),

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -580,15 +581,45 @@ class VisionFallbackTests(unittest.TestCase):
 
         envelope_path = root / "vision/source-evidence/source-evidence/ch001-q0044.json"
         original_envelope = envelope_path.read_bytes()
+        canonical_source = Path(evidence.source_pdf)
+        dotdot_alias = Path(
+            str(canonical_source.parent / "textbook_chapters_v2")
+            + os.sep + ".." + os.sep + canonical_source.name
+        )
+        alias_parent = self.root / "source-pdf-junction"
+        self.directory_junction(alias_parent, canonical_source.parent)
+        junction_alias = alias_parent / canonical_source.name
+        original_stat = Path.stat
+        original_open = Path.open
+
+        for alias in (dotdot_alias, junction_alias):
+            with self.subTest(source_pdf_alias=str(alias)):
+                forged_source = json.loads(original_envelope)
+                forged_source["payload"]["source_pdf"] = str(alias)
+                forged_source["payload_sha256"] = dependency_fingerprint(forged_source["payload"])
+                envelope_path.write_text(canonical_json(forged_source), encoding="utf-8")
+
+                def guarded_alias_stat(path: Path, *args, **kwargs):
+                    if Path(path) == alias:
+                        raise AssertionError("loader statted the untrusted source PDF alias")
+                    return original_stat(path, *args, **kwargs)
+
+                def guarded_alias_open(path: Path, *args, **kwargs):
+                    if Path(path) == alias:
+                        raise AssertionError("loader opened the untrusted source PDF alias")
+                    return original_open(path, *args, **kwargs)
+
+                with patch.object(Path, "stat", guarded_alias_stat), patch.object(Path, "open", guarded_alias_open):
+                    with self.assertRaisesRegex(ValueError, "canonical|source PDF"):
+                        load_persisted_vision_evidence(root, (44,))
+        envelope_path.write_bytes(original_envelope)
+
         forged_envelope = json.loads(original_envelope)
         outside = self.root / "loader-outside-sentinel.png"
         outside.write_bytes(evidence.question_crops[0].path.read_bytes())
         forged_envelope["payload"]["question_crops"][0]["path"] = str(outside)
         forged_envelope["payload_sha256"] = dependency_fingerprint(forged_envelope["payload"])
         envelope_path.write_text(canonical_json(forged_envelope), encoding="utf-8")
-        original_stat = Path.stat
-        original_open = Path.open
-
         def guarded_stat(path: Path, *args, **kwargs):
             if Path(path) == outside:
                 raise AssertionError("loader statted the outside sentinel")

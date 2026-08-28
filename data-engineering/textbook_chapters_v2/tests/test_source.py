@@ -70,6 +70,9 @@ class SourceEvidenceTests(unittest.TestCase):
         })
         pdf_path = self.root / "source.pdf"
         pdf_path.write_bytes(b"scoped reviewed source")
+        alias_component = self.root / "source-alias-component"
+        alias_component.mkdir()
+        aliased_pdf_path = Path(str(alias_component) + os.sep + ".." + os.sep + pdf_path.name)
         rendered: list[int] = []
 
         def render_fixture(_pdf: Path, page: int, _dpi: int, _output: Path) -> SourceImage:
@@ -79,7 +82,7 @@ class SourceEvidenceTests(unittest.TestCase):
         work = self.root / "scoped-work"
         with patch("textbook_chapters_v2.source.render_page", side_effect=render_fixture):
             evidence = prepare_source_evidence(
-                config, pdf_path, work, question_numbers=(2,)
+                config, aliased_pdf_path, work, question_numbers=(2,)
             )
 
         self.assertEqual([item.question_number for item in evidence], [2])
@@ -88,6 +91,8 @@ class SourceEvidenceTests(unittest.TestCase):
             [path.name for path in (work / "source-evidence").glob("*.json")],
             ["ch014-q0002.json"],
         )
+        persisted = json.loads((work / "source-evidence/ch014-q0002.json").read_text())
+        self.assertEqual(persisted["payload"]["source_pdf"], str(pdf_path))
         crop_names = [path.name for path in (work / "crops").glob("*.png")]
         self.assertTrue(crop_names)
         self.assertTrue(all("q0002" in name for name in crop_names))

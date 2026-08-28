@@ -439,6 +439,11 @@ def _configured_dpi(config: ChapterConfig) -> int:
     return value
 
 
+def canonical_source_pdf_text(path: Path | str) -> str:
+    """Serialize a source PDF using the writer's one canonical lexical spelling."""
+    return str(Path(os.path.abspath(path)))
+
+
 def _evidence_payload(evidence: RecordEvidence) -> dict[str, Any]:
     def crop_value(crop: SourceCrop) -> dict[str, Any]:
         value = {
@@ -460,7 +465,7 @@ def _evidence_payload(evidence: RecordEvidence) -> dict[str, Any]:
     return {
         "chapter": evidence.chapter,
         "question_number": evidence.question_number,
-        "source_pdf": str(evidence.source_pdf),
+        "source_pdf": canonical_source_pdf_text(evidence.source_pdf),
         "source_pdf_sha256": evidence.source_pdf_sha256,
         "question_crops": [crop_value(crop) for crop in evidence.question_crops],
         "answer_key_crops": [crop_value(crop) for crop in evidence.answer_key_crops],

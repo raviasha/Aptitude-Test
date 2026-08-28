@@ -37,6 +37,7 @@ from .merge import (
     _validate_quarantine_shape,
     _validate_baseline,
     _validate_route,
+    _validate_vision_job_canonical,
     _vision_job_index,
     merge_final_candidates,
 )
@@ -49,7 +50,6 @@ from .models import (
     VisionFallbackResult,
 )
 from .routing import resolve_agent_route
-from .vision_fallback import _validate_job as _validate_vision_job_object
 
 
 AUDIT_SCHEMA_VERSION = 1
@@ -340,10 +340,7 @@ def _validate_quarantines_without_prepared_evidence(
         job = job_by_id[record_id]
         if route.decision != "VISION_REQUIRED" or result.decision != "QUARANTINE":
             raise PipelineBlocked("Pilot audit needs prepared source evidence for supposedly accepted records.")
-        try:
-            _validate_vision_job_object(job)
-        except (TypeError, ValueError, RuntimeError, OSError) as error:
-            raise PipelineBlocked(f"{record_id} authoritative vision job is invalid: {error}") from error
+        _validate_vision_job_canonical(job)
         if (
             job.route_sha256 != route.route_sha256
             or job.baseline_sha256 != baseline.baseline_sha256

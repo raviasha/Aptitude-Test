@@ -16,7 +16,9 @@ from textbook_chapters_v2.store import dependency_fingerprint
 
 from .models import RawBaselineRecord, RouteDecision, VisionFallbackJob, VisionFallbackResult
 from .vision_fallback import (
+    _canonical_bytes as _vision_canonical_bytes,
     _evidence_sha256 as _vision_evidence_sha256,
+    _job_payload as _vision_job_document,
     _prompt as _vision_prompt,
     _source_payload as _vision_source_payload,
     _source_reasons as _vision_source_reasons,
@@ -29,6 +31,19 @@ _RECORD_ID = re.compile(r"^ch01-q([0-9]{4})$")
 _OPTION_LABEL_SETS = (tuple("ABCD"), tuple("ABCDE"))
 _BASELINE_SOURCE_FIELDS = {
     "source_pdf", "raw_extractor", "config", "question", "answer", "solution", "question_identity"
+}
+_VISION_SOURCE_FIELDS = {
+    "kind",
+    "role",
+    "printed_question_number",
+    "path",
+    "sha256",
+    "page_number",
+    "box",
+    "width",
+    "height",
+    "source_image_sha256",
+    "source_dpi",
 }
 _T = TypeVar("_T")
 
@@ -321,6 +336,63 @@ def _vision_job_index(
     return _index_exact(jobs, VisionFallbackJob, "vision job", expected_ids, lambda item: item.record_id)
 
 
+def _validate_vision_job_canonical(job: VisionFallbackJob) -> None:
+    """Validate all job fields that do not require a prepared RecordEvidence value."""
+    try:
+        _validate_vision_job_object(job)
+        for field, value in (
+            ("route hash", job.route_sha256),
+            ("baseline hash", job.baseline_sha256),
+            ("source PDF hash", job.source_pdf_sha256),
+            ("source dependency fingerprint", job.source_dependency_fingerprint),
+            ("evidence hash", job.evidence_sha256),
+            ("config hash", job.config_sha256),
+            ("schema hash", job.schema_sha256),
+            ("prompt hash", job.prompt_sha256),
+            ("job hash", job.job_sha256),
+        ):
+            _require_hash(value, f"{job.record_id} vision job {field}")
+        if not isinstance(job.requires_quarantine, bool):
+            raise ValueError("requires_quarantine must be boolean")
+        if any(not isinstance(reason, str) or not reason.strip() for reason in job.source_reasons):
+            raise ValueError("source reasons must be non-empty strings")
+        if job.source_reasons and not job.requires_quarantine:
+            raise ValueError("source reasons require quarantine")
+        expected_prompt = _vision_prompt(job.record_id, job.question_number, tuple(job.source_reasons))
+        if job.prompt != expected_prompt:
+            raise ValueError("prompt is not canonical for the job source reasons")
+        if not job.sources or not job.source_evidence_sha256s:
+            raise ValueError("source inventory is empty")
+        for source in job.sources:
+            if not isinstance(source, Mapping):
+                raise ValueError("source entry is not a mapping")
+            keys = set(source)
+            if keys not in (_VISION_SOURCE_FIELDS, _VISION_SOURCE_FIELDS | {"context_id"}):
+                raise ValueError("source entry has missing or extra metadata")
+            for field in ("page_number", "width", "height", "source_dpi"):
+                value = source[field]
+                if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+                    raise ValueError(f"source {field} must be a positive integer")
+            box = source["box"]
+            if not isinstance(box, Mapping) or set(box) != {"left", "top", "right", "bottom"}:
+                raise ValueError("source box metadata is malformed")
+            coordinates = tuple(box[field] for field in ("left", "top", "right", "bottom"))
+            if any(not isinstance(value, int) or isinstance(value, bool) for value in coordinates):
+                raise ValueError("source box coordinates must be integers")
+            if box["left"] >= box["right"] or box["top"] >= box["bottom"]:
+                raise ValueError("source box coordinates are empty or inverted")
+            if "context_id" in source and (
+                not isinstance(source["context_id"], str) or not source["context_id"].strip()
+            ):
+                raise ValueError("source context_id must be a non-empty string")
+        if not job.output_path.is_file():
+            raise ValueError("canonical job artifact is missing")
+        if job.output_path.read_bytes() != _vision_canonical_bytes(_vision_job_document(job)):
+            raise ValueError("canonical job artifact is stale")
+    except (AttributeError, KeyError, OSError, PipelineBlocked, RuntimeError, TypeError, ValueError) as error:
+        raise PipelineBlocked(f"{job.record_id} authoritative vision job is invalid: {error}") from error
+
+
 def _validate_vision_job(
     job: VisionFallbackJob,
     route: RouteDecision,
@@ -328,8 +400,8 @@ def _validate_vision_job(
     evidence: RecordEvidence,
     result: VisionFallbackResult,
 ) -> None:
+    _validate_vision_job_canonical(job)
     try:
-        _validate_vision_job_object(job)
         sources, role_hashes = _vision_source_payload(evidence, evidence.question_number)
         source_reasons = _vision_source_reasons(evidence, role_hashes)
     except (TypeError, ValueError, RuntimeError, OSError) as error:
@@ -356,6 +428,8 @@ def _validate_vision_job(
         raise PipelineBlocked(f"{job.record_id} vision job is stale against current source evidence.")
     if result.job_sha256 != job.job_sha256:
         raise PipelineBlocked(f"{job.record_id} vision result is stale against its authoritative vision job.")
+    if job.requires_quarantine and result.decision != "QUARANTINE":
+        raise PipelineBlocked(f"{job.record_id} authoritative vision job requires quarantine.")
 
 
 def _options(value: Any, record_id: str) -> dict[str, str]:

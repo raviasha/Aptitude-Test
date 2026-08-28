@@ -298,6 +298,60 @@ class PilotAuditTests(unittest.TestCase):
                 expected_record_ids=self.expected_ids,
             )
 
+    def test_audit_rejects_acceptance_from_a_requires_quarantine_job(self) -> None:
+        restricted_evidence, restricted_job = self.make_restricted_evidence_and_job()
+        accepted = self.with_result_hash(
+            replace(self.vision_result, job_sha256=restricted_job.job_sha256)
+        )
+
+        with self.assertRaisesRegex(PipelineBlocked, "requires quarantine"):
+            write_pilot_audit(
+                (self.baseline,),
+                (self.vision_route,),
+                (accepted,),
+                (),
+                (),
+                self.root,
+                agent_jobs={self.agent_job.record_id: self.agent_job},
+                agent_results={self.vision_review.record_id: self.vision_review},
+                vision_jobs={restricted_job.record_id: restricted_job},
+                evidence=(restricted_evidence,),
+                expected_record_ids=self.expected_ids,
+            )
+
+    def test_evidence_less_audit_rejects_self_rehashed_noncanonical_vision_jobs(self) -> None:
+        substituted_prompt = "A substituted evidence-less quarantine prompt."
+        forged_jobs = (
+            self.with_job_hash(
+                replace(self.vision_job, source_dependency_fingerprint="9" * 64)
+            ),
+            self.with_job_hash(
+                replace(
+                    self.vision_job,
+                    prompt=substituted_prompt,
+                    prompt_sha256=hashlib.sha256(substituted_prompt.encode("utf-8")).hexdigest(),
+                )
+            ),
+        )
+        for forged_job in forged_jobs:
+            with self.subTest(job_sha256=forged_job.job_sha256):
+                forged_result = self.with_result_hash(
+                    replace(self.quarantine_result, job_sha256=forged_job.job_sha256)
+                )
+                with self.assertRaisesRegex(PipelineBlocked, "vision job"):
+                    write_pilot_audit(
+                        (self.baseline,),
+                        (self.vision_route,),
+                        (forged_result,),
+                        (),
+                        (),
+                        self.root,
+                        agent_jobs={self.agent_job.record_id: self.agent_job},
+                        agent_results={self.vision_review.record_id: self.vision_review},
+                        vision_jobs={forged_job.record_id: forged_job},
+                        expected_record_ids=self.expected_ids,
+                    )
+
     def test_evidence_less_audit_rejects_quarantine_candidate_content(self) -> None:
         malformed = self.with_result_hash(replace(self.quarantine_result, question_text="forbidden content"))
 

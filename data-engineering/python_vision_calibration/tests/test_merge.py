@@ -272,6 +272,24 @@ class MergeFinalCandidatesTests(unittest.TestCase):
         }
         return replace(result, result_sha256=canonical_sha256(payload))
 
+    def with_job_hash(self, job):
+        return replace(job, job_sha256=canonical_sha256(json_value(_job_hash_payload(job))))
+
+    def make_restricted_evidence_and_job(self):
+        evidence = self.with_evidence_fingerprint(
+            replace(self.evidence[0], requires_reviewed_rejection=True)
+        )
+        with patch(
+            "python_vision_calibration.vision_fallback.prepare_source_evidence",
+            return_value=[evidence],
+        ):
+            job = create_vision_fallback_job(
+                self.vision_route,
+                evidence,
+                self.root / "vision" / "jobs" / "restricted-ch01-q0044.json",
+            )
+        return evidence, job
+
     def make_vision_result(
         self,
         decision: str,
@@ -526,10 +544,7 @@ class MergeFinalCandidatesTests(unittest.TestCase):
                 b"A substituted prompt bound to the same source evidence."
             ).hexdigest(),
         )
-        forged_prompt = replace(
-            forged_prompt,
-            job_sha256=canonical_sha256(json_value(_job_hash_payload(forged_prompt))),
-        )
+        forged_prompt = self.with_job_hash(forged_prompt)
         forged_result = self.with_result_hash(
             replace(self.vision_result, job_sha256=forged_prompt.job_sha256)
         )
@@ -540,6 +555,22 @@ class MergeFinalCandidatesTests(unittest.TestCase):
                 (forged_result,),
                 self.evidence,
                 vision_jobs={forged_prompt.record_id: forged_prompt},
+                expected_record_ids=self.expected_ids,
+            )
+
+    def test_requires_quarantine_job_cannot_produce_an_accepted_candidate(self) -> None:
+        restricted_evidence, restricted_job = self.make_restricted_evidence_and_job()
+        accepted = self.with_result_hash(
+            replace(self.vision_result, job_sha256=restricted_job.job_sha256)
+        )
+
+        with self.assertRaisesRegex(PipelineBlocked, "requires quarantine"):
+            merge_final_candidates(
+                (self.baseline,),
+                (self.vision_route,),
+                (accepted,),
+                (restricted_evidence,),
+                vision_jobs={restricted_job.record_id: restricted_job},
                 expected_record_ids=self.expected_ids,
             )
 

@@ -120,6 +120,16 @@ Do not suggest corrected text. Vision extraction owns correction.
 
 _SCHEMA_PATH = Path(__file__).with_name("schemas") / "agent-review-result.schema.json"
 _HASH = re.compile(r"^[0-9a-f]{64}$")
+_SOURCE_HASH_FIELDS = frozenset({
+    "source_pdf", "raw_extractor", "config", "question", "answer", "solution", "question_identity",
+})
+_CANDIDATE_TEXT_FIELDS = frozenset({
+    "key", "question_text", "category", "difficulty", "correct_answer", "explanation", "chapter",
+})
+_CANDIDATE_MAPPING_FIELDS = frozenset({"options", "option_explanations"})
+_CANDIDATE_LIST_FIELDS = frozenset({"solution_steps", "baseline_failures"})
+_CANDIDATE_FIELDS = _CANDIDATE_TEXT_FIELDS | _CANDIDATE_MAPPING_FIELDS | _CANDIDATE_LIST_FIELDS
+_SOURCE_IDENTITY_FIELDS = frozenset({"number", "question_region_sha256", "pdf_sha256", "page", "box"})
 
 
 def _json_value(value: Any) -> Any:
@@ -146,29 +156,95 @@ def _sha256(value: Any) -> str:
     return hashlib.sha256(_canonical_bytes(value)).hexdigest()
 
 
-def _without_source_crop(value: Any) -> Any:
-    if isinstance(value, Mapping):
-        return {
-            str(key): _without_source_crop(item)
-            for key, item in value.items()
-            if key != "source_crop"
-        }
-    if isinstance(value, (list, tuple)):
-        return [_without_source_crop(item) for item in value]
-    return value
+def _no_image_boundary(message: str) -> ValueError:
+    return ValueError(f"Agent review no-image boundary rejects {message}.")
+
+
+def _text_mapping(value: Any, field: str) -> dict[str, str]:
+    if not isinstance(value, Mapping) or any(not isinstance(key, str) or not isinstance(item, str) for key, item in value.items()):
+        raise _no_image_boundary(f"non-textual {field}")
+    return {key: item for key, item in value.items()}
+
+
+def _text_list(value: Any, field: str) -> list[str]:
+    if not isinstance(value, (list, tuple)) or any(not isinstance(item, str) for item in value):
+        raise _no_image_boundary(f"non-textual {field}")
+    return list(value)
+
+
+def _candidate_payload(candidate: Any) -> dict[str, Any]:
+    if not isinstance(candidate, Mapping):
+        raise _no_image_boundary("a non-mapping candidate")
+    unknown = set(candidate) - _CANDIDATE_FIELDS
+    if unknown:
+        raise _no_image_boundary(f"candidate metadata fields: {', '.join(sorted(map(str, unknown)))}")
+    payload: dict[str, Any] = {}
+    for field in _CANDIDATE_TEXT_FIELDS:
+        if field in candidate:
+            value = candidate[field]
+            if not isinstance(value, str):
+                raise _no_image_boundary(f"non-textual candidate.{field}")
+            payload[field] = value
+    for field in _CANDIDATE_MAPPING_FIELDS:
+        if field in candidate:
+            payload[field] = _text_mapping(candidate[field], f"candidate.{field}")
+    for field in _CANDIDATE_LIST_FIELDS:
+        if field in candidate:
+            payload[field] = _text_list(candidate[field], f"candidate.{field}")
+    return payload
+
+
+def _source_hash_payload(source_hashes: Any) -> dict[str, list[str]]:
+    if not isinstance(source_hashes, Mapping) or set(source_hashes) != _SOURCE_HASH_FIELDS:
+        raise _no_image_boundary("unknown or incomplete source-hash metadata")
+    payload: dict[str, list[str]] = {}
+    for field in sorted(_SOURCE_HASH_FIELDS):
+        values = source_hashes[field]
+        if not isinstance(values, (list, tuple)) or any(
+            not isinstance(value, str) or _HASH.fullmatch(value) is None for value in values
+        ):
+            raise _no_image_boundary(f"non-hash source metadata at {field}")
+        payload[field] = list(values)
+    return payload
+
+
+def _source_identity_payload(source_identity: Any) -> dict[str, Any]:
+    if not isinstance(source_identity, Mapping) or set(source_identity) != _SOURCE_IDENTITY_FIELDS:
+        raise _no_image_boundary("unknown source identity metadata")
+    number = source_identity["number"]
+    page = source_identity["page"]
+    box = source_identity["box"]
+    if (
+        not isinstance(number, int) or isinstance(number, bool) or number < 1
+        or not isinstance(page, int) or isinstance(page, bool) or page < 1
+        or not isinstance(source_identity["question_region_sha256"], str) or _HASH.fullmatch(source_identity["question_region_sha256"]) is None
+        or not isinstance(source_identity["pdf_sha256"], str) or _HASH.fullmatch(source_identity["pdf_sha256"]) is None
+        or not isinstance(box, (list, tuple)) or len(box) != 4
+        or any(not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value) for value in box)
+    ):
+        raise _no_image_boundary("non-textual source identity metadata")
+    return {
+        "number": number,
+        "question_region_sha256": source_identity["question_region_sha256"],
+        "pdf_sha256": source_identity["pdf_sha256"],
+        "page": page,
+        "box": list(box),
+    }
 
 
 def _record_payload(record: RawBaselineRecord) -> dict[str, Any]:
     if not isinstance(record, RawBaselineRecord):
         raise TypeError("record must be a RawBaselineRecord value.")
-    return _json_value(_without_source_crop({
+    if record.chapter != 1:
+        raise PipelineBlocked("Agent review jobs are limited to Chapter 1.")
+    return _json_value({
         "record_id": record.record_id,
         "chapter": record.chapter,
-        "source_hashes": record.source_hashes,
-        "candidate": record.candidate,
+        "source_hashes": _source_hash_payload(record.source_hashes),
+        "candidate": _candidate_payload(record.candidate),
         "baseline_sha256": record.baseline_sha256,
-        "source_identity": record.source_identity,
-    }))
+        "source_identity": _source_identity_payload(record.source_identity),
+    })
 
 
 def _write_json(path: Path, payload: Mapping[str, Any]) -> None:
@@ -259,6 +335,8 @@ def create_agent_review_queue(records: Iterable[RawBaselineRecord], work_root: P
     record_ids = [record.record_id for record in values]
     if len(set(record_ids)) != len(record_ids):
         raise PipelineBlocked("Agent review queue refuses duplicate record IDs.")
+    if any(record.chapter != 1 for record in values):
+        raise PipelineBlocked("Agent review queue is limited to Chapter 1; no other chapter may be mixed.")
     chapters = {record.chapter for record in values}
     if len(chapters) > 1:
         raise PipelineBlocked("Agent review queue refuses mixed chapters.")

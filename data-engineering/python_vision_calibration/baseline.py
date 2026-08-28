@@ -3,10 +3,14 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import tempfile
+from collections import Counter
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, Iterable, Mapping
+
+import pdfplumber
 
 from textbook_chapters import build as legacy_build
 
@@ -127,29 +131,142 @@ def _with_missing_raw_candidate(
     }
 
 
-def _candidate_for_source_position(
+def _identity_tokens(value: object) -> tuple[str, ...]:
+    if not isinstance(value, str):
+        return ()
+    return tuple(re.findall(r"[a-z]+|\d+(?:\.\d+)?", value.casefold()))
+
+
+def _candidate_identity_text(record: Mapping[str, object]) -> str:
+    material = [record.get("question_text", "")]
+    options = record.get("options")
+    if isinstance(options, Mapping):
+        material.extend(options.values())
+    return " ".join(str(value) for value in material if isinstance(value, str))
+
+
+def _identity_score(candidate_text: str, source_text: str) -> float:
+    candidate = Counter(_identity_tokens(candidate_text))
+    if sum(candidate.values()) < 4:
+        return 0.0
+    source = Counter(_identity_tokens(source_text))
+    return sum((candidate & source).values()) / sum(candidate.values())
+
+
+def _associate_raw_candidates_by_identity(
     *,
     chapter: int,
-    source_number: int,
-    printed_total: int,
-    raw_records: list[dict[str, object]],
-) -> dict[str, object]:
-    """Return a positional candidate only after chapter coverage was proven complete."""
-    if len(raw_records) != printed_total:
+    raw_records: Iterable[Mapping[str, object]],
+    identity_regions: Mapping[int, Mapping[str, object]],
+) -> dict[int, dict[str, object]]:
+    """Associate raw candidates only through hash-bound printed identities.
+
+    A raw extractor may supply its own ``source_identity`` object. Otherwise a
+    candidate must uniquely match one numbered source region through its own
+    text anchor. Candidate order is validated after identity resolution so a
+    reordered input cannot silently change which printed record it represents.
+    """
+    records = [deepcopy(dict(record)) for record in raw_records]
+    expected = set(identity_regions)
+    if expected != set(range(1, len(identity_regions) + 1)) or len(records) != len(expected):
         raise ValueError(
-            f"unresolved raw/source alignment for chapter {chapter}: "
-            f"{len(raw_records)} raw records for {printed_total} printed records; positional association "
-            "is unsafe without independent raw candidate identifiers."
+            f"unresolved raw/source identity for chapter {chapter}: "
+            f"{len(records)} raw candidates for {len(expected)} numbered source regions."
         )
-    record_id = f"ch{chapter:02d}-q{source_number:04d}"
-    if source_number > len(raw_records):
+
+    resolved: list[tuple[int, dict[str, object]]] = []
+    for raw in records:
+        explicit = raw.get("source_identity")
+        if explicit is not None:
+            if not isinstance(explicit, Mapping):
+                raise ValueError(f"unresolved raw/source identity for chapter {chapter}: malformed explicit identity.")
+            number = explicit.get("number")
+            declared_hash = explicit.get("question_region_sha256")
+            region = identity_regions.get(number) if isinstance(number, int) and not isinstance(number, bool) else None
+            if (
+                region is None
+                or not isinstance(declared_hash, str)
+                or declared_hash != region.get("sha256")
+            ):
+                raise ValueError(
+                    f"unresolved raw/source identity for chapter {chapter}: "
+                    "explicit identity is not bound to the numbered question region."
+                )
+            explicit_score = _identity_score(
+                _candidate_identity_text(raw),
+                str(region.get("anchor_text", "")),
+            )
+            if explicit_score < 0.75:
+                raise ValueError(
+                    f"unresolved raw/source identity for chapter {chapter}: "
+                    f"explicit identity does not match its candidate anchor (score={explicit_score:.3f})."
+                )
+        else:
+            candidate_text = _candidate_identity_text(raw)
+            scores = sorted(
+                (
+                    (_identity_score(candidate_text, str(region.get("anchor_text", ""))), number)
+                    for number, region in identity_regions.items()
+                ),
+                reverse=True,
+            )
+            best_score, number = scores[0]
+            second_score = scores[1][0] if len(scores) > 1 else 0.0
+            if best_score < 0.75 or best_score - second_score < 0.15:
+                key = raw.get("key", "candidate")
+                raise ValueError(
+                    f"unresolved raw/source identity for chapter {chapter}: {key!r} has no unique "
+                    f"numbered source anchor (best={best_score:.3f}, margin={best_score - second_score:.3f})."
+                )
+        resolved.append((number, raw))
+
+    numbers = [number for number, _ in resolved]
+    if numbers != sorted(numbers):
+        raise ValueError(f"unresolved raw/source identity for chapter {chapter}: reordered raw candidate identity.")
+    if set(numbers) != expected or len(set(numbers)) != len(numbers):
+        missing = sorted(expected - set(numbers))
+        duplicates = sorted(number for number in set(numbers) if numbers.count(number) > 1)
         raise ValueError(
-            f"unresolved raw/source alignment for chapter {chapter}: "
-            f"no independently identified raw candidate for printed record {source_number}."
+            f"unresolved raw/source identity for chapter {chapter}: "
+            f"missing={missing}; duplicate={duplicates}."
         )
-    raw = deepcopy(raw_records[source_number - 1])
-    raw["record_id"] = record_id
-    return raw
+    return {number: raw for number, raw in resolved}
+
+
+def _question_identity_regions(
+    source_pdf: Path,
+    question_markers: Mapping[int, tuple[int, float, float]],
+    source_pdf_hash: str,
+) -> dict[int, dict[str, object]]:
+    """Extract independently hash-bound text regions for printed questions."""
+    regions: dict[int, dict[str, object]] = {}
+    with pdfplumber.open(source_pdf) as document:
+        for number, (page_number, x0, top) in question_markers.items():
+            page = document.pages[page_number - 1]
+            left_column = x0 < page.width / 2
+            following = [
+                marker_top
+                for later_number, (marker_page, marker_x0, marker_top) in question_markers.items()
+                if later_number > number
+                and marker_page == page_number
+                and (marker_x0 < page.width / 2) == left_column
+                and marker_top > top
+            ]
+            bottom = min(following) if following else page.height - 20
+            left = 20 if left_column else page.width / 2 - 8
+            right = page.width / 2 + 8 if left_column else page.width - 20
+            box = (left, max(0.0, top - 2), right, min(page.height, bottom))
+            anchor_text = page.crop(box).extract_text() or ""
+            region_hash = _canonical_hash({
+                "source_pdf_sha256": source_pdf_hash,
+                "role": "question_identity",
+                "number": number,
+                "page": page_number,
+                "box": [round(value, 3) for value in box],
+                "anchor_text": anchor_text,
+            })
+            regions[number] = {"sha256": region_hash, "anchor_text": anchor_text}
+    return regions
 
 
 def _candidate_from_raw(record: Mapping[str, object]) -> dict[str, object]:
@@ -223,6 +340,11 @@ def _records_from_fixture(
             "answer": association_hashes["answer"],
             "solution": association_hashes["solution"],
         }
+        question_identity = raw.get("source_identity_sha256")
+        if question_identity is not None:
+            if not isinstance(question_identity, str) or not re.fullmatch(r"[0-9a-f]{64}", question_identity):
+                raise ValueError(f"{record_id} has an invalid raw question identity hash.")
+            source_hashes["question_identity"] = (question_identity,)
         fingerprint_input = {
             "record_id": record_id,
             "chapter": chapter,
@@ -300,6 +422,13 @@ def _raw_legacy_records(chapter: int, source_pdf: Path) -> tuple[dict[str, objec
         stop_at_answers=True,
     )
     questions = legacy_build._select_markers(question_candidates, total)
+    source_pdf_hash = _sha256_path(source_pdf)
+    identity_regions = _question_identity_regions(source_pdf, questions, source_pdf_hash)
+    raw_by_number = _associate_raw_candidates_by_identity(
+        chapter=chapter,
+        raw_records=raw,
+        identity_regions=identity_regions,
+    )
     solution_candidates = legacy_build._marker_candidates(
         source_pdf,
         range(int(raw_config["solution_pages"][0]), int(raw_config["solution_pages"][1]) + 1),
@@ -316,7 +445,6 @@ def _raw_legacy_records(chapter: int, source_pdf: Path) -> tuple[dict[str, objec
         [int(page) for page in raw_config["answer_pages"]],
         total,
     )
-    source_pdf_hash = _sha256_path(source_pdf)
     records: list[dict[str, object]] = []
     for number in range(1, total + 1):
         if number not in questions or number not in solutions:
@@ -335,16 +463,12 @@ def _raw_legacy_records(chapter: int, source_pdf: Path) -> tuple[dict[str, objec
                     "page": solution_page, "x0": solution_x0, "top": solution_top, "pages": solution_pages,
             })],
         }
-        raw_record = _candidate_for_source_position(
-            chapter=chapter,
-            source_number=number,
-            printed_total=total,
-            raw_records=raw,
-        )
+        raw_record = deepcopy(raw_by_number[number])
         raw_record.update({
             "record_id": f"ch{chapter:02d}-q{number:04d}",
             "correct_answer": answers[number],
             "source_association": source_association,
+            "source_identity_sha256": identity_regions[number]["sha256"],
         })
         records.append(raw_record)
     return tuple(records)

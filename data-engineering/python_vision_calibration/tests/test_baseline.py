@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Mapping
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -20,6 +21,7 @@ from python_vision_calibration.baseline import (
     build_raw_baseline_from_fixture,
 )
 from textbook_chapters import build as legacy_build
+from python_vision_calibration import baseline as calibration_baseline
 
 
 class RawBaselineTests(unittest.TestCase):
@@ -46,6 +48,79 @@ class RawBaselineTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temp_directory.cleanup()
+
+    def _associate_by_identity(
+        self,
+        *,
+        raw_records: list[dict[str, object]],
+        identity_regions: Mapping[int, Mapping[str, object]],
+    ) -> dict[int, dict[str, object]]:
+        associate = getattr(calibration_baseline, "_associate_raw_candidates_by_identity", None)
+        self.assertIsNotNone(associate, "raw candidates need an identity-based association function")
+        return associate(chapter=2, raw_records=raw_records, identity_regions=identity_regions)
+
+    @staticmethod
+    def _identity_regions() -> dict[int, dict[str, object]]:
+        return {
+            1: {"sha256": "1" * 64, "anchor_text": "Alpha orchard has eleven red apples."},
+            2: {"sha256": "2" * 64, "anchor_text": "Beta workshop makes twenty blue gears."},
+            3: {"sha256": "3" * 64, "anchor_text": "Gamma station receives thirty green trains."},
+        }
+
+    def test_equal_count_omission_and_duplicate_cannot_masquerade_as_complete_identity(self) -> None:
+        raw_records = [
+            {"key": "raw-1", "question_text": "Alpha orchard has eleven red apples.", "options": {}},
+            {"key": "raw-1-copy", "question_text": "Alpha orchard has eleven red apples.", "options": {}},
+            {"key": "raw-3", "question_text": "Gamma station receives thirty green trains.", "options": {}},
+        ]
+
+        with self.assertRaisesRegex(ValueError, r"unresolved raw/source identity.*chapter 2"):
+            self._associate_by_identity(raw_records=raw_records, identity_regions=self._identity_regions())
+
+    def test_reordered_explicit_identities_block_instead_of_falling_back_to_position(self) -> None:
+        regions = self._identity_regions()
+        raw_records = [
+            {"key": "raw-2", "question_text": "Beta workshop makes twenty blue gears.", "source_identity": {"number": 2, "question_region_sha256": "2" * 64}},
+            {"key": "raw-1", "question_text": "Alpha orchard has eleven red apples.", "source_identity": {"number": 1, "question_region_sha256": "1" * 64}},
+            {"key": "raw-3", "question_text": "Gamma station receives thirty green trains.", "source_identity": {"number": 3, "question_region_sha256": "3" * 64}},
+        ]
+
+        with self.assertRaisesRegex(ValueError, r"reordered.*identity"):
+            self._associate_by_identity(raw_records=raw_records, identity_regions=regions)
+
+    def test_complete_explicit_hash_bound_identity_map_succeeds(self) -> None:
+        regions = self._identity_regions()
+        raw_records = [
+            {"key": "raw-1", "question_text": "Alpha orchard has eleven red apples.", "source_identity": {"number": 1, "question_region_sha256": "1" * 64}},
+            {"key": "raw-2", "question_text": "Beta workshop makes twenty blue gears.", "source_identity": {"number": 2, "question_region_sha256": "2" * 64}},
+            {"key": "raw-3", "question_text": "Gamma station receives thirty green trains.", "source_identity": {"number": 3, "question_region_sha256": "3" * 64}},
+        ]
+
+        associated = self._associate_by_identity(raw_records=raw_records, identity_regions=regions)
+
+        self.assertEqual([associated[number]["key"] for number in (1, 2, 3)], ["raw-1", "raw-2", "raw-3"])
+
+    def test_explicit_number_and_hash_do_not_waive_candidate_anchor_validation(self) -> None:
+        regions = self._identity_regions()
+        raw_records = [
+            {"key": "raw-1", "question_text": "Alpha orchard has eleven red apples.", "source_identity": {"number": 1, "question_region_sha256": "1" * 64}},
+            {"key": "raw-2", "question_text": "Alpha orchard has eleven red apples.", "source_identity": {"number": 2, "question_region_sha256": "2" * 64}},
+            {"key": "raw-3", "question_text": "Gamma station receives thirty green trains.", "source_identity": {"number": 3, "question_region_sha256": "3" * 64}},
+        ]
+
+        with self.assertRaisesRegex(ValueError, r"explicit identity.*anchor"):
+            self._associate_by_identity(raw_records=raw_records, identity_regions=regions)
+
+    def test_unique_deterministic_source_anchors_can_supply_missing_explicit_identity(self) -> None:
+        raw_records = [
+            {"key": "raw-1", "question_text": "Alpha orchard has eleven red apples.", "options": {}},
+            {"key": "raw-2", "question_text": "Beta workshop makes twenty blue gears.", "options": {}},
+            {"key": "raw-3", "question_text": "Gamma station receives thirty green trains.", "options": {}},
+        ]
+
+        associated = self._associate_by_identity(raw_records=raw_records, identity_regions=self._identity_regions())
+
+        self.assertEqual([associated[number]["key"] for number in (1, 2, 3)], ["raw-1", "raw-2", "raw-3"])
 
     def test_raw_baseline_ignores_legacy_question_override(self) -> None:
         records = build_raw_baseline_from_fixture(
@@ -207,6 +282,27 @@ class RawBaselineTests(unittest.TestCase):
             build_raw_baseline(4, source_pdf, self.work_root)
 
         self.assertFalse((self.work_root / "baseline" / "chapter-004.jsonl").exists())
+
+    def test_real_chapters_two_and_three_have_hash_bound_identity_or_block_as_unprovable(self) -> None:
+        source_pdf = (
+            PROJECT_ROOT
+            / "data-engineering"
+            / "dokumen.pub_quantitative-aptitude-for-competitive-examinations-by-rs-aggarwal-reprint-2017nbsped-9352534026-9789352534029.pdf"
+        )
+        expected_totals = {2: 130, 3: 206}
+
+        for chapter, total in expected_totals.items():
+            chapter_work = self.work_root / f"chapter-{chapter:03d}"
+            try:
+                records = build_raw_baseline(chapter, source_pdf, chapter_work)
+            except ValueError as error:
+                self.assertRegex(str(error), rf"unresolved raw/source identity.*chapter {chapter}")
+                self.assertFalse((chapter_work / "baseline" / f"chapter-{chapter:03d}.jsonl").exists())
+            else:
+                self.assertEqual(len(records), total)
+                identity_hashes = [record.source_hashes.get("question_identity", ()) for record in records]
+                self.assertTrue(all(len(values) == 1 for values in identity_hashes))
+                self.assertEqual(len({values[0] for values in identity_hashes}), total)
 
     def test_malformed_nonempty_raw_fields_are_explicit_baseline_failures(self) -> None:
         raw = dict(self.raw_records[0])

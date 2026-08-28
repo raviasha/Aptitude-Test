@@ -303,6 +303,34 @@ class CliWorkspaceTests(unittest.TestCase):
             link.unlink(missing_ok=True)
             outside.rmdir()
 
+    def test_prepare_accepts_baseline_hashes_with_literal_unicode_math(self) -> None:
+        records = list(self.synthetic_baselines())
+        original = records[0]
+        candidate = dict(original.candidate)
+        candidate["solution_steps"] = ["Place value = 5 × 10000 = 50000."]
+        core = {
+            "record_id": original.record_id,
+            "chapter": original.chapter,
+            "source_hashes": original.source_hashes,
+            "source_identity": original.source_identity,
+            "candidate": candidate,
+        }
+        records[0] = RawBaselineRecord(
+            record_id=original.record_id,
+            chapter=original.chapter,
+            source_hashes=original.source_hashes,
+            candidate=candidate,
+            baseline_sha256=cli.canonical_sha256(core, ensure_ascii=False),
+            source_identity=original.source_identity,
+        )
+
+        with mock.patch.object(cli, "build_raw_baseline", return_value=tuple(records)):
+            code, payload, _, diagnostics = self.invoke("prepare")
+
+        self.assertEqual(code, 0, diagnostics)
+        self.assertEqual(payload["stage"], "prepared")
+        self.assertEqual(len(list((self.work_root / "agent-review/jobs").glob("*.json"))), 380)
+
     def test_clean_run_stops_at_agent_boundary_with_380_jobs(self) -> None:
         code, payload, raw, diagnostics = self.invoke_with_synthetic_extract("run")
 

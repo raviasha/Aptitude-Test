@@ -341,12 +341,18 @@ def _validate_baselines(records: tuple[RawBaselineRecord, ...], config: PilotCon
             raise PipelineBlocked(f"Baseline source PDF binding is stale for {record.record_id}.")
         core = _baseline_payload(record)
         core.pop("baseline_sha256")
-        if record.baseline_sha256 != canonical_sha256(core):
+        if record.baseline_sha256 != canonical_sha256(core, ensure_ascii=False):
             raise PipelineBlocked(f"Baseline hash is stale for {record.record_id}.")
 
 
 def _write_baselines(records: tuple[RawBaselineRecord, ...], path: Path) -> None:
-    _atomic_bytes(path, b"".join(canonical_json_bytes(_baseline_payload(record)) + b"\n" for record in records))
+    _atomic_bytes(
+        path,
+        b"".join(
+            canonical_json_bytes(_baseline_payload(record), ensure_ascii=False) + b"\n"
+            for record in records
+        ),
+    )
 
 
 def _load_baselines(config: PilotConfig) -> tuple[RawBaselineRecord, ...]:

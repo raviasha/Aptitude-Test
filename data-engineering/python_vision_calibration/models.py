@@ -87,6 +87,7 @@ class VisionFallbackJob:
     baseline_sha256: str
     source_pdf_sha256: str
     source_dependency_fingerprint: str
+    evidence_sha256: str
     config_sha256: str
     schema_sha256: str
     prompt: str

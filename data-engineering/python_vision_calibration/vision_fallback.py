@@ -92,17 +92,24 @@ def _route_hash_payload(route: RouteDecision) -> dict[str, object]:
     }
 
 
-def _validate_vision_route(route: RouteDecision) -> int:
+def _validate_route(route: RouteDecision) -> int:
     if not isinstance(route, RouteDecision):
         raise TypeError("routes must contain RouteDecision values.")
-    if route.decision != "VISION_REQUIRED":
-        raise ValueError("Only VISION_REQUIRED routes may cross the vision fallback boundary.")
+    if route.decision not in {"ACCEPT_PYTHON", "VISION_REQUIRED"}:
+        raise ValueError("RouteDecision contains an unsupported decision.")
     _require_hash(route.baseline_sha256, "route baseline hash")
     _require_hash(route.review_result_sha256, "route review-result hash")
     _require_hash(route.route_sha256, "route hash")
     if route.route_sha256 != _sha256(_route_hash_payload(route)):
         raise ValueError("Vision fallback route hash is stale against its immutable route payload.")
     return _question_number(route.record_id)
+
+
+def _validate_vision_route(route: RouteDecision) -> int:
+    number = _validate_route(route)
+    if route.decision != "VISION_REQUIRED":
+        raise ValueError("Only VISION_REQUIRED routes may cross the vision fallback boundary.")
+    return number
 
 
 def _current_config() -> tuple[ChapterConfig, str]:
@@ -121,6 +128,65 @@ def _current_prepared_evidence(work_root: Path) -> tuple[RecordEvidence, ...]:
     if not source_pdf.is_absolute():
         source_pdf = _PROJECT_ROOT / source_pdf
     return tuple(prepare_source_evidence(config, source_pdf, Path(work_root) / "vision" / "source-evidence"))
+
+
+def _crop_evidence_value(crop: SourceCrop) -> dict[str, object]:
+    return {
+        "role": crop.role,
+        "question_number": crop.question_number,
+        "page_number": crop.page_number,
+        "box": {
+            "left": crop.box.left,
+            "top": crop.box.top,
+            "right": crop.box.right,
+            "bottom": crop.box.bottom,
+        },
+        "width": crop.width,
+        "height": crop.height,
+        "sha256": crop.sha256,
+        "source_image_sha256": crop.source_image_sha256,
+        "source_dpi": crop.source_dpi,
+        "context_id": crop.context_id,
+    }
+
+
+def _evidence_value(evidence: RecordEvidence) -> dict[str, object]:
+    source_pdf = None if evidence.source_pdf is None else str(Path(evidence.source_pdf).resolve())
+    return {
+        "chapter": evidence.chapter,
+        "question_number": evidence.question_number,
+        "source_pdf": source_pdf,
+        "source_pdf_sha256": evidence.source_pdf_sha256,
+        "question_crops": [_crop_evidence_value(crop) for crop in evidence.question_crops],
+        "answer_key_crops": [_crop_evidence_value(crop) for crop in evidence.answer_key_crops],
+        "solution_crops": [_crop_evidence_value(crop) for crop in evidence.solution_crops],
+        "source_status": evidence.source_status,
+        "source_reasons": list(evidence.source_reasons),
+        "requires_reviewed_rejection": evidence.requires_reviewed_rejection,
+        "boundary_review": dict(evidence.boundary_review),
+        "dependency_fingerprint": evidence.dependency_fingerprint,
+    }
+
+
+def _evidence_sha256(evidence: RecordEvidence) -> str:
+    return _sha256(_evidence_value(evidence))
+
+
+def _evidence_index(values: Iterable[RecordEvidence], field: str) -> dict[int, RecordEvidence]:
+    evidence_values = tuple(values)
+    if any(not isinstance(item, RecordEvidence) for item in evidence_values):
+        raise TypeError(f"{field} must contain RecordEvidence values.")
+    numbers = [item.question_number for item in evidence_values]
+    if len(set(numbers)) != len(numbers):
+        raise ValueError(f"{field} contains duplicate printed question numbers.")
+    return {item.question_number: item for item in evidence_values}
+
+
+def _require_current_evidence(supplied: RecordEvidence, current: RecordEvidence) -> None:
+    if _evidence_value(supplied) != _evidence_value(current):
+        raise ValueError(
+            f"Caller-supplied RecordEvidence does not match current source evidence for question {current.question_number}."
+        )
 
 
 def _crop_source(crop: SourceCrop, role: str, number: int) -> dict[str, object]:
@@ -209,6 +275,7 @@ def _job_hash_payload(job: VisionFallbackJob) -> dict[str, object]:
         "baseline_sha256": job.baseline_sha256,
         "source_pdf_sha256": job.source_pdf_sha256,
         "source_dependency_fingerprint": job.source_dependency_fingerprint,
+        "evidence_sha256": job.evidence_sha256,
         "config_sha256": job.config_sha256,
         "schema_sha256": job.schema_sha256,
         "prompt_sha256": job.prompt_sha256,
@@ -229,6 +296,7 @@ def _job_payload(job: VisionFallbackJob) -> dict[str, object]:
         "baseline_sha256": job.baseline_sha256,
         "source_pdf_sha256": job.source_pdf_sha256,
         "source_dependency_fingerprint": job.source_dependency_fingerprint,
+        "evidence_sha256": job.evidence_sha256,
         "config_sha256": job.config_sha256,
         "schema_sha256": job.schema_sha256,
         "prompt": job.prompt,
@@ -271,16 +339,16 @@ def _write_jsonl(path: Path, payloads: Iterable[Mapping[str, object]]) -> None:
     _atomic_write(path, (_canonical_bytes(payload) + b"\n" for payload in payloads))
 
 
-def create_vision_fallback_job(
-    route: RouteDecision, evidence: RecordEvidence, output_path: Path
+def _create_vision_fallback_job_from_current(
+    route: RouteDecision,
+    evidence: RecordEvidence,
+    output_path: Path,
+    config: ChapterConfig,
+    config_sha256: str,
 ) -> VisionFallbackJob:
-    """Write one candidate-free, full-record job from current V2 source crops."""
     number = _validate_vision_route(route)
-    if not isinstance(evidence, RecordEvidence):
-        raise TypeError("evidence must be a RecordEvidence value.")
     if evidence.chapter != 1 or evidence.question_number != number:
         raise ValueError("RecordEvidence chapter or question number does not match the fallback route.")
-    config, config_sha256 = _current_config()
     if number < config.question_numbers[0] or number > config.question_numbers[1] or number in config.intentional_exclusions:
         raise ValueError("Vision fallback question number is outside the current Chapter 1 source configuration.")
     source_pdf_sha256 = _require_hash(evidence.source_pdf_sha256, "source PDF hash")
@@ -303,6 +371,7 @@ def create_vision_fallback_job(
         baseline_sha256=route.baseline_sha256,
         source_pdf_sha256=source_pdf_sha256,
         source_dependency_fingerprint=source_dependency,
+        evidence_sha256=_evidence_sha256(evidence),
         config_sha256=config_sha256,
         schema_sha256=schema_sha256,
         prompt=prompt,
@@ -325,6 +394,27 @@ def create_vision_fallback_job(
     return job
 
 
+def create_vision_fallback_job(
+    route: RouteDecision, evidence: RecordEvidence, output_path: Path
+) -> VisionFallbackJob:
+    """Write one candidate-free job after matching supplied evidence to a fresh V2 preparation."""
+    number = _validate_vision_route(route)
+    if not isinstance(evidence, RecordEvidence):
+        raise TypeError("evidence must be a RecordEvidence value.")
+    if evidence.chapter != 1 or evidence.question_number != number:
+        raise ValueError("RecordEvidence chapter or question number does not match the fallback route.")
+    _source_payload(evidence, number)
+    config, config_sha256 = _current_config()
+    current_by_number = _evidence_index(
+        _current_prepared_evidence(Path(output_path).parent), "current source evidence"
+    )
+    current = current_by_number.get(number)
+    if current is None:
+        raise ValueError(f"Current source evidence is missing question number {number}.")
+    _require_current_evidence(evidence, current)
+    return _create_vision_fallback_job_from_current(route, current, output_path, config, config_sha256)
+
+
 def create_vision_fallback_jobs(
     routes: Iterable[RouteDecision],
     evidence: Iterable[RecordEvidence] | None,
@@ -342,21 +432,28 @@ def create_vision_fallback_jobs(
     if len(set(route_ids)) != len(route_ids):
         raise ValueError("Vision fallback routes contain duplicate record IDs.")
 
-    evidence_values = _current_prepared_evidence(root) if evidence is None else tuple(evidence)
-    if any(not isinstance(item, RecordEvidence) for item in evidence_values):
-        raise TypeError("evidence must contain RecordEvidence values.")
-    evidence_numbers = [item.question_number for item in evidence_values]
-    if len(set(evidence_numbers)) != len(evidence_numbers):
-        raise ValueError("Vision fallback source evidence contains duplicate printed question numbers.")
-    evidence_by_number = {item.question_number: item for item in evidence_values}
+    supplied_by_number = None if evidence is None else _evidence_index(evidence, "Vision fallback source evidence")
+    config, config_sha256 = _current_config()
+    current_by_number = _evidence_index(_current_prepared_evidence(root), "current source evidence")
 
     jobs: dict[str, VisionFallbackJob] = {}
     for route in sorted(vision_routes, key=lambda item: item.record_id):
         number = _question_number(route.record_id)
-        if number not in evidence_by_number:
+        current = current_by_number.get(number)
+        if current is None:
             raise ValueError(f"Vision fallback is missing current source evidence for {route.record_id}.")
-        jobs[route.record_id] = create_vision_fallback_job(
-            route, evidence_by_number[number], root / "vision" / "jobs" / f"{route.record_id}.json"
+        if supplied_by_number is not None:
+            supplied = supplied_by_number.get(number)
+            if supplied is None:
+                raise ValueError(f"Vision fallback is missing caller-supplied evidence for {route.record_id}.")
+            _source_payload(supplied, number)
+            _require_current_evidence(supplied, current)
+        jobs[route.record_id] = _create_vision_fallback_job_from_current(
+            route,
+            current,
+            root / "vision" / "jobs" / f"{route.record_id}.json",
+            config,
+            config_sha256,
         )
     _write_jsonl(root / "vision" / "vision-jobs.jsonl", (_job_payload(job) for job in jobs.values()))
     return jobs
@@ -550,6 +647,7 @@ def _validate_job(job: VisionFallbackJob) -> None:
         raise ValueError("Vision fallback job hash is stale against its full-record dependencies.")
     if job.question_number != _question_number(job.record_id):
         raise ValueError("Vision fallback job question number is stale against its record_id.")
+    _require_hash(job.evidence_sha256, "job current source evidence hash")
     if job.prompt_sha256 != hashlib.sha256(job.prompt.encode("utf-8")).hexdigest():
         raise ValueError("Vision fallback job prompt hash is stale.")
     if job.schema_sha256 != _sha256_path(_SCHEMA_PATH):
@@ -587,9 +685,25 @@ def _validate_job(job: VisionFallbackJob) -> None:
         raise ValueError("Vision fallback job role evidence hashes are stale.")
 
 
-def ingest_vision_fallback_result(job: VisionFallbackJob, result_path: Path) -> VisionFallbackResult:
-    """Validate one terminal local vision result against its exact source job."""
+def _validate_job_against_current_evidence(job: VisionFallbackJob, current: RecordEvidence) -> None:
+    if current.question_number != job.question_number or current.chapter != 1:
+        raise ValueError(f"Current source evidence does not match job {job.record_id}.")
+    if job.evidence_sha256 != _evidence_sha256(current):
+        raise ValueError(f"Vision fallback job is stale against current source evidence for {job.record_id}.")
+
+
+def _job_work_root(job: VisionFallbackJob) -> Path:
+    parent = job.output_path.parent
+    if parent.name == "jobs" and parent.parent.name == "vision":
+        return parent.parent.parent
+    return parent
+
+
+def _ingest_result_against_current(
+    job: VisionFallbackJob, result_path: Path, current: RecordEvidence
+) -> VisionFallbackResult:
     _validate_job(job)
+    _validate_job_against_current_evidence(job, current)
     payload = _read_result(Path(result_path))
     _validate_schema(payload, _schema())
     if payload["record_id"] != job.record_id:
@@ -624,6 +738,19 @@ def ingest_vision_fallback_result(job: VisionFallbackJob, result_path: Path) -> 
         job_sha256=payload["job_sha256"],
         result_sha256=payload["result_sha256"],
     )
+
+
+def ingest_vision_fallback_result(job: VisionFallbackJob, result_path: Path) -> VisionFallbackResult:
+    """Validate one terminal local result against a freshly prepared source record."""
+    if not isinstance(job, VisionFallbackJob):
+        raise TypeError("job must be a VisionFallbackJob value.")
+    current_by_number = _evidence_index(
+        _current_prepared_evidence(_job_work_root(job)), "current source evidence"
+    )
+    current = current_by_number.get(job.question_number)
+    if current is None:
+        raise ValueError(f"Current source evidence is missing job {job.record_id}.")
+    return _ingest_result_against_current(job, result_path, current)
 
 
 def _result_inventory(directory: Path, expected_ids: set[str]) -> dict[str, Path]:
@@ -684,6 +811,10 @@ def ingest_vision_fallback_results(
     route_values = tuple(routes)
     if any(not isinstance(route, RouteDecision) for route in route_values):
         raise TypeError("routes must contain RouteDecision values.")
+    if any(route.decision not in {"ACCEPT_PYTHON", "VISION_REQUIRED"} for route in route_values):
+        raise ValueError("routes contain an unsupported decision.")
+    for route in route_values:
+        _validate_route(route)
     vision_routes = tuple(route for route in route_values if route.decision == "VISION_REQUIRED")
     route_ids = [route.record_id for route in vision_routes]
     if len(set(route_ids)) != len(route_ids):
@@ -692,7 +823,15 @@ def ingest_vision_fallback_results(
     for route in vision_routes:
         _validate_vision_route(route)
 
-    job_values = tuple(jobs.values()) if isinstance(jobs, Mapping) else tuple(jobs)
+    if isinstance(jobs, Mapping):
+        for key, job in jobs.items():
+            if not isinstance(job, VisionFallbackJob):
+                raise TypeError("jobs must contain VisionFallbackJob values.")
+            if key != job.record_id:
+                raise ValueError(f"Vision fallback jobs mapping key does not match job.record_id: {key}.")
+        job_values = tuple(jobs.values())
+    else:
+        job_values = tuple(jobs)
     if any(not isinstance(job, VisionFallbackJob) for job in job_values):
         raise TypeError("jobs must contain VisionFallbackJob values.")
     job_ids = [job.record_id for job in job_values]
@@ -701,10 +840,17 @@ def ingest_vision_fallback_results(
     if set(job_ids) != set(route_ids):
         raise ValueError("Vision fallback requires exactly one current job per VISION_REQUIRED route.")
     jobs_by_id = {job.record_id: job for job in job_values}
+    current_by_number = _evidence_index(
+        _current_prepared_evidence(Path(work_root)), "current source evidence"
+    )
     for record_id, job in jobs_by_id.items():
         _validate_job(job)
         if job.route_sha256 != route_by_id[record_id].route_sha256:
             raise ValueError(f"Vision fallback job is stale against route {record_id}.")
+        current = current_by_number.get(job.question_number)
+        if current is None:
+            raise ValueError(f"Current source evidence is missing job {record_id}.")
+        _validate_job_against_current_evidence(job, current)
 
     directory = Path(results_dir)
     inventory = _result_inventory(directory, set(job_ids))
@@ -715,7 +861,11 @@ def ingest_vision_fallback_results(
         if result_path is None:
             pending += 1
             continue
-        results.append(ingest_vision_fallback_result(jobs_by_id[record_id], result_path))
+        results.append(
+            _ingest_result_against_current(
+                jobs_by_id[record_id], result_path, current_by_number[jobs_by_id[record_id].question_number]
+            )
+        )
 
     if pending == 0:
         _write_jsonl(

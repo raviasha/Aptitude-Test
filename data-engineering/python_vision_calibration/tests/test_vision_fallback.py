@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -22,6 +23,7 @@ from python_vision_calibration.vision_fallback import (
     ingest_vision_fallback_results,
 )
 from textbook_chapters_v2.models import CropBox, RecordEvidence, SourceCrop
+from textbook_chapters_v2.config import ChapterConfig
 
 
 def canonical_json(value: object) -> str:
@@ -39,6 +41,12 @@ class VisionFallbackTests(unittest.TestCase):
         self.crop_root = self.root / "crops"
         self.crop_root.mkdir()
         self.evidence = (self.record_evidence(44),)
+        self.prepare_source_patcher = patch(
+            "python_vision_calibration.vision_fallback.prepare_source_evidence",
+            return_value=list(self.evidence),
+        )
+        self.prepare_source = self.prepare_source_patcher.start()
+        self.addCleanup(self.prepare_source_patcher.stop)
         self.accept_route = self.route("ACCEPT_PYTHON")
         self.vision_route = self.route("VISION_REQUIRED")
         self.job = create_vision_fallback_job(
@@ -241,6 +249,7 @@ class VisionFallbackTests(unittest.TestCase):
             source_reasons=("The textbook prints no complete solution.",),
             requires_reviewed_rejection=True,
         )
+        self.prepare_source.return_value = [incomplete]
         job = create_vision_fallback_job(self.vision_route, incomplete, self.root / "incomplete-job.json")
         payload = self.valid_vision_result()
         payload.update({
@@ -268,6 +277,68 @@ class VisionFallbackTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "crop hash"):
             create_vision_fallback_job(self.vision_route, evidence, self.root / "stale.json")
 
+    def test_configured_missing_or_incomplete_source_cannot_be_forged_complete(self) -> None:
+        config = ChapterConfig.load(
+            PROJECT_ROOT / "data-engineering" / "textbook_chapters_v2" / "configs" / "chapter-001.json"
+        )
+        for number in (365, 366):
+            with self.subTest(number=number):
+                issue = config.extras["known_source_issues"][str(number)]
+                source_overrides: dict[str, object] = {}
+                if number == 365:
+                    source_overrides["solution_crops"] = ()
+                current = self.record_evidence(
+                    number,
+                    source_status=issue["status"],
+                    source_reasons=(f"{issue['reason']}: {issue['detail']}",),
+                    requires_reviewed_rejection=True,
+                    **source_overrides,
+                )
+                forged = replace(
+                    current,
+                    solution_crops=current.solution_crops or (self.crop("solution", number, "forged-solution"),),
+                    source_status="complete",
+                    source_reasons=(),
+                    requires_reviewed_rejection=False,
+                    dependency_fingerprint="9" * 64,
+                )
+                self.prepare_source.return_value = [current]
+
+                with self.assertRaisesRegex(ValueError, "current source evidence"):
+                    create_vision_fallback_job(
+                        self.route("VISION_REQUIRED", record_id=f"ch01-q{number:04d}"),
+                        forged,
+                        self.root / f"q{number:04d}.json",
+                    )
+
+    def test_wrong_pdf_and_forged_provenance_or_fingerprint_are_rejected(self) -> None:
+        wrong_pdf = self.root / "wrong.pdf"
+        wrong_pdf.write_bytes(b"not the configured textbook")
+        forged_crop = replace(self.evidence[0].question_crops[0], page_number=999)
+        cases = (
+            replace(self.evidence[0], source_pdf=wrong_pdf),
+            replace(self.evidence[0], question_crops=(forged_crop,)),
+            replace(self.evidence[0], boundary_review={"question:44": {"forged": True}}),
+            replace(self.evidence[0], dependency_fingerprint="9" * 64),
+        )
+        for supplied in cases:
+            with self.subTest(supplied=supplied):
+                with self.assertRaisesRegex(ValueError, "current source evidence"):
+                    create_vision_fallback_job(self.vision_route, supplied, self.root / "forged.json")
+
+    def test_ingestion_rechecks_job_against_fresh_current_source_evidence(self) -> None:
+        changed = replace(
+            self.evidence[0],
+            source_status="incomplete_solution",
+            source_reasons=("textbook_solution_incomplete: source policy changed",),
+            requires_reviewed_rejection=True,
+            dependency_fingerprint="9" * 64,
+        )
+        self.prepare_source.return_value = [changed]
+
+        with self.assertRaisesRegex(ValueError, "current source evidence"):
+            ingest_vision_fallback_result(self.job, self.write(self.valid_vision_result()))
+
     def test_one_shot_route_iterable_cannot_hide_an_invalid_route_value(self) -> None:
         routes = (item for item in (self.vision_route, object()))
 
@@ -288,6 +359,7 @@ class VisionFallbackTests(unittest.TestCase):
     def test_directory_ingestion_is_resumable_and_writes_only_terminal_results(self) -> None:
         later_route = self.route("VISION_REQUIRED", record_id="ch01-q0045")
         later_evidence = self.record_evidence(45)
+        self.prepare_source.return_value = [*self.evidence, later_evidence]
         jobs = create_vision_fallback_jobs((self.vision_route, later_route), (*self.evidence, later_evidence), self.root)
         results_dir = self.root / "vision-results"
         results_dir.mkdir()
@@ -333,6 +405,50 @@ class VisionFallbackTests(unittest.TestCase):
         (results_dir / "ch01-q0044.JSON").write_text(canonical_json(self.valid_vision_result()), encoding="utf-8")
         with self.assertRaisesRegex(ValueError, "noncanonical"):
             ingest_vision_fallback_results((self.vision_route,), jobs, results_dir, self.root)
+
+    def test_aggregate_rejects_unsupported_route_before_filtering_and_preserves_output(self) -> None:
+        output = self.root / "vision" / "vision-results.jsonl"
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text("prior-complete\n", encoding="utf-8")
+        invalid_route = self.route("UNSUPPORTED", record_id="ch01-q0045")
+        results_dir = self.root / "unsupported-results"
+        results_dir.mkdir()
+        (results_dir / "ch01-q0044.json").write_text(canonical_json(self.valid_vision_result()), encoding="utf-8")
+
+        with self.assertRaisesRegex(ValueError, "decision"):
+            ingest_vision_fallback_results(
+                (self.vision_route, invalid_route), {self.job.record_id: self.job}, results_dir, self.root
+            )
+        self.assertEqual(output.read_text(encoding="utf-8"), "prior-complete\n")
+
+    def test_aggregate_validates_accept_route_hash_before_filtering(self) -> None:
+        output = self.root / "vision" / "vision-results.jsonl"
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text("prior-complete\n", encoding="utf-8")
+        stale_accept = replace(self.accept_route, route_sha256="0" * 64)
+        results_dir = self.root / "stale-accept-results"
+        results_dir.mkdir()
+        (results_dir / "ch01-q0044.json").write_text(canonical_json(self.valid_vision_result()), encoding="utf-8")
+
+        with self.assertRaisesRegex(ValueError, "route hash"):
+            ingest_vision_fallback_results(
+                (stale_accept, self.vision_route), {self.job.record_id: self.job}, results_dir, self.root
+            )
+        self.assertEqual(output.read_text(encoding="utf-8"), "prior-complete\n")
+
+    def test_aggregate_rejects_mapping_key_that_differs_from_job_record_id(self) -> None:
+        output = self.root / "vision" / "vision-results.jsonl"
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text("prior-complete\n", encoding="utf-8")
+        results_dir = self.root / "mapping-results"
+        results_dir.mkdir()
+        (results_dir / "ch01-q0044.json").write_text(canonical_json(self.valid_vision_result()), encoding="utf-8")
+
+        with self.assertRaisesRegex(ValueError, "mapping key"):
+            ingest_vision_fallback_results(
+                (self.vision_route,), {"ch01-q9999": self.job}, results_dir, self.root
+            )
+        self.assertEqual(output.read_text(encoding="utf-8"), "prior-complete\n")
 
 
 if __name__ == "__main__":

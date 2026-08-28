@@ -11,5 +11,6 @@ build/
 dist/
 release/
 .build-venv/
+.worktrees/
 *-dataless-backup/
 *-dataless-backup.md

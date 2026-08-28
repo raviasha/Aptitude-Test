@@ -14,8 +14,14 @@ if str(DATA_ENGINEERING) not in sys.path:
     sys.path.insert(0, str(DATA_ENGINEERING))
 
 from python_vision_calibration.baseline import (
+    _answer_evidence_from_words,
     _candidate_from_question_region,
+    _missing_solution_source_evidence,
+    _prefer_dotted_source_markers,
     _raw_config,
+    _source_marker_candidates_from_words,
+    _source_marker_page_words,
+    _source_region_digest,
     _with_missing_raw_candidate,
     build_raw_baseline,
     build_raw_baseline_from_fixture,
@@ -126,6 +132,186 @@ class RawBaselineTests(unittest.TestCase):
         )
 
         self.assertIn("isolated_gutter_glyph", record["baseline_failures"])
+
+    def test_bare_margin_solution_number_is_a_source_marker_candidate(self) -> None:
+        words = [
+            {"text": "196.", "x0": 48.25, "top": 487.41, "size": 9.0},
+            {"text": "197", "x0": 48.25, "top": 563.01, "size": 9.0},
+            {"text": "198.", "x0": 48.25, "top": 584.61, "size": 9.0},
+            {"text": "197", "x0": 150.0, "top": 563.01, "size": 9.0},
+        ]
+
+        candidates = _source_marker_candidates_from_words(
+            words,
+            page_number=49,
+            minimum_size=7.5,
+            maximum_size=10.5,
+        )
+
+        self.assertIn((197, 49, 48.25, 563.01), candidates)
+        self.assertNotIn((197, 49, 150.0, 563.01), candidates)
+
+    def test_dotted_solution_marker_wins_over_earlier_bare_table_value(self) -> None:
+        candidates = [
+            (5, 71, 57.25, 652.083),
+            (6, 71, 72.747, 665.326),
+            (6, 72, 48.25, 88.0),
+            (7, 72, 48.25, 130.0),
+        ]
+
+        selected = _prefer_dotted_source_markers(
+            candidates,
+            bare_coordinates={(71, 72.747, 665.326)},
+        )
+
+        self.assertNotIn((6, 71, 72.747, 665.326), selected)
+        self.assertIn((6, 72, 48.25, 88.0), selected)
+
+    def test_horizontal_solution_grid_numbers_are_source_marker_candidates(self) -> None:
+        words = [
+            {"text": "27.", "x0": 52.75, "top": 287.8, "size": 9.0},
+            {"text": "28.", "x0": 138.75, "top": 287.8, "size": 9.0},
+            {"text": "29.", "x0": 230.75, "top": 287.8, "size": 9.0},
+            {"text": "42.", "x0": 320.95, "top": 125.4, "size": 9.0},
+        ]
+
+        candidates = _source_marker_candidates_from_words(
+            words,
+            page_number=96,
+            minimum_size=7.5,
+            maximum_size=10.5,
+        )
+
+        self.assertEqual(
+            [candidate for candidate in candidates if candidate[0] in {27, 28, 29}],
+            [
+                (27, 96, 52.75, 287.8),
+                (28, 96, 138.75, 287.8),
+                (29, 96, 230.75, 287.8),
+            ],
+        )
+
+    def test_solution_marker_scan_starts_after_solutions_heading(self) -> None:
+        words = [
+            {"text": "ANSWERS", "top": 80.125, "bottom": 92.125, "size": 12.0},
+            {"text": "1.", "top": 102.18, "bottom": 112.18, "size": 10.0},
+            {"text": "SOLUTIONS", "top": 349.244, "bottom": 361.244, "size": 12.0},
+            {"text": "1.", "top": 373.0, "bottom": 383.0, "size": 9.0},
+        ]
+
+        selected = _source_marker_page_words(words, stop_at_answers=False)
+
+        self.assertEqual([word["top"] for word in selected], [373.0])
+
+    def test_answer_key_uses_word_geometry_when_flat_text_splits_number(self) -> None:
+        words = [
+            {"text": "10.", "x0": 512.58, "x1": 530.0, "top": 230.63, "bottom": 241.0},
+            {"text": "(d)", "x0": 534.08, "x1": 548.0, "top": 230.77, "bottom": 241.0},
+            {"text": "11.", "x0": 54.58, "x1": 69.0, "top": 248.33, "bottom": 259.0},
+            {"text": "(b)", "x0": 71.08, "x1": 84.0, "top": 248.47, "bottom": 259.0},
+            {"text": "12.", "x0": 104.58, "x1": 120.0, "top": 248.33, "bottom": 259.0},
+            {"text": "(d)", "x0": 122.08, "x1": 135.0, "top": 248.47, "bottom": 259.0},
+        ]
+
+        found = _answer_evidence_from_words(
+            words,
+            page_number=152,
+            pdf_sha256="a" * 64,
+            total=545,
+        )
+
+        self.assertEqual(found[11]["answer"], "B")
+        self.assertEqual(found[12]["answer"], "D")
+
+    def test_answer_key_reconstructs_split_parenthesized_label_glyphs(self) -> None:
+        words = [
+            {"text": "401.", "x0": 48.5, "x1": 66.0, "top": 270.001, "bottom": 280.001},
+            {"text": "(", "x0": 70.0, "x1": 73.33, "top": 270.271, "bottom": 280.271},
+            {"text": "a", "x0": 73.3301, "x1": 77.7701, "top": 270.141, "bottom": 280.141},
+            {"text": ")", "x0": 77.7686, "x1": 81.0986, "top": 270.271, "bottom": 280.271},
+        ]
+
+        found = _answer_evidence_from_words(
+            words,
+            page_number=153,
+            pdf_sha256="a" * 64,
+            total=545,
+        )
+
+        self.assertEqual(found[401]["answer"], "A")
+
+    def test_missing_numbered_solution_has_hash_bound_source_gap_evidence(self) -> None:
+        first = _missing_solution_source_evidence(
+            pdf_sha256="a" * 64,
+            number=365,
+            previous=(57, 315.25, 697.646),
+            following=(58, 48.25, 201.072),
+        )
+        changed_neighbor = _missing_solution_source_evidence(
+            pdf_sha256="a" * 64,
+            number=365,
+            previous=(57, 315.25, 697.646),
+            following=(58, 48.25, 249.972),
+        )
+
+        self.assertNotEqual(first["sha256"], changed_neighbor["sha256"])
+        self.assertEqual(first["status"], "missing_numbered_solution")
+
+    def test_answer_and_solution_hashes_change_only_with_their_own_source_evidence(self) -> None:
+        answer_words = [
+            {"text": "11.", "x0": 54.58, "x1": 69.0, "top": 248.33, "bottom": 259.0},
+            {"text": "(b)", "x0": 71.08, "x1": 84.0, "top": 248.47, "bottom": 259.0},
+            {"text": "12.", "x0": 104.58, "x1": 120.0, "top": 248.33, "bottom": 259.0},
+            {"text": "(d)", "x0": 122.08, "x1": 135.0, "top": 248.47, "bottom": 259.0},
+        ]
+        first_answers = _answer_evidence_from_words(
+            answer_words,
+            page_number=152,
+            pdf_sha256="a" * 64,
+            total=545,
+        )
+        changed_words = [dict(word) for word in answer_words]
+        changed_words[1]["text"] = "(c)"
+        second_answers = _answer_evidence_from_words(
+            changed_words,
+            page_number=152,
+            pdf_sha256="a" * 64,
+            total=545,
+        )
+
+        self.assertNotEqual(first_answers[11]["sha256"], second_answers[11]["sha256"])
+        self.assertEqual(first_answers[12]["sha256"], second_answers[12]["sha256"])
+
+        first_solution = _source_region_digest(
+            pdf_sha256="a" * 64,
+            role="solution",
+            number=28,
+            page=96,
+            box=[134.0, 285.8, 226.75, 418.0],
+            text="28. 636.66",
+            words=[{"text": "28.", "x0": 138.75, "top": 287.8}],
+        )
+        changed_solution = _source_region_digest(
+            pdf_sha256="a" * 64,
+            role="solution",
+            number=28,
+            page=96,
+            box=[134.0, 285.8, 226.75, 418.0],
+            text="28. 636.67",
+            words=[{"text": "28.", "x0": 138.75, "top": 287.8}],
+        )
+        other_solution = _source_region_digest(
+            pdf_sha256="a" * 64,
+            role="solution",
+            number=29,
+            page=96,
+            box=[226.75, 285.8, 306.0, 418.0],
+            text="29. 24.424",
+            words=[{"text": "29.", "x0": 230.75, "top": 287.8}],
+        )
+
+        self.assertNotEqual(first_solution, changed_solution)
+        self.assertNotEqual(first_solution, other_solution)
 
     def test_fixture_requires_explicit_record_id_and_source_identity(self) -> None:
         no_id = dict(self.raw_records[0])
@@ -307,7 +493,7 @@ class RawBaselineTests(unittest.TestCase):
         self.assertEqual(records[0].source_hashes["question"], ("q142-question",))
         self.assertNotEqual(records[0].baseline_sha256, "")
 
-    def test_real_chapters_one_through_four_are_source_extracted_or_explicitly_blocked(self) -> None:
+    def test_real_chapters_one_through_four_build_source_anchored_baselines(self) -> None:
         source_pdf = (
             PROJECT_ROOT
             / "data-engineering"
@@ -317,16 +503,15 @@ class RawBaselineTests(unittest.TestCase):
 
         for chapter, total in expected_totals.items():
             chapter_work = self.work_root / f"chapter-{chapter:03d}"
-            try:
-                records = build_raw_baseline(chapter, source_pdf, chapter_work)
-            except ValueError as error:
-                self.assertRegex(str(error), rf"source-association blocker.*chapter {chapter}")
-                self.assertFalse((chapter_work / "baseline" / f"chapter-{chapter:03d}.jsonl").exists())
-            else:
-                self.assertEqual(len(records), total)
-                identity_hashes = [record.source_identity["question_region_sha256"] for record in records]
-                self.assertEqual(len(set(identity_hashes)), total)
-                self.assertTrue(all(record.source_identity["number"] == number for number, record in enumerate(records, 1)))
+            records = build_raw_baseline(chapter, source_pdf, chapter_work)
+            self.assertEqual(len(records), total)
+            identity_hashes = [record.source_identity["question_region_sha256"] for record in records]
+            self.assertEqual(len(set(identity_hashes)), total)
+            self.assertTrue(all(record.source_identity["number"] == number for number, record in enumerate(records, 1)))
+            if chapter == 1:
+                self.assertNotIn("missing_solution_source", records[196].candidate.get("baseline_failures", []))
+                self.assertIn("missing_solution_source", records[364].candidate["baseline_failures"])
+                self.assertIn("missing_solution_source", records[365].candidate["baseline_failures"])
 
     def test_malformed_nonempty_raw_fields_are_explicit_baseline_failures(self) -> None:
         raw = dict(self.raw_records[0])

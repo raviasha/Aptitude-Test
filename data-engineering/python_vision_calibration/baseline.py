@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 import pdfplumber
-from pypdf import PdfReader
 
 from textbook_chapters import build as legacy_build
 
@@ -19,7 +18,7 @@ from .models import RawBaselineRecord
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 LEGACY_ROOT = PROJECT_ROOT / "data-engineering" / "textbook_chapters"
-RAW_EXTRACTOR_VERSION = "source-region-python-raw-v2"
+RAW_EXTRACTOR_VERSION = "source-region-python-raw-v3"
 
 _CANDIDATE_FIELDS = (
     "key",
@@ -49,6 +48,47 @@ def _sha256_path(path: Path) -> str:
 
 def _canonical_hash(value: object) -> str:
     return _sha256_bytes(_canonical_bytes(value))
+
+
+def _source_region_digest(
+    *,
+    pdf_sha256: str,
+    role: str,
+    number: int,
+    page: int,
+    box: list[float],
+    text: str,
+    words: list[dict[str, object]],
+) -> str:
+    """Hash only the literal source region bound to one record and role."""
+    return _canonical_hash({
+        "pdf_sha256": pdf_sha256,
+        "role": role,
+        "number": number,
+        "page": page,
+        "box": box,
+        "text": text,
+        "words": words,
+    })
+
+
+def _missing_solution_source_evidence(
+    *,
+    pdf_sha256: str,
+    number: int,
+    previous: tuple[int, float, float] | None,
+    following: tuple[int, float, float] | None,
+) -> dict[str, object]:
+    """Bind an absent numbered solution to its surrounding source anchors."""
+    evidence = {
+        "pdf_sha256": pdf_sha256,
+        "role": "solution",
+        "number": number,
+        "status": "missing_numbered_solution",
+        "previous_marker": list(previous) if previous is not None else None,
+        "following_marker": list(following) if following is not None else None,
+    }
+    return {"status": "missing_numbered_solution", "sha256": _canonical_hash(evidence)}
 
 
 def _atomic_write(path: Path, payload: bytes) -> None:
@@ -228,6 +268,130 @@ def _candidate_from_question_region(
     return raw
 
 
+def _source_marker_candidates_from_words(
+    words: Iterable[Mapping[str, object]],
+    *,
+    page_number: int,
+    minimum_size: float,
+    maximum_size: float,
+) -> list[tuple[int, int, float, float]]:
+    """Find printed record numbers without using any reviewed marker override.
+
+    Most textbook records begin in the two conventional margin bands.  A few
+    compact worked solutions form a horizontal grid, so dotted numbers on the
+    same baseline as a conventional marker are also source anchors.  Bare
+    numbers are accepted only in a conventional band; this covers PDF glyph
+    loss such as Chapter 1 solution 197 without admitting formula operands.
+    """
+    parsed: list[tuple[int, float, float, float, bool]] = []
+    for word in words:
+        text = str(word.get("text", ""))
+        match = re.fullmatch(r"(\d+)(\.)?", text)
+        if not match:
+            continue
+        try:
+            x0 = float(word["x0"])
+            top = float(word["top"])
+            size = float(word["size"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not (minimum_size <= size <= maximum_size):
+            continue
+        parsed.append((int(match.group(1)), x0, top, size, match.group(2) == "."))
+
+    conventional = lambda x0: 35 <= x0 <= 75 or 300 <= x0 <= 340
+    selected: list[tuple[int, int, float, float]] = []
+    for number, x0, top, _size, dotted in parsed:
+        if conventional(x0):
+            selected.append((number, page_number, x0, top))
+            continue
+        if not dotted or not (35 <= x0 < 300):
+            continue
+        same_row = [
+            candidate
+            for candidate in parsed
+            if candidate[4]
+            and candidate[1] < 300
+            and abs(candidate[2] - top) <= 1.0
+        ]
+        if any(conventional(candidate[1]) for candidate in same_row) and len(same_row) >= 2:
+            selected.append((number, page_number, x0, top))
+
+    unique = {(number, page, round(x0, 6), round(top, 6)) for number, page, x0, top in selected}
+    return sorted(unique, key=lambda item: (0 if item[2] < 300 else 1, item[3], item[2]))
+
+
+def _prefer_dotted_source_markers(
+    candidates: Iterable[tuple[int, int, float, float]],
+    *,
+    bare_coordinates: set[tuple[int, float, float]],
+) -> list[tuple[int, int, float, float]]:
+    """Discard a bare numeric lookalike when the same dotted marker exists."""
+    candidate_list = list(candidates)
+    dotted_numbers = {
+        number
+        for number, page, x0, top in candidate_list
+        if (page, round(x0, 6), round(top, 6)) not in bare_coordinates
+    }
+    return [
+        candidate
+        for candidate in candidate_list
+        if candidate[0] not in dotted_numbers
+        or (candidate[1], round(candidate[2], 6), round(candidate[3], 6)) not in bare_coordinates
+    ]
+
+
+def _source_marker_page_words(
+    words: Iterable[Mapping[str, object]],
+    *,
+    stop_at_answers: bool,
+) -> list[Mapping[str, object]]:
+    word_list = list(words)
+    if stop_at_answers:
+        answer_tops = [
+            float(word["top"])
+            for word in word_list
+            if str(word["text"]).upper() == "ANSWERS" and float(word["size"]) >= 11.5
+        ]
+        cutoff = min(answer_tops) if answer_tops else float("inf")
+        return [word for word in word_list if float(word["top"]) < cutoff]
+    solution_bottoms = [
+        float(word["bottom"])
+        for word in word_list
+        if str(word["text"]).upper() == "SOLUTIONS" and float(word["size"]) >= 11.5
+    ]
+    start = max(solution_bottoms) if solution_bottoms else 0.0
+    return [word for word in word_list if float(word["top"]) > start]
+
+
+def _source_marker_candidates(
+    source_pdf: Path,
+    pages: range,
+    *,
+    minimum_size: float,
+    maximum_size: float,
+    stop_at_answers: bool,
+) -> list[tuple[int, int, float, float]]:
+    candidates: list[tuple[int, int, float, float]] = []
+    bare_coordinates: set[tuple[int, float, float]] = set()
+    with pdfplumber.open(source_pdf) as document:
+        for page_number in pages:
+            words = document.pages[page_number - 1].extract_words(extra_attrs=["size"])
+            page_words = _source_marker_page_words(words, stop_at_answers=stop_at_answers)
+            bare_coordinates.update(
+                (page_number, round(float(word["x0"]), 6), round(float(word["top"]), 6))
+                for word in page_words
+                if re.fullmatch(r"\d+", str(word["text"]))
+            )
+            candidates.extend(_source_marker_candidates_from_words(
+                page_words,
+                page_number=page_number,
+                minimum_size=minimum_size,
+                maximum_size=maximum_size,
+            ))
+    return _prefer_dotted_source_markers(candidates, bare_coordinates=bare_coordinates)
+
+
 def _region_box(
     page: pdfplumber.page.Page,
     *,
@@ -237,7 +401,40 @@ def _region_box(
     stop_at_answers: bool,
 ) -> tuple[float, float, float, float]:
     page_number, x0, top = marker
-    left_column = x0 < page.width / 2
+    half = float(page.width / 2)
+    left_column = x0 < half
+    same_row = sorted(
+        (
+            (later_number, marker_x0)
+            for later_number, (marker_page, marker_x0, marker_top) in markers.items()
+            if marker_page == page_number
+            and (marker_x0 < half) == left_column
+            and abs(marker_top - top) <= 1.5
+        ),
+        key=lambda item: item[1],
+    )
+    horizontal_grid = len(same_row) > 1
+    if horizontal_grid:
+        position = next(index for index, item in enumerate(same_row) if item[0] == number)
+        left = (20.0 if left_column else half - 8) if position == 0 else max(
+            same_row[position][1] - 4.0,
+            same_row[position - 1][1] + 4.0,
+        )
+        right = (
+            same_row[position + 1][1] - 4.0
+            if position + 1 < len(same_row)
+            else (half + 8 if left_column else float(page.width - 20))
+        )
+        following = [
+            marker_top
+            for later_number, (marker_page, marker_x0, marker_top) in markers.items()
+            if later_number > number
+            and marker_page == page_number
+            and marker_top > top + 1.5
+            and left <= marker_x0 < right
+        ]
+        bottom = min(following) - 0.5 if following else page.height - 20
+        return (left, max(0.0, top - 2), right, min(float(page.height), bottom))
     following = [
         marker_top
         for later_number, (marker_page, marker_x0, marker_top) in markers.items()
@@ -255,8 +452,8 @@ def _region_box(
         ]
         if answer_tops:
             bottom = min(bottom, min(answer_tops) - 0.5)
-    left = 20.0 if left_column else float(page.width / 2 - 8)
-    right = float(page.width / 2 + 8) if left_column else float(page.width - 20)
+    left = 20.0 if left_column else half - 8
+    right = half + 8 if left_column else float(page.width - 20)
     return (left, max(0.0, top - 2), right, min(float(page.height), bottom))
 
 
@@ -292,15 +489,15 @@ def _source_region(
         for word in crop.extract_words()
     ]
     rounded_box = [round(float(value), 3) for value in box]
-    digest = _canonical_hash({
-        "pdf_sha256": pdf_sha256,
-        "role": role,
-        "number": number,
-        "page": page_number,
-        "box": rounded_box,
-        "text": text,
-        "words": words,
-    })
+    digest = _source_region_digest(
+        pdf_sha256=pdf_sha256,
+        role=role,
+        number=number,
+        page=page_number,
+        box=rounded_box,
+        text=text,
+        words=words,
+    )
     return {"page": page_number, "box": rounded_box, "text": text, "sha256": digest}
 
 
@@ -437,6 +634,93 @@ def build_raw_baseline_from_fixture(
     return records
 
 
+def _answer_evidence_from_words(
+    words: Iterable[Mapping[str, object]],
+    *,
+    page_number: int,
+    pdf_sha256: str,
+    total: int,
+) -> dict[int, dict[str, object]]:
+    word_list = list(words)
+    found: dict[int, dict[str, object]] = {}
+    for index, marker in enumerate(word_list):
+        marker_match = re.fullmatch(r"(\d+)\.", str(marker.get("text", "")))
+        if not marker_match:
+            continue
+        number = int(marker_match.group(1))
+        if not 1 <= number <= total:
+            continue
+        try:
+            marker_x1 = float(marker["x1"])
+            marker_top = float(marker["top"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        answer_words: list[Mapping[str, object]] | None = None
+        answer = ""
+        nearby = word_list[index + 1:index + 5]
+        for nearby_index, candidate in enumerate(nearby):
+            label_match = re.fullmatch(r"\(\s*([a-eA-E])\s*\)", str(candidate.get("text", "")))
+            candidate_words = [candidate]
+            if not label_match and str(candidate.get("text", "")) == "(" and nearby_index + 2 < len(nearby):
+                middle = nearby[nearby_index + 1]
+                closing = nearby[nearby_index + 2]
+                split_match = re.fullmatch(r"([a-eA-E])", str(middle.get("text", "")))
+                if split_match and str(closing.get("text", "")) == ")":
+                    try:
+                        contiguous = (
+                            abs(float(middle["x0"]) - float(candidate["x1"])) <= 1.0
+                            and abs(float(closing["x0"]) - float(middle["x1"])) <= 1.0
+                            and max(
+                                abs(float(middle["top"]) - marker_top),
+                                abs(float(closing["top"]) - marker_top),
+                            ) <= 2.0
+                        )
+                    except (KeyError, TypeError, ValueError):
+                        contiguous = False
+                    if contiguous:
+                        label_match = split_match
+                        candidate_words = [candidate, middle, closing]
+            if not label_match:
+                continue
+            try:
+                candidate_x0 = float(candidate["x0"])
+                candidate_top = float(candidate["top"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if marker_x1 - 1.0 <= candidate_x0 <= marker_x1 + 30.0 and abs(candidate_top - marker_top) <= 2.0:
+                answer_words = candidate_words
+                answer = label_match.group(1).upper()
+                break
+        if answer_words is None:
+            continue
+        literal_words = [
+            {
+                "text": str(value.get("text", "")),
+                "x0": round(float(value["x0"]), 3),
+                "top": round(float(value["top"]), 3),
+                "x1": round(float(value["x1"]), 3),
+                "bottom": round(float(value["bottom"]), 3),
+            }
+            for value in (marker, *answer_words)
+        ]
+        evidence = {
+            "answer": answer,
+            "page": page_number,
+            "sha256": _canonical_hash({
+                "pdf_sha256": pdf_sha256,
+                "role": "answer_key",
+                "number": number,
+                "page": page_number,
+                "literal_words": literal_words,
+            }),
+        }
+        previous = found.get(number)
+        if previous is not None and previous != evidence:
+            raise ValueError(f"ambiguous answer-key source records for {number} on page {page_number}.")
+        found[number] = evidence
+    return found
+
+
 def _answer_key_source_evidence(
     source_pdf: Path,
     *,
@@ -445,27 +729,33 @@ def _answer_key_source_evidence(
     pdf_sha256: str,
     chapter: int,
 ) -> dict[int, dict[str, object]]:
-    reader = PdfReader(str(source_pdf))
     found: dict[int, dict[str, object]] = {}
-    for page_number in answer_pages:
-        page_text = reader.pages[page_number - 1].extract_text() or ""
-        for match in re.finditer(r"(?<!\d)(\d+)\.\s*\(\s*([a-eA-E])\s*\)", page_text):
-            number = int(match.group(1))
-            if not 1 <= number <= total or number in found:
-                continue
-            answer = match.group(2).upper()
-            found[number] = {
-                "answer": answer,
-                "page": page_number,
-                "sha256": _canonical_hash({
-                    "pdf_sha256": pdf_sha256,
-                    "role": "answer_key",
-                    "number": number,
-                    "page": page_number,
-                    "literal": match.group(0),
-                    "page_text_sha256": _sha256_bytes(page_text.encode("utf-8")),
-                }),
-            }
+    with pdfplumber.open(source_pdf) as document:
+        for page_number in answer_pages:
+            words = document.pages[page_number - 1].extract_words(extra_attrs=["size"])
+            answer_headings = [
+                float(word["bottom"])
+                for word in words
+                if str(word["text"]).upper() == "ANSWERS" and float(word["size"]) >= 11.5
+            ]
+            solution_headings = [
+                float(word["top"])
+                for word in words
+                if str(word["text"]).upper() == "SOLUTIONS" and float(word["size"]) >= 11.5
+            ]
+            start = max(answer_headings) if answer_headings else 0.0
+            end = min(solution_headings) if solution_headings else float("inf")
+            page_found = _answer_evidence_from_words(
+                [word for word in words if start < float(word["top"]) < end],
+                page_number=page_number,
+                pdf_sha256=pdf_sha256,
+                total=total,
+            )
+            for number, evidence in page_found.items():
+                previous = found.get(number)
+                if previous is not None and previous["answer"] != evidence["answer"]:
+                    raise ValueError(f"ambiguous answer-key source records for {number}.")
+                found.setdefault(number, evidence)
     missing = sorted(set(range(1, total + 1)) - set(found))
     if missing:
         raise ValueError(
@@ -484,7 +774,7 @@ def _raw_source_records(chapter: int, source_pdf: Path) -> tuple[dict[str, objec
     total = int(raw_config["printed_question_count"])
     chapter_name = str(raw_config["chapter_name"])
     try:
-        question_candidates = legacy_build._marker_candidates(
+        question_candidates = _source_marker_candidates(
             source_pdf,
             range(int(raw_config["question_pages"][0]), int(raw_config["question_pages"][1]) + 1),
             minimum_size=8.5,
@@ -496,14 +786,19 @@ def _raw_source_records(chapter: int, source_pdf: Path) -> tuple[dict[str, objec
         raise ValueError(f"source-association blocker for chapter {chapter}: question markers: {error}") from error
     source_pdf_hash = _sha256_path(source_pdf)
     try:
-        solution_candidates = legacy_build._marker_candidates(
+        solution_candidates = _source_marker_candidates(
             source_pdf,
             range(int(raw_config["solution_pages"][0]), int(raw_config["solution_pages"][1]) + 1),
             minimum_size=7.5,
             maximum_size=10.5,
             stop_at_answers=False,
         )
-        solutions = legacy_build._select_markers(solution_candidates, total)
+        missing_solution_numbers = set(range(1, total + 1)) - {candidate[0] for candidate in solution_candidates}
+        solutions = legacy_build._select_markers(
+            solution_candidates,
+            total,
+            allowed_missing=missing_solution_numbers,
+        )
     except ValueError as error:
         raise ValueError(f"source-association blocker for chapter {chapter}: solution markers: {error}") from error
     answers = _answer_key_source_evidence(
@@ -525,15 +820,17 @@ def _raw_source_records(chapter: int, source_pdf: Path) -> tuple[dict[str, objec
                 role="question",
                 stop_at_answers=True,
             )
-            solution_region = _source_region(
-                document,
-                number=number,
-                marker=solutions[number],
-                markers=solutions,
-                pdf_sha256=source_pdf_hash,
-                role="solution",
-                stop_at_answers=False,
-            )
+            solution_region = None
+            if number in solutions:
+                solution_region = _source_region(
+                    document,
+                    number=number,
+                    marker=solutions[number],
+                    markers=solutions,
+                    pdf_sha256=source_pdf_hash,
+                    role="solution",
+                    stop_at_answers=False,
+                )
             identity = {
                 "number": number,
                 "question_region_sha256": question_region["sha256"],
@@ -547,15 +844,31 @@ def _raw_source_records(chapter: int, source_pdf: Path) -> tuple[dict[str, objec
                 identity=identity,
                 region_text=str(question_region["text"]),
             )
-            solution_text = legacy_build.normalize_extracted_text(str(solution_region["text"]))
-            solution_text = re.sub(rf"^\s*{number}\s*\.\s*", "", solution_text, count=1)
+            if solution_region is not None:
+                solution_text = legacy_build.normalize_extracted_text(str(solution_region["text"]))
+                solution_text = re.sub(rf"^\s*{number}\s*\.\s*", "", solution_text, count=1)
+                solution_hash = str(solution_region["sha256"])
+            else:
+                previous_number = max((value for value in solutions if value < number), default=None)
+                following_number = min((value for value in solutions if value > number), default=None)
+                missing_evidence = _missing_solution_source_evidence(
+                    pdf_sha256=source_pdf_hash,
+                    number=number,
+                    previous=solutions.get(previous_number) if previous_number is not None else None,
+                    following=solutions.get(following_number) if following_number is not None else None,
+                )
+                solution_text = ""
+                solution_hash = str(missing_evidence["sha256"])
+                failures = raw_record.setdefault("baseline_failures", [])
+                if isinstance(failures, list):
+                    failures.append("missing_solution_source")
             raw_record.update({
                 "correct_answer": answers[number]["answer"],
                 "solution_steps": [line.strip() for line in solution_text.splitlines() if line.strip()],
                 "source_association": {
                     "question": [question_region["sha256"]],
                     "answer": [answers[number]["sha256"]],
-                    "solution": [solution_region["sha256"]],
+                    "solution": [solution_hash],
                 },
             })
             records.append(raw_record)

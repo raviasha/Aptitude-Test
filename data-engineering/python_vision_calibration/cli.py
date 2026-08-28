@@ -33,14 +33,14 @@ from .models import (
     VisionFallbackResult,
 )
 from .routing import ingest_agent_review_directory, resolve_agent_route
-from .vision_fallback import create_vision_fallback_jobs, ingest_vision_fallback_results
+from .vision_fallback import ingest_vision_fallback_results, prepare_vision_fallback_jobs
 from . import vision_fallback as _vision_protocol
 from .merge import merge_final_candidates
-from .audit import write_pilot_audit
+from .audit import PilotAuditSummary, write_pilot_audit
+from . import audit as _audit_protocol
 from .render_gate import render_all_candidates
 from textbook_chapters_v2.config import ChapterConfig
 from textbook_chapters_v2.models import PipelineBlocked
-from textbook_chapters_v2.source import prepare_source_evidence
 
 
 def build_pilot_candidate_package(*args: Any, **kwargs: Any) -> Any:
@@ -48,6 +48,13 @@ def build_pilot_candidate_package(*args: Any, **kwargs: Any) -> Any:
     from .pilot_package import build_pilot_candidate_package as build
 
     return build(*args, **kwargs)
+
+
+def authenticate_pilot_candidate_package(*args: Any, **kwargs: Any) -> Any:
+    """Lazily import the dependency-heavy candidate authentication boundary."""
+    from .pilot_package import authenticate_pilot_candidate_package as authenticate
+
+    return authenticate(*args, **kwargs)
 
 
 COMMANDS = (
@@ -453,11 +460,11 @@ def _agent_result_inventory(directory: Path) -> dict[str, Path]:
     unexpected: list[str] = []
     for path in sorted(directory.iterdir(), key=lambda item: item.name):
         if not path.is_file():
+            unexpected.append(path.name)
             continue
         record_id = expected.get(path.name.casefold())
         if record_id is None:
-            if path.suffix.lower() == ".json":
-                unexpected.append(path.name)
+            unexpected.append(path.name)
             continue
         inventory.setdefault(record_id, []).append(path)
     if unexpected:
@@ -598,12 +605,7 @@ def prepare_source_and_vision_jobs(
     v2_config: ChapterConfig,
     routes: tuple[RouteDecision, ...],
 ) -> tuple[tuple[Any, ...], dict[str, Any]]:
-    evidence = tuple(prepare_source_evidence(
-        v2_config,
-        config.source_pdf,
-        config.work_root / "vision" / "source-evidence",
-    ))
-    jobs = create_vision_fallback_jobs(routes, evidence, config.work_root)
+    evidence, jobs = prepare_vision_fallback_jobs(routes, config.work_root)
     expected = {route.record_id for route in routes if route.decision == "VISION_REQUIRED"}
     if set(jobs) != expected:
         raise PipelineBlocked("Vision job inventory does not exactly match the terminal vision routes.")
@@ -674,9 +676,209 @@ def finalize_stage(
     )
     if int(audit.counts.get("pending_render", 0)):
         raise PipelineBlocked("At least one accepted candidate is missing a complete finding-free render manifest.")
-    return build_pilot_candidate_package(
+    package = build_pilot_candidate_package(
         _package_config(config, v2_config), candidates, audit, config.candidate_path
     )
+    write_completion_evidence(config, audit, package)
+    return package
+
+
+def _completion_paths(config: PilotConfig) -> tuple[Path, Path]:
+    base = config.workspace_root / "data-engineering" / "python_vision_calibration"
+    return (
+        base / "audits" / "chapter-001-agent-triage.json",
+        base / "reports" / "chapter-001-agent-triage-summary.json",
+    )
+
+
+def validate_current_audit(
+    config: PilotConfig,
+    baselines: tuple[RawBaselineRecord, ...],
+    routes: tuple[RouteDecision, ...],
+    agent_jobs: Mapping[str, AgentReviewJob],
+    agent_results: Mapping[str, AgentReviewResult],
+    evidence: tuple[Any, ...],
+    vision_jobs: Mapping[str, Any],
+    vision_results: tuple[Any, ...],
+    candidates: tuple[Any, ...],
+) -> PilotAuditSummary:
+    """Reconstruct and authenticate the terminal full audit without writing it."""
+    path = config.work_root / "audit" / "chapter-001-agent-triage.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise PipelineBlocked("The authoritative terminal audit is missing or unreadable.") from error
+    persisted = _audit_protocol._validate_persisted(payload)
+    if path.read_bytes() != canonical_json_bytes(persisted, ensure_ascii=False):
+        raise PipelineBlocked("The authoritative terminal audit is noncanonical.")
+    baseline_by_id = {item.record_id: item for item in baselines}
+    route_by_id = {item.record_id: item for item in routes}
+    result_by_id = {item.record_id: item for item in vision_results}
+    candidate_by_id = {
+        f"ch{item.chapter:02d}-q{item.question_number:04d}": item for item in candidates
+    }
+    evidence_by_id = {
+        f"ch{item.chapter:02d}-q{item.question_number:04d}": item for item in evidence
+    }
+    persisted_by_id = {record["record_id"]: record for record in persisted["records"]}
+    if (
+        tuple(persisted["expected_record_ids"]) != EXPECTED_RECORD_IDS
+        or set(persisted_by_id) != set(EXPECTED_RECORD_IDS)
+        or set(baseline_by_id) != set(EXPECTED_RECORD_IDS)
+        or set(route_by_id) != set(EXPECTED_RECORD_IDS)
+        or set(agent_jobs) != set(EXPECTED_RECORD_IDS)
+        or set(agent_results) != set(EXPECTED_RECORD_IDS)
+    ):
+        raise PipelineBlocked("The terminal audit authority inventory is incomplete or stale.")
+    records = tuple(
+        _audit_protocol._record_payload(
+            record_id,
+            baseline_by_id[record_id],
+            agent_jobs[record_id],
+            agent_results[record_id],
+            route_by_id[record_id],
+            vision_jobs.get(record_id),
+            result_by_id.get(record_id),
+            candidate_by_id.get(record_id),
+            evidence_by_id,
+            persisted_by_id[record_id].get("render_manifest"),
+        )
+        for record_id in EXPECTED_RECORD_IDS
+    )
+    statuses = [record["status"] for record in records]
+    counts = {
+        "total_baselines": 380,
+        "python_accepts": sum(route.decision == "ACCEPT_PYTHON" for route in routes),
+        "vision_routes": sum(route.decision == "VISION_REQUIRED" for route in routes),
+        "vision_accepts": sum(result.decision == "VISION_ACCEPTED" for result in vision_results),
+        "quarantined": statuses.count("QUARANTINED"),
+        "included": len(candidates),
+        "pending_render": statuses.count("PENDING_RENDER"),
+    }
+    expected = _audit_protocol._audit_payload(EXPECTED_RECORD_IDS, records, counts)
+    if expected != persisted or canonical_json_bytes(expected, ensure_ascii=False) != path.read_bytes():
+        raise PipelineBlocked("The terminal audit is stale against current pipeline dependencies.")
+    return PilotAuditSummary(
+        path=path,
+        records=tuple(expected["records"]),
+        counts=expected["counts"],
+        dependency_fingerprint=expected["dependency_fingerprint"],
+        sha256=expected["audit_sha256"],
+    )
+
+
+def _completion_document(
+    config: PilotConfig, audit: Any, package: Any
+) -> tuple[bytes, dict[str, object]]:
+    published_before = _sha256_path(config.published_path)
+    if published_before != APPROVED_PUBLISHED_SHA256:
+        raise PipelineBlocked("The published Chapter 1 ZIP changed before evidence publication.")
+    audit_bytes = Path(audit.path).read_bytes()
+    audit_copy, _ = _completion_paths(config)
+    counts = dict(audit.counts)
+    manifest = dict(package.manifest)
+    core: dict[str, object] = {
+        "schema_version": 1,
+        "chapter": 1,
+        "config_path": config.config_path.relative_to(config.workspace_root).as_posix(),
+        "config_sha256": _sha256_path(config.config_path),
+        "source_pdf_sha256": config.source_pdf_sha256,
+        "agent_prompt": {
+            "version": config.agent_prompt_version,
+            "sha256": canonical_sha256(AGENT_REVIEW_PROMPT),
+        },
+        "total_baselines": int(counts["total_baselines"]),
+        "agent_terminal": int(counts["total_baselines"]),
+        "python_accepts": int(counts["python_accepts"]),
+        "vision_required": int(counts["vision_routes"]),
+        "vision_terminal": int(counts["vision_accepts"]) + int(counts["quarantined"]),
+        "vision_accepts": int(counts["vision_accepts"]),
+        "quarantined": int(counts["quarantined"]),
+        "included": int(counts["included"]),
+        "pending_render": int(counts["pending_render"]),
+        "candidate_path": config.candidate_path.relative_to(config.workspace_root).as_posix(),
+        "candidate_sha256": package.sha256,
+        "candidate_question_count": int(package.question_count),
+        "audit_path": audit_copy.relative_to(config.workspace_root).as_posix(),
+        "audit_sha256": hashlib.sha256(audit_bytes).hexdigest(),
+        "audit_content_sha256": audit.sha256,
+        "audit_dependency_fingerprint": audit.dependency_fingerprint,
+        "application_fingerprint": manifest.get("application_fingerprint"),
+        "renderer_fingerprint": manifest.get("renderer_fingerprint"),
+        "browser": manifest.get("browser"),
+        "record_bindings": manifest.get("records"),
+        "published_sha256_before": published_before,
+        "published_sha256_after": _sha256_path(config.published_path),
+    }
+    if core["published_sha256_after"] != published_before:
+        raise PipelineBlocked("The published Chapter 1 ZIP changed during evidence publication.")
+    summary = {**core, "dependency_fingerprint": canonical_sha256(core)}
+    return audit_bytes, summary
+
+
+def write_completion_evidence(
+    config: PilotConfig, audit: Any, package: Any
+) -> dict[str, object]:
+    """Write or byte-stably reuse the planned full audit copy and compact terminal summary."""
+    audit_bytes, summary = _completion_document(config, audit, package)
+    audit_copy, summary_path = _completion_paths(config)
+    expected_summary = canonical_json_bytes(summary)
+    for path, content in ((audit_copy, audit_bytes), (summary_path, expected_summary)):
+        if path.exists() and (not path.is_file() or path.read_bytes() != content):
+            raise PipelineBlocked(f"Existing completion evidence is stale or forged: {path}")
+        if not path.exists():
+            _atomic_bytes(path, content)
+    return summary
+
+
+def validate_completion_evidence(
+    config: PilotConfig, audit: Any, package: Any
+) -> dict[str, object] | None:
+    """Authenticate planned evidence files read-only; return None when crash recovery is needed."""
+    audit_bytes, summary = _completion_document(config, audit, package)
+    audit_copy, summary_path = _completion_paths(config)
+    expected = ((audit_copy, audit_bytes), (summary_path, canonical_json_bytes(summary)))
+    missing = False
+    for path, content in expected:
+        if not path.exists():
+            missing = True
+        elif not path.is_file() or path.read_bytes() != content:
+            raise PipelineBlocked(f"Existing completion evidence is stale or forged: {path}")
+    return None if missing else summary
+
+
+def authenticate_completed_pilot(
+    *,
+    config: PilotConfig,
+    v2_config: ChapterConfig,
+    baselines: tuple[RawBaselineRecord, ...],
+    routes: tuple[RouteDecision, ...],
+    agent_jobs: Mapping[str, AgentReviewJob],
+    agent_results: Mapping[str, AgentReviewResult],
+    evidence: tuple[Any, ...],
+    vision_jobs: Mapping[str, Any],
+    vision_results: tuple[Any, ...],
+) -> tuple[Any, PilotAuditSummary, dict[str, object] | None] | None:
+    """Authenticate a completed candidate and its current audit/evidence boundary read-only."""
+    if not config.candidate_path.exists():
+        return None
+    if not config.candidate_path.is_file():
+        raise PipelineBlocked("The candidate path exists but is not a file.")
+    candidates = merge_final_candidates(
+        baselines, routes, vision_results, evidence,
+        vision_jobs=vision_jobs, expected_record_ids=EXPECTED_RECORD_IDS,
+    )
+    if not candidates:
+        raise PipelineBlocked("An existing candidate cannot authenticate against zero accepted records.")
+    audit = validate_current_audit(
+        config, baselines, routes, agent_jobs, agent_results, evidence,
+        vision_jobs, vision_results, candidates,
+    )
+    package = authenticate_pilot_candidate_package(
+        _package_config(config, v2_config), candidates, audit, config.candidate_path
+    )
+    summary = validate_completion_evidence(config, audit, package)
+    return package, audit, summary
 
 
 def _vision_progress(
@@ -686,7 +888,9 @@ def _vision_progress(
     evidence: tuple[Any, ...],
     results_dir: Path,
 ) -> tuple[dict[str, object], tuple[Any, ...]]:
-    summary = ingest_vision_fallback_results(routes, jobs, results_dir, config.work_root)
+    summary = ingest_vision_fallback_results(
+        routes, jobs, results_dir, config.work_root, refresh_source=False
+    )
     inventory = _vision_protocol._result_inventory(results_dir, set(jobs))
     evidence_by_number = {item.question_number: item for item in evidence}
     results = tuple(
@@ -708,8 +912,11 @@ def _load_vision_jobs(
     jobs_dir = config.work_root / "vision" / "jobs"
     if not jobs_dir.is_dir():
         raise PipelineBlocked("The canonical vision job directory is missing.")
-    observed = [path for path in jobs_dir.iterdir() if path.is_file()]
-    if {path.name for path in observed} != {f"{record_id}.json" for record_id in expected_ids}:
+    observed = list(jobs_dir.iterdir())
+    if (
+        any(not path.is_file() for path in observed)
+        or {path.name for path in observed} != {f"{record_id}.json" for record_id in expected_ids}
+    ):
         raise InvalidPilotInput("Vision job inventory is missing, extra, duplicate, or noncanonical.")
     route_by_id = {route.record_id: route for route in routes}
     jobs: dict[str, VisionFallbackJob] = {}
@@ -745,7 +952,14 @@ def _load_vision_jobs(
             )
         except (KeyError, TypeError) as error:
             raise InvalidPilotInput(f"Malformed vision job: {record_id}.") from error
-        if job.record_id != record_id or job.route_sha256 != route_by_id[record_id].route_sha256:
+        current_route = route_by_id[record_id]
+        if (
+            job.record_id != record_id
+            or job.route_sha256 != current_route.route_sha256
+            or job.baseline_sha256 != current_route.baseline_sha256
+            or job.source_pdf_sha256 != config.source_pdf_sha256
+            or job.output_path.resolve(strict=False) != path.resolve(strict=False)
+        ):
             raise InvalidPilotInput(f"Vision job is stale against route {record_id}.")
         _vision_protocol._validate_job(job)
         expected_payload = _vision_protocol._job_payload(job)
@@ -758,47 +972,45 @@ def _load_vision_jobs(
     )
     if not index_path.is_file() or index_path.read_bytes() != expected_index:
         raise InvalidPilotInput("Vision job index is stale or noncanonical.")
+    evidence = _vision_protocol.load_persisted_vision_evidence(
+        config.work_root, tuple(job.question_number for job in jobs.values())
+    )
+    evidence_by_number = {item.question_number: item for item in evidence}
+    for record_id, job in jobs.items():
+        current = evidence_by_number.get(job.question_number)
+        if current is None:
+            raise InvalidPilotInput(f"Vision source evidence is missing for {record_id}.")
+        _vision_protocol._validate_job_against_current_evidence(job, current)
+        sources, role_hashes = _vision_protocol._source_payload(current, job.question_number)
+        source_reasons = _vision_protocol._source_reasons(current, role_hashes)
+        requires_quarantine = bool(
+            current.requires_reviewed_rejection
+            or current.source_status != "complete"
+            or source_reasons
+        )
+        if (
+            job.sources != sources
+            or dict(job.role_sha256s) != role_hashes
+            or job.source_dependency_fingerprint != current.dependency_fingerprint
+            or job.requires_quarantine != requires_quarantine
+            or job.source_reasons != source_reasons
+        ):
+            raise InvalidPilotInput(f"Vision job is stale against current evidence policy for {record_id}.")
     return jobs
 
 
 def _load_vision_results_read_only(
-    jobs: Mapping[str, VisionFallbackJob], results_dir: Path
+    jobs: Mapping[str, VisionFallbackJob], results_dir: Path, evidence: tuple[Any, ...]
 ) -> tuple[VisionFallbackResult, ...]:
     inventory = _vision_protocol._result_inventory(results_dir, set(jobs))
+    evidence_by_number = {item.question_number: item for item in evidence}
     results = []
     for record_id, path in sorted(inventory.items()):
         job = jobs[record_id]
-        payload = _vision_protocol._read_result(path)
-        _vision_protocol._validate_schema(payload, _vision_protocol._schema())
-        if payload["record_id"] != record_id or payload["route_sha256"] != job.route_sha256 or payload["job_sha256"] != job.job_sha256:
-            raise InvalidPilotInput(f"Vision result is stale against job {record_id}.")
-        if payload["decision"] == "VISION_ACCEPTED":
-            _vision_protocol._validate_accepted(job, payload)
-        elif payload["decision"] == "QUARANTINE":
-            _vision_protocol._validate_quarantine(job, payload)
-        else:
-            raise InvalidPilotInput(f"Vision result is nonterminal: {record_id}.")
-        expected_hash = canonical_sha256(
-            {key: value for key, value in payload.items() if key != "result_sha256"}
-        )
-        if payload["result_sha256"] != expected_hash:
-            raise InvalidPilotInput(f"Vision result hash is stale: {record_id}.")
-        results.append(VisionFallbackResult(
-            record_id=payload["record_id"],
-            decision=payload["decision"],
-            question_text=payload["question_text"],
-            options=payload["options"],
-            correct_answer=payload["correct_answer"],
-            solution_steps=tuple(payload["solution_steps"]),
-            representation=payload["representation"],
-            media=payload["media"],
-            source_evidence_sha256s=tuple(payload["source_evidence_sha256s"]),
-            quarantine_reason=payload["quarantine_reason"],
-            reviewer=payload["reviewer"],
-            route_sha256=payload["route_sha256"],
-            job_sha256=payload["job_sha256"],
-            result_sha256=payload["result_sha256"],
-        ))
+        current = evidence_by_number.get(job.question_number)
+        if current is None:
+            raise InvalidPilotInput(f"Vision result lacks current evidence for {record_id}.")
+        results.append(_vision_protocol._ingest_result_against_current(job, path, current))
     return tuple(results)
 
 
@@ -839,7 +1051,11 @@ def _execute_vision_command(
     agent_summary: Mapping[str, Any],
     results_dir: Path,
 ) -> tuple[int, dict[str, object]]:
-    evidence, vision_jobs = prepare_source_and_vision_jobs(config, v2_config, routes)
+    prepare_source_and_vision_jobs(config, v2_config, routes)
+    vision_jobs = _load_vision_jobs(config, routes)
+    evidence = _vision_protocol.load_persisted_vision_evidence(
+        config.work_root, tuple(job.question_number for job in vision_jobs.values())
+    )
     job_index = config.work_root / "vision" / "vision-jobs.jsonl"
     _checkpoint(config, "vision-prepared", {
         "route_hashes": {route.record_id: route.route_sha256 for route in routes},
@@ -869,6 +1085,29 @@ def _execute_vision_command(
     if int(vision_summary["pending"]):
         return 20, payload
     if command == "ingest-vision":
+        return 0, payload
+    completed = authenticate_completed_pilot(
+        config=config,
+        v2_config=v2_config,
+        baselines=baselines,
+        routes=routes,
+        agent_jobs={job.record_id: job for job in agent_jobs},
+        agent_results=agent_results,
+        evidence=evidence,
+        vision_jobs=vision_jobs,
+        vision_results=vision_results,
+    )
+    if completed is not None:
+        package, audit, summary = completed
+        if summary is None:
+            write_completion_evidence(config, audit, package)
+        payload.update({
+            "stage": "candidate_ready",
+            "status": "complete",
+            "pending_jobs": 0,
+            "candidate_sha256": package.sha256,
+            "candidate_question_count": package.question_count,
+        })
         return 0, payload
     package = finalize_stage(
         config=config,
@@ -939,6 +1178,8 @@ def _artifact_paths(config: PilotConfig) -> dict[str, str]:
         "vision_jobs": str(root / "vision" / "jobs"),
         "vision_results": str(root / "vision-results"),
         "audit": str(root / "audit" / "chapter-001-agent-triage.json"),
+        "committed_audit": str(_completion_paths(config)[0]),
+        "summary": str(_completion_paths(config)[1]),
         "renders": str(root / "renders"),
         "candidate": str(config.candidate_path),
         "published": str(config.published_path),
@@ -954,7 +1195,7 @@ def _status(config: PilotConfig) -> dict[str, object]:
     else:
         baselines = _load_baselines(config)
         jobs = _load_agent_jobs(config, baselines)
-        agent_summary, _, routes = _agent_progress(
+        agent_summary, agent_results, routes = _agent_progress(
             config,
             baselines,
             jobs,
@@ -984,18 +1225,46 @@ def _status(config: PilotConfig) -> dict[str, object]:
         if not vision_index.is_file():
             return {**base, "stage": "vision_preparation", "pending_jobs": 0}
         vision_jobs = _load_vision_jobs(config, routes)
+        evidence = _vision_protocol.load_persisted_vision_evidence(
+            config.work_root, tuple(job.question_number for job in vision_jobs.values())
+        )
         vision_results = _load_vision_results_read_only(
-            vision_jobs, config.work_root / "vision-results"
+            vision_jobs, config.work_root / "vision-results", evidence
         )
         vision_pending = len(vision_jobs) - len(vision_results)
         vision_accepted = sum(result.decision == "VISION_ACCEPTED" for result in vision_results)
         quarantined = sum(result.decision == "QUARANTINE" for result in vision_results)
         stage = "vision_review" if vision_pending else "ready_to_finalize"
-        if config.candidate_path.is_file():
-            stage = "candidate_ready"
+        completion: dict[str, object] = {}
+        status = "complete"
+        if not vision_pending and config.candidate_path.exists():
+            completed = authenticate_completed_pilot(
+                config=config,
+                v2_config=_validate_v2_source_config(config),
+                baselines=baselines,
+                routes=routes,
+                agent_jobs={job.record_id: job for job in jobs},
+                agent_results=agent_results,
+                evidence=evidence,
+                vision_jobs=vision_jobs,
+                vision_results=vision_results,
+            )
+            if completed is None:
+                raise PipelineBlocked("The existing candidate disappeared during authentication.")
+            package, _audit, summary = completed
+            completion = {
+                "candidate_sha256": package.sha256,
+                "candidate_question_count": package.question_count,
+            }
+            if summary is None:
+                stage = "candidate_recovery"
+                status = "recovery_needed"
+            else:
+                stage = "candidate_ready"
         return {
             **base,
             "stage": stage,
+            "status": status,
             "pending_jobs": vision_pending,
             "pending_vision_jobs": vision_pending,
             "vision_required": len(vision_jobs),
@@ -1003,6 +1272,7 @@ def _status(config: PilotConfig) -> dict[str, object]:
             "vision_accepted": vision_accepted,
             "included": int(agent_summary["accepted_python"]) + vision_accepted,
             "quarantined": quarantined,
+            **completion,
         }
     return {
         "command": "status",
@@ -1027,11 +1297,15 @@ def _parse_arguments(arguments: list[str], workspace_root: Path) -> tuple[str, P
     command = arguments[0]
     config_path = workspace_root / "data-engineering/python_vision_calibration/configs/chapter-001-agent-triage.json"
     results_path: Path | None = None
+    seen: set[str] = set()
     index = 1
     while index < len(arguments):
         option = arguments[index]
         if option not in {"--config", "--results"} or index + 1 >= len(arguments):
             raise InvalidPilotInput(f"Invalid command arguments near {option!r}.")
+        if option in seen:
+            raise InvalidPilotInput(f"Duplicate command option is ambiguous: {option}.")
+        seen.add(option)
         value = Path(arguments[index + 1])
         if option == "--config":
             config_path = value if value.is_absolute() else workspace_root / value

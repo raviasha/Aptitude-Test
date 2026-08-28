@@ -148,6 +148,52 @@ class PilotPackageTests(unittest.TestCase):
         second = self.build(output=self.root / "two" / "candidate.zip").path
         self.assertEqual(first.read_bytes(), second.read_bytes())
 
+    def test_existing_candidate_is_fully_authenticated_without_republication(self) -> None:
+        from python_vision_calibration.pilot_package import authenticate_pilot_candidate_package
+        built = self.build()
+        before = self.output.read_bytes(), self.output.stat().st_mtime_ns
+
+        with patch(
+            "python_vision_calibration.pilot_package._current_fingerprints",
+            return_value=("7" * 64, "6" * 64, "8" * 64),
+        ):
+            authenticated = authenticate_pilot_candidate_package(
+                self.config, (self.candidate,), self.audit, self.output
+            )
+
+        self.assertEqual(authenticated.sha256, built.sha256)
+        self.assertEqual(authenticated.question_count, 1)
+        self.assertEqual((self.output.read_bytes(), self.output.stat().st_mtime_ns), before)
+
+    def test_existing_candidate_authentication_rejects_stale_runtime_fingerprints(self) -> None:
+        from python_vision_calibration.pilot_package import authenticate_pilot_candidate_package
+        self.build()
+        with patch(
+            "python_vision_calibration.pilot_package._current_fingerprints",
+            return_value=("0" * 64, "6" * 64, "8" * 64),
+        ):
+            with self.assertRaisesRegex(PipelineBlocked, "runtime|render"):
+                authenticate_pilot_candidate_package(
+                    self.config, (self.candidate,), self.audit, self.output
+                )
+
+    def test_existing_candidate_authentication_rejects_arbitrary_or_mismatched_bytes(self) -> None:
+        from python_vision_calibration.pilot_package import authenticate_pilot_candidate_package
+        self.output.write_bytes(b"not a package")
+        with self.assertRaises(PipelineBlocked):
+            authenticate_pilot_candidate_package(
+                self.config, (self.candidate,), self.audit, self.output
+            )
+
+        self.output.unlink()
+        self.build()
+        with zipfile.ZipFile(self.output, "a") as archive:
+            archive.writestr("manifest.json", b"{}")
+        with self.assertRaises(PipelineBlocked):
+            authenticate_pilot_candidate_package(
+                self.config, (self.candidate,), self.audit, self.output
+            )
+
     def test_changed_published_zip_during_build_prevents_candidate_publication(self) -> None:
         import python_vision_calibration.pilot_package as package_module
         original = package_module._validate_written_package

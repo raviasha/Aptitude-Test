@@ -85,7 +85,7 @@ class RenderGateTests(unittest.TestCase):
             agent_jobs={self.fixture.agent_job.record_id: self.fixture.agent_job},
             agent_results={self.fixture.accept_review.record_id: self.fixture.accept_review},
             vision_jobs={},
-            evidence=self.fixture.evidence,
+            evidence=(),
             expected_record_ids=self.fixture.expected_ids,
         )
         self.assertEqual(audit.records[0]["status"], "PYTHON_ACCEPTED")
@@ -190,7 +190,7 @@ class RenderGateTests(unittest.TestCase):
             self.root / "partial-audit",
             agent_jobs={self.fixture.agent_job.record_id: self.fixture.agent_job},
             agent_results={self.fixture.accept_review.record_id: self.fixture.accept_review},
-            vision_jobs={}, evidence=self.fixture.evidence, expected_record_ids=self.fixture.expected_ids,
+            vision_jobs={}, evidence=(), expected_record_ids=self.fixture.expected_ids,
         )
         self.assertEqual(audit.records[0]["status"], "PENDING_RENDER")
 
@@ -215,7 +215,7 @@ class RenderGateTests(unittest.TestCase):
             self.root / "findings-audit",
             agent_jobs={self.fixture.agent_job.record_id: self.fixture.agent_job},
             agent_results={self.fixture.accept_review.record_id: self.fixture.accept_review},
-            vision_jobs={}, evidence=self.fixture.evidence, expected_record_ids=self.fixture.expected_ids,
+            vision_jobs={}, evidence=(), expected_record_ids=self.fixture.expected_ids,
         )
         self.assertEqual(audit.records[0]["status"], "PENDING_RENDER")
 

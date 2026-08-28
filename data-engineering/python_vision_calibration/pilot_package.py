@@ -22,6 +22,7 @@ from textbook_chapters_v2.store import canonical_json, dependency_fingerprint
 
 from .agent_review import AGENT_REVIEW_PROMPT_VERSION
 from .audit import PilotAuditSummary, _render_index, _validate_persisted
+from .render_gate import _current_fingerprints, _manifest_is_current
 
 
 _ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
@@ -618,4 +619,119 @@ def build_pilot_candidate_package(
     )
 
 
-__all__ = ["PublishedPackageGuard", "build_pilot_candidate_package"]
+def authenticate_pilot_candidate_package(
+    config: ChapterConfig,
+    candidates: Iterable[CandidateRecord],
+    audit: PilotAuditSummary,
+    output_path: Path,
+) -> PackageResult:
+    """Authenticate an existing manual-review candidate against all current release inputs."""
+    if not isinstance(config, ChapterConfig) or config.chapter != 1:
+        raise TypeError("config must be a Chapter 1 ChapterConfig value.")
+    output = Path(output_path)
+    if not output.is_file():
+        raise PipelineBlocked("The pilot candidate ZIP is missing.")
+    published_raw = config.extras.get("published_path")
+    if not isinstance(published_raw, str) or not published_raw.strip():
+        raise PipelineBlocked("Pilot config requires the published Chapter 1 ZIP path.")
+    guard = PublishedPackageGuard.capture(Path(published_raw))
+    guard.verify()
+    supplied = tuple(candidates)
+    if any(not isinstance(candidate, CandidateRecord) for candidate in supplied):
+        raise TypeError("candidates must contain CandidateRecord values.")
+    ordered = tuple(sorted(supplied, key=_record_id))
+    audit_payload = _validate_release_gate(config, ordered, audit)
+    audit_by_id = {record["record_id"]: record for record in audit_payload["records"]}
+    browser_identities = {
+        audit_by_id[_record_id(candidate)]["render_manifest"]["browser_identity"]
+        for candidate in ordered
+    }
+    if len(browser_identities) != 1:
+        raise PipelineBlocked("Pilot candidate browser runtime bindings are inconsistent.")
+    browser_identity = next(iter(browser_identities))
+    application_fingerprint, renderer_fingerprint, browser_fingerprint = _current_fingerprints(
+        browser_identity
+    )
+    for candidate in ordered:
+        raw_manifest = audit_by_id[_record_id(candidate)]["render_manifest"]
+        if not _manifest_is_current(
+            raw_manifest,
+            candidate,
+            application_fingerprint=application_fingerprint,
+            renderer_fingerprint=renderer_fingerprint,
+            browser_identity=browser_identity,
+            browser_fingerprint=browser_fingerprint,
+        ):
+            raise PipelineBlocked("Pilot candidate render/runtime authority is stale.")
+    assets: dict[str, bytes] = {}
+    entries = [_question_entry(config, candidate, assets)[0] for candidate in ordered]
+    if set(assets) != _referenced_assets(entries):
+        raise PipelineBlocked("Pilot candidate has unreferenced or missing display assets.")
+    bindings = _package_bindings(audit_payload, assets)
+    configured_source = config.extras.get("source_pdf_sha256")
+    if not isinstance(configured_source, str) or configured_source != bindings["source_pdf_sha256"]:
+        raise PipelineBlocked("Pilot candidate source binding is stale.")
+    source_path_raw = config.extras.get("source_pdf")
+    source_path = Path(source_path_raw) if isinstance(source_path_raw, str) else Path()
+    if not source_path_raw or not source_path.is_file() or _sha256_path(source_path) != configured_source:
+        raise PipelineBlocked("Pilot candidate source PDF is missing or changed.")
+    manifest = {
+        "format_version": 3,
+        "artifact_kind": "agent-triage-manual-review-pilot",
+        "manual_review_required": True,
+        "bank_name": config.bank_name,
+        "question_files": ["questions/ch01.jsonl"],
+        "audit_file": "metadata/agent-triage-audit.json",
+        "lineage_file": "metadata/lineage.json",
+        **bindings,
+    }
+    lineage = {
+        "schema_version": 1,
+        "records": [
+            {
+                "record_id": _record_id(candidate),
+                "question_number": candidate.question_number,
+                "candidate_sha256": candidate.sha256,
+                "source_fingerprint": candidate.source_fingerprint,
+                "representation": {
+                    key: value for key, value in candidate.representation.items() if key != "media"
+                },
+                "display_assets": sorted(_referenced_assets((entry,))),
+            }
+            for candidate, entry in zip(ordered, entries)
+        ],
+    }
+    expected_members = {
+        "manifest.json": canonical_json(manifest),
+        "questions/ch01.jsonl": _canonical_jsonl(entries),
+        "metadata/agent-triage-audit.json": canonical_json(_portable_audit(audit_payload)),
+        "metadata/lineage.json": canonical_json(lineage),
+        **assets,
+    }
+    try:
+        _validate_written_package(output, manifest, len(entries), set(assets))
+        with zipfile.ZipFile(output) as archive:
+            names = [member.filename for member in archive.infolist() if not member.is_dir()]
+            if names != sorted(names) or len(names) != len(set(names)) or set(names) != set(expected_members):
+                raise PipelineBlocked("Pilot candidate member inventory is stale or noncanonical.")
+            for name, expected in expected_members.items():
+                if archive.read(name) != expected:
+                    raise PipelineBlocked(f"Pilot candidate member is stale: {name}.")
+    except PipelineBlocked:
+        raise
+    except Exception as error:
+        raise PipelineBlocked("Pilot candidate is unreadable or malformed.") from error
+    guard.verify()
+    return PackageResult(
+        path=output,
+        sha256=_sha256_path(output),
+        question_count=len(entries),
+        rejected_count=audit_payload["counts"]["quarantined"],
+        manifest=manifest,
+    )
+
+
+__all__ = [
+    "PublishedPackageGuard", "authenticate_pilot_candidate_package",
+    "build_pilot_candidate_package",
+]

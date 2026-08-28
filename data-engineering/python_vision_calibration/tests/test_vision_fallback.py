@@ -21,9 +21,14 @@ from python_vision_calibration.vision_fallback import (
     create_vision_fallback_jobs,
     ingest_vision_fallback_result,
     ingest_vision_fallback_results,
+    load_persisted_vision_evidence,
+    prepare_vision_fallback_jobs,
 )
+from python_vision_calibration import vision_fallback as vision_protocol
 from textbook_chapters_v2.models import CropBox, RecordEvidence, SourceCrop
 from textbook_chapters_v2.config import ChapterConfig
+from textbook_chapters_v2.source import _boundary_review, _source_issue
+from textbook_chapters_v2.store import ArtifactStore, dependency_fingerprint
 
 
 def canonical_json(value: object) -> str:
@@ -174,6 +179,158 @@ class VisionFallbackTests(unittest.TestCase):
         jobs = create_vision_fallback_jobs((self.accept_route, self.vision_route), self.evidence, self.root)
 
         self.assertEqual(tuple(jobs), ("ch01-q0044",))
+
+    def test_combined_preparation_scopes_source_once_to_only_vision_routes(self) -> None:
+        self.prepare_source.reset_mock()
+
+        evidence, jobs = prepare_vision_fallback_jobs(
+            (self.accept_route, self.vision_route), self.root / "combined"
+        )
+
+        self.assertEqual([item.question_number for item in evidence], [44])
+        self.assertEqual(tuple(jobs), ("ch01-q0044",))
+        self.prepare_source.assert_called_once()
+        self.assertEqual(self.prepare_source.call_args.kwargs["question_numbers"], (44,))
+
+    def test_combined_preparation_writes_canonical_empty_inventory_without_image_work(self) -> None:
+        self.prepare_source.reset_mock()
+        root = self.root / "zero"
+
+        evidence, jobs = prepare_vision_fallback_jobs((self.accept_route,), root)
+
+        self.assertEqual(evidence, ())
+        self.assertEqual(jobs, {})
+        self.prepare_source.assert_not_called()
+        self.assertTrue((root / "vision/jobs").is_dir())
+        self.assertEqual((root / "vision/vision-jobs.jsonl").read_bytes(), b"")
+
+    def test_result_inventory_rejects_every_unexpected_entry_kind(self) -> None:
+        results = self.root / "strict-results"
+        results.mkdir()
+        for label, create in (
+            ("non-json", lambda: (results / "ch01-q0044.json.tmp").write_text("{}")),
+            ("directory", lambda: (results / "nested").mkdir()),
+        ):
+            with self.subTest(label=label):
+                for entry in results.iterdir():
+                    if entry.is_dir():
+                        entry.rmdir()
+                    else:
+                        entry.unlink()
+                create()
+                with self.assertRaisesRegex(ValueError, "unexpected"):
+                    vision_protocol._result_inventory(results, {"ch01-q0044"})
+
+    def test_persisted_evidence_loader_reconstructs_only_exact_current_inventory(self) -> None:
+        root = self.root / "persisted"
+        authoritative_crops = root / "vision/source-evidence/crops"
+        authoritative_crops.mkdir(parents=True)
+        rendered_page = root / "vision/source-evidence/rendered/page-025-180dpi.png"
+        rendered_page.parent.mkdir(parents=True)
+        rendered_page.write_bytes(b"authoritative rendered source page")
+        rendered_sha256 = hashlib.sha256(rendered_page.read_bytes()).hexdigest()
+        moved_crops = []
+        for crop in (
+            self.evidence[0].question_crops
+            + self.evidence[0].answer_key_crops
+            + self.evidence[0].solution_crops
+        ):
+            path = authoritative_crops / f"ch001-q0044-{crop.role}-p{crop.page_number:03d}.png"
+            path.write_bytes(crop.path.read_bytes())
+            moved_crops.append(replace(crop, path=path, source_image_sha256=rendered_sha256))
+        config = ChapterConfig.load(DATA_ENGINEERING / "textbook_chapters_v2/configs/chapter-001.json")
+        source_status, source_reasons, requires_reviewed_rejection = _source_issue(config, 44)
+        evidence = replace(
+            self.evidence[0],
+            question_crops=(moved_crops[0],),
+            answer_key_crops=(moved_crops[1],),
+            solution_crops=(moved_crops[2],),
+            source_status=source_status,
+            source_reasons=source_reasons,
+            requires_reviewed_rejection=requires_reviewed_rejection,
+            boundary_review=_boundary_review(config, 44),
+        )
+        crops = evidence.question_crops + evidence.answer_key_crops + evidence.solution_crops
+        evidence = replace(evidence, dependency_fingerprint=dependency_fingerprint({
+            "chapter": 1,
+            "question_number": 44,
+            "source_pdf_sha256": evidence.source_pdf_sha256,
+            "dpi": 180,
+            "crop_provenance": tuple({
+                "role": crop.role,
+                "page_number": crop.page_number,
+                "box": [crop.box.left, crop.box.top, crop.box.right, crop.box.bottom],
+                "source_image_sha256": crop.source_image_sha256,
+                "source_dpi": crop.source_dpi,
+                "crop_sha256": crop.sha256,
+            } for crop in crops),
+            "source_status": evidence.source_status,
+            "source_reasons": evidence.source_reasons,
+            "requires_reviewed_rejection": evidence.requires_reviewed_rejection,
+            "boundary_review": evidence.boundary_review,
+        }))
+        def crop_value(crop: SourceCrop) -> dict[str, object]:
+            return {
+                "role": crop.role,
+                "question_number": crop.question_number,
+                "page_number": crop.page_number,
+                "box": {"left": crop.box.left, "top": crop.box.top, "right": crop.box.right, "bottom": crop.box.bottom},
+                "path": str(crop.path),
+                "width": crop.width,
+                "height": crop.height,
+                "sha256": crop.sha256,
+                "source_image_sha256": crop.source_image_sha256,
+                "source_dpi": crop.source_dpi,
+            }
+        payload = {
+            "chapter": evidence.chapter,
+            "question_number": evidence.question_number,
+            "source_pdf": str(evidence.source_pdf),
+            "source_pdf_sha256": evidence.source_pdf_sha256,
+            "question_crops": [crop_value(crop) for crop in evidence.question_crops],
+            "answer_key_crops": [crop_value(crop) for crop in evidence.answer_key_crops],
+            "solution_crops": [crop_value(crop) for crop in evidence.solution_crops],
+            "source_status": evidence.source_status,
+            "source_reasons": list(evidence.source_reasons),
+            "requires_reviewed_rejection": evidence.requires_reviewed_rejection,
+            "boundary_review": dict(evidence.boundary_review),
+            "dependency_fingerprint": evidence.dependency_fingerprint,
+        }
+        ArtifactStore(root / "vision/source-evidence").write_json(
+            "source-evidence", "ch001-q0044", payload,
+            {"fingerprint": evidence.dependency_fingerprint, "source_pdf_sha256": evidence.source_pdf_sha256},
+        )
+        before = {path: path.read_bytes() for path in root.rglob("*") if path.is_file()}
+
+        loaded = load_persisted_vision_evidence(root, (44,))
+
+        self.assertEqual(loaded, (evidence,))
+        self.assertEqual({path: path.read_bytes() for path in root.rglob("*") if path.is_file()}, before)
+
+        (authoritative_crops / "ch001-q0045-question-p025.png").write_bytes(b"stale direct accept")
+        with self.assertRaisesRegex(ValueError, "inventory"):
+            load_persisted_vision_evidence(root, (44,))
+
+    def test_persisted_evidence_loader_rejects_extra_record_artifact(self) -> None:
+        root = self.root / "extra-evidence"
+        directory = root / "vision/source-evidence/source-evidence"
+        directory.mkdir(parents=True)
+        (directory / "ch001-q0045.json").write_text("{}")
+        with self.assertRaisesRegex(ValueError, "inventory"):
+            load_persisted_vision_evidence(root, ())
+
+    def test_batch_ingest_can_validate_persisted_evidence_without_second_source_refresh(self) -> None:
+        self.prepare_source.reset_mock()
+        with patch.object(
+            vision_protocol, "load_persisted_vision_evidence", return_value=self.evidence
+        ) as load:
+            summary = ingest_vision_fallback_results(
+                (self.vision_route,), {self.job.record_id: self.job},
+                self.root / "missing-results", self.root, refresh_source=False,
+            )
+        self.assertEqual(summary["pending"], 1)
+        load.assert_called_once_with(self.root, (44,))
+        self.prepare_source.assert_not_called()
 
     def test_job_does_not_supply_a_proposed_correction(self) -> None:
         job = next(iter(create_vision_fallback_jobs((self.vision_route,), self.evidence, self.root).values()))

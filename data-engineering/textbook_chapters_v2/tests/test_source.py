@@ -48,6 +48,50 @@ class SourceEvidenceTests(unittest.TestCase):
         with Image.open(output_path) as result:
             self.assertEqual(result.getpixel((50, 40)), (0, 128, 0))
 
+    def test_prepare_source_evidence_can_scope_render_crop_and_artifact_work_to_exact_questions(self) -> None:
+        pages = {
+            page: self._page(page, [(0, 200, "red")], name=f"fixture-{page}.png")
+            for page in range(1, 10)
+        }
+        config = ChapterConfig.from_dict({
+            "chapter": 14,
+            "bank_name": "scoped source",
+            "question_pages": [1, 3],
+            "answer_pages": [4, 6],
+            "solution_pages": [7, 9],
+            "question_numbers": [1, 3],
+            "marker_overrides": {
+                role: {
+                    str(number): {"segments": [{"page": offset + number, "left": 0, "top": 0, "right": 100, "bottom": 100}]}
+                    for number in range(1, 4)
+                }
+                for role, offset in (("question", 0), ("answer_key", 3), ("solution", 6))
+            },
+        })
+        pdf_path = self.root / "source.pdf"
+        pdf_path.write_bytes(b"scoped reviewed source")
+        rendered: list[int] = []
+
+        def render_fixture(_pdf: Path, page: int, _dpi: int, _output: Path) -> SourceImage:
+            rendered.append(page)
+            return pages[page]
+
+        work = self.root / "scoped-work"
+        with patch("textbook_chapters_v2.source.render_page", side_effect=render_fixture):
+            evidence = prepare_source_evidence(
+                config, pdf_path, work, question_numbers=(2,)
+            )
+
+        self.assertEqual([item.question_number for item in evidence], [2])
+        self.assertEqual(rendered, [2, 5, 8])
+        self.assertEqual(
+            [path.name for path in (work / "source-evidence").glob("*.json")],
+            ["ch014-q0002.json"],
+        )
+        crop_names = [path.name for path in (work / "crops").glob("*.png")]
+        self.assertTrue(crop_names)
+        self.assertTrue(all("q0002" in name for name in crop_names))
+
     def test_sha256_path_retries_a_transient_permission_denied_from_a_synced_worktree(self) -> None:
         path = self.root / "source.bin"
         path.write_bytes(b"stable source bytes")

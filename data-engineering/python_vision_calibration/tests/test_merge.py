@@ -369,7 +369,7 @@ class MergeFinalCandidatesTests(unittest.TestCase):
             (self.baseline,),
             (route,),
             results,
-            self.evidence,
+            self.evidence if route.decision == "VISION_REQUIRED" else (),
             vision_jobs=jobs,
             expected_record_ids=self.expected_ids,
         )
@@ -389,6 +389,14 @@ class MergeFinalCandidatesTests(unittest.TestCase):
                 "media": {},
             },
         )
+
+    def test_python_accept_does_not_require_or_consume_source_image_evidence(self) -> None:
+        candidates = merge_final_candidates(
+            (self.baseline,), (self.accept_route,), (), (),
+            vision_jobs={}, expected_record_ids=self.expected_ids,
+        )
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0].question_text, self.baseline.candidate["question_text"])
 
     def test_python_candidate_hash_uses_exact_packaging_fields(self) -> None:
         candidate = self.merge(self.accept_route)[0]
@@ -451,7 +459,7 @@ class MergeFinalCandidatesTests(unittest.TestCase):
 
         with self.assertRaisesRegex(PipelineBlocked, "baseline failure"):
             merge_final_candidates(
-                (failed,), (route,), (), self.evidence, expected_record_ids={failed.record_id}
+                (failed,), (route,), (), (), expected_record_ids={failed.record_id}
             )
 
     def test_missing_duplicate_extra_and_cross_chapter_inputs_fail_closed(self) -> None:
@@ -472,7 +480,7 @@ class MergeFinalCandidatesTests(unittest.TestCase):
                 (self.baseline,),
                 (self.accept_route,),
                 (self.vision_result,),
-                self.evidence,
+                (),
                 expected_record_ids=self.expected_ids,
             )
         chapter_two = replace(self.baseline, record_id="ch02-q0044", chapter=2)

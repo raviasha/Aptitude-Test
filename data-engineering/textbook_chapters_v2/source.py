@@ -312,12 +312,15 @@ def _crop_shared_contexts(
     role: str,
     pages: Mapping[int, SourceImage],
     work_dir: Path,
+    selected_numbers: frozenset[int] | None = None,
 ) -> Mapping[int, tuple[SourceCrop, ...]]:
     start_page, last_page = _role_range(config, role)
     result: dict[int, list[SourceCrop]] = {}
     for context_id, numbers, segments in _shared_context_groups(config, role):
         for number in numbers:
-            if number in config.intentional_exclusions:
+            if number in config.intentional_exclusions or (
+                selected_numbers is not None and number not in selected_numbers
+            ):
                 continue
             for segment_index, segment in enumerate(segments):
                 page_number = segment["page"]
@@ -344,6 +347,7 @@ def _crop_role(
     role: str,
     pages: Mapping[int, SourceImage],
     work_dir: Path,
+    selected_numbers: frozenset[int] | None = None,
 ) -> Mapping[int, tuple[SourceCrop, ...]]:
     markers = _marker_mapping(config, role)
     numbers = list(range(config.question_numbers[0], config.question_numbers[1] + 1))
@@ -361,6 +365,8 @@ def _crop_role(
     result: dict[int, tuple[SourceCrop, ...]] = {}
 
     for index, number in enumerate(numbers):
+        if selected_numbers is not None and number not in selected_numbers:
+            continue
         segments = explicit[number]
         if segments is not None:
             if number in config.intentional_exclusions:
@@ -499,7 +505,49 @@ def _boundary_review(config: ChapterConfig, number: int) -> Mapping[str, Any]:
     return frozen_mapping(selected)
 
 
-def prepare_source_evidence(config: ChapterConfig, pdf_path: Path, work_dir: Path) -> list[RecordEvidence]:
+def _required_role_pages(
+    config: ChapterConfig, role: str, selected_numbers: frozenset[int]
+) -> set[int]:
+    markers = _marker_mapping(config, role)
+    numbers = list(range(config.question_numbers[0], config.question_numbers[1] + 1))
+    explicit = {
+        number: _explicit_segments(markers.get(str(number)), role, number)
+        for number in numbers
+    }
+    reviewed = {
+        number: _marker(markers.get(str(number)), role, number)
+        for number in numbers
+        if explicit[number] is None
+    }
+    _, last_page = _role_range(config, role)
+    required: set[int] = set()
+    for index, number in enumerate(numbers):
+        if number not in selected_numbers or number in config.intentional_exclusions:
+            continue
+        segments = explicit[number]
+        if segments is not None:
+            required.update(segment["page"] for segment in segments)
+            continue
+        current = reviewed[number]
+        next_number = numbers[index + 1] if index + 1 < len(numbers) else None
+        next_marker = reviewed[next_number] if next_number is not None and explicit[next_number] is None else None
+        final_page = current["page"] if "bottom" in current else (
+            next_marker["page"] if next_marker is not None else last_page
+        )
+        required.update(range(current["page"], min(final_page, last_page) + 1))
+    for _context_id, numbers_in_context, segments in _shared_context_groups(config, role):
+        if selected_numbers.intersection(numbers_in_context):
+            required.update(segment["page"] for segment in segments)
+    return required
+
+
+def prepare_source_evidence(
+    config: ChapterConfig,
+    pdf_path: Path,
+    work_dir: Path,
+    *,
+    question_numbers: Iterable[int] | None = None,
+) -> list[RecordEvidence]:
     """Render configured source pages and crop each reviewed record boundary."""
     pdf_path = Path(pdf_path)
     work_dir = Path(work_dir)
@@ -520,11 +568,22 @@ def prepare_source_evidence(config: ChapterConfig, pdf_path: Path, work_dir: Pat
                 f"got {source_pdf_sha256}."
             )
     dpi = _configured_dpi(config)
-    all_pages = sorted(
-        set(range(config.question_pages[0], config.question_pages[1] + 1))
-        | set(range(config.answer_pages[0], config.answer_pages[1] + 1))
-        | set(range(config.solution_pages[0], config.solution_pages[1] + 1))
+    configured_numbers = tuple(
+        number for number in range(config.question_numbers[0], config.question_numbers[1] + 1)
+        if number not in config.intentional_exclusions
     )
+    selected = configured_numbers if question_numbers is None else tuple(question_numbers)
+    if (
+        any(isinstance(number, bool) or not isinstance(number, int) for number in selected)
+        or len(set(selected)) != len(selected)
+        or not set(selected) <= set(configured_numbers)
+    ):
+        raise ValueError("question_numbers must be unique configured non-excluded question numbers.")
+    selected_set = frozenset(selected)
+    all_pages = sorted(set().union(*(
+        _required_role_pages(config, role, selected_set)
+        for role in ("question", "answer_key", "solution")
+    )))
     pages = {
         page_number: render_page(
             pdf_path,
@@ -536,17 +595,15 @@ def prepare_source_evidence(config: ChapterConfig, pdf_path: Path, work_dir: Pat
     }
     role_crops = {}
     for role in ("question", "answer_key", "solution"):
-        primary = _crop_role(config, role, pages, work_dir)
-        contexts = _crop_shared_contexts(config, role, pages, work_dir)
+        primary = _crop_role(config, role, pages, work_dir, selected_set)
+        contexts = _crop_shared_contexts(config, role, pages, work_dir, selected_set)
         role_crops[role] = {
             number: contexts.get(number, ()) + primary[number]
             for number in primary
         }
     prepared: list[RecordEvidence] = []
     store = ArtifactStore(work_dir)
-    for number in range(config.question_numbers[0], config.question_numbers[1] + 1):
-        if number in config.intentional_exclusions:
-            continue
+    for number in sorted(selected_set):
         crop_provenance = tuple(
             {
                 "role": crop.role,

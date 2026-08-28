@@ -13,8 +13,9 @@ from pathlib import Path
 from typing import Any
 
 from textbook_chapters_v2.config import ChapterConfig
-from textbook_chapters_v2.models import RecordEvidence, SourceCrop
-from textbook_chapters_v2.source import prepare_source_evidence
+from textbook_chapters_v2.models import CropBox, RecordEvidence, SourceCrop
+from textbook_chapters_v2.source import _boundary_review, _source_issue, prepare_source_evidence
+from textbook_chapters_v2.store import canonical_json, dependency_fingerprint
 
 from .models import RouteDecision, VisionFallbackJob, VisionFallbackResult
 
@@ -180,6 +181,191 @@ def _evidence_index(values: Iterable[RecordEvidence], field: str) -> dict[int, R
     if len(set(numbers)) != len(numbers):
         raise ValueError(f"{field} contains duplicate printed question numbers.")
     return {item.question_number: item for item in evidence_values}
+
+
+def _persisted_crop(value: Any, role: str, number: int) -> SourceCrop:
+    if not isinstance(value, Mapping):
+        raise ValueError("Persisted source crop is malformed.")
+    required = {
+        "role", "question_number", "page_number", "box", "path", "width", "height",
+        "sha256", "source_image_sha256", "source_dpi",
+    }
+    if set(value) not in (required, required | {"context_id"}):
+        raise ValueError("Persisted source crop fields are malformed.")
+    box = value["box"]
+    if not isinstance(box, Mapping) or set(box) != {"left", "top", "right", "bottom"}:
+        raise ValueError("Persisted source crop box is malformed.")
+    path = Path(value["path"])
+    if value["role"] != role or value["question_number"] != number or not path.is_file():
+        raise ValueError("Persisted source crop identity or path is stale.")
+    digest = _require_hash(value["sha256"], "persisted source crop hash")
+    if _sha256_path(path) != digest:
+        raise ValueError("Persisted source crop bytes are stale.")
+    return SourceCrop(
+        role=role,
+        question_number=number,
+        page_number=value["page_number"],
+        box=CropBox(box["left"], box["top"], box["right"], box["bottom"]),
+        path=path,
+        width=value["width"],
+        height=value["height"],
+        sha256=digest,
+        source_image_sha256=_require_hash(value["source_image_sha256"], "source image hash"),
+        source_dpi=value["source_dpi"],
+        context_id=value.get("context_id", ""),
+    )
+
+
+def load_persisted_vision_evidence(
+    work_root: Path, question_numbers: Iterable[int]
+) -> tuple[RecordEvidence, ...]:
+    """Read and authenticate the exact persisted source-evidence inventory without rendering."""
+    numbers = tuple(question_numbers)
+    if any(isinstance(number, bool) or not isinstance(number, int) for number in numbers) or len(set(numbers)) != len(numbers):
+        raise ValueError("Persisted evidence question inventory is invalid.")
+    evidence_root = Path(work_root) / "vision" / "source-evidence"
+    directory = evidence_root / "source-evidence"
+    expected = {f"ch001-q{number:04d}.json": number for number in numbers}
+    if not evidence_root.exists():
+        if expected:
+            raise ValueError("Persisted source-evidence inventory is missing.")
+        return ()
+    if not evidence_root.is_dir():
+        raise ValueError("Persisted source-evidence inventory is invalid.")
+    expected_directories = {"rendered", "crops", "source-evidence"}
+    root_entries = {entry.name: entry for entry in evidence_root.iterdir()}
+    if not expected:
+        if root_entries and (
+            set(root_entries) != expected_directories
+            or any(not entry.is_dir() or any(entry.iterdir()) for entry in root_entries.values())
+        ):
+            raise ValueError("Persisted source-evidence inventory is stale for an empty vision route.")
+        return ()
+    if set(root_entries) != expected_directories or any(not entry.is_dir() for entry in root_entries.values()):
+        raise ValueError("Persisted source-evidence inventory is missing, extra, or noncanonical.")
+    if not directory.is_dir() or {entry.name for entry in directory.iterdir()} != set(expected):
+        raise ValueError("Persisted source-evidence inventory is missing, extra, or noncanonical.")
+    config, _ = _current_config()
+    configured_source_raw = config.extras.get("source_pdf")
+    configured_source = Path(configured_source_raw) if isinstance(configured_source_raw, str) else Path()
+    if configured_source_raw and not configured_source.is_absolute():
+        configured_source = _PROJECT_ROOT / configured_source
+    crops_root = (evidence_root / "crops").resolve(strict=False)
+    rendered_root = (evidence_root / "rendered").resolve(strict=False)
+    expected_crop_paths: set[Path] = set()
+    expected_rendered: dict[Path, str] = {}
+    loaded: list[RecordEvidence] = []
+    for filename, number in sorted(expected.items(), key=lambda item: item[1]):
+        path = directory / filename
+        if not path.is_file():
+            raise ValueError("Persisted source-evidence inventory contains a non-file entry.")
+        try:
+            envelope = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise ValueError("Persisted source evidence is unreadable.") from error
+        if path.read_bytes() != canonical_json(envelope):
+            raise ValueError("Persisted source evidence is noncanonical.")
+        if not isinstance(envelope, Mapping) or set(envelope) != {
+            "schema_version", "stage", "key", "dependency_fingerprint", "payload_sha256", "payload"
+        }:
+            raise ValueError("Persisted source evidence envelope is malformed.")
+        payload = envelope["payload"]
+        if not isinstance(payload, Mapping) or envelope["schema_version"] != 1 or envelope["stage"] != "source-evidence" or envelope["key"] != filename[:-5]:
+            raise ValueError("Persisted source evidence envelope is stale.")
+        if envelope["payload_sha256"] != dependency_fingerprint(payload):
+            raise ValueError("Persisted source evidence payload hash is stale.")
+        source_pdf = Path(payload["source_pdf"])
+        source_hash = _require_hash(payload["source_pdf_sha256"], "persisted source PDF hash")
+        if (
+            not source_pdf.is_file()
+            or source_pdf.resolve() != configured_source.resolve()
+            or _sha256_path(source_pdf) != source_hash
+        ):
+            raise ValueError("Persisted source evidence source PDF is stale.")
+        evidence = RecordEvidence(
+            chapter=payload["chapter"],
+            question_number=payload["question_number"],
+            source_pdf=source_pdf,
+            source_pdf_sha256=source_hash,
+            question_crops=tuple(_persisted_crop(item, "question", number) for item in payload["question_crops"]),
+            answer_key_crops=tuple(_persisted_crop(item, "answer_key", number) for item in payload["answer_key_crops"]),
+            solution_crops=tuple(_persisted_crop(item, "solution", number) for item in payload["solution_crops"]),
+            source_status=payload["source_status"],
+            source_reasons=tuple(payload["source_reasons"]),
+            requires_reviewed_rejection=payload["requires_reviewed_rejection"],
+            boundary_review=payload["boundary_review"],
+            dependency_fingerprint=payload["dependency_fingerprint"],
+        )
+        if evidence.chapter != 1 or evidence.question_number != number:
+            raise ValueError("Persisted source evidence identity is stale.")
+        expected_status, expected_reasons, expected_rejection = _source_issue(config, number)
+        if (
+            evidence.source_status != expected_status
+            or evidence.source_reasons != expected_reasons
+            or evidence.requires_reviewed_rejection != expected_rejection
+            or dict(evidence.boundary_review) != dict(_boundary_review(config, number))
+        ):
+            raise ValueError("Persisted source evidence policy is stale against current configuration.")
+        for crop in evidence.question_crops + evidence.answer_key_crops + evidence.solution_crops:
+            try:
+                crop_path = crop.path.resolve()
+                crop_path.relative_to(crops_root)
+            except ValueError as error:
+                raise ValueError("Persisted source crop path escapes the authoritative evidence root.") from error
+            crop_name = re.compile(
+                rf"^ch001-q{number:04d}-{re.escape(crop.role)}"
+                rf"(?:-context-[A-Za-z0-9_.-]+-s[0-9]{{2}}|-s[0-9]{{2}})?-p{crop.page_number:03d}\.png$"
+            )
+            if not crop_name.fullmatch(crop.path.name):
+                raise ValueError("Persisted source crop output path is noncanonical.")
+            expected_crop_paths.add(crop_path)
+            rendered_path = (rendered_root / f"page-{crop.page_number:03d}-{crop.source_dpi}dpi.png").resolve()
+            prior_rendered_hash = expected_rendered.setdefault(rendered_path, crop.source_image_sha256)
+            if prior_rendered_hash != crop.source_image_sha256:
+                raise ValueError("Persisted source crops disagree about rendered-page provenance.")
+        crop_provenance = tuple(
+            {
+                "role": crop.role,
+                "page_number": crop.page_number,
+                "box": [crop.box.left, crop.box.top, crop.box.right, crop.box.bottom],
+                "source_image_sha256": crop.source_image_sha256,
+                "source_dpi": crop.source_dpi,
+                "crop_sha256": crop.sha256,
+                **({"context_id": crop.context_id} if crop.context_id else {}),
+            }
+            for crop in evidence.question_crops + evidence.answer_key_crops + evidence.solution_crops
+        )
+        expected_fingerprint = dependency_fingerprint({
+            "chapter": evidence.chapter,
+            "question_number": number,
+            "source_pdf_sha256": source_hash,
+            "dpi": evidence.question_crops[0].source_dpi if evidence.question_crops else (
+                evidence.answer_key_crops[0].source_dpi if evidence.answer_key_crops else evidence.solution_crops[0].source_dpi
+            ),
+            "crop_provenance": crop_provenance,
+            "source_status": evidence.source_status,
+            "source_reasons": evidence.source_reasons,
+            "requires_reviewed_rejection": evidence.requires_reviewed_rejection,
+            "boundary_review": evidence.boundary_review,
+        })
+        if evidence.dependency_fingerprint != expected_fingerprint:
+            raise ValueError("Persisted source evidence dependency fingerprint is stale.")
+        expected_envelope_dependency = dependency_fingerprint({
+            "fingerprint": expected_fingerprint, "source_pdf_sha256": source_hash
+        })
+        if envelope["dependency_fingerprint"] != expected_envelope_dependency:
+            raise ValueError("Persisted source evidence envelope dependency is stale.")
+        loaded.append(evidence)
+    crop_entries = {entry.resolve() for entry in crops_root.iterdir()} if crops_root.is_dir() else set()
+    if crop_entries != expected_crop_paths or any(not entry.is_file() for entry in crop_entries):
+        raise ValueError("Persisted source crop inventory is missing, extra, or noncanonical.")
+    rendered_entries = {entry.resolve() for entry in rendered_root.iterdir()} if rendered_root.is_dir() else set()
+    if rendered_entries != set(expected_rendered) or any(not entry.is_file() for entry in rendered_entries):
+        raise ValueError("Persisted rendered-page inventory is missing, extra, or noncanonical.")
+    for path, digest in expected_rendered.items():
+        if _sha256_path(path) != digest:
+            raise ValueError("Persisted rendered-page bytes are stale.")
+    return tuple(loaded)
 
 
 def _require_current_evidence(supplied: RecordEvidence, current: RecordEvidence) -> None:
@@ -457,6 +643,65 @@ def create_vision_fallback_jobs(
         )
     _write_jsonl(root / "vision" / "vision-jobs.jsonl", (_job_payload(job) for job in jobs.values()))
     return jobs
+
+
+def prepare_vision_fallback_jobs(
+    routes: Iterable[RouteDecision], work_root: Path
+) -> tuple[tuple[RecordEvidence, ...], dict[str, VisionFallbackJob]]:
+    """Prepare current source evidence once, scoped to terminal vision routes, then write jobs."""
+    root = Path(work_root)
+    route_values = tuple(routes)
+    if any(not isinstance(route, RouteDecision) for route in route_values):
+        raise TypeError("routes must contain RouteDecision values.")
+    for route in route_values:
+        _validate_route(route)
+    vision_routes = tuple(
+        sorted(
+            (route for route in route_values if route.decision == "VISION_REQUIRED"),
+            key=lambda item: item.record_id,
+        )
+    )
+    record_ids = [route.record_id for route in vision_routes]
+    if len(set(record_ids)) != len(record_ids):
+        raise ValueError("Vision fallback routes contain duplicate record IDs.")
+    jobs_dir = root / "vision" / "jobs"
+    jobs_dir.mkdir(parents=True, exist_ok=True)
+    if not vision_routes:
+        _write_jsonl(root / "vision" / "vision-jobs.jsonl", ())
+        return (), {}
+
+    config, config_sha256 = _current_config()
+    source_pdf_value = config.extras.get("source_pdf")
+    if not isinstance(source_pdf_value, str) or not source_pdf_value.strip():
+        raise RuntimeError("The Chapter 1 configuration does not name its source PDF.")
+    source_pdf = Path(source_pdf_value)
+    if not source_pdf.is_absolute():
+        source_pdf = _PROJECT_ROOT / source_pdf
+    numbers = tuple(_question_number(route.record_id) for route in vision_routes)
+    evidence = tuple(prepare_source_evidence(
+        config,
+        source_pdf,
+        root / "vision" / "source-evidence",
+        question_numbers=numbers,
+    ))
+    current_by_number = _evidence_index(evidence, "current source evidence")
+    if set(current_by_number) != set(numbers):
+        raise ValueError("Current source evidence inventory does not exactly match vision routes.")
+    jobs = {
+        route.record_id: _create_vision_fallback_job_from_current(
+            route,
+            current_by_number[_question_number(route.record_id)],
+            jobs_dir / f"{route.record_id}.json",
+            config,
+            config_sha256,
+        )
+        for route in vision_routes
+    }
+    _write_jsonl(
+        root / "vision" / "vision-jobs.jsonl",
+        (_job_payload(job) for job in jobs.values()),
+    )
+    return evidence, jobs
 
 
 def _reject_duplicate_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -763,11 +1008,12 @@ def _result_inventory(directory: Path, expected_ids: set[str]) -> dict[str, Path
     unexpected: list[str] = []
     for path in sorted(directory.iterdir(), key=lambda item: item.name):
         if not path.is_file():
+            unexpected.append(path.name)
             continue
         record_id = expected_names.get(path.name.casefold())
         if record_id is not None:
             observed.setdefault(record_id, []).append(path)
-        elif path.suffix.lower() == ".json":
+        else:
             unexpected.append(path.name)
     if unexpected:
         raise ValueError(f"Vision fallback results contain unexpected result files: {', '.join(unexpected)}.")
@@ -806,6 +1052,8 @@ def ingest_vision_fallback_results(
     jobs: Mapping[str, VisionFallbackJob] | Iterable[VisionFallbackJob],
     results_dir: Path,
     work_root: Path,
+    *,
+    refresh_source: bool = True,
 ) -> dict[str, object]:
     """Ingest resumable results and publish JSONL only at a complete terminal boundary."""
     route_values = tuple(routes)
@@ -840,9 +1088,14 @@ def ingest_vision_fallback_results(
     if set(job_ids) != set(route_ids):
         raise ValueError("Vision fallback requires exactly one current job per VISION_REQUIRED route.")
     jobs_by_id = {job.record_id: job for job in job_values}
-    current_by_number = _evidence_index(
-        _current_prepared_evidence(Path(work_root)), "current source evidence"
+    current_evidence = (
+        _current_prepared_evidence(Path(work_root))
+        if refresh_source
+        else load_persisted_vision_evidence(
+            Path(work_root), tuple(job.question_number for job in job_values)
+        )
     )
+    current_by_number = _evidence_index(current_evidence, "current source evidence")
     for record_id, job in jobs_by_id.items():
         _validate_job(job)
         if job.route_sha256 != route_by_id[record_id].route_sha256:

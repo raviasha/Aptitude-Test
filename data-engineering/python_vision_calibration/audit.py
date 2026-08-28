@@ -601,7 +601,7 @@ def write_pilot_audit(
         record_id for record_id in expected_ids if route_by_id[record_id].decision == "VISION_REQUIRED"
     )
     evidence_values = tuple(evidence or ())
-    if evidence_values:
+    if evidence_values or not vision_ids:
         expected_candidates = merge_final_candidates(
             baseline_values,
             route_values,

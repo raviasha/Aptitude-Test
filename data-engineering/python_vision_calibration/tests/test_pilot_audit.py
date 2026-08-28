@@ -53,7 +53,7 @@ class PilotAuditTests(unittest.TestCase):
             agent_jobs={self.agent_job.record_id: self.agent_job},
             agent_results={review.record_id: review},
             vision_jobs=vision_jobs,
-            evidence=self.evidence,
+            evidence=self.evidence if route.decision == "VISION_REQUIRED" else (),
             expected_record_ids=self.expected_ids,
         )
 
@@ -130,6 +130,24 @@ class PilotAuditTests(unittest.TestCase):
         self.assertEqual(audit.records[0]["agent_result"]["result_sha256"], self.accept_route.review_result_sha256)
         self.assertEqual(audit.records[0]["agent_job"]["job_sha256"], self.agent_job.job_sha256)
         self.assertEqual(audit.records[0]["agent_result"]["checks"]["logic"], "PASS")
+
+    def test_python_only_audit_does_not_require_source_image_evidence(self) -> None:
+        candidates = merge_final_candidates(
+            (self.baseline,), (self.accept_route,), (), (),
+            vision_jobs={}, expected_record_ids=self.expected_ids,
+        )
+        audit = write_pilot_audit(
+            (self.baseline,), (self.accept_route,), (), candidates, (), self.root,
+            agent_jobs={self.agent_job.record_id: self.agent_job},
+            agent_results={self.accept_review.record_id: self.accept_review},
+            vision_jobs={}, evidence=(), expected_record_ids=self.expected_ids,
+        )
+        self.assertEqual(audit.counts["python_accepts"], 1)
+        self.assertEqual(audit.counts["vision_routes"], 0)
+        self.assertEqual(
+            tuple(audit.records[0]["source_evidence"]["baseline_source_hashes"]["source_pdf"]),
+            tuple(self.baseline.source_hashes["source_pdf"]),
+        )
 
     def test_render_manifests_are_the_single_input_that_advances_status(self) -> None:
         candidates = self.merge(self.accept_route)

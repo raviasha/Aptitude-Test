@@ -721,23 +721,26 @@ def merge_final_candidates(
         baseline_values, RawBaselineRecord, "baseline", expected_ids, lambda item: item.record_id
     )
     route_by_id = _index_exact(routes, RouteDecision, "route", expected_ids, lambda item: item.record_id)
-    evidence_by_id = _index_exact(
-        evidence,
-        RecordEvidence,
-        "source evidence",
-        expected_ids,
-        lambda item: f"ch{item.chapter:02d}-q{item.question_number:04d}",
-    )
     numbers: dict[str, int] = {}
-    pdf_hashes: dict[Path, str] = {}
     for record_id in expected_ids:
         baseline = baseline_by_id[record_id]
         number = _validate_baseline(baseline)
         numbers[record_id] = number
         _validate_route(route_by_id[record_id], baseline)
-        _validate_evidence(evidence_by_id[record_id], baseline, number, pdf_hashes)
 
     vision_ids = tuple(sorted(record_id for record_id in expected_ids if route_by_id[record_id].decision == "VISION_REQUIRED"))
+    evidence_by_id = _index_exact(
+        evidence,
+        RecordEvidence,
+        "source evidence",
+        vision_ids,
+        lambda item: f"ch{item.chapter:02d}-q{item.question_number:04d}",
+    )
+    pdf_hashes: dict[Path, str] = {}
+    for record_id in vision_ids:
+        _validate_evidence(
+            evidence_by_id[record_id], baseline_by_id[record_id], numbers[record_id], pdf_hashes
+        )
     result_by_id = _index_exact(
         vision_results,
         VisionFallbackResult,

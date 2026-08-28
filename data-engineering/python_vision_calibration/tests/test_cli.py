@@ -223,6 +223,26 @@ class CliWorkspaceTests(unittest.TestCase):
                 self.assertTrue(stderr.getvalue().strip())
                 self.assertFalse(self.work_root.exists())
 
+    def test_duplicate_cli_options_are_invalid_before_mutation(self) -> None:
+        cases = (
+            ["status", "--config", str(self.config), "--config", str(self.config)],
+            [
+                "ingest-agent", "--config", str(self.config),
+                "--results", str(self.work_root / "agent-review-results"),
+                "--results", str(self.work_root / "agent-review-results"),
+            ],
+        )
+        for arguments in cases:
+            with self.subTest(arguments=arguments):
+                stdout = io.StringIO()
+                stderr = io.StringIO()
+                code = cli.main(
+                    arguments, stdout=stdout, stderr=stderr, workspace_root=self.workspace
+                )
+                self.assertEqual(code, 22)
+                self.assertEqual(json.loads(stdout.getvalue())["status"], "invalid")
+                self.assertFalse(self.work_root.exists())
+
     def test_changed_source_or_published_bytes_block_without_creating_work(self) -> None:
         for relative in (cli.APPROVED_PATHS["source_pdf"], cli.APPROVED_PATHS["published_path"]):
             with self.subTest(relative=relative):
@@ -315,6 +335,23 @@ class CliWorkspaceTests(unittest.TestCase):
                 self.assertEqual(payload["status"], "invalid")
                 self.assertTrue(diagnostics.strip())
 
+    def test_agent_result_inventory_rejects_non_json_files_and_directories(self) -> None:
+        self.invoke_with_synthetic_extract("run")
+        directory = self.work_root / "agent-review-results"
+        for label, create in (
+            ("temporary-file", lambda: (directory / "ch01-q0001.json.tmp").write_text("{}")),
+            ("nested-directory", lambda: (directory / "nested").mkdir()),
+        ):
+            with self.subTest(label=label):
+                if directory.exists():
+                    shutil.rmtree(directory)
+                directory.mkdir(parents=True)
+                create()
+                code, payload, _, diagnostics = self.invoke_with_synthetic_extract("ingest-agent")
+                self.assertEqual(code, 22)
+                self.assertEqual(payload["status"], "invalid")
+                self.assertTrue(diagnostics.strip())
+
     def test_prepare_vision_uses_all_routes_but_emits_only_exact_vision_routes(self) -> None:
         routes = tuple(
             RouteDecision(
@@ -328,12 +365,13 @@ class CliWorkspaceTests(unittest.TestCase):
             )
             for number, record_id in enumerate(cli.EXPECTED_RECORD_IDS, start=1)
         )
-        evidence = tuple(object() for _ in range(380))
+        evidence = tuple(object() for _ in range(3))
         expected_jobs = {record_id: object() for record_id in ("ch01-q0002", "ch01-q0007", "ch01-q0019")}
         v2_config = object()
         with (
-            mock.patch.object(cli, "prepare_source_evidence", return_value=evidence) as prepare,
-            mock.patch.object(cli, "create_vision_fallback_jobs", return_value=expected_jobs) as create,
+            mock.patch.object(
+                cli, "prepare_vision_fallback_jobs", return_value=(evidence, expected_jobs)
+            ) as prepare,
         ):
             observed_evidence, jobs = cli.prepare_source_and_vision_jobs(
                 self._pilot_config(), v2_config, routes
@@ -341,12 +379,24 @@ class CliWorkspaceTests(unittest.TestCase):
 
         self.assertIs(observed_evidence, evidence)
         self.assertEqual(jobs, expected_jobs)
-        prepare.assert_called_once_with(
-            v2_config,
-            self.workspace / cli.APPROVED_PATHS["source_pdf"],
-            self.work_root / "vision/source-evidence",
+        prepare.assert_called_once_with(routes, self.work_root)
+
+    def test_cli_vision_ingest_reuses_the_single_persisted_evidence_pass(self) -> None:
+        config = self._pilot_config()
+        summary = {"total": 0, "vision_accepted": 0, "quarantined": 0, "pending": 0}
+        with (
+            mock.patch.object(cli, "ingest_vision_fallback_results", return_value=summary) as ingest,
+            mock.patch.object(cli._vision_protocol, "_result_inventory", return_value={}),
+        ):
+            observed, results = cli._vision_progress(
+                config, (), {}, (), config.work_root / "vision-results"
+            )
+        self.assertEqual(observed, summary)
+        self.assertEqual(results, ())
+        ingest.assert_called_once_with(
+            (), {}, config.work_root / "vision-results", config.work_root,
+            refresh_source=False,
         )
-        create.assert_called_once_with(routes, evidence, self.work_root)
 
     def _pilot_config(self):
         return cli.load_pilot_config(self.config, workspace_root=self.workspace)
@@ -381,6 +431,7 @@ class CliWorkspaceTests(unittest.TestCase):
             mock.patch.object(cli, "write_pilot_audit", side_effect=[pre_audit, post_audit]) as audit,
             mock.patch.object(cli, "render_all_candidates", return_value=manifests) as render,
             mock.patch.object(cli, "build_pilot_candidate_package", return_value=package) as build,
+            mock.patch.object(cli, "write_completion_evidence") as completion,
         ):
             result = cli.finalize_stage(
                 config=config,
@@ -404,6 +455,7 @@ class CliWorkspaceTests(unittest.TestCase):
         merge.assert_called_once()
         render.assert_called_once()
         build.assert_called_once_with(mock.ANY, candidates, post_audit, config.candidate_path)
+        completion.assert_called_once_with(config, post_audit, package)
 
     def test_finalize_blocks_without_package_when_post_render_audit_is_pending(self) -> None:
         config = self._pilot_config()
@@ -431,6 +483,196 @@ class CliWorkspaceTests(unittest.TestCase):
                     vision_results=(),
                 )
         build.assert_not_called()
+        for path in cli._completion_paths(config):
+            self.assertFalse(path.exists())
+
+    def test_completion_evidence_uses_planned_paths_canonical_bytes_and_idempotent_reuse(self) -> None:
+        config = self._pilot_config()
+        audit_path = self.work_root / "audit/chapter-001-agent-triage.json"
+        audit_path.parent.mkdir(parents=True)
+        audit_payload = {"audit_sha256": "a" * 64, "records": [], "counts": {}}
+        audit_path.write_bytes(cli.canonical_json_bytes(audit_payload))
+        audit = mock.Mock(
+            path=audit_path,
+            sha256="a" * 64,
+            dependency_fingerprint="b" * 64,
+            counts={
+                "total_baselines": 380, "python_accepts": 377, "vision_routes": 3,
+                "vision_accepts": 2, "quarantined": 1, "included": 379,
+                "pending_render": 0,
+            },
+        )
+        package = PackageResult(
+            path=config.candidate_path,
+            sha256="c" * 64,
+            question_count=379,
+            manifest={
+                "source_pdf_sha256": cli.APPROVED_SOURCE_SHA256,
+                "agent_prompt": {"version": cli.AGENT_REVIEW_PROMPT_VERSION, "sha256": "d" * 64},
+                "application_fingerprint": "e" * 64,
+                "renderer_fingerprint": "f" * 64,
+                "browser": {"identity": "test-browser", "fingerprint": "1" * 64},
+                "records": [{"record_id": "ch01-q0001", "candidate_sha256": "2" * 64, "render_manifest_sha256": "3" * 64}],
+            },
+        )
+
+        first = cli.write_completion_evidence(config, audit, package)
+        audit_copy = self.workspace / "data-engineering/python_vision_calibration/audits/chapter-001-agent-triage.json"
+        summary_path = self.workspace / "data-engineering/python_vision_calibration/reports/chapter-001-agent-triage-summary.json"
+        before = {
+            path: (path.read_bytes(), path.stat().st_mtime_ns)
+            for path in (audit_copy, summary_path)
+        }
+        second = cli.write_completion_evidence(config, audit, package)
+
+        self.assertEqual(first, second)
+        self.assertEqual(audit_copy.read_bytes(), audit_path.read_bytes())
+        self.assertEqual(summary_path.read_bytes(), cli.canonical_json_bytes(first))
+        self.assertEqual(
+            {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in before}, before
+        )
+        self.assertEqual(first["total_baselines"], 380)
+        self.assertEqual(first["agent_terminal"], 380)
+        self.assertEqual(first["vision_terminal"], 3)
+        self.assertEqual(first["included"] + first["quarantined"], 380)
+        self.assertEqual(first["published_sha256_before"], cli.APPROVED_PUBLISHED_SHA256)
+        self.assertEqual(first["published_sha256_after"], cli.APPROVED_PUBLISHED_SHA256)
+        self.assertEqual(first["candidate_sha256"], package.sha256)
+        self.assertEqual(first["audit_sha256"], cli._sha256_path(audit_copy))
+        self.assertEqual(
+            first["dependency_fingerprint"],
+            cli.canonical_sha256({key: value for key, value in first.items() if key != "dependency_fingerprint"}),
+        )
+
+    def test_completed_candidate_authentication_uses_current_audit_and_never_republishes(self) -> None:
+        config = self._pilot_config()
+        config.candidate_path.parent.mkdir(parents=True)
+        config.candidate_path.write_bytes(b"existing candidate")
+        candidates = (mock.Mock(),)
+        audit = mock.Mock()
+        package = PackageResult(
+            path=config.candidate_path, sha256="a" * 64, question_count=380, manifest={}
+        )
+        summary = {"candidate_sha256": package.sha256}
+        with (
+            mock.patch.object(cli, "merge_final_candidates", return_value=candidates) as merge,
+            mock.patch.object(cli, "validate_current_audit", return_value=audit) as validate_audit,
+            mock.patch.object(
+                cli, "authenticate_pilot_candidate_package", return_value=package
+            ) as authenticate,
+            mock.patch.object(cli, "validate_completion_evidence", return_value=summary),
+            mock.patch.object(cli, "build_pilot_candidate_package") as publish,
+        ):
+            observed = cli.authenticate_completed_pilot(
+                config=config,
+                v2_config=cli._validate_v2_source_config(config),
+                baselines=self.synthetic_baselines(),
+                routes=tuple(mock.Mock() for _ in range(380)),
+                agent_jobs={record_id: mock.Mock() for record_id in cli.EXPECTED_RECORD_IDS},
+                agent_results={record_id: mock.Mock() for record_id in cli.EXPECTED_RECORD_IDS},
+                evidence=(),
+                vision_jobs={},
+                vision_results=(),
+            )
+        self.assertEqual(observed, (package, audit, summary))
+        merge.assert_called_once()
+        validate_audit.assert_called_once()
+        authenticate.assert_called_once()
+        publish.assert_not_called()
+
+    def test_finalize_reuses_authenticated_candidate_and_recovers_missing_evidence(self) -> None:
+        config = self._pilot_config()
+        index = config.work_root / "vision/vision-jobs.jsonl"
+        index.parent.mkdir(parents=True)
+        index.write_bytes(b"")
+        (config.work_root / "vision/jobs").mkdir()
+        package = PackageResult(
+            path=config.candidate_path, sha256="a" * 64, question_count=380, manifest={}
+        )
+        audit = mock.Mock()
+        agent_summary = {"accepted_python": 380, "vision_required": 0}
+        vision_summary = {"total": 0, "pending": 0, "vision_accepted": 0, "quarantined": 0}
+        with (
+            mock.patch.object(cli, "prepare_source_and_vision_jobs", return_value=((), {})),
+            mock.patch.object(cli, "_load_vision_jobs", return_value={}) as load_jobs,
+            mock.patch.object(
+                cli._vision_protocol, "load_persisted_vision_evidence", return_value=()
+            ) as load_evidence,
+            mock.patch.object(cli, "_checkpoint"),
+            mock.patch.object(cli, "_vision_progress", return_value=(vision_summary, ())),
+            mock.patch.object(
+                cli, "authenticate_completed_pilot", return_value=(package, audit, None)
+            ) as authenticate,
+            mock.patch.object(cli, "write_completion_evidence", return_value={}) as recover,
+            mock.patch.object(cli, "finalize_stage") as finalize,
+        ):
+            code, payload = cli._execute_vision_command(
+                "finalize", config, cli._validate_v2_source_config(config),
+                self.synthetic_baselines(), tuple(mock.Mock() for _ in range(380)),
+                {record_id: mock.Mock() for record_id in cli.EXPECTED_RECORD_IDS},
+                tuple(mock.Mock() for _ in range(380)), agent_summary,
+                config.work_root / "vision-results",
+            )
+        self.assertEqual(code, 0)
+        self.assertEqual(payload["stage"], "candidate_ready")
+        self.assertEqual(payload["candidate_sha256"], package.sha256)
+        authenticate.assert_called_once()
+        load_jobs.assert_called_once()
+        load_evidence.assert_called_once()
+        recover.assert_called_once_with(config, audit, package)
+        finalize.assert_not_called()
+
+    def test_status_authenticates_completed_candidate_and_reports_missing_evidence_as_recovery(self) -> None:
+        config = self._pilot_config()
+        baseline_path = config.work_root / "baseline/chapter-001.jsonl"
+        baseline_path.parent.mkdir(parents=True)
+        baseline_path.write_bytes(b"placeholder")
+        vision_index = config.work_root / "vision/vision-jobs.jsonl"
+        vision_index.parent.mkdir(parents=True)
+        vision_index.write_bytes(b"")
+        config.candidate_path.parent.mkdir(parents=True)
+        config.candidate_path.write_bytes(b"candidate")
+        baselines = self.synthetic_baselines()
+        jobs = tuple(mock.Mock(record_id=record_id) for record_id in cli.EXPECTED_RECORD_IDS)
+        results = {record_id: mock.Mock() for record_id in cli.EXPECTED_RECORD_IDS}
+        routes = tuple(mock.Mock() for _ in cli.EXPECTED_RECORD_IDS)
+        package = PackageResult(
+            path=config.candidate_path, sha256="a" * 64, question_count=380, manifest={}
+        )
+        with (
+            mock.patch.object(cli, "_load_baselines", return_value=baselines),
+            mock.patch.object(cli, "_load_agent_jobs", return_value=jobs),
+            mock.patch.object(cli, "_agent_progress", return_value=(
+                {"pending": 0, "accepted_python": 380, "vision_required": 0}, results, routes
+            )),
+            mock.patch.object(cli, "_load_vision_jobs", return_value={}),
+            mock.patch.object(cli._vision_protocol, "load_persisted_vision_evidence", return_value=()),
+            mock.patch.object(cli, "_load_vision_results_read_only", return_value=()),
+            mock.patch.object(
+                cli, "authenticate_completed_pilot",
+                return_value=(package, mock.Mock(), {"candidate_sha256": package.sha256}),
+            ),
+        ):
+            ready = cli._status(config)
+        self.assertEqual(ready["stage"], "candidate_ready")
+        self.assertEqual(ready["candidate_sha256"], package.sha256)
+
+        with (
+            mock.patch.object(cli, "_load_baselines", return_value=baselines),
+            mock.patch.object(cli, "_load_agent_jobs", return_value=jobs),
+            mock.patch.object(cli, "_agent_progress", return_value=(
+                {"pending": 0, "accepted_python": 380, "vision_required": 0}, results, routes
+            )),
+            mock.patch.object(cli, "_load_vision_jobs", return_value={}),
+            mock.patch.object(cli._vision_protocol, "load_persisted_vision_evidence", return_value=()),
+            mock.patch.object(cli, "_load_vision_results_read_only", return_value=()),
+            mock.patch.object(
+                cli, "authenticate_completed_pilot", return_value=(package, mock.Mock(), None)
+            ),
+        ):
+            recovery = cli._status(config)
+        self.assertEqual(recovery["stage"], "candidate_recovery")
+        self.assertEqual(recovery["status"], "recovery_needed")
 
     def test_all_380_agent_results_produce_exactly_the_three_requested_vision_routes(self) -> None:
         self.invoke_with_synthetic_extract("run")
@@ -456,6 +698,65 @@ class CliWorkspaceTests(unittest.TestCase):
             {row["record_id"] for row in rows if row["decision"] == "VISION_REQUIRED"},
             vision_ids,
         )
+
+    def test_main_rejects_malformed_extra_and_case_variant_vision_results(self) -> None:
+        self.invoke_with_synthetic_extract("run")
+        for record_id in cli.EXPECTED_RECORD_IDS:
+            self.seed_agent_result(
+                record_id, decision="VISION_REQUIRED" if record_id == "ch01-q0001" else "ACCEPT_PYTHON"
+            )
+        self.invoke("ingest-agent")
+        index = self.work_root / "vision/vision-jobs.jsonl"
+        index.parent.mkdir(parents=True, exist_ok=True)
+        index.write_bytes(b"\n")
+        fake_job = mock.Mock(record_id="ch01-q0001", question_number=1, job_sha256="1" * 64)
+        fake_evidence = mock.Mock(question_number=1)
+        directory = self.work_root / "vision-results"
+        cases = {
+            "extra": ("other.json", "{}"),
+            "case": ("CH01-Q0001.json", "{}"),
+            "malformed": ("ch01-q0001.json", "{"),
+        }
+        for label, (filename, content) in cases.items():
+            with self.subTest(label=label):
+                if directory.exists():
+                    shutil.rmtree(directory)
+                directory.mkdir(parents=True)
+                (directory / filename).write_text(content)
+                with (
+                    mock.patch.object(cli, "prepare_source_and_vision_jobs", return_value=((fake_evidence,), {"ch01-q0001": fake_job})),
+                    mock.patch.object(cli, "_load_vision_jobs", return_value={"ch01-q0001": fake_job}),
+                    mock.patch.object(cli._vision_protocol, "load_persisted_vision_evidence", return_value=(fake_evidence,)),
+                    mock.patch.object(cli, "_checkpoint"),
+                    mock.patch.object(cli, "ingest_vision_fallback_results", return_value={
+                        "total": 1, "pending": 0, "vision_accepted": 0, "quarantined": 0,
+                    }),
+                ):
+                    code, payload, _, diagnostics = self.invoke("ingest-vision")
+                self.assertEqual(code, 22)
+                self.assertEqual(payload["status"], "invalid")
+                self.assertTrue(diagnostics.strip())
+
+    def test_zero_vision_routes_use_empty_canonical_inventory_through_main_and_status(self) -> None:
+        self.invoke_with_synthetic_extract("run")
+        for record_id in cli.EXPECTED_RECORD_IDS:
+            self.seed_agent_result(record_id)
+        self.invoke("ingest-agent")
+
+        prepare_code, prepare_payload, _, prepare_diagnostics = self.invoke("prepare-vision")
+        status_code, status_payload, _, status_diagnostics = self.invoke("status")
+        ingest_code, ingest_payload, _, ingest_diagnostics = self.invoke("ingest-vision")
+
+        self.assertEqual(prepare_code, 0, prepare_diagnostics)
+        self.assertEqual(status_code, 0, status_diagnostics)
+        self.assertEqual(ingest_code, 0, ingest_diagnostics)
+        self.assertEqual(prepare_payload["vision_required"], 0)
+        self.assertEqual(status_payload["stage"], "ready_to_finalize")
+        self.assertEqual(ingest_payload["vision_terminal"], 0)
+        self.assertTrue((self.work_root / "vision/jobs").is_dir())
+        self.assertEqual((self.work_root / "vision/vision-jobs.jsonl").read_bytes(), b"")
+        self.assertEqual((self.work_root / "vision/vision-results.jsonl").read_bytes(), b"")
+        self.assertFalse((self.work_root / "vision/source-evidence").exists())
 
     def test_status_does_not_rewrite_any_existing_pilot_artifact(self) -> None:
         self.invoke_with_synthetic_extract("run")
@@ -508,6 +809,25 @@ class CliWorkspaceTests(unittest.TestCase):
             check=False,
         )
 
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(completed.stdout.count("\n"), 1)
+        self.assertEqual(json.loads(completed.stdout)["command"], "status")
+
+    def test_python_module_status_is_cwd_independent_with_absolute_pythonpath(self) -> None:
+        environment = os.environ.copy()
+        environment["PYTHONPATH"] = str(cli.WORKSPACE_ROOT / "data-engineering")
+        with tempfile.TemporaryDirectory() as unrelated:
+            completed = subprocess.run(
+                [
+                    sys.executable, "-m", "python_vision_calibration", "status",
+                    "--config", str(CliContractTests.CONFIG),
+                ],
+                cwd=unrelated,
+                env=environment,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertEqual(completed.stdout.count("\n"), 1)
         self.assertEqual(json.loads(completed.stdout)["command"], "status")

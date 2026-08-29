@@ -199,10 +199,10 @@ def _current_prepared_evidence(
     work_root: Path, question_numbers: Iterable[int] | None = None
 ) -> tuple[RecordEvidence, ...]:
     root = Path(work_root)
-    safe_tree(root, "Vision work root")
     evidence_root = safe_directory(
         root, root / "vision" / "source-evidence", "Vision source-evidence directory"
     )
+    safe_tree(evidence_root, "Vision source-evidence directory")
     config, _ = _current_config()
     source_pdf = _approved_source_pdf(config)
     evidence = tuple(prepare_source_evidence(
@@ -211,7 +211,7 @@ def _current_prepared_evidence(
         evidence_root,
         question_numbers=question_numbers,
     ))
-    safe_tree(root, "Vision work root")
+    safe_tree(evidence_root, "Vision source-evidence directory")
     return evidence
 
 
@@ -773,7 +773,6 @@ def create_vision_fallback_jobs(
 ) -> dict[str, VisionFallbackJob]:
     """Create jobs for vision routes only, indexed by canonical record ID."""
     root = Path(work_root)
-    safe_tree(root, "Vision work root")
     route_values = tuple(routes)
     if any(not isinstance(route, RouteDecision) for route in route_values):
         raise TypeError("routes must contain RouteDecision values.")
@@ -978,12 +977,21 @@ def _media_hashes(value: Any, field: str) -> tuple[str, ...]:
     return hashes
 
 
-def _validate_field_media(mode: str, value: Any, allowed: tuple[str, ...], field: str) -> tuple[str, ...]:
+def _validate_field_media(
+    mode: str,
+    value: Any,
+    allowed: tuple[str, ...],
+    field: str,
+    *,
+    exactly_one_for_image: bool = False,
+) -> tuple[str, ...]:
     hashes = _media_hashes(value, field)
     if mode == "text" and hashes:
         raise ValueError(f"{field} must be empty for text representation.")
     if mode == "image" and not hashes:
         raise ValueError(f"{field} requires current source media for image representation.")
+    if mode == "image" and exactly_one_for_image and len(hashes) != 1:
+        raise ValueError(f"{field} requires exactly one current source crop for image representation.")
     if any(item not in allowed for item in hashes):
         raise ValueError(f"{field} contains evidence from the wrong source role or a stale job.")
     return hashes
@@ -1026,9 +1034,21 @@ def _validate_accepted(job: VisionFallbackJob, payload: Mapping[str, Any]) -> No
     media_options = media["options"]
     if not isinstance(media_options, dict) or tuple(sorted(media_options)) != labels:
         raise ValueError("media.options must map every option.")
-    _validate_field_media(representation["question"], media["question"], job.role_sha256s["question"], "media.question")
+    _validate_field_media(
+        representation["question"],
+        media["question"],
+        job.role_sha256s["question"],
+        "media.question",
+        exactly_one_for_image=True,
+    )
     for label in labels:
-        _validate_field_media(option_modes[label], media_options[label], job.role_sha256s["question"], f"media.options.{label}")
+        _validate_field_media(
+            option_modes[label],
+            media_options[label],
+            job.role_sha256s["question"],
+            f"media.options.{label}",
+            exactly_one_for_image=True,
+        )
     _validate_field_media(representation["solution"], media["solution"], job.role_sha256s["solution"], "media.solution")
 
     evidence_hashes = tuple(payload["source_evidence_sha256s"])

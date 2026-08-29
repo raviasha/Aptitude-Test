@@ -742,6 +742,37 @@ class VisionFallbackTests(unittest.TestCase):
         accepted = ingest_vision_fallback_result(self.job, self.write(payload))
         self.assertEqual(accepted.media["question"], (self.job.role_sha256s["question"][0],))
 
+    def test_question_image_rejects_multiple_current_crops_before_merge(self) -> None:
+        first = self.evidence[0].question_crops[0]
+        second_path = self.crop_root / "ch001-q0044-question-s01-p025.png"
+        second_path.write_bytes(b"question:44:second-segment")
+        second = replace(
+            first,
+            path=second_path,
+            sha256=hashlib.sha256(second_path.read_bytes()).hexdigest(),
+        )
+        evidence = self.record_evidence(44, question_crops=(first, second))
+        self.prepare_source.return_value = [evidence]
+        job = create_vision_fallback_job(
+            self.vision_route,
+            evidence,
+            self.root / "vision" / "jobs" / "ch01-q0044.json",
+        )
+        payload = self.valid_vision_result()
+        payload.update({
+            "source_evidence_sha256s": list(job.source_evidence_sha256s),
+            "route_sha256": job.route_sha256,
+            "job_sha256": job.job_sha256,
+        })
+        payload["representation"]["question"] = "image"  # type: ignore[index]
+        payload["media"]["question"] = list(job.role_sha256s["question"])  # type: ignore[index]
+        payload = self.with_result_hash(
+            {key: value for key, value in payload.items() if key != "result_sha256"}
+        )
+
+        with self.assertRaisesRegex(ValueError, "exactly one"):
+            ingest_vision_fallback_result(job, self.write(payload))
+
     def test_incomplete_or_ambiguous_source_can_only_quarantine(self) -> None:
         incomplete = self.record_evidence(
             44,

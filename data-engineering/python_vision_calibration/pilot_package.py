@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import hashlib
+import importlib
 import json
 import os
 import secrets
+import sys
 import tempfile
 import zipfile
 from dataclasses import dataclass
@@ -484,14 +486,21 @@ def _package_bindings(payload: Mapping[str, Any], assets: Mapping[str, bytes]) -
 
 
 def _validate_written_package(path: Path, manifest: Mapping[str, Any], count: int, assets: set[str]) -> None:
+    project_root = str(Path(__file__).resolve().parents[2])
+    added_project_root = project_root not in sys.path
     try:
-        import app
+        if added_project_root:
+            sys.path.insert(0, project_root)
+        app = importlib.import_module("app")
         with path.open("rb") as package:
             bank, questions, _, version = app.parse_question_package(package)
     except Exception as error:
         if isinstance(error, PipelineBlocked):
             raise
         raise PipelineBlocked("Pilot candidate failed application parser validation.") from error
+    finally:
+        if added_project_root:
+            sys.path.remove(project_root)
     if bank != manifest["bank_name"] or version != 3 or len(questions) != count:
         raise PipelineBlocked("Pilot candidate failed application parser validation.")
     with zipfile.ZipFile(path) as archive:

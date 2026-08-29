@@ -4,10 +4,15 @@ from __future__ import annotations
 
 import hashlib
 import os
+import sys
 import tempfile
 import zipfile
 from pathlib import Path
 from typing import Any, Iterable, Mapping
+
+_WORKSPACE_ROOT = Path(__file__).resolve().parents[2]
+if str(_WORKSPACE_ROOT) not in sys.path:
+    sys.path.insert(0, str(_WORKSPACE_ROOT))
 
 import app
 

@@ -55,7 +55,7 @@ QUESTION_BANKS_DIR = DATA_DIR / "Question Banks"
 STATIC_DIR = BUNDLE_DIR / "static"
 TEMPLATE_DIR = BUNDLE_DIR / "templates"
 SERVER_URL = "http://127.0.0.1:8000"
-APP_VERSION = "1.3.3"
+APP_VERSION = "1.3.4"
 
 CATEGORIES = [
     "Quantitative Aptitude",

@@ -106,6 +106,21 @@ def _validate_candidate_representation(candidate: CandidateRecord) -> Mapping[st
     media_options = media.get("options", {})
     if not isinstance(media_options, Mapping) or set(media_options) != image_options:
         raise PipelineBlocked("Candidate option image representation needs matching display media.")
+
+    question_media = media.get("question")
+    question_digest = question_media.get("source_sha256") if isinstance(question_media, Mapping) else None
+    option_digest_labels: dict[str, str] = {}
+    for label, item in media_options.items():
+        if not isinstance(item, Mapping):
+            raise PipelineBlocked("Candidate option display media is invalid.")
+        digest = item.get("source_sha256")
+        if not isinstance(digest, str) or len(digest) != 64:
+            raise PipelineBlocked("Candidate option display media hash is invalid.")
+        if digest == question_digest:
+            raise PipelineBlocked("A full-question crop cannot be reused as an option image.")
+        if digest in option_digest_labels:
+            raise PipelineBlocked("Distinct options cannot reuse the same display-media crop.")
+        option_digest_labels[digest] = str(label)
     return media
 
 

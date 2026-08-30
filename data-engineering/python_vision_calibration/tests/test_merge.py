@@ -455,6 +455,37 @@ class MergeFinalCandidatesTests(unittest.TestCase):
         self.assertEqual(candidate.representation["media"]["question"]["source_sha256"], question_hash)
         self.assertEqual(candidate.representation["media"]["question"]["alt_text"], result.question_text)
 
+    def test_full_question_crop_reused_for_options_falls_back_to_clickable_text(self) -> None:
+        question_hash = self.evidence[0].question_crops[0].sha256
+        result = self.make_vision_result(
+            "VISION_ACCEPTED",
+            representation={
+                "question": "image",
+                "options": {"A": "image", "B": "image", "C": "image", "D": "image"},
+                "solution": "text",
+            },
+            media={
+                "question": [question_hash],
+                "options": {
+                    "A": [question_hash],
+                    "B": [question_hash],
+                    "C": [question_hash],
+                    "D": [question_hash],
+                },
+                "solution": [],
+            },
+        )
+
+        candidate = self.merge(self.vision_route, (result,))[0]
+
+        self.assertEqual(candidate.representation["question"], "image")
+        self.assertEqual(
+            dict(candidate.representation["options"]),
+            {"A": "text", "B": "text", "C": "text", "D": "text"},
+        )
+        self.assertEqual(set(candidate.representation["media"]), {"question"})
+        self.assertEqual(dict(candidate.options), dict(result.options))
+
     def test_quarantine_is_excluded(self) -> None:
         self.assertEqual(self.merge(self.vision_route, (self.quarantine_result,)), ())
 

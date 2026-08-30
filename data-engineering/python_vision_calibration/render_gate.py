@@ -6,6 +6,7 @@ import hashlib
 import importlib.metadata
 import json
 import os
+import re
 import sys
 import tempfile
 from collections.abc import Callable, Iterable, Mapping
@@ -71,6 +72,24 @@ def _file_inventory(paths: Iterable[Path], root: Path) -> list[dict[str, str]]:
     ]
 
 
+def _application_file_inventory(paths: Iterable[Path], root: Path) -> list[dict[str, str]]:
+    inventory: list[dict[str, str]] = []
+    for path in sorted({Path(path).resolve() for path in paths}, key=lambda item: item.as_posix()):
+        relative = path.relative_to(root).as_posix()
+        content = path.read_bytes()
+        if relative == "app.py":
+            normalized_carriage_return = b"\r" if content.count(b"\r\n") > content.count(b"\n") // 2 else b""
+            content, replacements = re.subn(
+                rb'(?m)^APP_VERSION = "[^"\r\n]+"\r?$',
+                b'APP_VERSION = "1.3.3"' + normalized_carriage_return,
+                content,
+            )
+            if replacements != 1:
+                raise PipelineBlocked("KSAT application version declaration is missing or ambiguous.")
+        inventory.append({"path": relative, "sha256": hashlib.sha256(content).hexdigest()})
+    return inventory
+
+
 def _current_fingerprints(browser_identity: str) -> tuple[str, str, str]:
     root = WORKSPACE_ROOT.resolve()
     startup = tuple(
@@ -81,7 +100,9 @@ def _current_fingerprints(browser_identity: str) -> tuple[str, str, str]:
     application_paths = (*startup, *sorted(path for path in static.rglob("*") if path.is_file()))
     if not (root / "app.py").is_file() or not (root / "question_media.py").is_file() or not static.is_dir():
         raise PipelineBlocked("KSAT application render contract is incomplete.")
-    application = dependency_fingerprint("ksat-application-assets", _file_inventory(application_paths, root))
+    application = dependency_fingerprint(
+        "ksat-application-assets", _application_file_inventory(application_paths, root)
+    )
     render_module = Path(__file__).resolve().parents[1] / "textbook_chapters_v2" / "render.py"
     try:
         playwright_version = importlib.metadata.version("playwright")

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import sys
@@ -34,6 +35,9 @@ _PNG = (
     b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\rIDATx\x9cc\xf8\xcf\xc0\xf0\x1f\x00\x05\x00\x01\xff\x89\x99=\x1d"
     b"\x00\x00\x00\x00IEND\xaeB`\x82"
 )
+_PNG_OPTION = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+)
 
 
 class CandidatePackageTests(unittest.TestCase):
@@ -41,6 +45,7 @@ class CandidatePackageTests(unittest.TestCase):
         self.temporary_directory = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary_directory.name)
         self.question_crop = self._crop("question")
+        self.option_crop = self._crop("question", content=_PNG_OPTION, filename="option")
         self.answer_crop = self._crop("answer_key")
         self.solution_crop = self._crop("solution")
         self.evidence = RecordEvidence(
@@ -48,7 +53,7 @@ class CandidatePackageTests(unittest.TestCase):
             question_number=334,
             source_pdf=self.root / "chapter-1.pdf",
             source_pdf_sha256="a" * 64,
-            question_crops=(self.question_crop,),
+            question_crops=(self.question_crop, self.option_crop),
             answer_key_crops=(self.answer_crop,),
             solution_crops=(self.solution_crop,),
             dependency_fingerprint="b" * 64,
@@ -68,9 +73,9 @@ class CandidatePackageTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary_directory.cleanup()
 
-    def _crop(self, role: str) -> SourceCrop:
-        path = self.root / f"{role}.png"
-        path.write_bytes(_PNG)
+    def _crop(self, role: str, *, content: bytes = _PNG, filename: str | None = None) -> SourceCrop:
+        path = self.root / f"{filename or role}.png"
+        path.write_bytes(content)
         return SourceCrop(
             role=role,
             question_number=334,
@@ -79,7 +84,7 @@ class CandidatePackageTests(unittest.TestCase):
             path=path,
             width=1,
             height=1,
-            sha256=hashlib.sha256(_PNG).hexdigest(),
+            sha256=hashlib.sha256(content).hexdigest(),
             source_image_sha256="c" * 64,
             source_dpi=240,
         )
@@ -201,7 +206,7 @@ class CandidatePackageTests(unittest.TestCase):
             },
             media_crops={
                 "question": self.question_crop,
-                "options": {"D": self.question_crop},
+                "options": {"D": self.option_crop},
                 "solution": [self.solution_crop],
             },
             alt_text={
@@ -222,6 +227,7 @@ class CandidatePackageTests(unittest.TestCase):
             self.assertEqual(archive.read(question_asset), _PNG)
             self.assertEqual(question["question_text"], extraction["question_text"])
             self.assertEqual(media["options"]["D"]["alt_text"], "341")
+            self.assertEqual(archive.read(media["options"]["D"]["asset"]), _PNG_OPTION)
             self.assertEqual(archive.read(media["solution"][0]["asset"]), _PNG)
             self.assertEqual(question_asset, f"assets/{hashlib.sha256(_PNG).hexdigest()}.png")
 
@@ -229,6 +235,37 @@ class CandidatePackageTests(unittest.TestCase):
             _, parsed, _, format_version = app.parse_question_package(package)
         self.assertEqual(format_version, 3)
         self.assertEqual(parsed[0]["options"]["D"], "341")
+
+    def test_package_rejects_one_full_question_crop_reused_for_multiple_options(self) -> None:
+        extraction = self._extraction(
+            representation={
+                "question": "image",
+                "options": {"A": "image", "B": "image", "C": "image", "D": "image"},
+                "solution": "text",
+            },
+            media_crops={
+                "question": self.question_crop,
+                "options": {
+                    "A": self.question_crop,
+                    "B": self.question_crop,
+                    "C": self.question_crop,
+                    "D": self.question_crop,
+                },
+            },
+            alt_text={
+                "question": "The complete textbook question and all four choices.",
+                "options": {"A": "0", "B": "1", "C": "49", "D": "341"},
+            },
+        )
+        candidate = assemble_candidate(self.evidence, extraction, [])
+
+        with self.assertRaisesRegex(PipelineBlocked, "reused|distinct"):
+            build_candidate_package(
+                self.config,
+                [candidate],
+                self._approved_audit(candidate),
+                self.root / "duplicate-option-media.zip",
+            )
 
     def test_assembly_rejects_an_image_crop_not_authorized_by_this_record_evidence(self) -> None:
         foreign_crop = replace(self.question_crop, question_number=335)

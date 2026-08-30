@@ -125,6 +125,38 @@ class RenderGateTests(unittest.TestCase):
         self.assertNotEqual(changed[0]["browser_fingerprint"], first[0]["browser_fingerprint"])
         self.assertNotEqual(changed[0]["renderer_fingerprint"], first[0]["renderer_fingerprint"])
 
+    def test_application_fingerprint_ignores_only_the_non_visual_version_constant(self) -> None:
+        from python_vision_calibration.render_gate import _current_fingerprints
+
+        application = self.root / "application"
+        static = application / "static"
+        static.mkdir(parents=True)
+        app_source = application / "app.py"
+        app_source.write_text('APP_VERSION = "1.3.3"\n\ndef import_question():\n    return 1\n', encoding="utf-8")
+        (application / "question_media.py").write_text("MEDIA_LIMIT = 1\n", encoding="utf-8")
+        (static / "app.js").write_text("const screen = 'attempt';\n", encoding="utf-8")
+
+        with patch("python_vision_calibration.render_gate.WORKSPACE_ROOT", application):
+            first = _current_fingerprints(self.identity)[0]
+            app_source.write_text(
+                'APP_VERSION = "1.3.4"\n\ndef import_question():\n    return 1\n',
+                encoding="utf-8",
+            )
+            version_only = _current_fingerprints(self.identity)[0]
+            app_source.write_bytes(
+                b'APP_VERSION = "1.3.4"\n\r\ndef import_question():\r\n    return 1\r\n'
+            )
+            version_line_ending_only = _current_fingerprints(self.identity)[0]
+            app_source.write_text(
+                'APP_VERSION = "1.3.4"\n\ndef import_question():\n    return 2\n',
+                encoding="utf-8",
+            )
+            functional_change = _current_fingerprints(self.identity)[0]
+
+        self.assertEqual(version_only, first)
+        self.assertEqual(version_line_ending_only, first)
+        self.assertNotEqual(functional_change, first)
+
     def test_missing_stale_extra_or_finding_bearing_screenshots_are_not_reused(self) -> None:
         manifest = self.render()[0]
         screenshot = Path(manifest["screenshots"]["1024x768"]["unanswered"]["path"])

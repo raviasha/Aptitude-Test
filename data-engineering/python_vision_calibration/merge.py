@@ -589,6 +589,19 @@ def _vision_representation(
         label: references(media_options[label], modes["options"][label], f"option {label}") for label in labels
     }
     solution_hashes = references(media["solution"], modes["solution"], "solution")
+
+    option_hash_usage: dict[str, int] = {}
+    for hashes in option_hashes.values():
+        for digest in hashes:
+            option_hash_usage[digest] = option_hash_usage.get(digest, 0) + 1
+    question_hash_set = set(question_hashes)
+    normalized_option_modes = dict(modes["options"])
+    for label, hashes in tuple(option_hashes.items()):
+        if any(digest in question_hash_set or option_hash_usage[digest] > 1 for digest in hashes):
+            normalized_option_modes[label] = "text"
+            option_hashes[label] = ()
+    modes["options"] = normalized_option_modes
+
     candidate_media: dict[str, object] = {}
     if question_hashes:
         if len(question_hashes) != 1 or crop_by_hash[question_hashes[0]].role != "question":

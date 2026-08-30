@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import unittest
+import zipfile
 from pathlib import Path
 
 
@@ -57,6 +58,43 @@ class Chapter001PilotInvariantTests(unittest.TestCase):
             summary["published_sha256_after"],
             hashlib.sha256(self.PUBLISHED.read_bytes()).hexdigest(),
         )
+
+    def test_candidate_does_not_reuse_question_or_option_crops_as_answers(self) -> None:
+        with zipfile.ZipFile(self.CANDIDATE) as archive:
+            questions = [
+                json.loads(line)
+                for line in archive.read("questions/ch01.jsonl")
+                .decode("utf-8")
+                .splitlines()
+                if line.strip()
+            ]
+
+        violations: list[str] = []
+        for question in questions:
+            media = question.get("display_media", {})
+            question_media = media.get("question", [])
+            if isinstance(question_media, dict):
+                question_media = [question_media]
+            question_hashes = {
+                item.get("sha256")
+                for item in question_media
+                if item.get("sha256")
+            }
+            option_hashes: dict[str, str] = {
+                label: item.get("sha256", "")
+                for label, item in media.get("options", {}).items()
+            }
+            reused_question = question_hashes.intersection(option_hashes.values())
+            duplicate_options = {
+                crop_hash
+                for crop_hash in option_hashes.values()
+                if crop_hash
+                and list(option_hashes.values()).count(crop_hash) > 1
+            }
+            if reused_question or duplicate_options:
+                violations.append(question["key"])
+
+        self.assertEqual(violations, [])
 
 
 if __name__ == "__main__":

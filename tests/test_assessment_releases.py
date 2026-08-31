@@ -497,6 +497,15 @@ class AssessmentReleaseTests(unittest.TestCase):
             {"question_text": "&#47;&#47;127.0.0.1/private"},
             {"question_html": "<p>&#47;&#47;127.0.0.1/private</p>"},
             {"question_html": '<span title="&#47;&#47;SeRvEr?private=1">x</span>'},
+            {"question_text": "//example.com./private"},
+            {"question_text": "//internal_server/private"},
+            {"question_text": "//@server/private"},
+            {"question_text": "//server:/private"},
+            {"question_text": "//127.1/private"},
+            {"question_text": "//2130706433/private"},
+            {"question_text": "//例子.com/private"},
+            {"question_text": "%2F %2F example%2Ecom%2E%2Fp"},
+            {"question_html": "<p>&#47;&#47;example.com.&#47;p</p>"},
         )
         for test_id, mutation in enumerate(attacks, start=80):
             with self.subTest(mutation=mutation):
@@ -518,6 +527,78 @@ class AssessmentReleaseTests(unittest.TestCase):
                         now_iso="2026-08-31T09:00:00+00:00",
                     )
                 self.assertEqual(before, set(self.pack_dir.glob("*.ksatpack")))
+
+    def test_symbolic_floor_division_survives_real_packs_without_masking_boundary_urls(self):
+        harmless_values = (
+            "x // y",
+            "Compute total // count",
+            "Data: values",
+            "6 // 2",
+            "6 // 2.0",
+            "x/y",
+            "items // groups",
+            "(left + right) // divisor",
+            "remainder = total // bucket_count",
+        )
+        for test_id, harmless_value in enumerate(harmless_values, start=120):
+            with self.subTest(harmless_value=harmless_value):
+                self.connection.execute(
+                    "INSERT INTO tests (test_id, test_name) VALUES (?, ?)",
+                    (test_id, f"Floor division case {test_id}"),
+                )
+                question = self.public_questions()[1].model_copy(
+                    update={"question_text": harmless_value}
+                )
+                release = prepare_release(
+                    self.connection,
+                    test_id=test_id,
+                    selected_questions=[question],
+                    assets={},
+                    pack_dir=self.pack_dir,
+                    signing_private_key_b64=self.private_key_b64,
+                    pack_master_key=self.master_key,
+                    now_iso="2026-08-31T09:00:00+00:00",
+                )
+                encrypted = (self.pack_dir / release.content_pack_filename).read_bytes()
+                content_key = unwrap_release_content_key(
+                    self.master_key, release.release_id, release.wrapped_content_key_b64
+                )
+                with zipfile.ZipFile(
+                    io.BytesIO(decrypt_pack(content_key, release.release_id, encrypted))
+                ) as archive:
+                    packed = json.loads(archive.read("questions.json"))[0]
+                self.assertEqual(harmless_value, packed["question_text"])
+
+        for test_id, malicious_value in enumerate(
+            (
+                "//server/private",
+                "See: //server/private",
+                "Open //example.com./private",
+                "x // internal_server /private",
+                "x // server : 8080/private",
+                "x // server ?private=1",
+            ),
+            start=140,
+        ):
+            with self.subTest(malicious_value=malicious_value):
+                self.connection.execute(
+                    "INSERT INTO tests (test_id, test_name) VALUES (?, ?)",
+                    (test_id, f"Boundary URL case {test_id}"),
+                )
+                question = self.public_questions()[1].model_copy(
+                    update={"question_text": malicious_value}
+                )
+                with self.assertRaisesRegex(ValueError, "external URL"):
+                    prepare_release(
+                        self.connection,
+                        test_id=test_id,
+                        selected_questions=[question],
+                        assets={},
+                        pack_dir=self.pack_dir,
+                        signing_private_key_b64=self.private_key_b64,
+                        pack_master_key=self.master_key,
+                        now_iso="2026-08-31T09:00:00+00:00",
+                    )
 
     def test_supported_structured_stimuli_and_safe_visual_html_survive_real_packs(self):
         chart = self.public_questions()[1].model_dump(mode="json")
@@ -887,6 +968,15 @@ class AssessmentReleaseTests(unittest.TestCase):
             ("question_html", "<p>&#47;&#47;127.0.0.1/private</p>"),
             ("question_text", "//server"),
             ("question_text", "//[2001:db8::1]:8443/private"),
+            ("question_text", "//example.com./private"),
+            ("question_text", "//internal_server/private"),
+            ("question_text", "//@server/private"),
+            ("question_text", "//server:/private"),
+            ("question_text", "//127.1/private"),
+            ("question_text", "//2130706433/private"),
+            ("question_text", "//例子.com/private"),
+            ("question_text", "%2F %2F example%2Ecom%2E%2Fp"),
+            ("question_html", "<p>&#47;&#47;example.com.&#47;p</p>"),
         )
         for field, malicious_value in attacks:
             with self.subTest(field=field, malicious_value=malicious_value):

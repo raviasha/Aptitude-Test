@@ -37,16 +37,8 @@ from ksat.protocol import (
 _FIXED_ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
 _SAFE_ASSET_NAME = re.compile(r"assets/[0-9a-f]{64}\.(?:png|jpe?g|webp|svg)\Z")
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
-_PROTOCOL_RELATIVE_AUTHORITY = re.compile(
-    r"//(?:[a-z0-9._~!$&'()*+,;=:%-]+@)?(?:"
-    r"(?:[0-9]{1,3}\.){3}[0-9]{1,3}"
-    r"|"
-    r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
-    r"[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?"
-    r"|\[[a-z0-9:.%_-]+\]"
-    r"|[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?"
-    r")(?::[0-9]{1,5})?(?=[/?#]|$)"
-)
+_REG_NAME_PUNCTUATION = frozenset("-._~!$&'()*+,;=%")
+_USERINFO_PUNCTUATION = _REG_NAME_PUNCTUATION | {":"}
 _PRIVATE_MARKERS = ("answer", "correct", "feedback", "score", "solution", "explanation")
 _WRAPPED_KEY_ENVELOPE_BYTES = 12 + 32 + 16
 
@@ -120,6 +112,112 @@ def _url_compact(value: str) -> str:
     )
 
 
+def _authority_component_character(character: str, punctuation: frozenset[str] | set[str]) -> bool:
+    return character.isalnum() or character == "_" or character in punctuation or (
+        ord(character) > 127
+        and not character.isspace()
+        and not unicodedata.category(character).startswith(("C", "P", "Z"))
+    )
+
+
+def _valid_reg_name(value: str) -> bool:
+    return bool(value) and all(
+        _authority_component_character(character, _REG_NAME_PUNCTUATION)
+        for character in value
+    ) and any(character.isalnum() or character == "_" for character in value)
+
+
+def _valid_userinfo(value: str) -> bool:
+    return all(
+        _authority_component_character(character, _USERINFO_PUNCTUATION)
+        for character in value
+    )
+
+
+def _valid_authority(value: str) -> bool:
+    if "@" in value:
+        userinfo, host_port = value.rsplit("@", 1)
+        if not _valid_userinfo(userinfo):
+            return False
+    else:
+        host_port = value
+
+    if host_port.startswith("["):
+        closing_bracket = host_port.find("]")
+        if closing_bracket < 2:
+            return False
+        host = host_port[1:closing_bracket]
+        remainder = host_port[closing_bracket + 1 :]
+        if not all(
+            character.isalnum() or character in ".:_%~-"
+            for character in host
+        ):
+            return False
+        return not remainder or (
+            remainder.startswith(":") and remainder[1:].isdigit()
+        ) or remainder == ":"
+
+    if host_port.count(":") > 1:
+        return False
+    host, separator, port = host_port.partition(":")
+    return _valid_reg_name(host) and (not separator or not port or port.isdigit())
+
+
+def _floor_division_at(decoded: str, first_slash: int, second_slash: int) -> bool:
+    if second_slash != first_slash + 1:
+        return False
+    if first_slash == 0 or second_slash + 1 >= len(decoded):
+        return False
+    if not decoded[first_slash - 1].isspace() or not decoded[second_slash + 1].isspace():
+        return False
+
+    left_text = decoded[:first_slash].rstrip().rstrip(")]}").rstrip()
+    right_text = decoded[second_slash + 1 :].lstrip()
+    if not re.search(r"(?:[^\W\d]\w*|\d+(?:\.\d+)?)\Z", left_text, re.UNICODE):
+        return False
+    operand = re.match(r"(?:[^\W\d]\w*|\d+(?:\.\d+)?)", right_text, re.UNICODE)
+    if operand is None:
+        return False
+    remainder = right_text[operand.end() :].lstrip()
+    return not remainder.startswith((".", ":", "@", "/", "?", "#", "["))
+
+
+def _contains_protocol_relative_authority(value: str) -> bool:
+    decoded = _decode_public_text(value).casefold().replace("\\", "/")
+    significant = [
+        (character, index)
+        for index, character in enumerate(decoded)
+        if not character.isspace() and not unicodedata.category(character).startswith("C")
+    ]
+    compact = "".join(character for character, _ in significant)
+    search_from = 0
+    while True:
+        marker = compact.find("//", search_from)
+        if marker < 0:
+            return False
+        search_from = marker + 1
+        authority_start = marker + 2
+        authority_end = authority_start
+        while authority_end < len(compact) and compact[authority_end] not in "/?#":
+            character = compact[authority_end]
+            if character in "@[]:" or _authority_component_character(
+                character, _REG_NAME_PUNCTUATION
+            ):
+                authority_end += 1
+                continue
+            break
+        authority = compact[authority_start:authority_end]
+        if not _valid_authority(authority):
+            continue
+        if _floor_division_at(
+            decoded,
+            significant[marker][1],
+            significant[marker + 1][1],
+        ):
+            continue
+        return True
+
+
 def _url_field_name(value: str) -> bool:
     normalized = re.sub(r"[^a-z0-9]", "", _decode_public_text(value).casefold())
     return normalized in {"asset", "assetfilename", "file", "href", "src", "url", "uri"} or normalized.endswith(
@@ -148,7 +246,7 @@ def _validate_public_string(value: str, *, url_field: bool = False) -> None:
     route_text = compact.replace("\\", "/")
     if re.search(r"(?:^|/)api/", route_text) or "question-assets" in route_text:
         raise ValueError("Public assessment content contains a coordinator URL.")
-    if _PROTOCOL_RELATIVE_AUTHORITY.search(route_text):
+    if _contains_protocol_relative_authority(value):
         raise ValueError("Public assessment content contains an external URL.")
 
 

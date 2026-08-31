@@ -1,5 +1,6 @@
 import base64
 import hashlib
+import html
 import io
 import json
 import os
@@ -12,6 +13,7 @@ import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
+from urllib.parse import unquote
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
@@ -381,7 +383,7 @@ class AssessmentReleaseTests(unittest.TestCase):
                     )
         self.assertEqual([], list(self.pack_dir.glob("*.ksatpack")))
 
-    def test_obfuscated_urls_are_rejected_but_plain_math_slashes_survive_real_pack(self):
+    def test_obfuscated_urls_and_plain_double_slashes_are_rejected(self):
         adversarial = (
             {"question_text": "Visit HtT\nPs%3A%2F%2Fevil.example now"},
             {"question_html": "<p>&#47;API&#47;question-assets/41/private.png</p>"},
@@ -401,6 +403,8 @@ class AssessmentReleaseTests(unittest.TestCase):
             {"question_text": "Connect w s s %3A%2F%2Fevil.example/socket"},
             {"question_text": "Open sMb%3A%2F%2Fserver/share"},
             {"question_text": "Load bLoB%3Anull%2Fprivate-id"},
+            {"question_text": "Data: values. Compute 6 // 2, then compare x/y."},
+            {"question_text": "6 // 2.0"},
         )
         for offset, mutation in enumerate(adversarial, start=50):
             with self.subTest(mutation=mutation):
@@ -422,54 +426,6 @@ class AssessmentReleaseTests(unittest.TestCase):
                         now_iso="2026-08-31T09:00:00+00:00",
                     )
                 self.assertEqual(before, set(self.pack_dir.glob("*.ksatpack")))
-
-        self.connection.execute("INSERT INTO tests (test_id, test_name) VALUES (70, 'Harmless slashes')")
-        harmless = self.public_questions()[1].model_copy(
-            update={"question_text": "Data: values. Compute 6 // 2, then compare x/y."}
-        )
-        release = prepare_release(
-            self.connection,
-            test_id=70,
-            selected_questions=[harmless],
-            assets={},
-            pack_dir=self.pack_dir,
-            signing_private_key_b64=self.private_key_b64,
-            pack_master_key=self.master_key,
-            now_iso="2026-08-31T09:00:00+00:00",
-        )
-        encrypted = (self.pack_dir / release.content_pack_filename).read_bytes()
-        content_key = unwrap_release_content_key(
-            self.master_key, release.release_id, release.wrapped_content_key_b64
-        )
-        with zipfile.ZipFile(
-            io.BytesIO(decrypt_pack(content_key, release.release_id, encrypted))
-        ) as archive:
-            packed = json.loads(archive.read("questions.json"))[0]
-        self.assertEqual("Data: values. Compute 6 // 2, then compare x/y.", packed["question_text"])
-
-        self.connection.execute("INSERT INTO tests (test_id, test_name) VALUES (71, 'Decimal division')")
-        decimal_division = self.public_questions()[1].model_copy(
-            update={"question_text": "6 // 2.0"}
-        )
-        decimal_release = prepare_release(
-            self.connection,
-            test_id=71,
-            selected_questions=[decimal_division],
-            assets={},
-            pack_dir=self.pack_dir,
-            signing_private_key_b64=self.private_key_b64,
-            pack_master_key=self.master_key,
-            now_iso="2026-08-31T09:00:00+00:00",
-        )
-        decimal_encrypted = (self.pack_dir / decimal_release.content_pack_filename).read_bytes()
-        decimal_key = unwrap_release_content_key(
-            self.master_key, decimal_release.release_id, decimal_release.wrapped_content_key_b64
-        )
-        with zipfile.ZipFile(
-            io.BytesIO(decrypt_pack(decimal_key, decimal_release.release_id, decimal_encrypted))
-        ) as archive:
-            decimal_packed = json.loads(archive.read("questions.json"))[0]
-        self.assertEqual("6 // 2.0", decimal_packed["question_text"])
 
     def test_protocol_relative_authorities_are_rejected_after_normalization(self):
         attacks = (
@@ -506,6 +462,10 @@ class AssessmentReleaseTests(unittest.TestCase):
             {"question_text": "//例子.com/private"},
             {"question_text": "%2F %2F example%2Ecom%2E%2Fp"},
             {"question_html": "<p>&#47;&#47;example.com.&#47;p</p>"},
+            {"question_text": "x // server-name/private"},
+            {"question_text": "x // server~name/private"},
+            {"question_text": "x // user;param@server/private"},
+            {"question_text": "x // 0x7f000001/private"},
         )
         for test_id, mutation in enumerate(attacks, start=80):
             with self.subTest(mutation=mutation):
@@ -528,67 +488,27 @@ class AssessmentReleaseTests(unittest.TestCase):
                     )
                 self.assertEqual(before, set(self.pack_dir.glob("*.ksatpack")))
 
-    def test_symbolic_floor_division_survives_real_packs_without_masking_boundary_urls(self):
-        harmless_values = (
+    def test_plain_double_slashes_fail_closed_with_author_guidance(self):
+        plain_values = (
             "x // y",
             "Compute total // count",
-            "Data: values",
             "6 // 2",
             "6 // 2.0",
-            "x/y",
             "items // groups",
             "(left + right) // divisor",
             "remainder = total // bucket_count",
         )
-        for test_id, harmless_value in enumerate(harmless_values, start=120):
-            with self.subTest(harmless_value=harmless_value):
+        for test_id, plain_value in enumerate(plain_values, start=120):
+            with self.subTest(plain_value=plain_value):
                 self.connection.execute(
                     "INSERT INTO tests (test_id, test_name) VALUES (?, ?)",
-                    (test_id, f"Floor division case {test_id}"),
+                    (test_id, f"Plain slash case {test_id}"),
                 )
                 question = self.public_questions()[1].model_copy(
-                    update={"question_text": harmless_value}
+                    update={"question_text": plain_value}
                 )
-                release = prepare_release(
-                    self.connection,
-                    test_id=test_id,
-                    selected_questions=[question],
-                    assets={},
-                    pack_dir=self.pack_dir,
-                    signing_private_key_b64=self.private_key_b64,
-                    pack_master_key=self.master_key,
-                    now_iso="2026-08-31T09:00:00+00:00",
-                )
-                encrypted = (self.pack_dir / release.content_pack_filename).read_bytes()
-                content_key = unwrap_release_content_key(
-                    self.master_key, release.release_id, release.wrapped_content_key_b64
-                )
-                with zipfile.ZipFile(
-                    io.BytesIO(decrypt_pack(content_key, release.release_id, encrypted))
-                ) as archive:
-                    packed = json.loads(archive.read("questions.json"))[0]
-                self.assertEqual(harmless_value, packed["question_text"])
-
-        for test_id, malicious_value in enumerate(
-            (
-                "//server/private",
-                "See: //server/private",
-                "Open //example.com./private",
-                "x // internal_server /private",
-                "x // server : 8080/private",
-                "x // server ?private=1",
-            ),
-            start=140,
-        ):
-            with self.subTest(malicious_value=malicious_value):
-                self.connection.execute(
-                    "INSERT INTO tests (test_id, test_name) VALUES (?, ?)",
-                    (test_id, f"Boundary URL case {test_id}"),
-                )
-                question = self.public_questions()[1].model_copy(
-                    update={"question_text": malicious_value}
-                )
-                with self.assertRaisesRegex(ValueError, "external URL"):
+                before = set(self.pack_dir.glob("*.ksatpack"))
+                with self.assertRaisesRegex(ValueError, "explicit math markup"):
                     prepare_release(
                         self.connection,
                         test_id=test_id,
@@ -599,6 +519,157 @@ class AssessmentReleaseTests(unittest.TestCase):
                         pack_master_key=self.master_key,
                         now_iso="2026-08-31T09:00:00+00:00",
                     )
+                self.assertEqual(before, set(self.pack_dir.glob("*.ksatpack")))
+
+        structured_mutations = (
+            {"options": {"A": "x // y", "B": "safe", "C": "safe", "D": "safe"}},
+            {
+                "stimulus": {
+                    "id": "plain",
+                    "type": "chart",
+                    "content": {"values": [1], "note": "x // y"},
+                }
+            },
+            {
+                "stimulus": {
+                    "id": "plain-key",
+                    "type": "chart",
+                    "content": {"values": [1], "x // y": "safe"},
+                }
+            },
+            {"question_html": "<p>x // y</p>"},
+            {"question_html": '<span title="x // y">safe</span>'},
+        )
+        for test_id, mutation in enumerate(structured_mutations, start=135):
+            with self.subTest(mutation=mutation):
+                self.connection.execute(
+                    "INSERT INTO tests (test_id, test_name) VALUES (?, ?)",
+                    (test_id, f"Structured slash case {test_id}"),
+                )
+                with self.assertRaisesRegex(ValueError, "explicit math markup"):
+                    prepare_release(
+                        self.connection,
+                        test_id=test_id,
+                        selected_questions=[self.public_questions()[1].model_copy(update=mutation)],
+                        assets={},
+                        pack_dir=self.pack_dir,
+                        signing_private_key_b64=self.private_key_b64,
+                        pack_master_key=self.master_key,
+                        now_iso="2026-08-31T09:00:00+00:00",
+                    )
+
+    def test_explicit_math_floor_division_is_canonicalized_and_verified_on_reload(self):
+        source_html = (
+            '<p>Compute <code class="math-floor-division">total // count</code> and '
+            '<code class="math-floor-division">6 // 2.0</code>; '
+            '<code>already ÷ safe</code>.</p>'
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2 2">'
+            '<path d="M0 0 L1 1"></path></svg>'
+        )
+        self.assertEqual(source_html, app.sanitize_visual_html(source_html))
+        question = self.public_questions()[1].model_copy(
+            update={
+                "question_text": "Compute the floor division of total by count and of six by two.",
+                "question_html": source_html,
+            }
+        )
+        self.connection.execute("INSERT INTO tests (test_id, test_name) VALUES (150, 'Math markup')")
+        release = prepare_release(
+            self.connection,
+            test_id=150,
+            selected_questions=[question],
+            assets={},
+            pack_dir=self.pack_dir,
+            signing_private_key_b64=self.private_key_b64,
+            pack_master_key=self.master_key,
+            now_iso="2026-08-31T09:00:00+00:00",
+        )
+        content_key = unwrap_release_content_key(
+            self.master_key, release.release_id, release.wrapped_content_key_b64
+        )
+        with zipfile.ZipFile(io.BytesIO(decrypt_pack(
+            content_key,
+            release.release_id,
+            (self.pack_dir / release.content_pack_filename).read_bytes(),
+        ))) as archive:
+            packed = json.loads(archive.read("questions.json"))[0]
+        self.assertEqual(
+            (
+                '<p>Compute <code class="math-floor-division">⌊total ÷ count⌋</code> and '
+                '<code class="math-floor-division">⌊6 ÷ 2.0⌋</code>; '
+                '<code>already ÷ safe</code>.</p>'
+                '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2 2">'
+                '<path d="M0 0 L1 1"></path></svg>'
+            ),
+            packed["question_html"],
+        )
+        self.assertNotIn("//", packed["question_text"])
+        self.assertEqual(1, packed["question_html"].count("//"))
+        invariant_payload = json.loads(json.dumps(packed))
+        invariant_payload["question_html"] = invariant_payload["question_html"].replace(
+            ' xmlns="http://www.w3.org/2000/svg"', "", 1
+        )
+        pending = [invariant_payload]
+        while pending:
+            value = pending.pop()
+            if isinstance(value, dict):
+                pending.extend(value.keys())
+                pending.extend(value.values())
+            elif isinstance(value, list):
+                pending.extend(value)
+            elif isinstance(value, str):
+                decoded = value
+                for _ in range(8):
+                    expanded = html.unescape(unquote(decoded))
+                    if expanded == decoded:
+                        break
+                    decoded = expanded
+                compact = "".join(character for character in decoded if not character.isspace())
+                self.assertNotIn("//", compact)
+        reloaded = self.verified_load(release.release_id)
+        self.assertEqual(release.content_hash, reloaded.content_hash)
+
+    def test_malformed_math_floor_division_markup_is_rejected_without_artifacts(self):
+        malformed = (
+            '<code class="math-floor-division">a // b // c</code>',
+            '<code class="math-floor-division">a + b // c</code>',
+            '<code class="math-floor-division">a // b + c</code>',
+            '<code class="math-floor-division"><span>a</span> // b</code>',
+            '<code class="math-floor-division extra">a // b</code>',
+            '<code class="math-floor-division" title="x">a // b</code>',
+            '<code class="math&#45;floor-division">a // b</code>',
+            '<code>a // b</code>',
+            '<code class="math-floor-division">a // server/private</code>',
+            '<code class="math-floor-division">a // user@server</code>',
+            '<code class="math-floor-division">a // server:80</code>',
+            '<code class="math-floor-division">a &#47;&#47; b</code>',
+            '<code class="math-floor-division">a %2F%2F b</code>',
+            '<code class="math-floor-division">a /\x00/ b</code>',
+            '<code class="math-floor-division">a<!--hidden--> // b</code>',
+            '<code class="math-floor-division">a<?hidden?> // b</code>',
+            f'<code class="math-floor-division">{"a" * 65} // b</code>',
+        )
+        for test_id, question_html in enumerate(malformed, start=160):
+            with self.subTest(question_html=question_html):
+                self.connection.execute(
+                    "INSERT INTO tests (test_id, test_name) VALUES (?, ?)",
+                    (test_id, f"Malformed math case {test_id}"),
+                )
+                before = set(self.pack_dir.glob("*.ksatpack"))
+                with self.assertRaisesRegex(ValueError, "math markup"):
+                    prepare_release(
+                        self.connection,
+                        test_id=test_id,
+                        selected_questions=[self.public_questions()[1].model_copy(
+                            update={"question_html": question_html}
+                        )],
+                        assets={},
+                        pack_dir=self.pack_dir,
+                        signing_private_key_b64=self.private_key_b64,
+                        pack_master_key=self.master_key,
+                        now_iso="2026-08-31T09:00:00+00:00",
+                    )
+                self.assertEqual(before, set(self.pack_dir.glob("*.ksatpack")))
 
     def test_supported_structured_stimuli_and_safe_visual_html_survive_real_packs(self):
         chart = self.public_questions()[1].model_dump(mode="json")
@@ -977,6 +1048,16 @@ class AssessmentReleaseTests(unittest.TestCase):
             ("question_text", "//例子.com/private"),
             ("question_text", "%2F %2F example%2Ecom%2E%2Fp"),
             ("question_html", "<p>&#47;&#47;example.com.&#47;p</p>"),
+            ("question_text", "x // y"),
+            ("question_text", "Compute total // count"),
+            ("question_text", "x // server-name/private"),
+            ("question_text", "x // server~name/private"),
+            ("question_text", "x // user;param@server/private"),
+            ("question_text", "x // 0x7f000001/private"),
+            (
+                "question_html",
+                '<code class="math-floor-division">a &#47;&#47; b</code>',
+            ),
         )
         for field, malicious_value in attacks:
             with self.subTest(field=field, malicious_value=malicious_value):

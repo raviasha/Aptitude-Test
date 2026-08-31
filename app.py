@@ -742,7 +742,7 @@ class SafeVisualHTML(HTMLParser):
         "p", "div", "span", "strong", "em", "b", "i", "small", "sub", "sup", "br", "hr", "ul", "ol", "li",
         "h1", "h2", "h3", "h4", "h5", "h6", "table", "thead", "tbody", "tfoot", "tr", "th", "td", "figure",
         "figcaption", "svg", "g", "path", "rect", "circle", "line", "polyline", "polygon", "text", "ellipse", "defs",
-        "lineargradient", "stop", "title", "desc",
+        "lineargradient", "stop", "title", "desc", "code",
     }
     BLOCKED_TAGS = {"script", "style", "iframe", "object", "embed", "link", "meta", "base", "form", "input", "button", "foreignobject"}
     VOID_TAGS = {"br", "hr"}

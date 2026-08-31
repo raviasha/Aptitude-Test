@@ -37,10 +37,22 @@ from ksat.protocol import (
 _FIXED_ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
 _SAFE_ASSET_NAME = re.compile(r"assets/[0-9a-f]{64}\.(?:png|jpe?g|webp|svg)\Z")
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
-_REG_NAME_PUNCTUATION = frozenset("-._~!$&'()*+,;=%")
-_USERINFO_PUNCTUATION = _REG_NAME_PUNCTUATION | {":"}
 _PRIVATE_MARKERS = ("answer", "correct", "feedback", "score", "solution", "explanation")
 _WRAPPED_KEY_ENVELOPE_BYTES = 12 + 32 + 16
+_MATH_FLOOR_DIVISION_CLASS = "math-floor-division"
+_MATH_OPERAND = r"(?:[A-Za-z_][A-Za-z0-9_]*|(?:0|[1-9][0-9]*)(?:\.[0-9]+)?)"
+_RAW_MATH_FLOOR_DIVISION = re.compile(rf"({_MATH_OPERAND}) // ({_MATH_OPERAND})\Z")
+_CANONICAL_MATH_FLOOR_DIVISION = re.compile(
+    rf"⌊({_MATH_OPERAND}) ÷ ({_MATH_OPERAND})⌋\Z"
+)
+_DOUBLE_SLASH_MESSAGE = (
+    "Public assessment content contains ambiguous external URL // syntax; use explicit math markup "
+    '<code class="math-floor-division">LEFT // RIGHT</code> in question_html for floor division.'
+)
+_MATH_MARKUP_MESSAGE = (
+    "Question HTML floor division must use exact explicit math markup "
+    '<code class="math-floor-division">LEFT // RIGHT</code> with simple operands.'
+)
 
 
 def _require_key(value: bytes, label: str) -> bytes:
@@ -96,7 +108,7 @@ def _private_marker(value: str) -> bool:
 
 def _decode_public_text(value: str) -> str:
     decoded = value
-    for _ in range(3):
+    for _ in range(8):
         expanded = html.unescape(unquote(decoded))
         if expanded == decoded:
             break
@@ -112,110 +124,14 @@ def _url_compact(value: str) -> str:
     )
 
 
-def _authority_component_character(character: str, punctuation: frozenset[str] | set[str]) -> bool:
-    return character.isalnum() or character == "_" or character in punctuation or (
-        ord(character) > 127
-        and not character.isspace()
-        and not unicodedata.category(character).startswith(("C", "P", "Z"))
-    )
-
-
-def _valid_reg_name(value: str) -> bool:
-    return bool(value) and all(
-        _authority_component_character(character, _REG_NAME_PUNCTUATION)
-        for character in value
-    ) and any(character.isalnum() or character == "_" for character in value)
-
-
-def _valid_userinfo(value: str) -> bool:
-    return all(
-        _authority_component_character(character, _USERINFO_PUNCTUATION)
-        for character in value
-    )
-
-
-def _valid_authority(value: str) -> bool:
-    if "@" in value:
-        userinfo, host_port = value.rsplit("@", 1)
-        if not _valid_userinfo(userinfo):
-            return False
-    else:
-        host_port = value
-
-    if host_port.startswith("["):
-        closing_bracket = host_port.find("]")
-        if closing_bracket < 2:
-            return False
-        host = host_port[1:closing_bracket]
-        remainder = host_port[closing_bracket + 1 :]
-        if not all(
-            character.isalnum() or character in ".:_%~-"
-            for character in host
-        ):
-            return False
-        return not remainder or (
-            remainder.startswith(":") and remainder[1:].isdigit()
-        ) or remainder == ":"
-
-    if host_port.count(":") > 1:
-        return False
-    host, separator, port = host_port.partition(":")
-    return _valid_reg_name(host) and (not separator or not port or port.isdigit())
-
-
-def _floor_division_at(decoded: str, first_slash: int, second_slash: int) -> bool:
-    if second_slash != first_slash + 1:
-        return False
-    if first_slash == 0 or second_slash + 1 >= len(decoded):
-        return False
-    if not decoded[first_slash - 1].isspace() or not decoded[second_slash + 1].isspace():
-        return False
-
-    left_text = decoded[:first_slash].rstrip().rstrip(")]}").rstrip()
-    right_text = decoded[second_slash + 1 :].lstrip()
-    if not re.search(r"(?:[^\W\d]\w*|\d+(?:\.\d+)?)\Z", left_text, re.UNICODE):
-        return False
-    operand = re.match(r"(?:[^\W\d]\w*|\d+(?:\.\d+)?)", right_text, re.UNICODE)
-    if operand is None:
-        return False
-    remainder = right_text[operand.end() :].lstrip()
-    return not remainder.startswith((".", ":", "@", "/", "?", "#", "["))
-
-
-def _contains_protocol_relative_authority(value: str) -> bool:
-    decoded = _decode_public_text(value).casefold().replace("\\", "/")
-    significant = [
-        (character, index)
-        for index, character in enumerate(decoded)
+def _contains_ambiguous_double_slash(value: str) -> bool:
+    decoded = _decode_public_text(value).replace("\\", "/")
+    compact = "".join(
+        character
+        for character in decoded
         if not character.isspace() and not unicodedata.category(character).startswith("C")
-    ]
-    compact = "".join(character for character, _ in significant)
-    search_from = 0
-    while True:
-        marker = compact.find("//", search_from)
-        if marker < 0:
-            return False
-        search_from = marker + 1
-        authority_start = marker + 2
-        authority_end = authority_start
-        while authority_end < len(compact) and compact[authority_end] not in "/?#":
-            character = compact[authority_end]
-            if character in "@[]:" or _authority_component_character(
-                character, _REG_NAME_PUNCTUATION
-            ):
-                authority_end += 1
-                continue
-            break
-        authority = compact[authority_start:authority_end]
-        if not _valid_authority(authority):
-            continue
-        if _floor_division_at(
-            decoded,
-            significant[marker][1],
-            significant[marker + 1][1],
-        ):
-            continue
-        return True
+    )
+    return "//" in compact
 
 
 def _url_field_name(value: str) -> bool:
@@ -246,8 +162,8 @@ def _validate_public_string(value: str, *, url_field: bool = False) -> None:
     route_text = compact.replace("\\", "/")
     if re.search(r"(?:^|/)api/", route_text) or "question-assets" in route_text:
         raise ValueError("Public assessment content contains a coordinator URL.")
-    if _contains_protocol_relative_authority(value):
-        raise ValueError("Public assessment content contains an external URL.")
+    if _contains_ambiguous_double_slash(value):
+        raise ValueError(_DOUBLE_SLASH_MESSAGE)
 
 
 def _validate_public_payload(value: Any, *, field_name: str = "") -> None:
@@ -255,6 +171,7 @@ def _validate_public_payload(value: Any, *, field_name: str = "") -> None:
         for key, item in value.items():
             if not isinstance(key, str) or _private_marker(key):
                 raise ValueError("Private assessment fields are not allowed in public content.")
+            _validate_public_string(key)
             if _url_field_name(key) and not isinstance(item, str):
                 raise ValueError("Public URL fields must reference canonical embedded assets.")
             _validate_public_payload(item, field_name=key)
@@ -278,7 +195,7 @@ class _PublicHTMLSanitizer(HTMLParser):
         "ul", "ol", "li", "h1", "h2", "h3", "h4", "h5", "h6", "table", "thead", "tbody",
         "tfoot", "tr", "th", "td", "figure", "figcaption", "svg", "g", "path", "rect", "circle",
         "line", "polyline", "polygon", "text", "ellipse", "defs", "lineargradient", "stop", "title",
-        "desc",
+        "desc", "code",
     }
     BLOCKED_TAGS = {
         "script", "style", "iframe", "object", "embed", "link", "meta", "base", "form", "input",
@@ -300,12 +217,54 @@ class _PublicHTMLSanitizer(HTMLParser):
         self.output: list[str] = []
         self.drop_depth = 0
         self.open_tags: list[str] = []
+        self.math_code_parts: list[str] | None = None
+
+    def _is_exact_math_code(self, attrs: list[tuple[str, str | None]]) -> bool:
+        return (
+            len(attrs) == 1
+            and attrs[0] == ("class", _MATH_FLOOR_DIVISION_CLASS)
+            and self.get_starttag_text()
+            == '<code class="math-floor-division">'
+        )
+
+    @staticmethod
+    def _uses_math_class(attrs: list[tuple[str, str | None]]) -> bool:
+        return any(
+            name.lower() == "class"
+            and value is not None
+            and _MATH_FLOOR_DIVISION_CLASS in value.split()
+            for name, value in attrs
+        )
+
+    def _finish_math_code(self) -> None:
+        if self.math_code_parts is None:
+            raise ValueError(_MATH_MARKUP_MESSAGE)
+        value = "".join(self.math_code_parts)
+        match = _RAW_MATH_FLOOR_DIVISION.fullmatch(value)
+        if match is None:
+            match = _CANONICAL_MATH_FLOOR_DIVISION.fullmatch(value)
+        if match is None or any(len(operand) > 64 for operand in match.groups()):
+            raise ValueError(_MATH_MARKUP_MESSAGE)
+        left, right = match.groups()
+        self.output.append(
+            f'<code class="{_MATH_FLOOR_DIVISION_CLASS}">'
+            f"⌊{html.escape(left, quote=False)} ÷ {html.escape(right, quote=False)}⌋</code>"
+        )
+        self.math_code_parts = None
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         tag = tag.lower()
+        if self.math_code_parts is not None:
+            raise ValueError(_MATH_MARKUP_MESSAGE)
         if self.drop_depth:
             self.drop_depth += 1
             return
+        if tag == "code":
+            if self._is_exact_math_code(attrs):
+                self.math_code_parts = []
+                return
+            if self._uses_math_class(attrs):
+                raise ValueError(_MATH_MARKUP_MESSAGE)
         for name, value in attrs:
             if value is None:
                 continue
@@ -345,6 +304,11 @@ class _PublicHTMLSanitizer(HTMLParser):
 
     def handle_endtag(self, tag: str) -> None:
         tag = tag.lower()
+        if self.math_code_parts is not None:
+            if tag != "code":
+                raise ValueError(_MATH_MARKUP_MESSAGE)
+            self._finish_math_code()
+            return
         if self.drop_depth:
             self.drop_depth -= 1
             return
@@ -353,18 +317,45 @@ class _PublicHTMLSanitizer(HTMLParser):
             self.open_tags.remove(tag)
 
     def handle_data(self, data: str) -> None:
+        if self.math_code_parts is not None:
+            self.math_code_parts.append(data)
+            if sum(map(len, self.math_code_parts)) > 132:
+                raise ValueError(_MATH_MARKUP_MESSAGE)
+            return
         if not self.drop_depth:
             self.output.append(html.escape(data, quote=False))
 
     def handle_entityref(self, name: str) -> None:
+        if self.math_code_parts is not None:
+            raise ValueError(_MATH_MARKUP_MESSAGE)
         if not self.drop_depth:
             self.output.append(f"&{name};")
 
     def handle_charref(self, name: str) -> None:
+        if self.math_code_parts is not None:
+            raise ValueError(_MATH_MARKUP_MESSAGE)
         if not self.drop_depth:
             self.output.append(f"&#{name};")
 
+    def handle_comment(self, data: str) -> None:
+        if self.math_code_parts is not None:
+            raise ValueError(_MATH_MARKUP_MESSAGE)
+
+    def handle_pi(self, data: str) -> None:
+        if self.math_code_parts is not None:
+            raise ValueError(_MATH_MARKUP_MESSAGE)
+
+    def handle_decl(self, decl: str) -> None:
+        if self.math_code_parts is not None:
+            raise ValueError(_MATH_MARKUP_MESSAGE)
+
+    def unknown_decl(self, data: str) -> None:
+        if self.math_code_parts is not None:
+            raise ValueError(_MATH_MARKUP_MESSAGE)
+
     def result(self) -> str:
+        if self.math_code_parts is not None:
+            raise ValueError(_MATH_MARKUP_MESSAGE)
         return "".join(self.output).strip()
 
 

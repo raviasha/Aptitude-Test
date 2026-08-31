@@ -3,11 +3,12 @@
 import base64
 import hashlib
 import json
+import math
 import re
 from datetime import datetime
 from typing import Any, Literal, Sequence
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 PROTOCOL_VERSION = 1
@@ -46,7 +47,48 @@ class ClientSession(BaseModel):
 
 _PUBLIC_ASSET_URL = re.compile(r"assets/[0-9a-f]{64}\.(?:png|jpe?g|webp|svg)\Z")
 _PUBLIC_OPTION_KEYS = frozenset(("A", "B", "C", "D", "E"))
-PublicScalar = str | int | float
+PublicScalar = str | int | float | bool | None
+_PUBLIC_PRIVATE_MARKERS = ("answer", "correct", "feedback", "score", "solution", "explanation")
+_MAX_PUBLIC_STRUCTURE_DEPTH = 8
+_MAX_PUBLIC_COLLECTION_ITEMS = 10_000
+_MAX_PUBLIC_STRUCTURE_NODES = 50_000
+
+
+def _normalized_public_key(value: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", value.lower())
+
+
+def _validate_public_structure(value: Any) -> None:
+    budget = [_MAX_PUBLIC_STRUCTURE_NODES]
+
+    def visit(item: Any, depth: int) -> None:
+        budget[0] -= 1
+        if budget[0] < 0 or depth > _MAX_PUBLIC_STRUCTURE_DEPTH:
+            raise ValueError("Public structured stimulus is too deeply nested or large.")
+        if isinstance(item, dict):
+            if len(item) > _MAX_PUBLIC_COLLECTION_ITEMS:
+                raise ValueError("Public structured stimulus collection is too large.")
+            for key, nested in item.items():
+                if not isinstance(key, str):
+                    raise ValueError("Public structured stimulus keys must be strings.")
+                normalized = _normalized_public_key(key)
+                if any(marker in normalized for marker in _PUBLIC_PRIVATE_MARKERS):
+                    raise ValueError("Private assessment fields are not allowed in public stimuli.")
+                visit(nested, depth + 1)
+            return
+        if isinstance(item, list):
+            if len(item) > _MAX_PUBLIC_COLLECTION_ITEMS:
+                raise ValueError("Public structured stimulus collection is too large.")
+            for nested in item:
+                visit(nested, depth + 1)
+            return
+        if item is None or isinstance(item, (str, int, bool)):
+            return
+        if isinstance(item, float) and math.isfinite(item):
+            return
+        raise ValueError("Public structured stimulus contains an unsupported value.")
+
+    visit(value, 0)
 
 
 class PublicMediaItem(ProtocolModel):
@@ -91,16 +133,33 @@ class PublicImageStimulus(ProtocolModel):
 
 
 class PublicChartSeries(ProtocolModel):
+    model_config = ConfigDict(extra="allow")
+
     name: str = ""
     label: str = ""
-    values: list[int | float]
+    values: list[PublicScalar] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def bounded_public_content(cls, value: Any) -> Any:
+        _validate_public_structure(value)
+        return value
 
 
 class PublicChartContent(ProtocolModel):
+    model_config = ConfigDict(extra="allow")
+
     chart_type: Literal["bar", "line"] | None = None
     kind: Literal["bar", "line"] | None = None
-    labels: list[PublicScalar]
-    series: list[PublicChartSeries]
+    labels: list[PublicScalar] | None = None
+    series: list[PublicChartSeries] | None = None
+    values: list[PublicScalar] | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def bounded_public_content(cls, value: Any) -> Any:
+        _validate_public_structure(value)
+        return value
 
 
 class PublicChartStimulus(ProtocolModel):
@@ -112,8 +171,16 @@ class PublicChartStimulus(ProtocolModel):
 
 
 class PublicTableContent(ProtocolModel):
-    columns: list[PublicScalar]
-    rows: list[list[PublicScalar]]
+    model_config = ConfigDict(extra="allow")
+
+    columns: list[PublicScalar] | None = None
+    rows: list[list[PublicScalar]] | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def bounded_public_content(cls, value: Any) -> Any:
+        _validate_public_structure(value)
+        return value
 
 
 class PublicTableStimulus(ProtocolModel):

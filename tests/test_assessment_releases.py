@@ -253,6 +253,28 @@ class AssessmentReleaseTests(unittest.TestCase):
                 now_iso="2026-08-31T09:00:00+00:00",
             )
 
+        constructed = PublicQuestion.model_construct(
+            question_id=7,
+            source_key="constructed-bypass",
+            category="Reasoning",
+            chapter="Series",
+            difficulty="Medium",
+            question_text="Constructed?",
+            options={"A": "1", "B": "2", "C": "3", "D": "4"},
+            display_media={"feedback_html": "private feedback"},
+        )
+        with self.assertRaises(ValueError):
+            prepare_release(
+                self.connection,
+                test_id=41,
+                selected_questions=[constructed],
+                assets={},
+                pack_dir=self.pack_dir,
+                signing_private_key_b64=self.private_key_b64,
+                pack_master_key=self.master_key,
+                now_iso="2026-08-31T09:00:00+00:00",
+            )
+
         unsafe_score = self.public_questions()[1].model_dump(mode="json")
         unsafe_score["stimulus"]["content"]["series"][0]["score_value"] = 100
         with self.assertRaises(ValueError):
@@ -358,6 +380,180 @@ class AssessmentReleaseTests(unittest.TestCase):
                         now_iso="2026-08-31T09:00:00+00:00",
                     )
         self.assertEqual([], list(self.pack_dir.glob("*.ksatpack")))
+
+    def test_obfuscated_urls_are_rejected_but_plain_math_slashes_survive_real_pack(self):
+        adversarial = (
+            {"question_text": "Visit HtT\nPs%3A%2F%2Fevil.example now"},
+            {"question_html": "<p>&#47;API&#47;question-assets/41/private.png</p>"},
+            {"question_html": '<span title="java%73cript%3Aalert(1)">Safe-looking</span>'},
+            {"source_key": "data%3Atext/html%2Cprivate"},
+        )
+        for offset, mutation in enumerate(adversarial, start=50):
+            with self.subTest(mutation=mutation):
+                self.connection.execute(
+                    "INSERT INTO tests (test_id, test_name) VALUES (?, ?)",
+                    (offset, f"URL case {offset}"),
+                )
+                question = self.public_questions()[1].model_copy(update=mutation)
+                before = set(self.pack_dir.glob("*.ksatpack"))
+                with self.assertRaisesRegex(ValueError, "URL|coordinator"):
+                    prepare_release(
+                        self.connection,
+                        test_id=offset,
+                        selected_questions=[question],
+                        assets={},
+                        pack_dir=self.pack_dir,
+                        signing_private_key_b64=self.private_key_b64,
+                        pack_master_key=self.master_key,
+                        now_iso="2026-08-31T09:00:00+00:00",
+                    )
+                self.assertEqual(before, set(self.pack_dir.glob("*.ksatpack")))
+
+        self.connection.execute("INSERT INTO tests (test_id, test_name) VALUES (60, 'Harmless slashes')")
+        harmless = self.public_questions()[1].model_copy(
+            update={"question_text": "Data: values. Compute 6 // 2, then compare x/y."}
+        )
+        release = prepare_release(
+            self.connection,
+            test_id=60,
+            selected_questions=[harmless],
+            assets={},
+            pack_dir=self.pack_dir,
+            signing_private_key_b64=self.private_key_b64,
+            pack_master_key=self.master_key,
+            now_iso="2026-08-31T09:00:00+00:00",
+        )
+        encrypted = (self.pack_dir / release.content_pack_filename).read_bytes()
+        content_key = unwrap_release_content_key(
+            self.master_key, release.release_id, release.wrapped_content_key_b64
+        )
+        with zipfile.ZipFile(io.BytesIO(decrypt_pack(content_key, release.release_id, encrypted))) as archive:
+            packed = json.loads(archive.read("questions.json"))[0]
+        self.assertEqual("Data: values. Compute 6 // 2, then compare x/y.", packed["question_text"])
+
+    def test_supported_structured_stimuli_and_safe_visual_html_survive_real_packs(self):
+        chart = self.public_questions()[1].model_dump(mode="json")
+        chart["stimulus"]["content"] = {
+            "values": [10, 20, 30],
+            "axis": {"labels": ["Q1", "Q2", "Q3"], "unit": "%"},
+        }
+        safe_table = self.public_questions()[0].model_dump(mode="json")
+        safe_table["display_media"] = {}
+        safe_table["stimulus"] = {
+            "id": "results-table",
+            "type": "table",
+            "title": "Results",
+            "alt_text": "Quarterly results",
+            "content": {"columns": ["Quarter", "Value"], "rows": [["Q1", 10], ["Q2", 20]]},
+        }
+        self.connection.execute("INSERT INTO tests (test_id, test_name) VALUES (61, 'Values chart')")
+        chart_release = prepare_release(
+            self.connection,
+            test_id=61,
+            selected_questions=[chart, safe_table],
+            assets={},
+            pack_dir=self.pack_dir,
+            signing_private_key_b64=self.private_key_b64,
+            pack_master_key=self.master_key,
+            now_iso="2026-08-31T09:00:00+00:00",
+        )
+        chart_key = unwrap_release_content_key(
+            self.master_key, chart_release.release_id, chart_release.wrapped_content_key_b64
+        )
+        with zipfile.ZipFile(io.BytesIO(decrypt_pack(
+            chart_key,
+            chart_release.release_id,
+            (self.pack_dir / chart_release.content_pack_filename).read_bytes(),
+        ))) as archive:
+            packed_structured = json.loads(archive.read("questions.json"))
+        packed_chart = next(item for item in packed_structured if item["question_id"] == 3)
+        packed_safe_table = next(item for item in packed_structured if item["question_id"] == 7)
+        self.assertEqual(chart["stimulus"]["content"], packed_chart["stimulus"]["content"])
+        self.assertEqual(
+            safe_table["stimulus"]["content"], packed_safe_table["stimulus"]["content"]
+        )
+
+        second_asset = b"\x89PNG\r\n\x1a\npublic-stimulus"
+        second_name = f"assets/{hashlib.sha256(second_asset).hexdigest()}.png"
+        table_question = self.public_questions()[0].model_dump(mode="json")
+        table_question["question_html"] = (
+            '<table><tbody><tr><th scope="col" colspan="2">x<sub>1</sub></th></tr></tbody></table>'
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2 2">'
+            '<path d="M0 0 L1 1" fill="#000"></path></svg><sup>2</sup>'
+        )
+        table_question["stimulus"] = {
+            "id": "legacy-table",
+            "type": "table",
+            "title": "Legacy empty table",
+            "alt_text": "Legacy table",
+            "content": {},
+        }
+        table_question["display_media"]["options"] = {
+            "A": {"url": second_name, "alt_text": "Option diagram", "width": 8, "height": 6}
+        }
+        image_question = self.public_questions()[1].model_dump(mode="json")
+        image_question["question_id"] = 8
+        image_question["source_key"] = "image-stimulus"
+        image_question["stimulus"] = {
+            "id": "image-stimulus",
+            "type": "image",
+            "title": "Embedded image",
+            "alt_text": "Public stimulus diagram",
+            "url": second_name,
+        }
+        self.connection.execute("INSERT INTO tests (test_id, test_name) VALUES (62, 'Safe visuals')")
+        table_release = prepare_release(
+            self.connection,
+            test_id=62,
+            selected_questions=[table_question, image_question],
+            assets={self.asset_name: self.asset_bytes, second_name: second_asset},
+            pack_dir=self.pack_dir,
+            signing_private_key_b64=self.private_key_b64,
+            pack_master_key=self.master_key,
+            now_iso="2026-08-31T09:00:00+00:00",
+        )
+        table_key = unwrap_release_content_key(
+            self.master_key, table_release.release_id, table_release.wrapped_content_key_b64
+        )
+        with zipfile.ZipFile(io.BytesIO(decrypt_pack(
+            table_key,
+            table_release.release_id,
+            (self.pack_dir / table_release.content_pack_filename).read_bytes(),
+        ))) as archive:
+            packed_visuals = json.loads(archive.read("questions.json"))
+        packed_table = next(item for item in packed_visuals if item["question_id"] == 7)
+        packed_image = next(item for item in packed_visuals if item["question_id"] == 8)
+        self.assertEqual({}, packed_table["stimulus"]["content"])
+        self.assertEqual(second_name, packed_table["display_media"]["options"]["A"]["url"])
+        self.assertEqual(second_name, packed_image["stimulus"]["url"])
+        for fragment in ("<table>", '<th scope="col" colspan="2">', "<sub>1</sub>", "<svg", "viewBox=", "<path", "<sup>2</sup>"):
+            self.assertIn(fragment, packed_table["question_html"])
+
+    def test_structured_stimulus_rejects_nested_private_and_url_fields(self):
+        for test_id, content in (
+            (63, {"values": [1], "meta": {"feedback_html": "private"}}),
+            (64, {"values": [1], "s%6furce_%75rl": "hTTps%3A%2F%2Fevil.example"}),
+            (65, {"a": {"b": {"c": {"d": {"e": {"f": {"g": {"h": {"i": 1}}}}}}}}}),
+            (66, {"values": [1], "asset": {"path": "diagram.png"}}),
+        ):
+            with self.subTest(content=content):
+                self.connection.execute(
+                    "INSERT INTO tests (test_id, test_name) VALUES (?, ?)",
+                    (test_id, f"Unsafe structure {test_id}"),
+                )
+                question = self.public_questions()[1].model_dump(mode="json")
+                question["stimulus"]["content"] = content
+                with self.assertRaises(ValueError):
+                    prepare_release(
+                        self.connection,
+                        test_id=test_id,
+                        selected_questions=[question],
+                        assets={},
+                        pack_dir=self.pack_dir,
+                        signing_private_key_b64=self.private_key_b64,
+                        pack_master_key=self.master_key,
+                        now_iso="2026-08-31T09:00:00+00:00",
+                    )
 
     def verified_load(self, release_id):
         return load_release_manifest(
@@ -531,6 +727,49 @@ class AssessmentReleaseTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.verified_load(release.release_id)
 
+    def test_verified_load_rejects_signed_pack_with_unreferenced_asset(self):
+        release = self.prepare_release_with_two_questions()
+        content_key = unwrap_release_content_key(
+            self.master_key, release.release_id, release.wrapped_content_key_b64
+        )
+        encrypted = (self.pack_dir / release.content_pack_filename).read_bytes()
+        with zipfile.ZipFile(io.BytesIO(decrypt_pack(content_key, release.release_id, encrypted))) as archive:
+            questions = json.loads(archive.read("questions.json"))
+            manifest = json.loads(archive.read("manifest.json"))
+            original_asset = archive.read(self.asset_name)
+
+        private_bytes = b"unreferenced private solution diagram"
+        private_name = f"assets/{hashlib.sha256(private_bytes).hexdigest()}.png"
+        manifest["asset_names"] = sorted([self.asset_name, private_name])
+        plaintext = io.BytesIO()
+        with zipfile.ZipFile(plaintext, "w") as archive:
+            for name, value in (
+                ("manifest.json", json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode()),
+                ("questions.json", json.dumps(questions, sort_keys=True, separators=(",", ":")).encode()),
+                (self.asset_name, original_asset),
+                (private_name, private_bytes),
+            ):
+                info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
+                info.compress_type = zipfile.ZIP_STORED
+                info.create_system = 3
+                info.external_attr = 0o600 << 16
+                archive.writestr(info, value)
+        tampered_encrypted = encrypt_pack(content_key, release.release_id, plaintext.getvalue())
+        content_hash = hashlib.sha256(tampered_encrypted).hexdigest()
+        signature = sign_json(
+            self.private_key_b64,
+            {"release_id": release.release_id, "content_hash": content_hash, "manifest": manifest},
+        )
+        (self.pack_dir / release.content_pack_filename).write_bytes(tampered_encrypted)
+        self.connection.execute(
+            """UPDATE assessment_releases
+               SET manifest_json = ?, content_hash = ?, content_signature_b64 = ?
+               WHERE release_id = ?""",
+            (json.dumps(manifest), content_hash, signature, release.release_id),
+        )
+        with self.assertRaisesRegex(ValueError, "asset|reference"):
+            self.verified_load(release.release_id)
+
     def test_key_wrapping_rejects_wrong_lengths_and_malformed_envelopes_stably(self):
         for invalid_key in (b"", b"x" * 16, b"x" * 31, b"x" * 33):
             with self.subTest(length=len(invalid_key)):
@@ -544,6 +783,16 @@ class AssessmentReleaseTests(unittest.TestCase):
             with self.subTest(value=malformed):
                 with self.assertRaisesRegex(ValueError, "Wrapped release content key is invalid"):
                     unwrap_release_content_key(b"m" * 32, "release-1", malformed)
+        valid = wrap_release_content_key(b"m" * 32, "release-1", b"c" * 32)
+        tampered = bytearray(base64.b64decode(valid))
+        tampered[-1] ^= 1
+        for master_key, envelope in (
+            (b"m" * 32, base64.b64encode(tampered).decode("ascii")),
+            (b"w" * 32, valid),
+        ):
+            with self.subTest(master_key=master_key, envelope=envelope):
+                with self.assertRaisesRegex(ValueError, "Wrapped release content key is invalid"):
+                    unwrap_release_content_key(master_key, "release-1", envelope)
 
     def test_pack_collision_never_clobbers_or_deletes_preexisting_artifact(self):
         fixed_release_id = "11111111-1111-1111-1111-111111111111"
@@ -767,6 +1016,30 @@ class FacultyReleaseFlowTests(unittest.TestCase):
         for forbidden in ("solution", "answer", "explanation", "feedback", "/api/"):
             self.assertNotIn(forbidden, serialized)
         self.assertNotIn(self.solution_media, assets.values())
+
+    def test_public_release_material_preserves_empty_legacy_table_content(self):
+        with app.db() as connection:
+            connection.execute(
+                """UPDATE stimuli
+                   SET stimulus_type = 'table', asset_filename = NULL, content_json = '{}'
+                   WHERE bank_id = ? AND stimulus_id = 'stimulus-1'""",
+                (self.bank_id,),
+            )
+            selected = connection.execute(
+                """SELECT question_id, category, chapter, stimulus_id
+                   FROM questions WHERE question_id = ?""",
+                (self.question_id,),
+            ).fetchall()
+            questions, assets = app.public_release_material(connection, selected)
+        payload = questions[0].model_dump(mode="json", exclude_none=True)
+        self.assertEqual(
+            {"id": "stimulus-1", "type": "table", "title": "Prompt chart", "alt_text": "Public chart", "content": {}},
+            payload["stimulus"],
+        )
+        self.assertEqual(
+            {f"assets/{hashlib.sha256(self.public_media).hexdigest()}.png": self.public_media},
+            assets,
+        )
 
     def test_create_and_legacy_launch_prepare_once_without_resampling_history(self):
         created = self.client.post("/api/admin/tests", json=self.create_payload())

@@ -12,11 +12,13 @@ import os
 import re
 import sqlite3
 import tempfile
+import unicodedata
 import uuid
 import zipfile
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Mapping, Sequence
+from urllib.parse import unquote
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
@@ -86,8 +88,72 @@ def unwrap_release_content_key(master_key: bytes, release_id: str, wrapped_b64: 
 
 
 def _private_marker(value: str) -> bool:
-    normalized = re.sub(r"[^a-z0-9]", "", value.lower())
+    normalized = re.sub(r"[^a-z0-9]", "", _decode_public_text(value).lower())
     return any(marker in normalized for marker in _PRIVATE_MARKERS)
+
+
+def _decode_public_text(value: str) -> str:
+    decoded = value
+    for _ in range(3):
+        expanded = html.unescape(unquote(decoded))
+        if expanded == decoded:
+            break
+        decoded = expanded
+    return "".join(character for character in decoded if unicodedata.category(character) != "Cf")
+
+
+def _url_compact(value: str) -> str:
+    return "".join(
+        character
+        for character in _decode_public_text(value).casefold()
+        if not character.isspace() and not unicodedata.category(character).startswith("C")
+    )
+
+
+def _url_field_name(value: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9]", "", _decode_public_text(value).casefold())
+    return normalized in {"asset", "assetfilename", "file", "href", "src", "url", "uri"} or normalized.endswith(
+        ("href", "src", "url", "uri")
+    )
+
+
+def _validate_public_string(value: str, *, url_field: bool = False, html_fragment: bool = False) -> None:
+    if url_field and not _SAFE_ASSET_NAME.fullmatch(value):
+        raise ValueError("Public URL fields must reference canonical embedded assets.")
+    compact = _url_compact(value)
+    if html_fragment:
+        compact = compact.replace("http://www.w3.org/2000/svg", "")
+    if re.search(r"(?:https?|ftp|javascript|vbscript):", compact) or re.search(
+        r"(?<![a-z0-9])data:(?:[a-z0-9.+-]+/[a-z0-9.+-]+)?(?:;[a-z0-9=.+-]+)*,",
+        compact,
+    ):
+        raise ValueError("Public assessment content contains an active or external URL.")
+    route_text = compact.replace("\\", "/")
+    if re.search(r"(?:^|/)api/", route_text) or "question-assets" in route_text:
+        raise ValueError("Public assessment content contains a coordinator URL.")
+    if url_field and route_text.startswith("//"):
+        raise ValueError("Public assessment content contains an external URL.")
+
+
+def _validate_public_payload(value: Any, *, field_name: str = "") -> None:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if not isinstance(key, str) or _private_marker(key):
+                raise ValueError("Private assessment fields are not allowed in public content.")
+            if _url_field_name(key) and not isinstance(item, str):
+                raise ValueError("Public URL fields must reference canonical embedded assets.")
+            _validate_public_payload(item, field_name=key)
+        return
+    if isinstance(value, list):
+        for item in value:
+            _validate_public_payload(item, field_name=field_name)
+        return
+    if isinstance(value, str):
+        _validate_public_string(
+            value,
+            url_field=_url_field_name(field_name),
+            html_fragment=field_name == "question_html",
+        )
 
 
 class _PublicHTMLSanitizer(HTMLParser):
@@ -130,13 +196,12 @@ class _PublicHTMLSanitizer(HTMLParser):
             if value is None:
                 continue
             normalized_name = name.lower()
-            lowered = value.strip().lower()
+            lowered = _decode_public_text(value).strip().lower()
             if normalized_name == "xmlns" and lowered == "http://www.w3.org/2000/svg":
                 continue
             if normalized_name in self.URL_ATTRS and not _SAFE_ASSET_NAME.fullmatch(value):
                 raise ValueError("Question HTML contains an external or coordinator URL.")
-            if re.search(r"(?:https?:|//|/api/|javascript:|data:)", lowered):
-                raise ValueError("Question HTML contains an external or coordinator URL.")
+            _validate_public_string(value, url_field=normalized_name in self.URL_ATTRS)
         if tag in self.BLOCKED_TAGS:
             self.drop_depth = 1
             return
@@ -201,7 +266,11 @@ def _public_question_payloads(
 ) -> list[dict[str, Any]]:
     questions: list[PublicQuestion] = []
     for item in selected_questions:
-        raw = item.model_dump(mode="json") if isinstance(item, PublicQuestion) else dict(item)
+        raw = (
+            item.model_dump(mode="json", warnings=False)
+            if isinstance(item, PublicQuestion)
+            else dict(item)
+        )
         question = PublicQuestion.model_validate(raw)
         sanitized = question.model_dump(mode="json")
         sanitized["question_html"] = _sanitize_question_html(question.question_html)
@@ -211,6 +280,7 @@ def _public_question_payloads(
         raise ValueError("Assessment releases require unique questions.")
     payloads = [item.model_dump(mode="json", exclude_none=True) for item in questions]
     payloads.sort(key=lambda item: item["question_id"])
+    _validate_public_payload(payloads)
     return payloads
 
 
@@ -365,6 +435,8 @@ def _inspect_pack(
         raise ValueError("Stored assessment pack questions are not canonical public content.")
     if [item["question_id"] for item in packed_questions] != canonical_question_ids:
         raise ValueError("Stored assessment pack question linkage is inconsistent.")
+    if _referenced_asset_names(canonical_payloads) != set(manifest.asset_names):
+        raise ValueError("Stored assessment pack asset references are inconsistent.")
 
 
 def _summary_from_row(

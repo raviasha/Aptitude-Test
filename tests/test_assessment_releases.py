@@ -447,6 +447,78 @@ class AssessmentReleaseTests(unittest.TestCase):
             packed = json.loads(archive.read("questions.json"))[0]
         self.assertEqual("Data: values. Compute 6 // 2, then compare x/y.", packed["question_text"])
 
+        self.connection.execute("INSERT INTO tests (test_id, test_name) VALUES (71, 'Decimal division')")
+        decimal_division = self.public_questions()[1].model_copy(
+            update={"question_text": "6 // 2.0"}
+        )
+        decimal_release = prepare_release(
+            self.connection,
+            test_id=71,
+            selected_questions=[decimal_division],
+            assets={},
+            pack_dir=self.pack_dir,
+            signing_private_key_b64=self.private_key_b64,
+            pack_master_key=self.master_key,
+            now_iso="2026-08-31T09:00:00+00:00",
+        )
+        decimal_encrypted = (self.pack_dir / decimal_release.content_pack_filename).read_bytes()
+        decimal_key = unwrap_release_content_key(
+            self.master_key, decimal_release.release_id, decimal_release.wrapped_content_key_b64
+        )
+        with zipfile.ZipFile(
+            io.BytesIO(decrypt_pack(decimal_key, decimal_release.release_id, decimal_encrypted))
+        ) as archive:
+            decimal_packed = json.loads(archive.read("questions.json"))[0]
+        self.assertEqual("6 // 2.0", decimal_packed["question_text"])
+
+    def test_protocol_relative_authorities_are_rejected_after_normalization(self):
+        attacks = (
+            {"question_text": "//127.0.0.1"},
+            {"question_text": "//127.0.0.1:8080/private?answer=1#key"},
+            {"question_text": "//10.20.30.4?private=1"},
+            {"question_text": "//192.168.1.254#private"},
+            {"question_text": "//server"},
+            {"question_text": "//server:8080"},
+            {"question_text": "//server/private"},
+            {"question_text": "//server?private=1"},
+            {"question_text": "//server#private"},
+            {"question_text": "//user:pass@server/private"},
+            {"question_text": "//localhost"},
+            {"question_text": "//localhost/private"},
+            {"question_text": "//localhost?private=1"},
+            {"question_text": "//localhost#private"},
+            {"question_text": "//localhost:8080?private=1#key"},
+            {"question_text": "//example.com"},
+            {"question_text": "//example.com:8443?private=1"},
+            {"question_text": "//[::1]"},
+            {"question_text": "//[2001:db8::1]:8443/private"},
+            {"question_text": "%2F %2F LoCaL\u200bHoSt:8080/private"},
+            {"question_text": "\x00/\t/\rSeRvEr\n:8080/private"},
+            {"question_text": "&#47;&#47;127.0.0.1/private"},
+            {"question_html": "<p>&#47;&#47;127.0.0.1/private</p>"},
+            {"question_html": '<span title="&#47;&#47;SeRvEr?private=1">x</span>'},
+        )
+        for test_id, mutation in enumerate(attacks, start=80):
+            with self.subTest(mutation=mutation):
+                self.connection.execute(
+                    "INSERT INTO tests (test_id, test_name) VALUES (?, ?)",
+                    (test_id, f"Protocol-relative case {test_id}"),
+                )
+                question = self.public_questions()[1].model_copy(update=mutation)
+                before = set(self.pack_dir.glob("*.ksatpack"))
+                with self.assertRaisesRegex(ValueError, "external URL"):
+                    prepare_release(
+                        self.connection,
+                        test_id=test_id,
+                        selected_questions=[question],
+                        assets={},
+                        pack_dir=self.pack_dir,
+                        signing_private_key_b64=self.private_key_b64,
+                        pack_master_key=self.master_key,
+                        now_iso="2026-08-31T09:00:00+00:00",
+                    )
+                self.assertEqual(before, set(self.pack_dir.glob("*.ksatpack")))
+
     def test_supported_structured_stimuli_and_safe_visual_html_survive_real_packs(self):
         chart = self.public_questions()[1].model_dump(mode="json")
         chart["stimulus"]["content"] = {
@@ -812,6 +884,9 @@ class AssessmentReleaseTests(unittest.TestCase):
             ("question_text", "Read f%69le%3A%2F%2Fserver/private"),
             ("source_key", "mail&#116;o%3Ateacher%40example.com"),
             ("question_text", "Open %2F%2Fevil.example/private"),
+            ("question_html", "<p>&#47;&#47;127.0.0.1/private</p>"),
+            ("question_text", "//server"),
+            ("question_text", "//[2001:db8::1]:8443/private"),
         )
         for field, malicious_value in attacks:
             with self.subTest(field=field, malicious_value=malicious_value):
@@ -847,6 +922,15 @@ class AssessmentReleaseTests(unittest.TestCase):
                         "content_hash": content_hash,
                         "manifest": manifest,
                     },
+                )
+                verify_json(
+                    self.public_key_b64,
+                    {
+                        "release_id": release.release_id,
+                        "content_hash": content_hash,
+                        "manifest": manifest,
+                    },
+                    signature,
                 )
                 (self.pack_dir / release.content_pack_filename).write_bytes(malicious_encrypted)
                 self.connection.execute(

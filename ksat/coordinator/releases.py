@@ -37,6 +37,16 @@ from ksat.protocol import (
 _FIXED_ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
 _SAFE_ASSET_NAME = re.compile(r"assets/[0-9a-f]{64}\.(?:png|jpe?g|webp|svg)\Z")
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
+_PROTOCOL_RELATIVE_AUTHORITY = re.compile(
+    r"//(?:[a-z0-9._~!$&'()*+,;=:%-]+@)?(?:"
+    r"(?:[0-9]{1,3}\.){3}[0-9]{1,3}"
+    r"|"
+    r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
+    r"[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?"
+    r"|\[[a-z0-9:.%_-]+\]"
+    r"|[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?"
+    r")(?::[0-9]{1,5})?(?=[/?#]|$)"
+)
 _PRIVATE_MARKERS = ("answer", "correct", "feedback", "score", "solution", "explanation")
 _WRAPPED_KEY_ENVELOPE_BYTES = 12 + 32 + 16
 
@@ -138,10 +148,7 @@ def _validate_public_string(value: str, *, url_field: bool = False) -> None:
     route_text = compact.replace("\\", "/")
     if re.search(r"(?:^|/)api/", route_text) or "question-assets" in route_text:
         raise ValueError("Public assessment content contains a coordinator URL.")
-    if re.search(
-        r"//(?:(?:[a-z0-9-]+\.)+[a-z0-9-]{2,}|localhost)(?::[0-9]+)?(?:/|$)",
-        route_text,
-    ) or re.search(r"//[a-z][a-z0-9-]{1,62}(?::[0-9]+)?/", route_text):
+    if _PROTOCOL_RELATIVE_AUTHORITY.search(route_text):
         raise ValueError("Public assessment content contains an external URL.")
 
 

@@ -43,6 +43,31 @@ class ClientSession(BaseModel):
     expires_in_seconds: int = 43_200
 
 
+class PublicQuestion(ProtocolModel):
+    question_id: int
+    source_key: str
+    category: str
+    chapter: str
+    difficulty: str
+    question_text: str
+    question_html: str = ""
+    options: dict[str, str]
+    stimulus: dict[str, Any] | None = None
+    display_media: dict[str, Any] = Field(default_factory=dict)
+
+
+class ReleaseSummary(ProtocolModel):
+    release_id: str
+    test_id: int
+    state: str
+    duration_seconds: int
+    canonical_question_ids: list[int]
+    content_pack_filename: str
+    content_hash: str
+    content_signature_b64: str
+    wrapped_content_key_b64: str
+
+
 def canonical_json(value: BaseModel | dict[str, Any]) -> bytes:
     payload = value.model_dump(mode="json") if hasattr(value, "model_dump") else (
         value.dict() if isinstance(value, BaseModel) else value

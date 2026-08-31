@@ -40,9 +40,11 @@ from pydantic import BaseModel, Field
 from starlette.middleware.sessions import SessionMiddleware
 import question_media
 from ksat.coordinator.auth import load_or_create_client_session_secret
+from ksat.coordinator.releases import load_release_manifest, prepare_release
 from ksat.coordinator.routes import CoordinatorConfig, router as coordinator_router
 from ksat.coordinator.schema import migrate_distributed_schema
 from ksat.crypto import load_or_create_coordinator_keyring
+from ksat.protocol import PublicQuestion, ReleaseSummary
 from ksat.sqlite import connect_sqlite
 
 SOURCE_ROOT = Path(__file__).resolve().parent
@@ -383,6 +385,10 @@ def decode_difficulties(raw: Optional[str]) -> List[str]:
 
 def question_assets_dir() -> Path:
     return DATA_DIR / "Question Assets"
+
+
+def assessment_packs_dir() -> Path:
+    return DATA_DIR / "Assessment Releases"
 
 
 def normalize_selection_rules(
@@ -1524,6 +1530,114 @@ def display_media_for_attempt(
     return display_media
 
 
+def public_release_material(
+    connection: sqlite3.Connection, selected: list[sqlite3.Row]
+) -> tuple[list[PublicQuestion], dict[str, bytes]]:
+    """Snapshot public question content and embed its display-only assets."""
+    assets: dict[str, bytes] = {}
+
+    def embedded_asset(bank_id: int, stored_filename: str) -> str:
+        safe_filename = Path(stored_filename).name
+        if not safe_filename or safe_filename != stored_filename:
+            raise ValueError("Stored assessment media has an unsafe filename.")
+        extension = Path(safe_filename).suffix.lower()
+        if extension not in ALLOWED_ASSET_EXTENSIONS:
+            raise ValueError("Stored assessment media has an unsupported extension.")
+        content = (question_assets_dir() / str(bank_id) / safe_filename).read_bytes()
+        name = f"assets/{hashlib.sha256(content).hexdigest()}{extension}"
+        assets[name] = content
+        return name
+
+    questions: list[PublicQuestion] = []
+    for chosen in selected:
+        row = connection.execute(
+            """SELECT q.question_id, q.source_key, q.question_text, q.question_html, q.bank_id,
+                      q.category, COALESCE(NULLIF(q.chapter, ''), ?) AS chapter, q.stimulus_id,
+                      q.difficulty, q.option_a, q.option_b, q.option_c, q.option_d, q.options_json,
+                      q.display_media_json, s.stimulus_type, s.title AS stimulus_title,
+                      s.alt_text, s.asset_filename, s.content_json
+               FROM questions q
+               LEFT JOIN stimuli s ON s.bank_id = q.bank_id AND s.stimulus_id = q.stimulus_id
+               WHERE q.question_id = ?""",
+            (UNCATEGORIZED_CHAPTER, chosen["question_id"]),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"Selected question no longer exists: {chosen['question_id']}")
+
+        display_media = display_media_for_attempt(
+            row["display_media_json"], row["bank_id"], include_solution=False
+        )
+
+        def rewrite_media(item: dict[str, Any]) -> dict[str, Any]:
+            return {
+                **item,
+                "url": embedded_asset(row["bank_id"], Path(item["url"]).name),
+            }
+
+        embedded_media: dict[str, Any] = {}
+        if "question" in display_media:
+            embedded_media["question"] = rewrite_media(display_media["question"])
+        if "options" in display_media:
+            embedded_media["options"] = {
+                option: rewrite_media(item)
+                for option, item in sorted(display_media["options"].items())
+            }
+
+        stimulus: dict[str, Any] | None = None
+        if row["stimulus_id"] and row["stimulus_type"]:
+            stimulus = {
+                "id": row["stimulus_id"],
+                "type": row["stimulus_type"],
+                "title": row["stimulus_title"],
+                "alt_text": row["alt_text"],
+            }
+            if row["asset_filename"]:
+                stimulus["url"] = embedded_asset(row["bank_id"], row["asset_filename"])
+            else:
+                stimulus["content"] = json.loads(row["content_json"] or "{}")
+
+        questions.append(PublicQuestion(
+            question_id=row["question_id"],
+            source_key=str(row["source_key"] or f"question-{row['question_id']}"),
+            category=row["category"],
+            chapter=row["chapter"],
+            difficulty=row["difficulty"],
+            question_text=display_question_text(row["question_text"], row["source_key"]),
+            question_html=clean_display_text(row["question_html"]),
+            options=question_options(row),
+            stimulus=stimulus,
+            display_media=embedded_media,
+        ))
+    return questions, assets
+
+
+def prepare_faculty_release(connection: sqlite3.Connection, test: sqlite3.Row) -> ReleaseSummary:
+    """Prepare a legacy or newly inserted faculty test exactly once."""
+    if test["release_id"]:
+        return load_release_manifest(connection, test["release_id"])
+    difficulties = decode_difficulties(test["difficulties"])
+    rules = validate_selection_rules(
+        connection,
+        test["bank_id"],
+        decode_selection_rules(test["composition"]),
+        MAX_ASSESSMENT_QUESTIONS,
+        difficulties,
+    )
+    selected = sample_questions(connection, test["bank_id"], rules, difficulties)
+    questions, assets = public_release_material(connection, selected)
+    config = app.state.coordinator_config
+    return prepare_release(
+        connection,
+        test_id=test["test_id"],
+        selected_questions=questions,
+        assets=assets,
+        pack_dir=assessment_packs_dir(),
+        signing_private_key_b64=config.signing_private_key_b64,
+        pack_master_key=config.pack_master_key,
+        now_iso=now(),
+    )
+
+
 def serialize_attempt(connection: sqlite3.Connection, attempt: sqlite3.Row, include_answers: bool = False) -> Dict[str, Any]:
     attempt = ensure_faculty_deadline(connection, attempt)
     attempt = expire_attempt_if_needed(connection, attempt)
@@ -2092,6 +2206,7 @@ def list_question_banks(request: Request) -> Dict[str, Any]:
 @app.delete("/api/admin/question-banks/{bank_id}")
 def delete_question_bank(bank_id: int, request: Request) -> Dict[str, Any]:
     require_user(request, "admin")
+    release_pack_filenames: list[str] = []
     with db() as connection:
         bank = connection.execute("SELECT bank_name FROM question_banks WHERE bank_id = ?", (bank_id,)).fetchone()
         if not bank:
@@ -2147,6 +2262,21 @@ def delete_question_bank(bank_id: int, request: Request) -> Dict[str, Any]:
             "DELETE FROM attempts WHERE test_id IN (SELECT test_id FROM tests WHERE bank_id = ?)",
             (bank_id,),
         )
+        release_pack_filenames = [
+            row["content_pack_filename"]
+            for row in connection.execute(
+                "SELECT content_pack_filename FROM assessment_releases WHERE test_id IN (SELECT test_id FROM tests WHERE bank_id = ?)",
+                (bank_id,),
+            ).fetchall()
+        ]
+        connection.execute(
+            "DELETE FROM release_questions WHERE release_id IN (SELECT release_id FROM assessment_releases WHERE test_id IN (SELECT test_id FROM tests WHERE bank_id = ?))",
+            (bank_id,),
+        )
+        connection.execute(
+            "DELETE FROM assessment_releases WHERE test_id IN (SELECT test_id FROM tests WHERE bank_id = ?)",
+            (bank_id,),
+        )
         connection.execute("DELETE FROM tests WHERE bank_id = ?", (bank_id,))
         connection.execute("DELETE FROM stimuli WHERE bank_id = ?", (bank_id,))
         connection.execute("DELETE FROM questions WHERE bank_id = ?", (bank_id,))
@@ -2154,6 +2284,8 @@ def delete_question_bank(bank_id: int, request: Request) -> Dict[str, Any]:
     asset_directory = question_assets_dir() / str(bank_id)
     if asset_directory.exists():
         shutil.rmtree(asset_directory)
+    for filename in release_pack_filenames:
+        (assessment_packs_dir() / Path(filename).name).unlink(missing_ok=True)
     return {"deleted": True, "bank_name": bank["bank_name"], "deleted_counts": deleted_counts}
 
 
@@ -2323,13 +2455,33 @@ def list_tests(request: Request) -> Dict[str, Any]:
     require_user(request, "admin")
     with db() as connection:
         tests = rows(connection.execute(
-            """SELECT t.*, b.bank_name,
+            """SELECT t.*, b.bank_name, r.state AS release_state,
+                      r.content_hash AS content_hash, r.content_pack_filename AS release_pack_filename,
+                      EXISTS(SELECT 1 FROM attempts submitted
+                             WHERE submitted.test_id = t.test_id AND submitted.status = 'submitted')
+                        AS has_submitted_attempt,
                       (SELECT COUNT(*) FROM attempts a WHERE a.test_id = t.test_id) AS attempt_count
                FROM tests t
                LEFT JOIN question_banks b ON b.bank_id = t.bank_id
+               LEFT JOIN assessment_releases r ON r.release_id = t.release_id
                WHERE t.mode = 'faculty' ORDER BY t.created_at DESC"""
         ).fetchall())
         for test in tests:
+            has_submitted_attempt = bool(test.pop("has_submitted_attempt"))
+            test["release_state"] = test.get("release_state") or (
+                "failed" if has_submitted_attempt else "preparing"
+            )
+            if test["release_state"] == "prepared":
+                pack_filename = Path(test.pop("release_pack_filename") or "").name
+                pack_path = assessment_packs_dir() / pack_filename
+                if (
+                    not pack_filename
+                    or not pack_path.is_file()
+                    or hashlib.sha256(pack_path.read_bytes()).hexdigest() != test["content_hash"]
+                ):
+                    test["release_state"] = "failed"
+            else:
+                test.pop("release_pack_filename", None)
             test["selection_rules"] = decode_selection_rules(test["composition"])
             test["difficulty_levels"] = decode_difficulties(test["difficulties"])
             deadline = parse_timestamp(test.get("launch_expires_at"))
@@ -2353,24 +2505,42 @@ def create_test(payload: TestPayload, request: Request) -> Dict[str, Any]:
     difficulties = normalize_difficulties(payload.difficulties)
     if not payload.test_name.strip():
         raise HTTPException(400, "Provide a test name.")
-    with db() as connection:
-        rules = validate_selection_rules(connection, payload.bank_id, rules, MAX_ASSESSMENT_QUESTIONS, difficulties)
-        bank = connection.execute("SELECT bank_name FROM question_banks WHERE bank_id = ?", (payload.bank_id,)).fetchone()
-        if not bank:
-            raise HTTPException(404, "Choose an imported question bank.")
-        connection.execute(
-            "INSERT INTO tests (test_name, composition, bank_id, created_at, difficulties) VALUES (?, ?, ?, ?, ?)",
-            (payload.test_name.strip(), json.dumps(rules), payload.bank_id, now(), json.dumps(difficulties)),
-        )
-    return {"created": True}
+    created_release: ReleaseSummary | None = None
+    try:
+        with db() as connection:
+            rules = validate_selection_rules(connection, payload.bank_id, rules, MAX_ASSESSMENT_QUESTIONS, difficulties)
+            bank = connection.execute("SELECT bank_name FROM question_banks WHERE bank_id = ?", (payload.bank_id,)).fetchone()
+            if not bank:
+                raise HTTPException(404, "Choose an imported question bank.")
+            test_id = connection.execute(
+                "INSERT INTO tests (test_name, composition, bank_id, created_at, difficulties) VALUES (?, ?, ?, ?, ?)",
+                (payload.test_name.strip(), json.dumps(rules), payload.bank_id, now(), json.dumps(difficulties)),
+            ).lastrowid
+            test = connection.execute("SELECT * FROM tests WHERE test_id = ?", (test_id,)).fetchone()
+            created_release = prepare_faculty_release(connection, test)
+        return {
+            "created": True,
+            "test_id": test_id,
+            "release_id": created_release.release_id,
+            "release_state": created_release.state,
+            "content_hash": created_release.content_hash,
+        }
+    except Exception:
+        if created_release is not None:
+            (assessment_packs_dir() / created_release.content_pack_filename).unlink(missing_ok=True)
+        raise
 
 
 @app.delete("/api/admin/tests/{test_id}")
 def delete_test(test_id: int, request: Request) -> Dict[str, Any]:
     require_user(request, "admin")
+    release_pack_filename: str | None = None
     with db() as connection:
         test = connection.execute(
-            "SELECT test_name FROM tests WHERE test_id = ? AND mode = 'faculty'", (test_id,)
+            """SELECT t.test_name, r.content_pack_filename
+               FROM tests t LEFT JOIN assessment_releases r ON r.release_id = t.release_id
+               WHERE t.test_id = ? AND t.mode = 'faculty'""",
+            (test_id,),
         ).fetchone()
         if not test:
             raise HTTPException(404, "Faculty assessment not found.")
@@ -2383,25 +2553,69 @@ def delete_test(test_id: int, request: Request) -> Dict[str, Any]:
             connection.execute(f"DELETE FROM exam_violations WHERE attempt_id IN ({placeholders})", attempt_ids)
             connection.execute(f"DELETE FROM responses WHERE attempt_id IN ({placeholders})", attempt_ids)
             connection.execute(f"DELETE FROM attempts WHERE attempt_id IN ({placeholders})", attempt_ids)
+        release_pack_filename = test["content_pack_filename"]
+        connection.execute(
+            "DELETE FROM release_questions WHERE release_id IN (SELECT release_id FROM assessment_releases WHERE test_id = ?)",
+            (test_id,),
+        )
+        connection.execute("DELETE FROM assessment_releases WHERE test_id = ?", (test_id,))
         connection.execute("DELETE FROM tests WHERE test_id = ?", (test_id,))
+    if release_pack_filename:
+        (assessment_packs_dir() / Path(release_pack_filename).name).unlink(missing_ok=True)
     return {"deleted": True, "test_name": test["test_name"], "attempts_deleted": len(attempt_ids)}
 
 
 @app.post("/api/admin/tests/{test_id}/launch")
 def launch_test(test_id: int, request: Request) -> Dict[str, bool]:
     require_user(request, "admin")
-    with db() as connection:
-        test = connection.execute(
-            "SELECT composition FROM tests WHERE test_id = ? AND active = 1 AND mode = 'faculty'", (test_id,)
-        ).fetchone()
-        if not test:
-            raise HTTPException(404, "Test not found.")
-        total_questions = sum(rule["quantity"] for rule in decode_selection_rules(test["composition"]))
-        deadline = (datetime.now(timezone.utc) + timedelta(seconds=total_questions * SECONDS_PER_FACULTY_QUESTION)).isoformat(timespec="seconds")
-        connection.execute("UPDATE tests SET launched = 0, launch_expires_at = NULL WHERE mode = 'faculty'")
-        connection.execute("UPDATE tests SET launched = 1, launch_expires_at = ? WHERE test_id = ?", (deadline, test_id))
-        connection.execute("UPDATE attempts SET expires_at = ? WHERE test_id = ? AND status = 'in_progress'", (deadline, test_id))
-    return {"launched": True}
+    created_release: ReleaseSummary | None = None
+    try:
+        with db() as connection:
+            test = connection.execute(
+                "SELECT * FROM tests WHERE test_id = ? AND active = 1 AND mode = 'faculty'", (test_id,)
+            ).fetchone()
+            if not test:
+                raise HTTPException(404, "Test not found.")
+            if not test["release_id"] and test["bank_id"] is None:
+                # Pre-bank placeholder rows have no content that can be snapshotted. Keep
+                # their established faculty timer behavior; startup migration assigns a
+                # bank to every real legacy assessment before it can reach this branch.
+                duration_seconds = sum(
+                    rule["quantity"] for rule in decode_selection_rules(test["composition"])
+                ) * SECONDS_PER_FACULTY_QUESTION
+            elif not test["release_id"]:
+                submitted = connection.execute(
+                    "SELECT 1 FROM attempts WHERE test_id = ? AND status = 'submitted' LIMIT 1",
+                    (test_id,),
+                ).fetchone()
+                if submitted:
+                    raise HTTPException(
+                        409,
+                        "This historical assessment has submitted attempts and cannot be resampled.",
+                    )
+                created_release = prepare_faculty_release(connection, test)
+                release = created_release
+                duration_seconds = release.duration_seconds
+            else:
+                release = load_release_manifest(connection, test["release_id"])
+                pack_path = assessment_packs_dir() / Path(release.content_pack_filename).name
+                if (
+                    not pack_path.is_file()
+                    or hashlib.sha256(pack_path.read_bytes()).hexdigest() != release.content_hash
+                ):
+                    raise HTTPException(409, "Assessment release preparation failed. Create a new assessment.")
+                duration_seconds = release.duration_seconds
+            deadline = (
+                datetime.now(timezone.utc) + timedelta(seconds=duration_seconds)
+            ).isoformat(timespec="seconds")
+            connection.execute("UPDATE tests SET launched = 0, launch_expires_at = NULL WHERE mode = 'faculty'")
+            connection.execute("UPDATE tests SET launched = 1, launch_expires_at = ? WHERE test_id = ?", (deadline, test_id))
+            connection.execute("UPDATE attempts SET expires_at = ? WHERE test_id = ? AND status = 'in_progress'", (deadline, test_id))
+        return {"launched": True}
+    except Exception:
+        if created_release is not None:
+            (assessment_packs_dir() / created_release.content_pack_filename).unlink(missing_ok=True)
+        raise
 
 
 @app.post("/api/admin/tests/{test_id}/close")

@@ -8,6 +8,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi.testclient import TestClient
@@ -162,6 +163,44 @@ class ClientAuthApiTests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             app.configure_coordinator_state(app.app)
+
+    def test_concurrent_client_session_secret_creation_publishes_one_winner(self):
+        from ksat.coordinator.auth import load_or_create_client_session_secret
+
+        caller_count = 8
+        barrier = threading.Barrier(caller_count)
+        candidate_lock = threading.Lock()
+        candidate_number = 0
+        secrets_dir = app.DATA_DIR / "concurrent-secrets"
+
+        def distinct_candidate(_length):
+            nonlocal candidate_number
+            with candidate_lock:
+                candidate_number += 1
+                candidate = bytes([candidate_number]) * 32
+            barrier.wait(timeout=5)
+            return candidate
+
+        with patch("ksat.coordinator.auth.os.urandom", side_effect=distinct_candidate):
+            with ThreadPoolExecutor(max_workers=caller_count) as executor:
+                futures = [
+                    executor.submit(load_or_create_client_session_secret, secrets_dir)
+                    for _ in range(caller_count)
+                ]
+                returned_secrets = []
+                errors = []
+                for future in futures:
+                    try:
+                        returned_secrets.append(future.result(timeout=10))
+                    except Exception as error:  # The assertion below reports concurrent failures.
+                        errors.append(type(error).__name__)
+
+        self.assertEqual(errors, [])
+        persisted_secret = (secrets_dir / "client-session.key").read_bytes()
+        encoded_persisted_secret = base64.urlsafe_b64encode(persisted_secret).decode("ascii")
+        self.assertEqual(len(set(returned_secrets)), 1)
+        self.assertEqual(returned_secrets, [encoded_persisted_secret] * caller_count)
+        self.assertEqual(len(persisted_secret), 32)
 
     def test_student_session_is_bound_to_active_device(self):
         enrolled = self.enroll("Lab-01")

@@ -57,31 +57,42 @@ def _public_key(public_key_b64: str) -> Ed25519PublicKey:
         raise _problem("invalid_device_key", "The device key is invalid.", status_code=400) from error
 
 
+def _load_client_session_secret(secret_path: Path) -> bytes | None:
+    try:
+        raw_secret = secret_path.read_bytes()
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        raise ValueError("Coordinator client session secret is invalid.") from error
+    if len(raw_secret) != 32:
+        raise ValueError("Coordinator client session secret is invalid.")
+    return raw_secret
+
+
 def load_or_create_client_session_secret(secrets_dir: Path) -> str:
     secrets_dir.mkdir(parents=True, exist_ok=True)
     secret_path = secrets_dir / "client-session.key"
-    if secret_path.exists():
-        try:
-            raw_secret = secret_path.read_bytes()
-        except OSError as error:
-            raise ValueError("Coordinator client session secret is invalid.") from error
-        if len(raw_secret) != 32:
-            raise ValueError("Coordinator client session secret is invalid.")
-    else:
-        raw_secret = os.urandom(32)
+    while (raw_secret := _load_client_session_secret(secret_path)) is None:
+        candidate = os.urandom(32)
         file_descriptor, temporary_name = tempfile.mkstemp(
             prefix=f".{secret_path.name}.", dir=secrets_dir
         )
         temporary_path = Path(temporary_name)
         try:
             with os.fdopen(file_descriptor, "wb") as temporary_file:
-                temporary_file.write(raw_secret)
+                temporary_file.write(candidate)
                 temporary_file.flush()
                 os.fsync(temporary_file.fileno())
-            os.replace(temporary_path, secret_path)
+            try:
+                os.link(temporary_path, secret_path)
+                raw_secret = candidate
+            except FileExistsError:
+                raw_secret = _load_client_session_secret(secret_path)
         finally:
             if temporary_path.exists():
                 temporary_path.unlink()
+        if raw_secret is not None:
+            break
     return base64.urlsafe_b64encode(raw_secret).decode("ascii")
 
 

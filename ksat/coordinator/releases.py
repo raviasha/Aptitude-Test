@@ -25,11 +25,15 @@ from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 from ksat.crypto import decrypt_pack, encrypt_pack, sha256_hex, sign_json, verify_json
 from ksat.protocol import (
+    MATH_FLOOR_DIVISION_CLASS,
+    MATH_FLOOR_DIVISION_ERROR,
     PACK_FORMAT_VERSION,
     PROTOCOL_VERSION,
     PublicQuestion,
     ReleaseManifest,
     ReleaseSummary,
+    canonicalize_math_floor_division_expression,
+    canonicalize_math_floor_division_markup,
     canonical_json,
 )
 
@@ -39,19 +43,9 @@ _SAFE_ASSET_NAME = re.compile(r"assets/[0-9a-f]{64}\.(?:png|jpe?g|webp|svg)\Z")
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _PRIVATE_MARKERS = ("answer", "correct", "feedback", "score", "solution", "explanation")
 _WRAPPED_KEY_ENVELOPE_BYTES = 12 + 32 + 16
-_MATH_FLOOR_DIVISION_CLASS = "math-floor-division"
-_MATH_OPERAND = r"(?:[A-Za-z_][A-Za-z0-9_]*|(?:0|[1-9][0-9]*)(?:\.[0-9]+)?)"
-_RAW_MATH_FLOOR_DIVISION = re.compile(rf"({_MATH_OPERAND}) // ({_MATH_OPERAND})\Z")
-_CANONICAL_MATH_FLOOR_DIVISION = re.compile(
-    rf"⌊({_MATH_OPERAND}) ÷ ({_MATH_OPERAND})⌋\Z"
-)
 _DOUBLE_SLASH_MESSAGE = (
     "Public assessment content contains ambiguous external URL // syntax; use explicit math markup "
     '<code class="math-floor-division">LEFT // RIGHT</code> in question_html for floor division.'
-)
-_MATH_MARKUP_MESSAGE = (
-    "Question HTML floor division must use exact explicit math markup "
-    '<code class="math-floor-division">LEFT // RIGHT</code> with simple operands.'
 )
 
 
@@ -222,7 +216,7 @@ class _PublicHTMLSanitizer(HTMLParser):
     def _is_exact_math_code(self, attrs: list[tuple[str, str | None]]) -> bool:
         return (
             len(attrs) == 1
-            and attrs[0] == ("class", _MATH_FLOOR_DIVISION_CLASS)
+            and attrs[0] == ("class", MATH_FLOOR_DIVISION_CLASS)
             and self.get_starttag_text()
             == '<code class="math-floor-division">'
         )
@@ -232,30 +226,25 @@ class _PublicHTMLSanitizer(HTMLParser):
         return any(
             name.lower() == "class"
             and value is not None
-            and _MATH_FLOOR_DIVISION_CLASS in value.split()
+            and MATH_FLOOR_DIVISION_CLASS in value.split()
             for name, value in attrs
         )
 
     def _finish_math_code(self) -> None:
         if self.math_code_parts is None:
-            raise ValueError(_MATH_MARKUP_MESSAGE)
+            raise ValueError(MATH_FLOOR_DIVISION_ERROR)
         value = "".join(self.math_code_parts)
-        match = _RAW_MATH_FLOOR_DIVISION.fullmatch(value)
-        if match is None:
-            match = _CANONICAL_MATH_FLOOR_DIVISION.fullmatch(value)
-        if match is None or any(len(operand) > 64 for operand in match.groups()):
-            raise ValueError(_MATH_MARKUP_MESSAGE)
-        left, right = match.groups()
+        canonical = canonicalize_math_floor_division_expression(value)
         self.output.append(
-            f'<code class="{_MATH_FLOOR_DIVISION_CLASS}">'
-            f"⌊{html.escape(left, quote=False)} ÷ {html.escape(right, quote=False)}⌋</code>"
+            f'<code class="{MATH_FLOOR_DIVISION_CLASS}">'
+            f"{canonical}</code>"
         )
         self.math_code_parts = None
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         tag = tag.lower()
         if self.math_code_parts is not None:
-            raise ValueError(_MATH_MARKUP_MESSAGE)
+            raise ValueError(MATH_FLOOR_DIVISION_ERROR)
         if self.drop_depth:
             self.drop_depth += 1
             return
@@ -264,7 +253,7 @@ class _PublicHTMLSanitizer(HTMLParser):
                 self.math_code_parts = []
                 return
             if self._uses_math_class(attrs):
-                raise ValueError(_MATH_MARKUP_MESSAGE)
+                raise ValueError(MATH_FLOOR_DIVISION_ERROR)
         for name, value in attrs:
             if value is None:
                 continue
@@ -306,7 +295,7 @@ class _PublicHTMLSanitizer(HTMLParser):
         tag = tag.lower()
         if self.math_code_parts is not None:
             if tag != "code":
-                raise ValueError(_MATH_MARKUP_MESSAGE)
+                raise ValueError(MATH_FLOOR_DIVISION_ERROR)
             self._finish_math_code()
             return
         if self.drop_depth:
@@ -320,46 +309,47 @@ class _PublicHTMLSanitizer(HTMLParser):
         if self.math_code_parts is not None:
             self.math_code_parts.append(data)
             if sum(map(len, self.math_code_parts)) > 132:
-                raise ValueError(_MATH_MARKUP_MESSAGE)
+                raise ValueError(MATH_FLOOR_DIVISION_ERROR)
             return
         if not self.drop_depth:
             self.output.append(html.escape(data, quote=False))
 
     def handle_entityref(self, name: str) -> None:
         if self.math_code_parts is not None:
-            raise ValueError(_MATH_MARKUP_MESSAGE)
+            raise ValueError(MATH_FLOOR_DIVISION_ERROR)
         if not self.drop_depth:
             self.output.append(f"&{name};")
 
     def handle_charref(self, name: str) -> None:
         if self.math_code_parts is not None:
-            raise ValueError(_MATH_MARKUP_MESSAGE)
+            raise ValueError(MATH_FLOOR_DIVISION_ERROR)
         if not self.drop_depth:
             self.output.append(f"&#{name};")
 
     def handle_comment(self, data: str) -> None:
         if self.math_code_parts is not None:
-            raise ValueError(_MATH_MARKUP_MESSAGE)
+            raise ValueError(MATH_FLOOR_DIVISION_ERROR)
 
     def handle_pi(self, data: str) -> None:
         if self.math_code_parts is not None:
-            raise ValueError(_MATH_MARKUP_MESSAGE)
+            raise ValueError(MATH_FLOOR_DIVISION_ERROR)
 
     def handle_decl(self, decl: str) -> None:
         if self.math_code_parts is not None:
-            raise ValueError(_MATH_MARKUP_MESSAGE)
+            raise ValueError(MATH_FLOOR_DIVISION_ERROR)
 
     def unknown_decl(self, data: str) -> None:
         if self.math_code_parts is not None:
-            raise ValueError(_MATH_MARKUP_MESSAGE)
+            raise ValueError(MATH_FLOOR_DIVISION_ERROR)
 
     def result(self) -> str:
         if self.math_code_parts is not None:
-            raise ValueError(_MATH_MARKUP_MESSAGE)
+            raise ValueError(MATH_FLOOR_DIVISION_ERROR)
         return "".join(self.output).strip()
 
 
 def _sanitize_question_html(fragment: str) -> str:
+    fragment = canonicalize_math_floor_division_markup(fragment)
     sanitizer = _PublicHTMLSanitizer()
     sanitizer.feed(fragment)
     sanitizer.close()
@@ -547,6 +537,32 @@ def _derive_public_key_b64(private_key_b64: str) -> str:
     return base64.b64encode(public).decode("ascii")
 
 
+class _DuplicateJSONKey(ValueError):
+    pass
+
+
+def _reject_duplicate_json_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    value: dict[str, Any] = {}
+    for key, item in pairs:
+        if key in value:
+            raise _DuplicateJSONKey(key)
+        value[key] = item
+    return value
+
+
+def _load_json_without_duplicate_keys(content: str | bytes, message: str) -> Any:
+    try:
+        return json.loads(content, object_pairs_hook=_reject_duplicate_json_keys)
+    except (_DuplicateJSONKey, TypeError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError(message) from error
+
+
+def _load_pack_json(content: bytes, label: str) -> Any:
+    return _load_json_without_duplicate_keys(
+        content, f"Stored assessment pack {label} JSON is invalid."
+    )
+
+
 def _inspect_pack(
     plaintext: bytes, manifest: ReleaseManifest, canonical_question_ids: list[int]
 ) -> None:
@@ -559,14 +575,15 @@ def _inspect_pack(
                 raise ValueError("Stored assessment pack entries are invalid.")
             if any(info.date_time != _FIXED_ZIP_TIMESTAMP for info in infos):
                 raise ValueError("Stored assessment pack timestamps are invalid.")
-            packed_manifest = json.loads(archive.read("manifest.json"))
-            packed_questions = json.loads(archive.read("questions.json"))
+            packed_manifest = _load_pack_json(archive.read("manifest.json"), "manifest")
+            packed_questions_json = archive.read("questions.json")
+            packed_questions = _load_pack_json(packed_questions_json, "questions")
             for asset_name in manifest.asset_names:
                 content = archive.read(asset_name)
                 digest = asset_name.split("/", 1)[1].split(".", 1)[0]
                 if hashlib.sha256(content).hexdigest() != digest:
                     raise ValueError("Stored assessment pack asset hash is invalid.")
-    except (KeyError, json.JSONDecodeError, zipfile.BadZipFile, OSError) as error:
+    except (KeyError, zipfile.BadZipFile, OSError) as error:
         raise ValueError("Stored assessment pack is invalid.") from error
     if packed_manifest != manifest.model_dump(mode="json"):
         raise ValueError("Stored assessment pack manifest is inconsistent.")
@@ -574,8 +591,8 @@ def _inspect_pack(
         canonical_payloads = _public_question_payloads(packed_questions)
     except Exception as error:
         raise ValueError("Stored assessment pack questions are invalid.") from error
-    if canonical_payloads != packed_questions:
-        raise ValueError("Stored assessment pack questions are not canonical public content.")
+    if packed_questions_json != canonical_json(canonical_payloads):
+        raise ValueError("Stored assessment pack questions JSON is not canonical public content.")
     if [item["question_id"] for item in packed_questions] != canonical_question_ids:
         raise ValueError("Stored assessment pack question linkage is inconsistent.")
     if _referenced_asset_names(canonical_payloads) != set(manifest.asset_names):
@@ -607,7 +624,9 @@ def _summary_from_row(
         message="Stored assessment wrapped content key is invalid.",
     )
     try:
-        manifest = ReleaseManifest.model_validate_json(row["manifest_json"])
+        manifest = ReleaseManifest.model_validate(_load_json_without_duplicate_keys(
+            row["manifest_json"], "Stored assessment release manifest is invalid."
+        ))
     except Exception as error:
         raise ValueError("Stored assessment release manifest is invalid.") from error
     if (

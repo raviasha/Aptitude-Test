@@ -27,7 +27,7 @@ from ksat.coordinator.releases import (
 )
 from ksat.coordinator.schema import migrate_distributed_schema
 from ksat.crypto import decrypt_pack, encrypt_pack, generate_ed25519_keypair, sign_json, verify_json
-from ksat.protocol import PublicQuestion
+from ksat.protocol import PublicQuestion, canonical_json
 from ksat.sqlite import connect_sqlite
 
 
@@ -566,7 +566,14 @@ class AssessmentReleaseTests(unittest.TestCase):
             '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2 2">'
             '<path d="M0 0 L1 1"></path></svg>'
         )
-        self.assertEqual(source_html, app.sanitize_visual_html(source_html))
+        canonical_html = (
+            '<p>Compute <code class="math-floor-division">⌊total ÷ count⌋</code> and '
+            '<code class="math-floor-division">⌊6 ÷ 2.0⌋</code>; '
+            '<code>already ÷ safe</code>.</p>'
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2 2">'
+            '<path d="M0 0 L1 1"></path></svg>'
+        )
+        self.assertEqual(canonical_html, app.sanitize_visual_html(source_html))
         question = self.public_questions()[1].model_copy(
             update={
                 "question_text": "Compute the floor division of total by count and of six by two.",
@@ -593,16 +600,7 @@ class AssessmentReleaseTests(unittest.TestCase):
             (self.pack_dir / release.content_pack_filename).read_bytes(),
         ))) as archive:
             packed = json.loads(archive.read("questions.json"))[0]
-        self.assertEqual(
-            (
-                '<p>Compute <code class="math-floor-division">⌊total ÷ count⌋</code> and '
-                '<code class="math-floor-division">⌊6 ÷ 2.0⌋</code>; '
-                '<code>already ÷ safe</code>.</p>'
-                '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2 2">'
-                '<path d="M0 0 L1 1"></path></svg>'
-            ),
-            packed["question_html"],
-        )
+        self.assertEqual(canonical_html, packed["question_html"])
         self.assertNotIn("//", packed["question_text"])
         self.assertEqual(1, packed["question_html"].count("//"))
         invariant_payload = json.loads(json.dumps(packed))
@@ -647,6 +645,15 @@ class AssessmentReleaseTests(unittest.TestCase):
             '<code class="math-floor-division">a /\x00/ b</code>',
             '<code class="math-floor-division">a<!--hidden--> // b</code>',
             '<code class="math-floor-division">a<?hidden?> // b</code>',
+            '<code class="math-floor-division">a // b</CODE>',
+            '<code class="math-floor-division">a // b</code x>',
+            '<code class="math-floor-division">a // b</code></code>',
+            '</code><code class="math-floor-division">a // b</code>',
+            '<code class="math-floor-division">a // b',
+            '<code class="math-floor-division"/>',
+            '<code><code class="math-floor-division">a // b</code></code>',
+            '<span><code class="math-floor-division">a // b</span></code>',
+            '<code class="math-floor-division">a // b</code><code>',
             f'<code class="math-floor-division">{"a" * 65} // b</code>',
         )
         for test_id, question_html in enumerate(malformed, start=160):
@@ -814,11 +821,156 @@ class AssessmentReleaseTests(unittest.TestCase):
             pack_master_key=self.master_key,
         )
 
+    def install_resigned_questions(self, release, manifest, asset_bytes, questions_json):
+        content_key = unwrap_release_content_key(
+            self.master_key, release.release_id, release.wrapped_content_key_b64
+        )
+        plaintext = io.BytesIO()
+        with zipfile.ZipFile(plaintext, "w") as archive:
+            entries = (
+                (
+                    "manifest.json",
+                    json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(),
+                ),
+                ("questions.json", questions_json),
+                *((name, asset_bytes[name]) for name in manifest["asset_names"]),
+            )
+            for name, value in entries:
+                info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
+                info.compress_type = zipfile.ZIP_STORED
+                info.create_system = 3
+                info.external_attr = 0o600 << 16
+                archive.writestr(info, value)
+        encrypted = encrypt_pack(content_key, release.release_id, plaintext.getvalue())
+        content_hash = hashlib.sha256(encrypted).hexdigest()
+        signature = sign_json(
+            self.private_key_b64,
+            {"release_id": release.release_id, "content_hash": content_hash, "manifest": manifest},
+        )
+        verify_json(
+            self.public_key_b64,
+            {"release_id": release.release_id, "content_hash": content_hash, "manifest": manifest},
+            signature,
+        )
+        (self.pack_dir / release.content_pack_filename).write_bytes(encrypted)
+        self.connection.execute(
+            """UPDATE assessment_releases SET content_hash = ?, content_signature_b64 = ?
+               WHERE release_id = ?""",
+            (content_hash, signature, release.release_id),
+        )
+
+    def test_verified_load_requires_canonical_duplicate_free_questions_json_bytes(self):
+        release = self.prepare_release_with_two_questions()
+        content_key = unwrap_release_content_key(
+            self.master_key, release.release_id, release.wrapped_content_key_b64
+        )
+        encrypted = (self.pack_dir / release.content_pack_filename).read_bytes()
+        with zipfile.ZipFile(io.BytesIO(decrypt_pack(content_key, release.release_id, encrypted))) as archive:
+            canonical_questions = archive.read("questions.json")
+            questions = json.loads(canonical_questions)
+            manifest = json.loads(archive.read("manifest.json"))
+            asset_bytes = {name: archive.read(name) for name in manifest["asset_names"]}
+        self.assertEqual(canonical_json(questions), canonical_questions)
+
+        duplicate_key_json = canonical_questions.replace(
+            b'"question_text":"Three?"',
+            b'"question_text":"forbidden // value","question_text":"Three?"',
+            1,
+        )
+        noncanonical_json = json.dumps(
+            questions, ensure_ascii=False, sort_keys=False, indent=2
+        ).encode("utf-8")
+        alternate_order = json.loads(canonical_questions)
+        alternate_order[0] = dict(reversed(list(alternate_order[0].items())))
+        alternate_order_json = json.dumps(
+            alternate_order, ensure_ascii=False, sort_keys=False, separators=(",", ":")
+        ).encode("utf-8")
+        escaped_json = canonical_questions.replace(b'"source_key":"q-3"', b'"source_key":"\\u0071-3"', 1)
+        noncanonical_number_json = canonical_questions.replace(b'"question_id":3', b'"question_id":3.0', 1)
+        for label, questions_json in (
+            ("duplicate key", duplicate_key_json),
+            ("alternate formatting", noncanonical_json),
+            ("alternate key order", alternate_order_json),
+            ("alternate escape", escaped_json),
+            ("noncanonical number", noncanonical_number_json),
+        ):
+            with self.subTest(label=label):
+                self.install_resigned_questions(release, manifest, asset_bytes, questions_json)
+                with self.assertRaisesRegex(ValueError, "questions.*(?:JSON|canonical)"):
+                    self.verified_load(release.release_id)
+
+    def test_verified_load_rejects_duplicate_key_hiding_malformed_math_source(self):
+        release = self.prepare_release_with_two_questions()
+        content_key = unwrap_release_content_key(
+            self.master_key, release.release_id, release.wrapped_content_key_b64
+        )
+        encrypted = (self.pack_dir / release.content_pack_filename).read_bytes()
+        with zipfile.ZipFile(io.BytesIO(decrypt_pack(content_key, release.release_id, encrypted))) as archive:
+            canonical_questions = archive.read("questions.json")
+            manifest = json.loads(archive.read("manifest.json"))
+            asset_bytes = {name: archive.read(name) for name in manifest["asset_names"]}
+
+        for malformed_close in ("</CODE>", "</code x>", "</code></code>"):
+            with self.subTest(malformed_close=malformed_close):
+                malicious_html = (
+                    '<code class="math-floor-division">left // right' + malformed_close
+                )
+                duplicate_key_json = canonical_questions.replace(
+                    b'"question_html":""',
+                    (
+                        '"question_html":'
+                        + json.dumps(malicious_html, ensure_ascii=False)
+                        + ',"question_html":""'
+                    ).encode("utf-8"),
+                    1,
+                )
+                self.install_resigned_questions(
+                    release, manifest, asset_bytes, duplicate_key_json
+                )
+                with self.assertRaisesRegex(ValueError, "questions.*(?:JSON|canonical)"):
+                    self.verified_load(release.release_id)
+
+    def test_verified_load_rejects_canonical_json_with_malformed_math_source(self):
+        release = self.prepare_release_with_two_questions()
+        content_key = unwrap_release_content_key(
+            self.master_key, release.release_id, release.wrapped_content_key_b64
+        )
+        encrypted = (self.pack_dir / release.content_pack_filename).read_bytes()
+        with zipfile.ZipFile(io.BytesIO(decrypt_pack(content_key, release.release_id, encrypted))) as archive:
+            original_questions = json.loads(archive.read("questions.json"))
+            manifest = json.loads(archive.read("manifest.json"))
+            asset_bytes = {name: archive.read(name) for name in manifest["asset_names"]}
+
+        for malformed_close in ("</CODE>", "</code x>", "</code></code>"):
+            with self.subTest(malformed_close=malformed_close):
+                questions = json.loads(json.dumps(original_questions))
+                questions[0]["question_html"] = (
+                    '<code class="math-floor-division">left // right' + malformed_close
+                )
+                self.install_resigned_questions(
+                    release, manifest, asset_bytes, canonical_json(questions)
+                )
+                with self.assertRaisesRegex(ValueError, "pack questions"):
+                    self.verified_load(release.release_id)
+
     def test_verified_load_rejects_manifest_linkage_and_encoding_corruption(self):
         release = self.prepare_release_with_two_questions()
         row = self.connection.execute(
             "SELECT manifest_json FROM assessment_releases WHERE release_id = ?", (release.release_id,)
         ).fetchone()
+        duplicate_manifest = row["manifest_json"].replace(
+            '"test_id":41', '"test_id":999,"test_id":41', 1
+        )
+        self.connection.execute(
+            "UPDATE assessment_releases SET manifest_json = ? WHERE release_id = ?",
+            (duplicate_manifest, release.release_id),
+        )
+        with self.assertRaisesRegex(ValueError, "release manifest is invalid"):
+            self.verified_load(release.release_id)
+        self.connection.execute(
+            "UPDATE assessment_releases SET manifest_json = ? WHERE release_id = ?",
+            (row["manifest_json"], release.release_id),
+        )
         manifest = json.loads(row["manifest_json"])
         manifest["test_id"] = 999
         self.connection.execute(
@@ -1383,6 +1535,68 @@ class FacultyReleaseFlowTests(unittest.TestCase):
             {f"assets/{hashlib.sha256(self.public_media).hexdigest()}.png": self.public_media},
             assets,
         )
+
+    def test_html_pair_math_import_survives_storage_public_material_and_real_pack(self):
+        html_source = (
+            '<section data-question-key="math-q"><p>Compute '
+            '<code class="math-floor-division">total // count</code> now.</p></section>'
+        )
+        answer_key_source = json.dumps({
+            "bank_name": "Imported explicit math",
+            "questions": [{
+                "key": "math-q",
+                "category": "Quantitative Aptitude",
+                "chapter": "Arithmetic",
+                "difficulty": "Easy",
+                "options": {"A": "1", "B": "2", "C": "3", "D": "4"},
+                "correct_answer": "A",
+            }],
+        })
+
+        bank_name, imported = app.parse_question_bank(html_source, answer_key_source)
+        expected_html = (
+            '<p>Compute <code class="math-floor-division">⌊total ÷ count⌋</code> now.</p>'
+        )
+        self.assertEqual(expected_html, imported[0]["question_html"])
+        self.assertEqual("Compute ⌊total ÷ count⌋ now.", imported[0]["question_text"])
+        saved = app.save_question_bank(bank_name, imported, "math.html", "math.json")
+
+        with app.db() as connection:
+            stored = connection.execute(
+                "SELECT * FROM questions WHERE bank_id = ? AND source_key = 'math-q'",
+                (saved["bank_id"],),
+            ).fetchone()
+            self.assertEqual(expected_html, stored["question_html"])
+            self.assertEqual("Compute ⌊total ÷ count⌋ now.", stored["question_text"])
+            public_questions, assets = app.public_release_material(connection, [stored])
+            test_id = connection.execute(
+                "INSERT INTO tests (test_name, composition, bank_id, created_at) VALUES (?, '[]', ?, ?)",
+                ("Imported math release", saved["bank_id"], app.now()),
+            ).lastrowid
+            config = app.app.state.coordinator_config
+            release = prepare_release(
+                connection,
+                test_id=test_id,
+                selected_questions=public_questions,
+                assets=assets,
+                pack_dir=app.assessment_packs_dir(),
+                signing_private_key_b64=config.signing_private_key_b64,
+                pack_master_key=config.pack_master_key,
+                now_iso=app.now(),
+            )
+
+        content_key = unwrap_release_content_key(
+            config.pack_master_key, release.release_id, release.wrapped_content_key_b64
+        )
+        encrypted = (app.assessment_packs_dir() / release.content_pack_filename).read_bytes()
+        with zipfile.ZipFile(io.BytesIO(decrypt_pack(
+            content_key, release.release_id, encrypted
+        ))) as archive:
+            packed = json.loads(archive.read("questions.json"))[0]
+        self.assertEqual("Compute ⌊total ÷ count⌋ now.", packed["question_text"])
+        self.assertEqual(expected_html, packed["question_html"])
+        self.assertNotIn("//", packed["question_text"])
+        self.assertNotIn("//", packed["question_html"])
 
     def test_create_and_legacy_launch_prepare_once_without_resampling_history(self):
         created = self.client.post("/api/admin/tests", json=self.create_payload())

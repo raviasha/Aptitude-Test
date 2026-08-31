@@ -44,7 +44,11 @@ from ksat.coordinator.releases import load_release_manifest, prepare_release
 from ksat.coordinator.routes import CoordinatorConfig, router as coordinator_router
 from ksat.coordinator.schema import migrate_distributed_schema
 from ksat.crypto import load_or_create_coordinator_keyring
-from ksat.protocol import PublicQuestion, ReleaseSummary
+from ksat.protocol import (
+    PublicQuestion,
+    ReleaseSummary,
+    canonicalize_math_floor_division_markup,
+)
 from ksat.sqlite import connect_sqlite
 
 SOURCE_ROOT = Path(__file__).resolve().parent
@@ -823,6 +827,7 @@ class PlainText(HTMLParser):
 
 
 def sanitize_visual_html(fragment: str) -> str:
+    fragment = canonicalize_math_floor_division_markup(fragment)
     sanitizer = SafeVisualHTML()
     sanitizer.feed(fragment)
     sanitizer.close()
@@ -830,6 +835,7 @@ def sanitize_visual_html(fragment: str) -> str:
 
 
 def question_summary(fragment: str) -> str:
+    fragment = canonicalize_math_floor_division_markup(fragment)
     parser = PlainText()
     parser.feed(fragment)
     parser.close()

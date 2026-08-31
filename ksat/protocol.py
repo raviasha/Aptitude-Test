@@ -2,6 +2,7 @@
 
 import base64
 import hashlib
+import html
 import json
 import math
 import re
@@ -14,6 +15,73 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 PROTOCOL_VERSION = 1
 PACK_FORMAT_VERSION = 1
 SHUFFLE_ALGORITHM = "sha256-rank-v1"
+MATH_FLOOR_DIVISION_CLASS = "math-floor-division"
+MATH_FLOOR_DIVISION_OPEN = '<code class="math-floor-division">'
+MATH_FLOOR_DIVISION_CLOSE = "</code>"
+MATH_FLOOR_DIVISION_ERROR = (
+    "Question HTML floor division must use exact explicit math markup "
+    '<code class="math-floor-division">LEFT // RIGHT</code> with simple operands.'
+)
+
+_MATH_OPERAND = r"(?:[A-Za-z_][A-Za-z0-9_]*|(?:0|[1-9][0-9]*)(?:\.[0-9]+)?)"
+_RAW_MATH_FLOOR_DIVISION = re.compile(rf"({_MATH_OPERAND}) // ({_MATH_OPERAND})\Z")
+_CANONICAL_MATH_FLOOR_DIVISION = re.compile(
+    rf"⌊({_MATH_OPERAND}) ÷ ({_MATH_OPERAND})⌋\Z"
+)
+_CODE_TAG = re.compile(r"<\s*(?P<closing>/?)\s*code\b[^>]*>", re.IGNORECASE)
+
+
+def canonicalize_math_floor_division_expression(value: str) -> str:
+    """Return the sole canonical rendering of a supported floor-division expression."""
+    match = _RAW_MATH_FLOOR_DIVISION.fullmatch(value)
+    if match is None:
+        match = _CANONICAL_MATH_FLOOR_DIVISION.fullmatch(value)
+    if match is None or any(len(operand) > 64 for operand in match.groups()):
+        raise ValueError(MATH_FLOOR_DIVISION_ERROR)
+    left, right = match.groups()
+    return f"⌊{left} ÷ {right}⌋"
+
+
+def canonicalize_math_floor_division_markup(fragment: str) -> str:
+    """Validate exact explicit-math source and replace expressions with canonical Unicode."""
+    if MATH_FLOOR_DIVISION_CLASS not in html.unescape(fragment):
+        return fragment
+
+    stack: list[tuple[str, int, int]] = []
+    replacements: list[tuple[int, int, str]] = []
+    found_math = False
+    for token in _CODE_TAG.finditer(fragment):
+        raw = token.group(0)
+        if token.group("closing"):
+            if raw != MATH_FLOOR_DIVISION_CLOSE or not stack:
+                raise ValueError(MATH_FLOOR_DIVISION_ERROR)
+            kind, start, body_start = stack.pop()
+            if kind == "math":
+                canonical = canonicalize_math_floor_division_expression(
+                    fragment[body_start:token.start()]
+                )
+                replacements.append((
+                    start,
+                    token.end(),
+                    f"{MATH_FLOOR_DIVISION_OPEN}{canonical}{MATH_FLOOR_DIVISION_CLOSE}",
+                ))
+            continue
+
+        if stack:
+            raise ValueError(MATH_FLOOR_DIVISION_ERROR)
+        if raw == MATH_FLOOR_DIVISION_OPEN:
+            found_math = True
+            stack.append(("math", token.start(), token.end()))
+            continue
+        if MATH_FLOOR_DIVISION_CLASS in html.unescape(raw) or raw.rstrip().endswith("/>"):
+            raise ValueError(MATH_FLOOR_DIVISION_ERROR)
+        stack.append(("code", token.start(), token.end()))
+
+    if stack or not found_math:
+        raise ValueError(MATH_FLOOR_DIVISION_ERROR)
+    for start, end, replacement in reversed(replacements):
+        fragment = fragment[:start] + replacement + fragment[end:]
+    return fragment
 
 
 class ProtocolModel(BaseModel):

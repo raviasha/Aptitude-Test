@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Codex-compatible textbook V2 verification result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["job_id", "job_fingerprint", "verdicts", "differences", "reviewer"],
+  "properties": {
+    "job_id": {"type": "string"},
+    "job_fingerprint": {"type": "string"},
+    "verdicts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["question", "options.A", "options.B", "options.C", "options.D", "options.E", "answer_mapping", "solution", "readability", "clipping"],
+      "properties": {
+        "question": {"type": "string", "enum": ["pass", "fail"]},
+        "options.A": {"type": "string", "enum": ["pass", "fail"]},
+        "options.B": {"type": "string", "enum": ["pass", "fail"]},
+        "options.C": {"type": "string", "enum": ["pass", "fail"]},
+        "options.D": {"type": "string", "enum": ["pass", "fail"]},
+        "options.E": {"type": ["string", "null"], "enum": ["pass", "fail", null]},
+        "answer_mapping": {"type": "string", "enum": ["pass", "fail"]},
+        "solution": {"type": "string", "enum": ["pass", "fail"]},
+        "readability": {"type": "string", "enum": ["pass", "fail"]},
+        "clipping": {"type": "string", "enum": ["pass", "fail"]}
+      }
+    },
+    "differences": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["question", "options.A", "options.B", "options.C", "options.D", "options.E", "answer_mapping", "solution", "readability", "clipping"],
+      "properties": {
+        "question": {"type": ["string", "null"]},
+        "options.A": {"type": ["string", "null"]},
+        "options.B": {"type": ["string", "null"]},
+        "options.C": {"type": ["string", "null"]},
+        "options.D": {"type": ["string", "null"]},
+        "options.E": {"type": ["string", "null"]},
+        "answer_mapping": {"type": ["string", "null"]},
+        "solution": {"type": ["string", "null"]},
+        "readability": {"type": ["string", "null"]},
+        "clipping": {"type": ["string", "null"]}
+      }
+    },
+    "reviewer": {"type": "string"}
+  }
+}

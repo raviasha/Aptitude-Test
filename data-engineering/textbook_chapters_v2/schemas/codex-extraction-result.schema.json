@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Codex-compatible textbook V2 extraction result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "job_id",
+    "job_fingerprint",
+    "question_text",
+    "options",
+    "correct_answer",
+    "answer_key",
+    "solution_steps",
+    "representation",
+    "differences_from_legacy",
+    "reviewer"
+  ],
+  "properties": {
+    "job_id": {"type": "string"},
+    "job_fingerprint": {"type": "string"},
+    "question_text": {"type": "string"},
+    "options": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["A", "B", "C", "D", "E"],
+      "properties": {
+        "A": {"type": "string"},
+        "B": {"type": "string"},
+        "C": {"type": "string"},
+        "D": {"type": "string"},
+        "E": {"type": ["string", "null"]}
+      }
+    },
+    "correct_answer": {"type": "string", "enum": ["A", "B", "C", "D", "E"]},
+    "answer_key": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["correct_answer", "crop_sha256", "job_fingerprint"],
+      "properties": {
+        "correct_answer": {"type": "string", "enum": ["A", "B", "C", "D", "E"]},
+        "crop_sha256": {"type": "string"},
+        "job_fingerprint": {"type": "string"}
+      }
+    },
+    "solution_steps": {"type": "array", "items": {"type": "string"}},
+    "representation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["question", "options", "solution"],
+      "properties": {
+        "question": {"type": "string", "enum": ["text"]},
+        "options": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["A", "B", "C", "D", "E"],
+          "properties": {
+            "A": {"type": "string", "enum": ["text"]},
+            "B": {"type": "string", "enum": ["text"]},
+            "C": {"type": "string", "enum": ["text"]},
+            "D": {"type": "string", "enum": ["text"]},
+            "E": {"type": ["string", "null"], "enum": ["text", null]}
+          }
+        },
+        "solution": {"type": "string", "enum": ["text"]}
+      }
+    },
+    "differences_from_legacy": {"type": "array", "items": {"type": "string"}},
+    "reviewer": {"type": "string"}
+  }
+}

@@ -39,6 +39,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.middleware.sessions import SessionMiddleware
 import question_media
+from ksat.coordinator.schema import migrate_distributed_schema
+from ksat.sqlite import connect_sqlite
 
 SOURCE_ROOT = Path(__file__).resolve().parent
 BUNDLE_DIR = Path(getattr(sys, "_MEIPASS", SOURCE_ROOT))
@@ -241,9 +243,7 @@ def now() -> str:
 
 @contextmanager
 def db():
-    connection = sqlite3.connect(DB_PATH)
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA foreign_keys = ON")
+    connection = connect_sqlite(DB_PATH)
     try:
         yield connection
         connection.commit()
@@ -977,6 +977,7 @@ def ensure_schema() -> None:
         connection.execute("CREATE INDEX IF NOT EXISTS idx_questions_taxonomy ON questions(bank_id, category, chapter, active)")
         connection.execute("CREATE INDEX IF NOT EXISTS idx_tests_mode ON tests(mode, active, launched)")
         connection.execute("CREATE INDEX IF NOT EXISTS idx_exam_violations_attempt ON exam_violations(attempt_id)")
+        migrate_distributed_schema(connection)
 
 
 def seed_data() -> None:

@@ -2,8 +2,10 @@ import base64
 import json
 import os
 import tempfile
+import threading
 import unittest
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -26,16 +28,19 @@ class ClientAuthApiTests(unittest.TestCase):
         self.original_coordinator_config = app.app.state.coordinator_config
         self.original_enrollment_code = os.environ.get("KSAT_DEVICE_ENROLLMENT_CODE")
         self.original_session_secret = os.environ.get("SESSION_SECRET")
+        self.original_client_session_secret = os.environ.get("KSAT_SESSION_SECRET")
         app.DATA_DIR = Path(self.temp_dir.name)
         app.DB_PATH = app.DATA_DIR / "aptitude.db"
         app.BACKUP_DIR = app.DATA_DIR / "backups"
         app.QUESTION_BANKS_DIR = app.DATA_DIR / "Question Banks"
         os.environ["KSAT_DEVICE_ENROLLMENT_CODE"] = "lab-enroll-test"
         os.environ["SESSION_SECRET"] = "client-auth-test-secret"
+        os.environ.pop("KSAT_SESSION_SECRET", None)
         app.ensure_schema()
         app.register_student("S100", "Student One", "AIML", "A", "student123")
-        self.session_secret = "client-auth-test-secret"
+        self.browser_session_secret = "client-auth-test-secret"
         app.configure_coordinator_state(app.app)
+        self.session_secret = app.app.state.coordinator_config.session_secret
         self.private_key, self.public_key = generate_ed25519_keypair()
         self.client = TestClient(app.app)
 
@@ -49,6 +54,10 @@ class ClientAuthApiTests(unittest.TestCase):
             os.environ.pop("SESSION_SECRET", None)
         else:
             os.environ["SESSION_SECRET"] = self.original_session_secret
+        if self.original_client_session_secret is None:
+            os.environ.pop("KSAT_SESSION_SECRET", None)
+        else:
+            os.environ["KSAT_SESSION_SECRET"] = self.original_client_session_secret
         app.DATA_DIR = self.original_data_dir
         app.DB_PATH = self.original_db_path
         app.BACKUP_DIR = self.original_backup_dir
@@ -65,21 +74,45 @@ class ClientAuthApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         return response.json()
 
-    def device_post(self, path, device_id, *, payload, nonce=None, timestamp=None, private_key=None):
+    def device_post(
+        self,
+        path,
+        device_id,
+        *,
+        payload,
+        nonce=None,
+        timestamp=None,
+        private_key=None,
+        signed_path=None,
+        signed_payload=None,
+    ):
         body = _json_bytes(payload)
+        signed_body = body if signed_payload is None else _json_bytes(signed_payload)
         timestamp = timestamp or datetime.now(timezone.utc).isoformat(timespec="seconds")
         nonce = nonce or str(uuid.uuid4())
+        headers = self.device_headers(
+            "POST",
+            signed_path or path,
+            device_id,
+            signed_body,
+            timestamp,
+            nonce,
+            private_key=private_key,
+        )
+        return self.client.post(path, content=body, headers=headers)
+
+    def device_headers(self, method, path, device_id, body, timestamp, nonce, *, private_key=None):
         signing_key = Ed25519PrivateKey.from_private_bytes(
             base64.b64decode(private_key or self.private_key)
         )
-        signature = signing_key.sign(device_request_bytes("POST", path, body, timestamp, nonce))
-        return self.client.post(path, content=body, headers={
+        signature = signing_key.sign(device_request_bytes(method, path, body, timestamp, nonce))
+        return {
             "Content-Type": "application/json",
             "X-KSAT-Device": device_id,
             "X-KSAT-Timestamp": timestamp,
             "X-KSAT-Nonce": nonce,
             "X-KSAT-Signature": base64.b64encode(signature).decode("ascii"),
-        })
+        }
 
     def test_enrollment_requires_the_configured_code(self):
         response = self.client.post("/api/client/v1/devices/enroll", json={
@@ -89,6 +122,46 @@ class ClientAuthApiTests(unittest.TestCase):
         })
         self.assertEqual(response.status_code, 403)
         self.assertEqual(response.json()["detail"]["code"], "invalid_enrollment_code")
+
+    def test_unicode_enrollment_code_returns_structured_rejection(self):
+        client = TestClient(app.app, raise_server_exceptions=False)
+        try:
+            response = client.post("/api/client/v1/devices/enroll", json={
+                "label": "Lab-01",
+                "public_key_b64": self.public_key,
+                "enrollment_code": "wrong-🔒",
+            })
+        finally:
+            client.close()
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.json()["detail"]["code"], "invalid_enrollment_code")
+
+    def test_generated_client_session_secret_is_stable_and_separate_from_browser_secret(self):
+        first = app.app.state.coordinator_config.session_secret
+        app.configure_coordinator_state(app.app)
+        second = app.app.state.coordinator_config.session_secret
+
+        self.assertNotEqual(first, self.browser_session_secret)
+        self.assertEqual(first, second)
+        self.assertEqual((app.DATA_DIR / "secrets" / "client-session.key").stat().st_size, 32)
+
+    def test_client_session_secret_honors_explicit_environment_override(self):
+        os.environ["KSAT_SESSION_SECRET"] = "explicit-client-session-secret"
+        app.configure_coordinator_state(app.app)
+
+        self.assertEqual(
+            app.app.state.coordinator_config.session_secret,
+            "explicit-client-session-secret",
+        )
+
+    def test_corrupt_persisted_client_session_secret_refuses_startup(self):
+        os.environ.pop("KSAT_SESSION_SECRET", None)
+        secret_path = app.DATA_DIR / "secrets" / "client-session.key"
+        secret_path.write_bytes(b"corrupt")
+
+        with self.assertRaises(ValueError):
+            app.configure_coordinator_state(app.app)
 
     def test_student_session_is_bound_to_active_device(self):
         enrolled = self.enroll("Lab-01")
@@ -194,6 +267,57 @@ class ClientAuthApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 403)
         self.assertEqual(response.json()["detail"]["code"], "invalid_device_key")
 
+    def test_device_request_rejects_future_timestamp_outside_five_minutes(self):
+        enrolled = self.enroll("Lab-01")
+        future = (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat(
+            timespec="seconds"
+        )
+        response = self.device_post(
+            "/api/client/v1/session",
+            enrolled["device_id"],
+            timestamp=future,
+            payload={
+                "student_id": "S100",
+                "password": "student123",
+                "device_id": enrolled["device_id"],
+            },
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.json()["detail"]["code"], "invalid_device_key")
+
+    def test_device_request_signature_binds_exact_body(self):
+        enrolled = self.enroll("Lab-01")
+        device_id = enrolled["device_id"]
+        signed_payload = {
+            "student_id": "S100",
+            "password": "student123",
+            "device_id": device_id,
+        }
+        response = self.device_post(
+            "/api/client/v1/session",
+            device_id,
+            signed_payload=signed_payload,
+            payload={**signed_payload, "student_id": "S101"},
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.json()["detail"]["code"], "invalid_device_key")
+
+    def test_device_request_signature_binds_exact_path(self):
+        enrolled = self.enroll("Lab-01")
+        device_id = enrolled["device_id"]
+        response = self.device_post(
+            "/api/client/v1/session",
+            device_id,
+            signed_path="/api/client/v1/not-session",
+            payload={
+                "student_id": "S100",
+                "password": "student123",
+                "device_id": device_id,
+            },
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.json()["detail"]["code"], "invalid_device_key")
+
     def test_device_request_nonce_is_rejected_on_replay(self):
         enrolled = self.enroll("Lab-01")
         nonce = str(uuid.uuid4())
@@ -211,6 +335,70 @@ class ClientAuthApiTests(unittest.TestCase):
         self.assertEqual(first.status_code, 200, first.text)
         self.assertEqual(replay.status_code, 403)
         self.assertEqual(replay.json()["detail"]["code"], "invalid_device_key")
+
+    def test_concurrent_device_requests_accept_same_nonce_exactly_once(self):
+        enrolled = self.enroll("Lab-01")
+        device_id = enrolled["device_id"]
+        nonce = str(uuid.uuid4())
+        timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        payload = {
+            "student_id": "S100",
+            "password": "student123",
+            "device_id": device_id,
+        }
+        barrier = threading.Barrier(2)
+
+        def send():
+            barrier.wait(timeout=5)
+            return self.device_post(
+                "/api/client/v1/session",
+                device_id,
+                nonce=nonce,
+                timestamp=timestamp,
+                payload=payload,
+            )
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = (executor.submit(send), executor.submit(send))
+            responses = [future.result(timeout=10) for future in futures]
+
+        self.assertEqual(sorted(response.status_code for response in responses), [200, 403])
+        rejected = next(response for response in responses if response.status_code == 403)
+        self.assertEqual(rejected.json()["detail"]["code"], "invalid_device_key")
+
+    def test_device_request_nonce_is_pruned_after_replay_window(self):
+        from ksat.coordinator.auth import AuthenticationProblem, verify_device_request
+
+        enrolled = self.enroll("Lab-01")
+        device_id = enrolled["device_id"]
+        nonce = str(uuid.uuid4())
+        body = _json_bytes({"probe": "replay-window"})
+        first_time = datetime(2026, 8, 31, 9, 0, tzinfo=timezone.utc)
+        second_time = first_time + timedelta(minutes=5, seconds=1)
+
+        accepted = 0
+        with app.db() as connection:
+            for current_time in (first_time, second_time):
+                timestamp = current_time.isoformat(timespec="seconds")
+                headers = self.device_headers(
+                    "POST", "/api/client/v1/probe", device_id, body, timestamp, nonce
+                )
+                try:
+                    verify_device_request(
+                        connection,
+                        device_id=device_id,
+                        method="POST",
+                        path="/api/client/v1/probe",
+                        body=body,
+                        timestamp=timestamp,
+                        nonce=nonce,
+                        signature_b64=headers["X-KSAT-Signature"],
+                        now_utc=current_time,
+                    )
+                    accepted += 1
+                except AuthenticationProblem:
+                    pass
+        self.assertEqual(accepted, 2)
 
     def test_student_token_requires_exact_nonblank_claims(self):
         from ksat.coordinator.auth import AuthenticationProblem, TOKEN_SALT, verify_student_access_token

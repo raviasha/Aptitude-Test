@@ -39,6 +39,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.middleware.sessions import SessionMiddleware
 import question_media
+from ksat.coordinator.auth import load_or_create_client_session_secret
 from ksat.coordinator.routes import CoordinatorConfig, router as coordinator_router
 from ksat.coordinator.schema import migrate_distributed_schema
 from ksat.crypto import load_or_create_coordinator_keyring
@@ -152,11 +153,17 @@ LEGACY_QUESTION_REPAIRS = {
 }
 
 def configure_coordinator_state(application: FastAPI) -> None:
-    keyring = load_or_create_coordinator_keyring(DATA_DIR / "secrets")
+    secrets_dir = DATA_DIR / "secrets"
+    keyring = load_or_create_coordinator_keyring(secrets_dir)
+    client_session_secret = os.getenv("KSAT_SESSION_SECRET")
+    if client_session_secret is None:
+        client_session_secret = load_or_create_client_session_secret(secrets_dir)
+    elif not client_session_secret.strip():
+        raise ValueError("KSAT_SESSION_SECRET must not be blank.")
     application.state.coordinator_config = CoordinatorConfig(
         db_path=DB_PATH,
         data_dir=DATA_DIR,
-        session_secret=os.getenv("SESSION_SECRET", "replace-this-before-production"),
+        session_secret=client_session_secret,
         device_enrollment_code=os.getenv("KSAT_DEVICE_ENROLLMENT_CODE") or keyring.enrollment_code,
         signing_private_key_b64=keyring.signing_private_key_b64,
         signing_public_key_b64=keyring.signing_public_key_b64,

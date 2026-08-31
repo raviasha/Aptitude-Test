@@ -2,11 +2,15 @@
 
 import base64
 import binascii
+import hashlib
+import os
 import secrets
 import sqlite3
+import tempfile
 import threading
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
@@ -33,7 +37,7 @@ class AuthenticationProblem(ValueError):
 
 
 _NONCE_LOCK = threading.Lock()
-_SEEN_NONCES: set[tuple[str, str]] = set()
+_SEEN_NONCES: dict[tuple[str, str], datetime] = {}
 
 
 def _problem(code: str, message: str, *, status_code: int) -> AuthenticationProblem:
@@ -53,6 +57,34 @@ def _public_key(public_key_b64: str) -> Ed25519PublicKey:
         raise _problem("invalid_device_key", "The device key is invalid.", status_code=400) from error
 
 
+def load_or_create_client_session_secret(secrets_dir: Path) -> str:
+    secrets_dir.mkdir(parents=True, exist_ok=True)
+    secret_path = secrets_dir / "client-session.key"
+    if secret_path.exists():
+        try:
+            raw_secret = secret_path.read_bytes()
+        except OSError as error:
+            raise ValueError("Coordinator client session secret is invalid.") from error
+        if len(raw_secret) != 32:
+            raise ValueError("Coordinator client session secret is invalid.")
+    else:
+        raw_secret = os.urandom(32)
+        file_descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{secret_path.name}.", dir=secrets_dir
+        )
+        temporary_path = Path(temporary_name)
+        try:
+            with os.fdopen(file_descriptor, "wb") as temporary_file:
+                temporary_file.write(raw_secret)
+                temporary_file.flush()
+                os.fsync(temporary_file.fileno())
+            os.replace(temporary_path, secret_path)
+        finally:
+            if temporary_path.exists():
+                temporary_path.unlink()
+    return base64.urlsafe_b64encode(raw_secret).decode("ascii")
+
+
 def register_device(
     connection: sqlite3.Connection,
     request: DeviceEnrollmentRequest,
@@ -63,7 +95,9 @@ def register_device(
 ) -> DeviceEnrollmentReceipt:
     supplied_code = request.enrollment_code if isinstance(request.enrollment_code, str) else ""
     expected_code = expected_enrollment_code if isinstance(expected_enrollment_code, str) else ""
-    if not secrets.compare_digest(supplied_code, expected_code):
+    supplied_digest = hashlib.sha256(supplied_code.encode("utf-8")).digest()
+    expected_digest = hashlib.sha256(expected_code.encode("utf-8")).digest()
+    if not secrets.compare_digest(supplied_digest, expected_digest):
         raise _problem("invalid_enrollment_code", "The enrollment code is invalid.", status_code=403)
     label = request.label.strip()
     if not label:
@@ -148,7 +182,13 @@ def verify_device_request(
         raise _problem("invalid_device_key", "The device request proof is invalid.", status_code=403) from error
     replay_key = (device_id, nonce)
     with _NONCE_LOCK:
+        cutoff = current_time - timedelta(seconds=DEVICE_TIMESTAMP_TOLERANCE_SECONDS)
+        expired_keys = [
+            key for key, accepted_at in _SEEN_NONCES.items() if accepted_at < cutoff
+        ]
+        for key in expired_keys:
+            del _SEEN_NONCES[key]
         if replay_key in _SEEN_NONCES:
             raise _problem("invalid_device_key", "The device request proof is invalid.", status_code=403)
-        _SEEN_NONCES.add(replay_key)
+        _SEEN_NONCES[replay_key] = current_time
     return device_id

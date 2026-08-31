@@ -18,6 +18,31 @@ class ProtocolModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class DeviceEnrollmentRequest(BaseModel):
+    label: str
+    public_key_b64: str
+    enrollment_code: str
+
+
+class DeviceEnrollmentReceipt(BaseModel):
+    device_id: str
+    coordinator_public_key_b64: str
+
+
+class ClientLoginRequest(BaseModel):
+    student_id: str
+    password: str
+    device_id: str
+
+
+class ClientSession(BaseModel):
+    access_token: str
+    student_id: str
+    student_name: str
+    device_id: str
+    expires_in_seconds: int = 43_200
+
+
 def canonical_json(value: BaseModel | dict[str, Any]) -> bytes:
     payload = value.model_dump(mode="json") if hasattr(value, "model_dump") else (
         value.dict() if isinstance(value, BaseModel) else value

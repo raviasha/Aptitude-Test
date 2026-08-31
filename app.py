@@ -39,7 +39,9 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.middleware.sessions import SessionMiddleware
 import question_media
+from ksat.coordinator.routes import CoordinatorConfig, router as coordinator_router
 from ksat.coordinator.schema import migrate_distributed_schema
+from ksat.crypto import load_or_create_coordinator_keyring
 from ksat.sqlite import connect_sqlite
 
 SOURCE_ROOT = Path(__file__).resolve().parent
@@ -149,7 +151,22 @@ LEGACY_QUESTION_REPAIRS = {
     },
 }
 
+def configure_coordinator_state(application: FastAPI) -> None:
+    keyring = load_or_create_coordinator_keyring(DATA_DIR / "secrets")
+    application.state.coordinator_config = CoordinatorConfig(
+        db_path=DB_PATH,
+        data_dir=DATA_DIR,
+        session_secret=os.getenv("SESSION_SECRET", "replace-this-before-production"),
+        device_enrollment_code=os.getenv("KSAT_DEVICE_ENROLLMENT_CODE") or keyring.enrollment_code,
+        signing_private_key_b64=keyring.signing_private_key_b64,
+        signing_public_key_b64=keyring.signing_public_key_b64,
+        pack_master_key=keyring.pack_master_key,
+    )
+
+
 app = FastAPI(title="KSAT")
+configure_coordinator_state(app)
+app.include_router(coordinator_router)
 app.add_middleware(SessionMiddleware, secret_key=os.getenv("SESSION_SECRET", "replace-this-before-production"), https_only=False, same_site="lax")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 

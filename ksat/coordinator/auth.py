@@ -58,12 +58,17 @@ def _public_key(public_key_b64: str) -> Ed25519PublicKey:
 
 
 def _load_client_session_secret(secret_path: Path) -> bytes | None:
-    try:
-        raw_secret = secret_path.read_bytes()
-    except FileNotFoundError:
-        return None
-    except OSError as error:
-        raise ValueError("Coordinator client session secret is invalid.") from error
+    for attempt in range(2):
+        try:
+            raw_secret = secret_path.read_bytes()
+            break
+        except FileNotFoundError as error:
+            if not os.path.lexists(secret_path):
+                return None
+            if attempt == 1:
+                raise ValueError("Coordinator client session secret is invalid.") from error
+        except OSError as error:
+            raise ValueError("Coordinator client session secret is invalid.") from error
     if len(raw_secret) != 32:
         raise ValueError("Coordinator client session secret is invalid.")
     return raw_secret

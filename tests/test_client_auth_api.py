@@ -164,6 +164,74 @@ class ClientAuthApiTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             app.configure_coordinator_state(app.app)
 
+    def test_dangling_client_session_secret_entry_fails_closed_without_retry(self):
+        from ksat.coordinator.auth import load_or_create_client_session_secret
+
+        secrets_dir = app.DATA_DIR / "dangling-secrets"
+        secrets_dir.mkdir()
+        secret_path = secrets_dir / "client-session.key"
+        original_read_bytes = Path.read_bytes
+
+        def dangling_read(path):
+            if path == secret_path:
+                raise FileNotFoundError("dangling symlink target")
+            return original_read_bytes(path)
+
+        caught = None
+        with (
+            patch.object(Path, "read_bytes", autospec=True, side_effect=dangling_read),
+            patch("ksat.coordinator.auth.os.path.lexists", return_value=True),
+            patch(
+                "ksat.coordinator.auth.os.urandom",
+                side_effect=AssertionError("creation attempted for existing directory entry"),
+            ),
+        ):
+            try:
+                load_or_create_client_session_secret(secrets_dir)
+            except Exception as error:  # The assertions distinguish safe failure from retry.
+                caught = error
+
+        self.assertIsInstance(caught, ValueError)
+        self.assertEqual(str(caught), "Coordinator client session secret is invalid.")
+
+    def test_client_session_secret_reloads_winner_that_appears_during_initial_read(self):
+        from ksat.coordinator.auth import load_or_create_client_session_secret
+
+        secrets_dir = app.DATA_DIR / "appearing-winner-secrets"
+        secrets_dir.mkdir()
+        secret_path = secrets_dir / "client-session.key"
+        winner = b"w" * 32
+        read_count = 0
+        original_read_bytes = Path.read_bytes
+
+        def appearing_winner(path):
+            nonlocal read_count
+            if path == secret_path:
+                read_count += 1
+                if read_count == 1:
+                    raise FileNotFoundError("winner not published yet")
+                return winner
+            return original_read_bytes(path)
+
+        with (
+            patch.object(Path, "read_bytes", autospec=True, side_effect=appearing_winner),
+            patch("ksat.coordinator.auth.os.path.lexists", return_value=True),
+            patch(
+                "ksat.coordinator.auth.os.urandom",
+                side_effect=AssertionError("creation attempted instead of loading winner"),
+            ),
+        ):
+            loaded = None
+            caught = None
+            try:
+                loaded = load_or_create_client_session_secret(secrets_dir)
+            except Exception as error:  # The assertion below reports bounded failure.
+                caught = error
+
+        self.assertIsNone(caught)
+        self.assertEqual(loaded, base64.urlsafe_b64encode(winner).decode("ascii"))
+        self.assertEqual(read_count, 2)
+
     def test_concurrent_client_session_secret_creation_publishes_one_winner(self):
         from ksat.coordinator.auth import load_or_create_client_session_secret
 

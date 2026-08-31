@@ -117,21 +117,31 @@ def _url_field_name(value: str) -> bool:
     )
 
 
-def _validate_public_string(value: str, *, url_field: bool = False, html_fragment: bool = False) -> None:
+def _validate_public_string(value: str, *, url_field: bool = False) -> None:
     if url_field and not _SAFE_ASSET_NAME.fullmatch(value):
         raise ValueError("Public URL fields must reference canonical embedded assets.")
     compact = _url_compact(value)
-    if html_fragment:
-        compact = compact.replace("http://www.w3.org/2000/svg", "")
-    if re.search(r"(?:https?|ftp|javascript|vbscript):", compact) or re.search(
-        r"(?<![a-z0-9])data:(?:[a-z0-9.+-]+/[a-z0-9.+-]+)?(?:;[a-z0-9=.+-]+)*,",
-        compact,
+    if (
+        re.search(r"(?:https?|ftp|javascript|vbscript):", compact)
+        or re.search(r"[a-z][a-z0-9+.-]{1,63}:(?://|\\\\)", compact)
+        or re.search(
+            r"(?:mailto|blob|filesystem|about|chrome|resource|view-source):", compact
+        )
+        or re.search(r"file:/", compact)
+        or re.search(r"tel:\+?[0-9]", compact)
+        or re.search(
+            r"(?<![a-z0-9])data:(?:[a-z0-9.+-]+/[a-z0-9.+-]+)?(?:;[a-z0-9=.+-]+)*,",
+            compact,
+        )
     ):
         raise ValueError("Public assessment content contains an active or external URL.")
     route_text = compact.replace("\\", "/")
     if re.search(r"(?:^|/)api/", route_text) or "question-assets" in route_text:
         raise ValueError("Public assessment content contains a coordinator URL.")
-    if url_field and route_text.startswith("//"):
+    if re.search(
+        r"//(?:(?:[a-z0-9-]+\.)+[a-z0-9-]{2,}|localhost)(?::[0-9]+)?(?:/|$)",
+        route_text,
+    ) or re.search(r"//[a-z][a-z0-9-]{1,62}(?::[0-9]+)?/", route_text):
         raise ValueError("Public assessment content contains an external URL.")
 
 
@@ -149,11 +159,10 @@ def _validate_public_payload(value: Any, *, field_name: str = "") -> None:
             _validate_public_payload(item, field_name=field_name)
         return
     if isinstance(value, str):
-        _validate_public_string(
-            value,
-            url_field=_url_field_name(field_name),
-            html_fragment=field_name == "question_html",
-        )
+        if field_name == "question_html":
+            _validate_sanitized_question_html(value)
+        else:
+            _validate_public_string(value, url_field=_url_field_name(field_name))
 
 
 class _PublicHTMLSanitizer(HTMLParser):
@@ -259,6 +268,44 @@ def _sanitize_question_html(fragment: str) -> str:
     sanitizer.feed(fragment)
     sanitizer.close()
     return sanitizer.result()
+
+
+class _SanitizedHTMLURLCollector(HTMLParser):
+    """Collect URL-relevant sanitized HTML while omitting only canonical SVG xmlns."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=False)
+        self.parts: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        for name, value in attrs:
+            if value is None:
+                continue
+            if (
+                tag.lower() == "svg"
+                and name.lower() == "xmlns"
+                and value == "http://www.w3.org/2000/svg"
+            ):
+                continue
+            self.parts.append(value)
+
+    handle_startendtag = handle_starttag
+
+    def handle_data(self, data: str) -> None:
+        self.parts.append(data)
+
+    def handle_entityref(self, name: str) -> None:
+        self.parts.append(f"&{name};")
+
+    def handle_charref(self, name: str) -> None:
+        self.parts.append(f"&#{name};")
+
+
+def _validate_sanitized_question_html(fragment: str) -> None:
+    collector = _SanitizedHTMLURLCollector()
+    collector.feed(fragment)
+    collector.close()
+    _validate_public_string("".join(collector.parts))
 
 
 def _public_question_payloads(

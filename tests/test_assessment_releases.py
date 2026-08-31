@@ -387,6 +387,20 @@ class AssessmentReleaseTests(unittest.TestCase):
             {"question_html": "<p>&#47;API&#47;question-assets/41/private.png</p>"},
             {"question_html": '<span title="java%73cript%3Aalert(1)">Safe-looking</span>'},
             {"source_key": "data%3Atext/html%2Cprivate"},
+            {"question_html": "<p>http://www.w3.org/2000/svg.evil.example/private</p>"},
+            {
+                "question_html": (
+                    '<span title="http://www.w3.org/2000/svg.evil.example/private">x</span>'
+                )
+            },
+            {"question_html": '<span xmlns="http://www.w3.org/2000/svg">not svg</span>'},
+            {"question_text": "Read f%69le%3A%2F%2Fserver/private"},
+            {"source_key": "mail&#116;o%3Ateacher%40example.com"},
+            {"question_text": "Open %2F%2Fevil.example/private"},
+            {"question_html": "<p>&#47;&#47;evil.example/private</p>"},
+            {"question_text": "Connect w s s %3A%2F%2Fevil.example/socket"},
+            {"question_text": "Open sMb%3A%2F%2Fserver/share"},
+            {"question_text": "Load bLoB%3Anull%2Fprivate-id"},
         )
         for offset, mutation in enumerate(adversarial, start=50):
             with self.subTest(mutation=mutation):
@@ -409,13 +423,13 @@ class AssessmentReleaseTests(unittest.TestCase):
                     )
                 self.assertEqual(before, set(self.pack_dir.glob("*.ksatpack")))
 
-        self.connection.execute("INSERT INTO tests (test_id, test_name) VALUES (60, 'Harmless slashes')")
+        self.connection.execute("INSERT INTO tests (test_id, test_name) VALUES (70, 'Harmless slashes')")
         harmless = self.public_questions()[1].model_copy(
             update={"question_text": "Data: values. Compute 6 // 2, then compare x/y."}
         )
         release = prepare_release(
             self.connection,
-            test_id=60,
+            test_id=70,
             selected_questions=[harmless],
             assets={},
             pack_dir=self.pack_dir,
@@ -427,7 +441,9 @@ class AssessmentReleaseTests(unittest.TestCase):
         content_key = unwrap_release_content_key(
             self.master_key, release.release_id, release.wrapped_content_key_b64
         )
-        with zipfile.ZipFile(io.BytesIO(decrypt_pack(content_key, release.release_id, encrypted))) as archive:
+        with zipfile.ZipFile(
+            io.BytesIO(decrypt_pack(content_key, release.release_id, encrypted))
+        ) as archive:
             packed = json.loads(archive.read("questions.json"))[0]
         self.assertEqual("Data: values. Compute 6 // 2, then compare x/y.", packed["question_text"])
 
@@ -528,6 +544,16 @@ class AssessmentReleaseTests(unittest.TestCase):
         self.assertEqual(second_name, packed_image["stimulus"]["url"])
         for fragment in ("<table>", '<th scope="col" colspan="2">', "<sub>1</sub>", "<svg", "viewBox=", "<path", "<sup>2</sup>"):
             self.assertIn(fragment, packed_table["question_html"])
+        self.assertEqual(
+            table_release,
+            load_release_manifest(
+                self.connection,
+                table_release.release_id,
+                pack_dir=self.pack_dir,
+                signing_public_key_b64=self.public_key_b64,
+                pack_master_key=self.master_key,
+            ),
+        )
 
     def test_structured_stimulus_rejects_nested_private_and_url_fields(self):
         for test_id, content in (
@@ -769,6 +795,68 @@ class AssessmentReleaseTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "asset|reference"):
             self.verified_load(release.release_id)
+
+    def test_verified_load_rejects_signed_pack_with_obfuscated_external_references(self):
+        release = self.prepare_release_with_two_questions()
+        content_key = unwrap_release_content_key(
+            self.master_key, release.release_id, release.wrapped_content_key_b64
+        )
+        encrypted = (self.pack_dir / release.content_pack_filename).read_bytes()
+        with zipfile.ZipFile(io.BytesIO(decrypt_pack(content_key, release.release_id, encrypted))) as archive:
+            original_questions = json.loads(archive.read("questions.json"))
+            manifest = json.loads(archive.read("manifest.json"))
+            asset_bytes = {name: archive.read(name) for name in manifest["asset_names"]}
+
+        attacks = (
+            ("question_html", "<p>http://www.w3.org/2000/svg.evil.example/private</p>"),
+            ("question_text", "Read f%69le%3A%2F%2Fserver/private"),
+            ("source_key", "mail&#116;o%3Ateacher%40example.com"),
+            ("question_text", "Open %2F%2Fevil.example/private"),
+        )
+        for field, malicious_value in attacks:
+            with self.subTest(field=field, malicious_value=malicious_value):
+                questions = json.loads(json.dumps(original_questions))
+                questions[0][field] = malicious_value
+                plaintext = io.BytesIO()
+                with zipfile.ZipFile(plaintext, "w") as archive:
+                    entries = (
+                        (
+                            "manifest.json",
+                            json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode(),
+                        ),
+                        (
+                            "questions.json",
+                            json.dumps(questions, sort_keys=True, separators=(",", ":")).encode(),
+                        ),
+                        *((name, asset_bytes[name]) for name in manifest["asset_names"]),
+                    )
+                    for name, value in entries:
+                        info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
+                        info.compress_type = zipfile.ZIP_STORED
+                        info.create_system = 3
+                        info.external_attr = 0o600 << 16
+                        archive.writestr(info, value)
+                malicious_encrypted = encrypt_pack(
+                    content_key, release.release_id, plaintext.getvalue()
+                )
+                content_hash = hashlib.sha256(malicious_encrypted).hexdigest()
+                signature = sign_json(
+                    self.private_key_b64,
+                    {
+                        "release_id": release.release_id,
+                        "content_hash": content_hash,
+                        "manifest": manifest,
+                    },
+                )
+                (self.pack_dir / release.content_pack_filename).write_bytes(malicious_encrypted)
+                self.connection.execute(
+                    """UPDATE assessment_releases
+                       SET content_hash = ?, content_signature_b64 = ?
+                       WHERE release_id = ?""",
+                    (content_hash, signature, release.release_id),
+                )
+                with self.assertRaises(ValueError):
+                    self.verified_load(release.release_id)
 
     def test_key_wrapping_rejects_wrong_lengths_and_malformed_envelopes_stably(self):
         for invalid_key in (b"", b"x" * 16, b"x" * 31, b"x" * 33):

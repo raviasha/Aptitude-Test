@@ -1611,10 +1611,27 @@ def public_release_material(
     return questions, assets
 
 
-def prepare_faculty_release(connection: sqlite3.Connection, test: sqlite3.Row) -> ReleaseSummary:
+def prepare_faculty_release(
+    connection: sqlite3.Connection,
+    test: sqlite3.Row,
+    *,
+    _created_artifact_paths: list[Path] | None = None,
+) -> ReleaseSummary:
     """Prepare a legacy or newly inserted faculty test exactly once."""
+    if not connection.in_transaction:
+        connection.execute("BEGIN IMMEDIATE")
+    test = connection.execute("SELECT * FROM tests WHERE test_id = ?", (test["test_id"],)).fetchone()
+    if test is None:
+        raise ValueError("Assessment test no longer exists.")
     if test["release_id"]:
-        return load_release_manifest(connection, test["release_id"])
+        config = app.state.coordinator_config
+        return load_release_manifest(
+            connection,
+            test["release_id"],
+            pack_dir=assessment_packs_dir(),
+            signing_public_key_b64=config.signing_public_key_b64,
+            pack_master_key=config.pack_master_key,
+        )
     difficulties = decode_difficulties(test["difficulties"])
     rules = validate_selection_rules(
         connection,
@@ -1635,6 +1652,7 @@ def prepare_faculty_release(connection: sqlite3.Connection, test: sqlite3.Row) -
         signing_private_key_b64=config.signing_private_key_b64,
         pack_master_key=config.pack_master_key,
         now_iso=now(),
+        _created_artifact_paths=_created_artifact_paths,
     )
 
 
@@ -2466,19 +2484,23 @@ def list_tests(request: Request) -> Dict[str, Any]:
                LEFT JOIN assessment_releases r ON r.release_id = t.release_id
                WHERE t.mode = 'faculty' ORDER BY t.created_at DESC"""
         ).fetchall())
+        config = app.state.coordinator_config
         for test in tests:
             has_submitted_attempt = bool(test.pop("has_submitted_attempt"))
             test["release_state"] = test.get("release_state") or (
                 "failed" if has_submitted_attempt else "preparing"
             )
             if test["release_state"] == "prepared":
-                pack_filename = Path(test.pop("release_pack_filename") or "").name
-                pack_path = assessment_packs_dir() / pack_filename
-                if (
-                    not pack_filename
-                    or not pack_path.is_file()
-                    or hashlib.sha256(pack_path.read_bytes()).hexdigest() != test["content_hash"]
-                ):
+                test.pop("release_pack_filename", None)
+                try:
+                    load_release_manifest(
+                        connection,
+                        test["release_id"],
+                        pack_dir=assessment_packs_dir(),
+                        signing_public_key_b64=config.signing_public_key_b64,
+                        pack_master_key=config.pack_master_key,
+                    )
+                except (KeyError, ValueError):
                     test["release_state"] = "failed"
             else:
                 test.pop("release_pack_filename", None)
@@ -2506,6 +2528,7 @@ def create_test(payload: TestPayload, request: Request) -> Dict[str, Any]:
     if not payload.test_name.strip():
         raise HTTPException(400, "Provide a test name.")
     created_release: ReleaseSummary | None = None
+    created_artifact_paths: list[Path] = []
     try:
         with db() as connection:
             rules = validate_selection_rules(connection, payload.bank_id, rules, MAX_ASSESSMENT_QUESTIONS, difficulties)
@@ -2517,7 +2540,9 @@ def create_test(payload: TestPayload, request: Request) -> Dict[str, Any]:
                 (payload.test_name.strip(), json.dumps(rules), payload.bank_id, now(), json.dumps(difficulties)),
             ).lastrowid
             test = connection.execute("SELECT * FROM tests WHERE test_id = ?", (test_id,)).fetchone()
-            created_release = prepare_faculty_release(connection, test)
+            created_release = prepare_faculty_release(
+                connection, test, _created_artifact_paths=created_artifact_paths
+            )
         return {
             "created": True,
             "test_id": test_id,
@@ -2526,8 +2551,8 @@ def create_test(payload: TestPayload, request: Request) -> Dict[str, Any]:
             "content_hash": created_release.content_hash,
         }
     except Exception:
-        if created_release is not None:
-            (assessment_packs_dir() / created_release.content_pack_filename).unlink(missing_ok=True)
+        for artifact_path in created_artifact_paths:
+            artifact_path.unlink(missing_ok=True)
         raise
 
 
@@ -2569,13 +2594,16 @@ def delete_test(test_id: int, request: Request) -> Dict[str, Any]:
 def launch_test(test_id: int, request: Request) -> Dict[str, bool]:
     require_user(request, "admin")
     created_release: ReleaseSummary | None = None
+    created_artifact_paths: list[Path] = []
     try:
         with db() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             test = connection.execute(
                 "SELECT * FROM tests WHERE test_id = ? AND active = 1 AND mode = 'faculty'", (test_id,)
             ).fetchone()
             if not test:
                 raise HTTPException(404, "Test not found.")
+            legacy_timer_only = False
             if not test["release_id"] and test["bank_id"] is None:
                 # Pre-bank placeholder rows have no content that can be snapshotted. Keep
                 # their established faculty timer behavior; startup migration assigns a
@@ -2583,6 +2611,7 @@ def launch_test(test_id: int, request: Request) -> Dict[str, bool]:
                 duration_seconds = sum(
                     rule["quantity"] for rule in decode_selection_rules(test["composition"])
                 ) * SECONDS_PER_FACULTY_QUESTION
+                legacy_timer_only = True
             elif not test["release_id"]:
                 submitted = connection.execute(
                     "SELECT 1 FROM attempts WHERE test_id = ? AND status = 'submitted' LIMIT 1",
@@ -2593,28 +2622,47 @@ def launch_test(test_id: int, request: Request) -> Dict[str, bool]:
                         409,
                         "This historical assessment has submitted attempts and cannot be resampled.",
                     )
-                created_release = prepare_faculty_release(connection, test)
+                created_release = prepare_faculty_release(
+                    connection, test, _created_artifact_paths=created_artifact_paths
+                )
                 release = created_release
                 duration_seconds = release.duration_seconds
             else:
-                release = load_release_manifest(connection, test["release_id"])
-                pack_path = assessment_packs_dir() / Path(release.content_pack_filename).name
-                if (
-                    not pack_path.is_file()
-                    or hashlib.sha256(pack_path.read_bytes()).hexdigest() != release.content_hash
-                ):
-                    raise HTTPException(409, "Assessment release preparation failed. Create a new assessment.")
+                config = app.state.coordinator_config
+                try:
+                    release = load_release_manifest(
+                        connection,
+                        test["release_id"],
+                        pack_dir=assessment_packs_dir(),
+                        signing_public_key_b64=config.signing_public_key_b64,
+                        pack_master_key=config.pack_master_key,
+                    )
+                except ValueError as error:
+                    raise HTTPException(
+                        409, "Assessment release preparation failed. Create a new assessment."
+                    ) from error
                 duration_seconds = release.duration_seconds
+            if not legacy_timer_only and connection.execute(
+                "SELECT 1 FROM attempts WHERE release_id = ? LIMIT 1", (release.release_id,)
+            ).fetchone():
+                raise HTTPException(
+                    409,
+                    "This assessment release has already issued an attempt. Duplicate the assessment to run it again.",
+                )
             deadline = (
                 datetime.now(timezone.utc) + timedelta(seconds=duration_seconds)
             ).isoformat(timespec="seconds")
             connection.execute("UPDATE tests SET launched = 0, launch_expires_at = NULL WHERE mode = 'faculty'")
             connection.execute("UPDATE tests SET launched = 1, launch_expires_at = ? WHERE test_id = ?", (deadline, test_id))
-            connection.execute("UPDATE attempts SET expires_at = ? WHERE test_id = ? AND status = 'in_progress'", (deadline, test_id))
+            if legacy_timer_only:
+                connection.execute(
+                    "UPDATE attempts SET expires_at = ? WHERE test_id = ? AND status = 'in_progress'",
+                    (deadline, test_id),
+                )
         return {"launched": True}
     except Exception:
-        if created_release is not None:
-            (assessment_packs_dir() / created_release.content_pack_filename).unlink(missing_ok=True)
+        for artifact_path in created_artifact_paths:
+            artifact_path.unlink(missing_ok=True)
         raise
 
 

@@ -1,11 +1,18 @@
+import base64
 import hashlib
 import io
 import json
+import os
 import sqlite3
 import tempfile
+import threading
 import unittest
+import warnings
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
@@ -17,8 +24,9 @@ from ksat.coordinator.releases import (
     wrap_release_content_key,
 )
 from ksat.coordinator.schema import migrate_distributed_schema
-from ksat.crypto import decrypt_pack, generate_ed25519_keypair, verify_json
+from ksat.crypto import decrypt_pack, encrypt_pack, generate_ed25519_keypair, sign_json, verify_json
 from ksat.protocol import PublicQuestion
+from ksat.sqlite import connect_sqlite
 
 
 class AssessmentReleaseTests(unittest.TestCase):
@@ -80,7 +88,7 @@ class AssessmentReleaseTests(unittest.TestCase):
                 difficulty="Medium",
                 question_text="Seven?",
                 question_html="<p>Seven?</p>",
-                options={"A": "6", "B": "7"},
+                options={"A": "6", "B": "7", "C": "8", "D": "9"},
                 display_media={
                     "question": {
                         "url": self.asset_name,
@@ -97,8 +105,16 @@ class AssessmentReleaseTests(unittest.TestCase):
                 chapter="Numbers",
                 difficulty="Easy",
                 question_text="Three?",
-                options={"A": "3", "B": "4"},
-                stimulus={"id": "chart-1", "type": "chart", "content": {"values": [3, 4]}},
+                options={"A": "3", "B": "4", "C": "5", "D": "6"},
+                stimulus={
+                    "id": "chart-1",
+                    "type": "chart",
+                    "content": {
+                        "chart_type": "bar",
+                        "labels": ["A", "B"],
+                        "series": [{"name": "Values", "values": [3, 4]}],
+                    },
+                },
             ),
         ]
 
@@ -202,22 +218,439 @@ class AssessmentReleaseTests(unittest.TestCase):
         self.assertEqual(0, self.connection.execute("SELECT COUNT(*) FROM assessment_releases").fetchone()[0])
         self.assertIsNone(self.connection.execute("SELECT release_id FROM tests WHERE test_id=41").fetchone()[0])
 
-    def test_release_rejects_answer_flags_hidden_in_question_html(self):
+    def test_release_sanitizes_answer_flags_hidden_in_question_html(self):
         unsafe = self.public_questions()[0].model_copy(
             update={"question_html": '<p data-correct-answer="B">Seven?</p>'}
         )
-        with self.assertRaisesRegex(ValueError, "Private assessment material"):
+        release = prepare_release(
+            self.connection,
+            test_id=41,
+            selected_questions=[unsafe],
+            assets={self.asset_name: self.asset_bytes},
+            pack_dir=self.pack_dir,
+            signing_private_key_b64=self.private_key_b64,
+            pack_master_key=self.master_key,
+            now_iso="2026-08-31T09:00:00+00:00",
+        )
+        encrypted = (self.pack_dir / release.content_pack_filename).read_bytes()
+        key = unwrap_release_content_key(self.master_key, release.release_id, release.wrapped_content_key_b64)
+        with zipfile.ZipFile(io.BytesIO(decrypt_pack(key, release.release_id, encrypted))) as archive:
+            packed = json.loads(archive.read("questions.json"))[0]
+        self.assertEqual("", packed["question_html"])
+
+    def test_adversarial_nested_content_html_and_unreferenced_assets_cannot_leak(self):
+        unsafe_nested = self.public_questions()[0].model_dump(mode="json")
+        unsafe_nested["display_media"]["feedback_html"] = "private feedback"
+        with self.assertRaises(ValueError):
             prepare_release(
                 self.connection,
                 test_id=41,
-                selected_questions=[unsafe],
+                selected_questions=[unsafe_nested],
                 assets={self.asset_name: self.asset_bytes},
                 pack_dir=self.pack_dir,
                 signing_private_key_b64=self.private_key_b64,
                 pack_master_key=self.master_key,
                 now_iso="2026-08-31T09:00:00+00:00",
             )
+
+        unsafe_score = self.public_questions()[1].model_dump(mode="json")
+        unsafe_score["stimulus"]["content"]["series"][0]["score_value"] = 100
+        with self.assertRaises(ValueError):
+            prepare_release(
+                self.connection,
+                test_id=41,
+                selected_questions=[unsafe_score],
+                assets={},
+                pack_dir=self.pack_dir,
+                signing_private_key_b64=self.private_key_b64,
+                pack_master_key=self.master_key,
+                now_iso="2026-08-31T09:00:00+00:00",
+            )
+
+        unsafe_stimulus = self.public_questions()[1].model_dump(mode="json")
+        unsafe_stimulus["stimulus"] = {
+            "id": "table-1",
+            "type": "table",
+            "title": "Table",
+            "alt_text": "Values",
+            "content": {"columns": ["A"], "rows": [[1]], "correct_option": "A"},
+        }
+        with self.assertRaises(ValueError):
+            prepare_release(
+                self.connection,
+                test_id=41,
+                selected_questions=[unsafe_stimulus],
+                assets={},
+                pack_dir=self.pack_dir,
+                signing_private_key_b64=self.private_key_b64,
+                pack_master_key=self.master_key,
+                now_iso="2026-08-31T09:00:00+00:00",
+            )
+
+        sanitized_question = self.public_questions()[0].model_copy(update={
+            "question_html": (
+                '<div onclick="steal()"><strong>Seven?</strong>'
+                '<script>correct_option="B"</script><!-- feedback_html=private -->'
+                '<span data-score-value="100">private score</span></div>'
+            )
+        })
+        release = prepare_release(
+            self.connection,
+            test_id=41,
+            selected_questions=[sanitized_question],
+            assets={self.asset_name: self.asset_bytes},
+            pack_dir=self.pack_dir,
+            signing_private_key_b64=self.private_key_b64,
+            pack_master_key=self.master_key,
+            now_iso="2026-08-31T09:00:00+00:00",
+        )
+        encrypted = (self.pack_dir / release.content_pack_filename).read_bytes()
+        key = unwrap_release_content_key(self.master_key, release.release_id, release.wrapped_content_key_b64)
+        with zipfile.ZipFile(io.BytesIO(decrypt_pack(key, release.release_id, encrypted))) as archive:
+            packed = json.loads(archive.read("questions.json"))[0]
+        packed_html = packed["question_html"].lower()
+        self.assertIn("<strong>seven?</strong>", packed_html)
+        for forbidden in ("onclick", "script", "correct_option", "feedback_html", "private score", "data-score"):
+            self.assertNotIn(forbidden, packed_html)
+
+    def test_unreferenced_or_unsafe_assets_are_rejected_before_pack_publication(self):
+        unused = b"private solution bytes"
+        unused_name = f"assets/{hashlib.sha256(unused).hexdigest()}.png"
+        with self.assertRaisesRegex(ValueError, "exactly match"):
+            prepare_release(
+                self.connection,
+                test_id=41,
+                selected_questions=self.public_questions(),
+                assets={self.asset_name: self.asset_bytes, unused_name: unused},
+                pack_dir=self.pack_dir,
+                signing_private_key_b64=self.private_key_b64,
+                pack_master_key=self.master_key,
+                now_iso="2026-08-31T09:00:00+00:00",
+            )
+        with self.assertRaisesRegex(ValueError, "unsafe"):
+            prepare_release(
+                self.connection,
+                test_id=41,
+                selected_questions=self.public_questions(),
+                assets={"assets/../collision.png": self.asset_bytes},
+                pack_dir=self.pack_dir,
+                signing_private_key_b64=self.private_key_b64,
+                pack_master_key=self.master_key,
+                now_iso="2026-08-31T09:00:00+00:00",
+            )
+        for unsafe_html in (
+            '<a href="https://coordinator.example/answers">Open</a>',
+            '<img src="/api/question-assets/41/solution.png">',
+        ):
+            with self.subTest(unsafe_html=unsafe_html):
+                question = self.public_questions()[1].model_copy(
+                    update={"question_html": unsafe_html}
+                )
+                with self.assertRaisesRegex(ValueError, "URL"):
+                    prepare_release(
+                        self.connection,
+                        test_id=41,
+                        selected_questions=[question],
+                        assets={},
+                        pack_dir=self.pack_dir,
+                        signing_private_key_b64=self.private_key_b64,
+                        pack_master_key=self.master_key,
+                        now_iso="2026-08-31T09:00:00+00:00",
+                    )
         self.assertEqual([], list(self.pack_dir.glob("*.ksatpack")))
+
+    def verified_load(self, release_id):
+        return load_release_manifest(
+            self.connection,
+            release_id,
+            pack_dir=self.pack_dir,
+            signing_public_key_b64=self.public_key_b64,
+            pack_master_key=self.master_key,
+        )
+
+    def test_verified_load_rejects_manifest_linkage_and_encoding_corruption(self):
+        release = self.prepare_release_with_two_questions()
+        row = self.connection.execute(
+            "SELECT manifest_json FROM assessment_releases WHERE release_id = ?", (release.release_id,)
+        ).fetchone()
+        manifest = json.loads(row["manifest_json"])
+        manifest["test_id"] = 999
+        self.connection.execute(
+            "UPDATE assessment_releases SET manifest_json = ? WHERE release_id = ?",
+            (json.dumps(manifest), release.release_id),
+        )
+        with self.assertRaises(ValueError):
+            self.verified_load(release.release_id)
+
+        manifest["test_id"] = 41
+        self.connection.execute(
+            "UPDATE assessment_releases SET manifest_json = ?, content_signature_b64 = '***' WHERE release_id = ?",
+            (json.dumps(manifest), release.release_id),
+        )
+        with self.assertRaises(ValueError):
+            self.verified_load(release.release_id)
+
+        self.connection.execute(
+            "UPDATE assessment_releases SET content_signature_b64 = ?, wrapped_content_key_b64 = 'AAAA' WHERE release_id = ?",
+            (release.content_signature_b64, release.release_id),
+        )
+        with self.assertRaises(ValueError):
+            self.verified_load(release.release_id)
+
+    def test_verified_load_rejects_pack_hash_signature_and_question_linkage_corruption(self):
+        release = self.prepare_release_with_two_questions()
+        pack_path = self.pack_dir / release.content_pack_filename
+        original = pack_path.read_bytes()
+        pack_path.write_bytes(original + b"tampered")
+        with self.assertRaises(ValueError):
+            self.verified_load(release.release_id)
+        pack_path.write_bytes(original)
+        self.connection.execute(
+            "DELETE FROM release_questions WHERE release_id = ? AND question_id = 7", (release.release_id,)
+        )
+        with self.assertRaises(ValueError):
+            self.verified_load(release.release_id)
+
+    def test_verified_load_cross_checks_every_stored_identity_field(self):
+        release = self.prepare_release_with_two_questions()
+        self.connection.execute("INSERT INTO tests (test_id, test_name) VALUES (999, 'Wrong test')")
+        mutations = (
+            ("state", "failed"),
+            ("test_id", 999),
+            ("duration_seconds", 999),
+            ("content_pack_filename", "../wrong.ksatpack"),
+            ("content_hash", "0" * 64),
+            ("content_signature_b64", base64.b64encode(b"s" * 64).decode("ascii")),
+            ("wrapped_content_key_b64", base64.b64encode(b"w" * 60).decode("ascii")),
+        )
+        original = dict(self.connection.execute(
+            "SELECT * FROM assessment_releases WHERE release_id = ?", (release.release_id,)
+        ).fetchone())
+        for column, value in mutations:
+            with self.subTest(column=column):
+                self.connection.execute(
+                    f"UPDATE assessment_releases SET {column} = ? WHERE release_id = ?",
+                    (value, release.release_id),
+                )
+                with self.assertRaises(ValueError):
+                    self.verified_load(release.release_id)
+                self.connection.execute(
+                    f"UPDATE assessment_releases SET {column} = ? WHERE release_id = ?",
+                    (original[column], release.release_id),
+                )
+        self.connection.execute("UPDATE tests SET release_id = NULL WHERE test_id = 41")
+        with self.assertRaises(ValueError):
+            self.verified_load(release.release_id)
+
+    def test_stored_release_rejects_unknown_versions_and_unsafe_identity(self):
+        release = self.prepare_release_with_two_questions()
+        original_manifest = self.connection.execute(
+            "SELECT manifest_json FROM assessment_releases WHERE release_id = ?", (release.release_id,)
+        ).fetchone()[0]
+        manifest = json.loads(original_manifest)
+        for field in ("protocol_version", "pack_format_version"):
+            with self.subTest(field=field):
+                corrupt = dict(manifest)
+                corrupt[field] = 999
+                self.connection.execute(
+                    "UPDATE assessment_releases SET manifest_json = ? WHERE release_id = ?",
+                    (json.dumps(corrupt), release.release_id),
+                )
+                with self.assertRaises(ValueError):
+                    load_release_manifest(self.connection, release.release_id)
+                self.connection.execute(
+                    "UPDATE assessment_releases SET manifest_json = ? WHERE release_id = ?",
+                    (original_manifest, release.release_id),
+                )
+
+        unsafe_release_id = "../escape"
+        self.connection.execute(
+            "INSERT INTO tests (test_id, test_name, release_id) VALUES (42, 'Unsafe', ?)",
+            (unsafe_release_id,),
+        )
+        unsafe_manifest = dict(manifest)
+        unsafe_manifest.update({
+            "release_id": unsafe_release_id,
+            "test_id": 42,
+            "test_name": "Unsafe",
+            "duration_seconds": 60,
+            "canonical_question_ids": [3],
+            "asset_names": [],
+        })
+        self.connection.execute(
+            """INSERT INTO assessment_releases
+               (release_id, test_id, state, duration_seconds, manifest_json, content_pack_filename,
+                content_hash, content_signature_b64, wrapped_content_key_b64, created_at)
+               VALUES (?, 42, 'prepared', 60, ?, ?, ?, ?, ?, ?)""",
+            (
+                unsafe_release_id,
+                json.dumps(unsafe_manifest),
+                "../escape.ksatpack",
+                "0" * 64,
+                base64.b64encode(b"s" * 64).decode("ascii"),
+                base64.b64encode(b"w" * 60).decode("ascii"),
+                "2026-08-31T09:00:00+00:00",
+            ),
+        )
+        self.connection.execute(
+            "INSERT INTO release_questions (release_id, question_id, canonical_order) VALUES (?, 3, 0)",
+            (unsafe_release_id,),
+        )
+        with self.assertRaises(ValueError):
+            load_release_manifest(self.connection, unsafe_release_id)
+
+    def test_verified_load_rejects_unsafe_or_colliding_zip_entries_even_when_resigned(self):
+        release = self.prepare_release_with_two_questions()
+        row = self.connection.execute(
+            "SELECT manifest_json FROM assessment_releases WHERE release_id = ?", (release.release_id,)
+        ).fetchone()
+        manifest = json.loads(row["manifest_json"])
+        content_key = unwrap_release_content_key(
+            self.master_key, release.release_id, release.wrapped_content_key_b64
+        )
+        malicious_zip = io.BytesIO()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            with zipfile.ZipFile(malicious_zip, "w") as archive:
+                archive.writestr("manifest.json", json.dumps(manifest))
+                archive.writestr("questions.json", "[]")
+                archive.writestr("../solution.json", '{"correct_option":"B"}')
+                archive.writestr("questions.json", "[]")
+        encrypted = encrypt_pack(content_key, release.release_id, malicious_zip.getvalue())
+        content_hash = hashlib.sha256(encrypted).hexdigest()
+        signature = sign_json(
+            self.private_key_b64,
+            {"release_id": release.release_id, "content_hash": content_hash, "manifest": manifest},
+        )
+        (self.pack_dir / release.content_pack_filename).write_bytes(encrypted)
+        self.connection.execute(
+            """UPDATE assessment_releases SET content_hash = ?, content_signature_b64 = ?
+               WHERE release_id = ?""",
+            (content_hash, signature, release.release_id),
+        )
+        with self.assertRaises(ValueError):
+            self.verified_load(release.release_id)
+
+    def test_key_wrapping_rejects_wrong_lengths_and_malformed_envelopes_stably(self):
+        for invalid_key in (b"", b"x" * 16, b"x" * 31, b"x" * 33):
+            with self.subTest(length=len(invalid_key)):
+                with self.assertRaisesRegex(ValueError, "32 bytes"):
+                    wrap_release_content_key(invalid_key, "release-1", b"c" * 32)
+                with self.assertRaisesRegex(ValueError, "32 bytes"):
+                    wrap_release_content_key(b"m" * 32, "release-1", invalid_key)
+                with self.assertRaisesRegex(ValueError, "32 bytes"):
+                    unwrap_release_content_key(invalid_key, "release-1", "AAAA")
+        for malformed in ("***", "AAAA", 123):
+            with self.subTest(value=malformed):
+                with self.assertRaisesRegex(ValueError, "Wrapped release content key is invalid"):
+                    unwrap_release_content_key(b"m" * 32, "release-1", malformed)
+
+    def test_pack_collision_never_clobbers_or_deletes_preexisting_artifact(self):
+        fixed_release_id = "11111111-1111-1111-1111-111111111111"
+        self.pack_dir.mkdir(parents=True)
+        existing_path = self.pack_dir / f"{fixed_release_id}.ksatpack"
+        existing_path.write_bytes(b"pre-existing verified bytes")
+        with patch("ksat.coordinator.releases.uuid.uuid4", return_value=fixed_release_id):
+            with self.assertRaises(FileExistsError):
+                self.prepare_release_with_two_questions()
+        self.assertEqual(b"pre-existing verified bytes", existing_path.read_bytes())
+        self.assertEqual(0, self.connection.execute("SELECT COUNT(*) FROM assessment_releases").fetchone()[0])
+
+    def test_commit_failure_preserves_identical_preexisting_pack(self):
+        fixed_release_id = "22222222-2222-2222-2222-222222222222"
+        deterministic_random = lambda size: b"r" * size
+        with (
+            patch("ksat.coordinator.releases.uuid.uuid4", return_value=fixed_release_id),
+            patch("os.urandom", side_effect=deterministic_random),
+        ):
+            release = self.prepare_release_with_two_questions()
+        pack_path = self.pack_dir / release.content_pack_filename
+        original = pack_path.read_bytes()
+        self.connection.execute("DELETE FROM release_questions WHERE release_id = ?", (release.release_id,))
+        self.connection.execute("DELETE FROM assessment_releases WHERE release_id = ?", (release.release_id,))
+        self.connection.execute("UPDATE tests SET release_id = NULL WHERE test_id = 41")
+        self.connection.execute(
+            """CREATE TRIGGER reject_recreated_release BEFORE INSERT ON assessment_releases
+               BEGIN SELECT RAISE(ABORT, 'forced commit failure'); END"""
+        )
+        created_artifacts = []
+        with (
+            patch("ksat.coordinator.releases.uuid.uuid4", return_value=fixed_release_id),
+            patch("os.urandom", side_effect=deterministic_random),
+        ):
+            with self.assertRaises(sqlite3.IntegrityError):
+                prepare_release(
+                    self.connection,
+                    test_id=41,
+                    selected_questions=self.public_questions(),
+                    assets={self.asset_name: self.asset_bytes},
+                    pack_dir=self.pack_dir,
+                    signing_private_key_b64=self.private_key_b64,
+                    pack_master_key=self.master_key,
+                    now_iso="2026-08-31T09:00:00+00:00",
+                    _created_artifact_paths=created_artifacts,
+                )
+        self.assertEqual([], created_artifacts)
+        self.assertEqual(original, pack_path.read_bytes())
+
+
+class ConcurrentAssessmentReleaseTests(unittest.TestCase):
+    def test_two_connections_publish_and_return_one_release(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            database = root / "release.db"
+            connection = connect_sqlite(database)
+            connection.executescript(
+                """
+                CREATE TABLE tests (test_id INTEGER PRIMARY KEY, test_name TEXT NOT NULL, release_id TEXT);
+                CREATE TABLE attempts (attempt_id TEXT PRIMARY KEY, test_id INTEGER, student_id TEXT);
+                """
+            )
+            migrate_distributed_schema(connection)
+            connection.execute("INSERT INTO tests (test_id, test_name) VALUES (1, 'Concurrent')")
+            connection.commit()
+            connection.close()
+            private_key, _ = generate_ed25519_keypair()
+            barrier = threading.Barrier(2)
+
+            def worker(question_id):
+                local = connect_sqlite(database)
+                try:
+                    barrier.wait(timeout=5)
+                    result = prepare_release(
+                        local,
+                        test_id=1,
+                        selected_questions=[PublicQuestion(
+                            question_id=question_id,
+                            source_key=f"q-{question_id}",
+                            category="Reasoning",
+                            chapter="Series",
+                            difficulty="Easy",
+                            question_text=f"Question {question_id}",
+                            options={"A": "One", "B": "Two", "C": "Three", "D": "Four"},
+                        )],
+                        assets={},
+                        pack_dir=root / "packs",
+                        signing_private_key_b64=private_key,
+                        pack_master_key=b"m" * 32,
+                        now_iso="2026-08-31T09:00:00+00:00",
+                    )
+                    local.commit()
+                    return result
+                finally:
+                    local.close()
+
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                results = list(executor.map(worker, (1, 2)))
+            self.assertEqual(results[0], results[1])
+            self.assertIn(results[0].canonical_question_ids, ([1], [2]))
+            self.assertEqual(1, len(list((root / "packs").glob("*.ksatpack"))))
+            check = connect_sqlite(database)
+            try:
+                self.assertEqual(1, check.execute("SELECT COUNT(*) FROM assessment_releases").fetchone()[0])
+                self.assertEqual(1, check.execute("SELECT COUNT(*) FROM release_questions").fetchone()[0])
+            finally:
+                check.close()
 
 
 class FacultyReleaseFlowTests(unittest.TestCase):
@@ -405,6 +838,84 @@ class FacultyReleaseFlowTests(unittest.TestCase):
         self.assertTrue(legacy_release_id)
         self.assertIsNone(historical)
         self.assertEqual(1, historical_attempts)
+
+    def test_referenced_release_cannot_relaunch_or_rewrite_attempt_deadline(self):
+        created = self.client.post("/api/admin/tests", json=self.create_payload("One shot"))
+        self.assertEqual(200, created.status_code, created.text)
+        test_id = created.json()["test_id"]
+        release_id = created.json()["release_id"]
+        first_launch = self.client.post(f"/api/admin/tests/{test_id}/launch")
+        self.assertEqual(200, first_launch.status_code, first_launch.text)
+        fixed_deadline = "2026-09-01T10:00:00+00:00"
+        with app.db() as connection:
+            connection.execute(
+                """INSERT INTO students
+                   (student_id, name, password_hash, class, section, created_at)
+                   VALUES ('S-ISSUED', 'Issued', 'hash', 'AIML', 'A', ?)""",
+                (app.now(),),
+            )
+            connection.execute(
+                """INSERT INTO attempts
+                   (attempt_id, student_id, test_id, release_id, started_at, status,
+                    total_questions, expires_at)
+                   VALUES ('issued-attempt', 'S-ISSUED', ?, ?, ?, 'in_progress', 1, ?)""",
+                (test_id, release_id, app.now(), fixed_deadline),
+            )
+            launch_deadline = connection.execute(
+                "SELECT launch_expires_at FROM tests WHERE test_id = ?", (test_id,)
+            ).fetchone()[0]
+        relaunch = self.client.post(f"/api/admin/tests/{test_id}/launch")
+        self.assertEqual(409, relaunch.status_code, relaunch.text)
+        with app.db() as connection:
+            unchanged = connection.execute(
+                "SELECT expires_at FROM attempts WHERE attempt_id = 'issued-attempt'"
+            ).fetchone()[0]
+            unchanged_launch = connection.execute(
+                "SELECT launch_expires_at FROM tests WHERE test_id = ?", (test_id,)
+            ).fetchone()[0]
+        self.assertEqual(fixed_deadline, unchanged)
+        self.assertEqual(launch_deadline, unchanged_launch)
+
+    def test_create_commit_failure_rolls_back_rows_and_removes_only_owned_pack(self):
+        @contextmanager
+        def database_with_failing_commit():
+            connection = connect_sqlite(app.DB_PATH)
+            try:
+                yield connection
+                connection.rollback()
+                raise sqlite3.OperationalError("forced commit failure")
+            finally:
+                connection.close()
+
+        with patch("app.db", database_with_failing_commit):
+            response = self.client.post(
+                "/api/admin/tests", json=self.create_payload("Commit failure")
+            )
+        self.assertEqual(500, response.status_code, response.text)
+        self.assertEqual([], list(app.assessment_packs_dir().glob("*.ksatpack")))
+        with app.db() as connection:
+            self.assertIsNone(
+                connection.execute(
+                    "SELECT 1 FROM tests WHERE test_name = 'Commit failure'"
+                ).fetchone()
+            )
+
+    def test_delete_prepared_test_removes_release_rows_and_pack(self):
+        created = self.client.post("/api/admin/tests", json=self.create_payload("Delete release"))
+        self.assertEqual(200, created.status_code, created.text)
+        test_id = created.json()["test_id"]
+        release_id = created.json()["release_id"]
+        pack_path = app.assessment_packs_dir() / f"{release_id}.ksatpack"
+        self.assertTrue(pack_path.is_file())
+        deleted = self.client.delete(f"/api/admin/tests/{test_id}")
+        self.assertEqual(200, deleted.status_code, deleted.text)
+        with app.db() as connection:
+            counts = (
+                connection.execute("SELECT COUNT(*) FROM assessment_releases WHERE release_id = ?", (release_id,)).fetchone()[0],
+                connection.execute("SELECT COUNT(*) FROM release_questions WHERE release_id = ?", (release_id,)).fetchone()[0],
+            )
+        self.assertEqual((0, 0), counts)
+        self.assertFalse(pack_path.exists())
 
 
 if __name__ == "__main__":

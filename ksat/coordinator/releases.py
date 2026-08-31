@@ -5,94 +5,249 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
+import html
 import io
+import json
 import os
 import re
 import sqlite3
 import tempfile
 import uuid
 import zipfile
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from ksat.crypto import decrypt_pack, encrypt_pack, sha256_hex, sign_json
-from ksat.protocol import PublicQuestion, ReleaseManifest, ReleaseSummary, canonical_json
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+
+from ksat.crypto import decrypt_pack, encrypt_pack, sha256_hex, sign_json, verify_json
+from ksat.protocol import (
+    PACK_FORMAT_VERSION,
+    PROTOCOL_VERSION,
+    PublicQuestion,
+    ReleaseManifest,
+    ReleaseSummary,
+    canonical_json,
+)
 
 
 _FIXED_ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
 _SAFE_ASSET_NAME = re.compile(r"assets/[0-9a-f]{64}\.(?:png|jpe?g|webp|svg)\Z")
-_PRIVATE_KEY_PARTS = ("answer", "solution", "explanation")
-_PRIVATE_KEYS = frozenset(("correct", "iscorrect", "feedback", "score"))
-_PRIVATE_HTML_MARKER = re.compile(
-    r"(?:data-[\w:-]*(?:answer|correct|solution|explanation)|"
-    r"(?:id|class)\s*=\s*[\"'][^\"']*(?:answer|correct|solution|explanation)|"
-    r"correct[-_ ]?answer|answer[-_ ]?key|solution[-_ ]?(?:step|media)|"
-    r"option[-_ ]?explanation)",
-    re.IGNORECASE,
-)
+_SHA256 = re.compile(r"[0-9a-f]{64}\Z")
+_PRIVATE_MARKERS = ("answer", "correct", "feedback", "score", "solution", "explanation")
+_WRAPPED_KEY_ENVELOPE_BYTES = 12 + 32 + 16
+
+
+def _require_key(value: bytes, label: str) -> bytes:
+    if not isinstance(value, bytes) or len(value) != 32:
+        raise ValueError(f"{label} must be exactly 32 bytes.")
+    return value
+
+
+def _require_stored_release_id(value: Any) -> str:
+    try:
+        parsed = uuid.UUID(value)
+    except (AttributeError, TypeError, ValueError) as error:
+        raise ValueError("Stored assessment release ID is invalid.") from error
+    if str(parsed) != value:
+        raise ValueError("Stored assessment release ID is invalid.")
+    return value
+
+
+def _strict_base64(value: Any, *, length: int, message: str) -> bytes:
+    try:
+        decoded = base64.b64decode(value.encode("ascii"), validate=True)
+    except (AttributeError, UnicodeEncodeError, binascii.Error, ValueError) as error:
+        raise ValueError(message) from error
+    if len(decoded) != length:
+        raise ValueError(message)
+    return decoded
 
 
 def wrap_release_content_key(master_key: bytes, release_id: str, content_key: bytes) -> str:
-    """Wrap a release key with fresh AES-GCM encryption bound to its release ID."""
+    master_key = _require_key(master_key, "Pack master key")
+    content_key = _require_key(content_key, "Release content key")
     return base64.b64encode(encrypt_pack(master_key, release_id, content_key)).decode("ascii")
 
 
 def unwrap_release_content_key(master_key: bytes, release_id: str, wrapped_b64: str) -> bytes:
+    master_key = _require_key(master_key, "Pack master key")
+    wrapped = _strict_base64(
+        wrapped_b64,
+        length=_WRAPPED_KEY_ENVELOPE_BYTES,
+        message="Wrapped release content key is invalid.",
+    )
     try:
-        wrapped = base64.b64decode(wrapped_b64.encode("ascii"), validate=True)
-    except (AttributeError, UnicodeEncodeError, binascii.Error, ValueError) as error:
+        content_key = decrypt_pack(master_key, release_id, wrapped)
+    except ValueError as error:
         raise ValueError("Wrapped release content key is invalid.") from error
-    content_key = decrypt_pack(master_key, release_id, wrapped)
-    if len(content_key) != 32:
-        raise ValueError("Wrapped release content key is invalid.")
-    return content_key
+    return _require_key(content_key, "Release content key")
 
 
-def _normalized_key(value: Any) -> str:
-    return re.sub(r"[^a-z0-9]", "", str(value).lower())
+def _private_marker(value: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9]", "", value.lower())
+    return any(marker in normalized for marker in _PRIVATE_MARKERS)
 
 
-def _assert_public_content(value: Any) -> None:
-    if isinstance(value, dict):
-        for key, item in value.items():
-            normalized = _normalized_key(key)
-            if normalized in _PRIVATE_KEYS or any(part in normalized for part in _PRIVATE_KEY_PARTS):
-                raise ValueError(f"Private assessment material is not allowed in content packs: {key}")
-            if normalized == "questionhtml" and isinstance(item, str) and _PRIVATE_HTML_MARKER.search(item):
-                raise ValueError("Private assessment material is not allowed in question HTML.")
-            _assert_public_content(item)
-        return
-    if isinstance(value, list):
-        for item in value:
-            _assert_public_content(item)
-        return
-    if isinstance(value, str) and (
-        "/api/question-banks/" in value or "/api/question-assets/" in value
-    ):
-        raise ValueError("Coordinator media URLs are not allowed in content packs.")
+class _PublicHTMLSanitizer(HTMLParser):
+    """Preserve static question formatting/SVG while dropping private or active markup."""
+
+    SAFE_TAGS = {
+        "p", "div", "span", "strong", "em", "b", "i", "small", "sub", "sup", "br", "hr",
+        "ul", "ol", "li", "h1", "h2", "h3", "h4", "h5", "h6", "table", "thead", "tbody",
+        "tfoot", "tr", "th", "td", "figure", "figcaption", "svg", "g", "path", "rect", "circle",
+        "line", "polyline", "polygon", "text", "ellipse", "defs", "lineargradient", "stop", "title",
+        "desc",
+    }
+    BLOCKED_TAGS = {
+        "script", "style", "iframe", "object", "embed", "link", "meta", "base", "form", "input",
+        "button", "textarea", "select", "option", "foreignobject",
+    }
+    VOID_TAGS = {"br", "hr"}
+    GLOBAL_ATTRS = {"class", "title", "role", "aria-label"}
+    URL_ATTRS = {"href", "src", "xlink:href", "action", "formaction", "poster"}
+    VISUAL_ATTRS = {
+        "x", "y", "x1", "y1", "x2", "y2", "cx", "cy", "r", "rx", "ry", "d", "points", "fill",
+        "fill-opacity", "stroke", "stroke-width", "stroke-dasharray", "stroke-linecap", "opacity",
+        "text-anchor", "font-size", "font-family", "font-weight", "transform", "dominant-baseline",
+        "viewbox", "preserveaspectratio", "width", "height", "xmlns", "colspan", "rowspan", "scope",
+    }
+    ATTR_CASE = {"viewbox": "viewBox", "preserveaspectratio": "preserveAspectRatio"}
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=False)
+        self.output: list[str] = []
+        self.drop_depth = 0
+        self.open_tags: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        tag = tag.lower()
+        if self.drop_depth:
+            self.drop_depth += 1
+            return
+        for name, value in attrs:
+            if value is None:
+                continue
+            normalized_name = name.lower()
+            lowered = value.strip().lower()
+            if normalized_name == "xmlns" and lowered == "http://www.w3.org/2000/svg":
+                continue
+            if normalized_name in self.URL_ATTRS and not _SAFE_ASSET_NAME.fullmatch(value):
+                raise ValueError("Question HTML contains an external or coordinator URL.")
+            if re.search(r"(?:https?:|//|/api/|javascript:|data:)", lowered):
+                raise ValueError("Question HTML contains an external or coordinator URL.")
+        if tag in self.BLOCKED_TAGS:
+            self.drop_depth = 1
+            return
+        if tag not in self.SAFE_TAGS:
+            return
+        for name, value in attrs:
+            if _private_marker(name) or (value is not None and _private_marker(value)):
+                self.drop_depth = 1
+                return
+        safe_attrs: list[str] = []
+        for name, value in attrs:
+            name = name.lower()
+            if name.startswith("on") or name not in self.GLOBAL_ATTRS | self.VISUAL_ATTRS or value is None:
+                continue
+            lowered = value.strip().lower()
+            if name == "xmlns":
+                if lowered != "http://www.w3.org/2000/svg":
+                    raise ValueError("Question HTML contains an external URL.")
+            safe_attrs.append(f' {self.ATTR_CASE.get(name, name)}="{html.escape(value, quote=True)}"')
+        self.output.append(f"<{tag}{''.join(safe_attrs)}>")
+        if tag not in self.VOID_TAGS:
+            self.open_tags.append(tag)
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self.handle_starttag(tag, attrs)
+        self.handle_endtag(tag)
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.lower()
+        if self.drop_depth:
+            self.drop_depth -= 1
+            return
+        if tag in self.SAFE_TAGS and tag in self.open_tags:
+            self.output.append(f"</{tag}>")
+            self.open_tags.remove(tag)
+
+    def handle_data(self, data: str) -> None:
+        if not self.drop_depth:
+            self.output.append(html.escape(data, quote=False))
+
+    def handle_entityref(self, name: str) -> None:
+        if not self.drop_depth:
+            self.output.append(f"&{name};")
+
+    def handle_charref(self, name: str) -> None:
+        if not self.drop_depth:
+            self.output.append(f"&#{name};")
+
+    def result(self) -> str:
+        return "".join(self.output).strip()
+
+
+def _sanitize_question_html(fragment: str) -> str:
+    sanitizer = _PublicHTMLSanitizer()
+    sanitizer.feed(fragment)
+    sanitizer.close()
+    return sanitizer.result()
 
 
 def _public_question_payloads(
     selected_questions: Sequence[PublicQuestion | Mapping[str, Any]],
 ) -> list[dict[str, Any]]:
-    questions = [
-        item if isinstance(item, PublicQuestion) else PublicQuestion.model_validate(item)
-        for item in selected_questions
-    ]
+    questions: list[PublicQuestion] = []
+    for item in selected_questions:
+        raw = item.model_dump(mode="json") if isinstance(item, PublicQuestion) else dict(item)
+        question = PublicQuestion.model_validate(raw)
+        sanitized = question.model_dump(mode="json")
+        sanitized["question_html"] = _sanitize_question_html(question.question_html)
+        questions.append(PublicQuestion.model_validate(sanitized))
     question_ids = [item.question_id for item in questions]
     if not question_ids or len(question_ids) != len(set(question_ids)):
         raise ValueError("Assessment releases require unique questions.")
     payloads = [item.model_dump(mode="json", exclude_none=True) for item in questions]
     payloads.sort(key=lambda item: item["question_id"])
-    _assert_public_content(payloads)
     return payloads
 
 
-def _validated_assets(assets: Mapping[str, bytes]) -> list[tuple[str, bytes]]:
-    validated: list[tuple[str, bytes]] = []
-    for name, content in assets.items():
+def _referenced_asset_names(value: Any) -> set[str]:
+    if isinstance(value, dict):
+        names: set[str] = set()
+        for item in value.values():
+            names.update(_referenced_asset_names(item))
+        return names
+    if isinstance(value, list):
+        names: set[str] = set()
+        for item in value:
+            names.update(_referenced_asset_names(item))
+        return names
+    if isinstance(value, str) and value.startswith("assets/"):
+        return {value}
+    return set()
+
+
+def _validated_assets(
+    assets: Mapping[str, bytes], referenced_names: set[str]
+) -> list[tuple[str, bytes]]:
+    for name in assets:
         if not isinstance(name, str) or not _SAFE_ASSET_NAME.fullmatch(name):
             raise ValueError(f"Assessment asset name is unsafe: {name!r}")
+    supplied_names = set(assets)
+    if supplied_names != referenced_names:
+        missing = sorted(referenced_names - supplied_names)
+        extra = sorted(supplied_names - referenced_names)
+        raise ValueError(
+            "Assessment assets must exactly match final public references"
+            + (f"; missing: {', '.join(missing)}" if missing else "")
+            + (f"; unreferenced: {', '.join(extra)}" if extra else "")
+            + "."
+        )
+    validated: list[tuple[str, bytes]] = []
+    for name, content in assets.items():
         if not isinstance(content, bytes):
             raise ValueError(f"Assessment asset must contain bytes: {name}")
         expected_digest = name.split("/", 1)[1].split(".", 1)[0]
@@ -101,16 +256,6 @@ def _validated_assets(assets: Mapping[str, bytes]) -> list[tuple[str, bytes]]:
         validated.append((name, content))
     validated.sort(key=lambda item: item[0])
     return validated
-
-
-def _referenced_asset_names(value: Any) -> set[str]:
-    if isinstance(value, dict):
-        return set().union(*(_referenced_asset_names(item) for item in value.values()), set())
-    if isinstance(value, list):
-        return set().union(*(_referenced_asset_names(item) for item in value), set())
-    if isinstance(value, str) and value.startswith("assets/"):
-        return {value}
-    return set()
 
 
 def _zip_entry(name: str, content: bytes) -> tuple[zipfile.ZipInfo, bytes]:
@@ -138,7 +283,8 @@ def _build_pack_payload(
     return stream.getvalue()
 
 
-def _atomic_write(path: Path, content: bytes) -> None:
+def _publish_exclusive(path: Path, content: bytes) -> bool:
+    """Publish a complete fsynced file without replacing an existing destination."""
     descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     temporary_path = Path(temporary_name)
     try:
@@ -146,13 +292,28 @@ def _atomic_write(path: Path, content: bytes) -> None:
             stream.write(content)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary_path, path)
+        try:
+            os.link(temporary_path, path)
+        except FileExistsError:
+            if path.read_bytes() == content:
+                return False
+            raise FileExistsError(f"Assessment pack path already contains different content: {path.name}")
+        try:
+            directory_descriptor = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory_descriptor)
+            finally:
+                os.close(directory_descriptor)
+        except OSError:
+            pass
+        return True
     finally:
-        if temporary_path.exists():
-            temporary_path.unlink()
+        temporary_path.unlink(missing_ok=True)
 
 
-def _release_row(connection: sqlite3.Connection, *, release_id: str | None = None, test_id: int | None = None):
+def _release_row(
+    connection: sqlite3.Connection, *, release_id: str | None = None, test_id: int | None = None
+):
     if release_id is not None:
         return connection.execute(
             "SELECT * FROM assessment_releases WHERE release_id = ?", (release_id,)
@@ -162,20 +323,146 @@ def _release_row(connection: sqlite3.Connection, *, release_id: str | None = Non
     ).fetchone()
 
 
-def _summary_from_row(connection: sqlite3.Connection, row: sqlite3.Row) -> ReleaseSummary:
-    question_ids = [
-        item["question_id"]
-        for item in connection.execute(
-            "SELECT question_id FROM release_questions WHERE release_id = ? ORDER BY canonical_order",
-            (row["release_id"],),
-        ).fetchall()
-    ]
+def _derive_public_key_b64(private_key_b64: str) -> str:
+    raw = _strict_base64(private_key_b64, length=32, message="Invalid Ed25519 private key.")
+    try:
+        public = Ed25519PrivateKey.from_private_bytes(raw).public_key().public_bytes(
+            Encoding.Raw, PublicFormat.Raw
+        )
+    except ValueError as error:
+        raise ValueError("Invalid Ed25519 private key.") from error
+    return base64.b64encode(public).decode("ascii")
+
+
+def _inspect_pack(
+    plaintext: bytes, manifest: ReleaseManifest, canonical_question_ids: list[int]
+) -> None:
+    try:
+        with zipfile.ZipFile(io.BytesIO(plaintext)) as archive:
+            infos = archive.infolist()
+            names = [info.filename for info in infos]
+            expected_names = ["manifest.json", "questions.json", *manifest.asset_names]
+            if names != expected_names or len(names) != len(set(names)) or any(info.is_dir() for info in infos):
+                raise ValueError("Stored assessment pack entries are invalid.")
+            if any(info.date_time != _FIXED_ZIP_TIMESTAMP for info in infos):
+                raise ValueError("Stored assessment pack timestamps are invalid.")
+            packed_manifest = json.loads(archive.read("manifest.json"))
+            packed_questions = json.loads(archive.read("questions.json"))
+            for asset_name in manifest.asset_names:
+                content = archive.read(asset_name)
+                digest = asset_name.split("/", 1)[1].split(".", 1)[0]
+                if hashlib.sha256(content).hexdigest() != digest:
+                    raise ValueError("Stored assessment pack asset hash is invalid.")
+    except (KeyError, json.JSONDecodeError, zipfile.BadZipFile, OSError) as error:
+        raise ValueError("Stored assessment pack is invalid.") from error
+    if packed_manifest != manifest.model_dump(mode="json"):
+        raise ValueError("Stored assessment pack manifest is inconsistent.")
+    try:
+        canonical_payloads = _public_question_payloads(packed_questions)
+    except Exception as error:
+        raise ValueError("Stored assessment pack questions are invalid.") from error
+    if canonical_payloads != packed_questions:
+        raise ValueError("Stored assessment pack questions are not canonical public content.")
+    if [item["question_id"] for item in packed_questions] != canonical_question_ids:
+        raise ValueError("Stored assessment pack question linkage is inconsistent.")
+
+
+def _summary_from_row(
+    connection: sqlite3.Connection,
+    row: sqlite3.Row,
+    *,
+    expected_release_id: str,
+    pack_dir: Path | None = None,
+    signing_public_key_b64: str | None = None,
+    pack_master_key: bytes | None = None,
+) -> ReleaseSummary:
+    _require_stored_release_id(expected_release_id)
+    if row["release_id"] != expected_release_id or row["state"] != "prepared":
+        raise ValueError("Stored assessment release identity or state is invalid.")
+    if row["content_pack_filename"] != f"{expected_release_id}.ksatpack":
+        raise ValueError("Stored assessment release filename is invalid.")
+    if not isinstance(row["content_hash"], str) or not _SHA256.fullmatch(row["content_hash"]):
+        raise ValueError("Stored assessment release content hash is invalid.")
+    _strict_base64(
+        row["content_signature_b64"], length=64, message="Stored assessment release signature is invalid."
+    )
+    _strict_base64(
+        row["wrapped_content_key_b64"],
+        length=_WRAPPED_KEY_ENVELOPE_BYTES,
+        message="Stored assessment wrapped content key is invalid.",
+    )
     try:
         manifest = ReleaseManifest.model_validate_json(row["manifest_json"])
     except Exception as error:
         raise ValueError("Stored assessment release manifest is invalid.") from error
-    if manifest.canonical_question_ids != question_ids:
-        raise ValueError("Stored assessment release question order is inconsistent.")
+    if (
+        manifest.protocol_version != PROTOCOL_VERSION
+        or manifest.pack_format_version != PACK_FORMAT_VERSION
+    ):
+        raise ValueError("Stored assessment release version is unsupported.")
+    test = connection.execute(
+        "SELECT test_id, test_name, release_id FROM tests WHERE test_id = ?", (row["test_id"],)
+    ).fetchone()
+    if (
+        test is None
+        or test["release_id"] != expected_release_id
+        or manifest.release_id != expected_release_id
+        or manifest.test_id != row["test_id"]
+        or manifest.test_name != test["test_name"]
+    ):
+        raise ValueError("Stored assessment release/test linkage is invalid.")
+    question_rows = connection.execute(
+        "SELECT question_id, canonical_order FROM release_questions WHERE release_id = ? ORDER BY canonical_order",
+        (expected_release_id,),
+    ).fetchall()
+    canonical_orders = [item["canonical_order"] for item in question_rows]
+    question_ids = [item["question_id"] for item in question_rows]
+    if (
+        canonical_orders != list(range(len(question_rows)))
+        or not question_ids
+        or len(question_ids) != len(set(question_ids))
+        or manifest.canonical_question_ids != question_ids
+        or row["duration_seconds"] != manifest.duration_seconds
+        or manifest.duration_seconds != len(question_ids) * 60
+        or manifest.asset_names != sorted(set(manifest.asset_names))
+        or any(not _SAFE_ASSET_NAME.fullmatch(name) for name in manifest.asset_names)
+    ):
+        raise ValueError("Stored assessment release manifest/linkage is inconsistent.")
+
+    verification_values = (pack_dir, signing_public_key_b64, pack_master_key)
+    if any(value is not None for value in verification_values) and not all(
+        value is not None for value in verification_values
+    ):
+        raise ValueError("Complete release verification inputs are required.")
+    if pack_dir is not None and signing_public_key_b64 is not None and pack_master_key is not None:
+        _strict_base64(
+            signing_public_key_b64, length=32, message="Stored assessment signing public key is invalid."
+        )
+        pack_master_key = _require_key(pack_master_key, "Pack master key")
+        pack_path = Path(pack_dir) / row["content_pack_filename"]
+        try:
+            encrypted = pack_path.read_bytes()
+        except OSError as error:
+            raise ValueError("Stored assessment pack is missing.") from error
+        if sha256_hex(encrypted) != row["content_hash"]:
+            raise ValueError("Stored assessment pack hash is invalid.")
+        signature_value = {
+            "release_id": expected_release_id,
+            "content_hash": row["content_hash"],
+            "manifest": manifest.model_dump(mode="json"),
+        }
+        try:
+            verify_json(signing_public_key_b64, signature_value, row["content_signature_b64"])
+        except ValueError as error:
+            raise ValueError("Stored assessment release signature is invalid.") from error
+        content_key = unwrap_release_content_key(
+            pack_master_key, expected_release_id, row["wrapped_content_key_b64"]
+        )
+        try:
+            plaintext = decrypt_pack(content_key, expected_release_id, encrypted)
+        except ValueError as error:
+            raise ValueError("Stored assessment pack encryption is invalid.") from error
+        _inspect_pack(plaintext, manifest, question_ids)
     return ReleaseSummary(
         release_id=row["release_id"],
         test_id=row["test_id"],
@@ -189,11 +476,26 @@ def _summary_from_row(connection: sqlite3.Connection, row: sqlite3.Row) -> Relea
     )
 
 
-def load_release_manifest(connection: sqlite3.Connection, release_id: str) -> ReleaseSummary:
+def load_release_manifest(
+    connection: sqlite3.Connection,
+    release_id: str,
+    *,
+    pack_dir: Path | None = None,
+    signing_public_key_b64: str | None = None,
+    pack_master_key: bytes | None = None,
+) -> ReleaseSummary:
+    _require_stored_release_id(release_id)
     row = _release_row(connection, release_id=release_id)
     if row is None:
         raise KeyError(f"Assessment release not found: {release_id}")
-    return _summary_from_row(connection, row)
+    return _summary_from_row(
+        connection,
+        row,
+        expected_release_id=release_id,
+        pack_dir=pack_dir,
+        signing_public_key_b64=signing_public_key_b64,
+        pack_master_key=pack_master_key,
+    )
 
 
 def prepare_release(
@@ -206,12 +508,22 @@ def prepare_release(
     signing_private_key_b64: str,
     pack_master_key: bytes,
     now_iso: str,
+    _created_artifact_paths: list[Path] | None = None,
 ) -> ReleaseSummary:
-    """Create one immutable release for a test, or return its existing release."""
+    pack_master_key = _require_key(pack_master_key, "Pack master key")
+    signing_public_key_b64 = _derive_public_key_b64(signing_private_key_b64)
+    if not connection.in_transaction:
+        connection.execute("BEGIN IMMEDIATE")
     existing = _release_row(connection, test_id=test_id)
     if existing is not None:
-        return _summary_from_row(connection, existing)
-
+        return _summary_from_row(
+            connection,
+            existing,
+            expected_release_id=existing["release_id"],
+            pack_dir=Path(pack_dir),
+            signing_public_key_b64=signing_public_key_b64,
+            pack_master_key=pack_master_key,
+        )
     test = connection.execute(
         "SELECT test_id, test_name FROM tests WHERE test_id = ?", (test_id,)
     ).fetchone()
@@ -219,12 +531,9 @@ def prepare_release(
         raise KeyError(f"Assessment test not found: {test_id}")
 
     question_payloads = _public_question_payloads(selected_questions)
-    validated_assets = _validated_assets(assets)
+    referenced_assets = _referenced_asset_names(question_payloads)
+    validated_assets = _validated_assets(assets, referenced_assets)
     asset_names = [name for name, _ in validated_assets]
-    missing_assets = _referenced_asset_names(question_payloads) - set(asset_names)
-    if missing_assets:
-        raise ValueError("Assessment questions reference missing assets: " + ", ".join(sorted(missing_assets)))
-
     release_id = str(uuid.uuid4())
     canonical_question_ids = [item["question_id"] for item in question_payloads]
     duration_seconds = len(canonical_question_ids) * 60
@@ -237,20 +546,32 @@ def prepare_release(
         asset_names=asset_names,
     )
     plaintext = _build_pack_payload(manifest, question_payloads, validated_assets)
-    content_key = os.urandom(32)
+    content_key = _require_key(os.urandom(32), "Release content key")
     encrypted = encrypt_pack(content_key, release_id, plaintext)
     content_hash = sha256_hex(encrypted)
-    manifest_payload = manifest.model_dump(mode="json")
     content_signature_b64 = sign_json(
         signing_private_key_b64,
-        {"release_id": release_id, "content_hash": content_hash, "manifest": manifest_payload},
+        {
+            "release_id": release_id,
+            "content_hash": content_hash,
+            "manifest": manifest.model_dump(mode="json"),
+        },
     )
     wrapped_content_key_b64 = wrap_release_content_key(pack_master_key, release_id, content_key)
     content_pack_filename = f"{release_id}.ksatpack"
     pack_dir = Path(pack_dir)
     pack_dir.mkdir(parents=True, exist_ok=True)
     pack_path = pack_dir / content_pack_filename
-    _atomic_write(pack_path, encrypted)
+    created_pack = _publish_exclusive(pack_path, encrypted)
+    if created_pack and _created_artifact_paths is not None:
+        _created_artifact_paths.append(pack_path)
+
+    def remove_owned_pack() -> None:
+        if not created_pack:
+            return
+        pack_path.unlink(missing_ok=True)
+        if _created_artifact_paths is not None:
+            _created_artifact_paths.remove(pack_path)
 
     connection.execute("SAVEPOINT prepare_assessment_release")
     try:
@@ -279,16 +600,40 @@ def prepare_release(
                 for canonical_order, question_id in enumerate(canonical_question_ids)
             ],
         )
-        connection.execute(
-            "UPDATE tests SET release_id = ? WHERE test_id = ?", (release_id, test_id)
+        updated = connection.execute(
+            "UPDATE tests SET release_id = ? WHERE test_id = ? AND release_id IS NULL",
+            (release_id, test_id),
         )
+        if updated.rowcount != 1:
+            raise sqlite3.IntegrityError("Assessment test already has a release.")
+    except sqlite3.IntegrityError:
+        connection.execute("ROLLBACK TO SAVEPOINT prepare_assessment_release")
+        connection.execute("RELEASE SAVEPOINT prepare_assessment_release")
+        remove_owned_pack()
+        winner = _release_row(connection, test_id=test_id)
+        if winner is not None:
+            return _summary_from_row(
+                connection,
+                winner,
+                expected_release_id=winner["release_id"],
+                pack_dir=pack_dir,
+                signing_public_key_b64=signing_public_key_b64,
+                pack_master_key=pack_master_key,
+            )
+        raise
     except Exception:
         connection.execute("ROLLBACK TO SAVEPOINT prepare_assessment_release")
         connection.execute("RELEASE SAVEPOINT prepare_assessment_release")
-        pack_path.unlink(missing_ok=True)
+        remove_owned_pack()
         raise
     connection.execute("RELEASE SAVEPOINT prepare_assessment_release")
-    return load_release_manifest(connection, release_id)
+    return load_release_manifest(
+        connection,
+        release_id,
+        pack_dir=pack_dir,
+        signing_public_key_b64=signing_public_key_b64,
+        pack_master_key=pack_master_key,
+    )
 
 
 __all__ = [

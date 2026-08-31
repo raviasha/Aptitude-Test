@@ -3,10 +3,11 @@
 import base64
 import hashlib
 import json
+import re
 from datetime import datetime
-from typing import Any, Sequence
+from typing import Any, Literal, Sequence
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 PROTOCOL_VERSION = 1
@@ -43,6 +44,89 @@ class ClientSession(BaseModel):
     expires_in_seconds: int = 43_200
 
 
+_PUBLIC_ASSET_URL = re.compile(r"assets/[0-9a-f]{64}\.(?:png|jpe?g|webp|svg)\Z")
+_PUBLIC_OPTION_KEYS = frozenset(("A", "B", "C", "D", "E"))
+PublicScalar = str | int | float
+
+
+class PublicMediaItem(ProtocolModel):
+    url: str
+    alt_text: str
+    width: int = Field(gt=0, le=10_000)
+    height: int = Field(gt=0, le=10_000)
+
+    @field_validator("url")
+    @classmethod
+    def embedded_url_only(cls, value: str) -> str:
+        if not _PUBLIC_ASSET_URL.fullmatch(value):
+            raise ValueError("Public media URLs must name embedded pack assets.")
+        return value
+
+
+class PublicDisplayMedia(ProtocolModel):
+    question: PublicMediaItem | None = None
+    options: dict[str, PublicMediaItem] = Field(default_factory=dict)
+
+    @field_validator("options")
+    @classmethod
+    def option_media_keys(cls, value: dict[str, PublicMediaItem]) -> dict[str, PublicMediaItem]:
+        if set(value) - _PUBLIC_OPTION_KEYS:
+            raise ValueError("Public option media must use option keys A-E.")
+        return value
+
+
+class PublicImageStimulus(ProtocolModel):
+    id: str
+    type: Literal["image"]
+    title: str = ""
+    alt_text: str = ""
+    url: str
+
+    @field_validator("url")
+    @classmethod
+    def embedded_url_only(cls, value: str) -> str:
+        if not _PUBLIC_ASSET_URL.fullmatch(value):
+            raise ValueError("Public stimulus URLs must name embedded pack assets.")
+        return value
+
+
+class PublicChartSeries(ProtocolModel):
+    name: str = ""
+    label: str = ""
+    values: list[int | float]
+
+
+class PublicChartContent(ProtocolModel):
+    chart_type: Literal["bar", "line"] | None = None
+    kind: Literal["bar", "line"] | None = None
+    labels: list[PublicScalar]
+    series: list[PublicChartSeries]
+
+
+class PublicChartStimulus(ProtocolModel):
+    id: str
+    type: Literal["chart"]
+    title: str = ""
+    alt_text: str = ""
+    content: PublicChartContent
+
+
+class PublicTableContent(ProtocolModel):
+    columns: list[PublicScalar]
+    rows: list[list[PublicScalar]]
+
+
+class PublicTableStimulus(ProtocolModel):
+    id: str
+    type: Literal["table"]
+    title: str = ""
+    alt_text: str = ""
+    content: PublicTableContent
+
+
+PublicStimulus = PublicImageStimulus | PublicChartStimulus | PublicTableStimulus
+
+
 class PublicQuestion(ProtocolModel):
     question_id: int
     source_key: str
@@ -52,8 +136,15 @@ class PublicQuestion(ProtocolModel):
     question_text: str
     question_html: str = ""
     options: dict[str, str]
-    stimulus: dict[str, Any] | None = None
-    display_media: dict[str, Any] = Field(default_factory=dict)
+    stimulus: PublicStimulus | None = None
+    display_media: PublicDisplayMedia = Field(default_factory=PublicDisplayMedia)
+
+    @field_validator("options")
+    @classmethod
+    def public_option_keys(cls, value: dict[str, str]) -> dict[str, str]:
+        if set(value) not in (set("ABCD"), set("ABCDE")) or any(not item.strip() for item in value.values()):
+            raise ValueError("Public questions require non-empty A-D options with optional E.")
+        return value
 
 
 class ReleaseSummary(ProtocolModel):

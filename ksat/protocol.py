@@ -35,6 +35,7 @@ _MATH_FLOOR_DIVISION_CLASS_TOKEN = re.compile(
     re.escape(MATH_FLOOR_DIVISION_CLASS), re.IGNORECASE
 )
 _ORDINARY_CODE_CLOSE = re.compile(r"</\s*code\s*>\Z", re.IGNORECASE)
+_MAX_MARKUP_DECODE_ROUNDS = 8
 
 
 def _markup_structure_signature(value: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
@@ -65,16 +66,18 @@ def _normalize_markup_detection(value: str) -> str:
 def _validate_stable_markup_structure(fragment: str) -> None:
     raw_signature = _markup_structure_signature(fragment)
     decoded = fragment
-    for _ in range(8):
+    for _ in range(_MAX_MARKUP_DECODE_ROUNDS):
         normalized = _normalize_markup_detection(decoded)
         if _markup_structure_signature(normalized) != raw_signature:
             raise ValueError(MATH_FLOOR_DIVISION_ERROR)
+        # Entity and percent decoding are non-expanding relative to their encoded source.
         expanded = html.unescape(unquote(decoded))
         if _markup_structure_signature(expanded) != raw_signature:
             raise ValueError(MATH_FLOOR_DIVISION_ERROR)
         if expanded == decoded:
-            break
+            return
         decoded = expanded
+    raise ValueError(MATH_FLOOR_DIVISION_ERROR)
 
 
 def _contains_normalized_double_slash(value: str) -> bool:

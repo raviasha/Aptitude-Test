@@ -27,8 +27,84 @@ from ksat.coordinator.releases import (
 )
 from ksat.coordinator.schema import migrate_distributed_schema
 from ksat.crypto import decrypt_pack, encrypt_pack, generate_ed25519_keypair, sign_json, verify_json
-from ksat.protocol import PublicQuestion, canonical_json
+from ksat.protocol import (
+    MATH_FLOOR_DIVISION_ERROR,
+    PublicQuestion,
+    canonical_json,
+    canonicalize_math_floor_division_markup,
+)
 from ksat.sqlite import connect_sqlite
+
+
+_MARKUP_DECODE_BOUND = 8
+
+
+def nested_pseudo_math(family, rounds):
+    pseudo = '<code class="math-floor-division">c // d</code>'
+    if family == "control-separated":
+        pseudo = (
+            '<c\u200do\u200dd\u200de class="math-floor-\u200ddivision">c // d'
+            '</c\u200do\u200dd\u200de>'
+        )
+        family = "entity"
+    if family == "entity":
+        encoded = "".join(f"&#{ord(character)};" for character in pseudo)
+    elif family == "percent":
+        encoded = "".join(f"%{byte:02X}" for byte in pseudo.encode("utf-8"))
+    elif family == "alternating":
+        parts = []
+        for index, character in enumerate(pseudo):
+            if index % 2:
+                parts.extend(f"%{byte:02X}" for byte in character.encode("utf-8"))
+            else:
+                parts.append(f"&#{ord(character)};")
+        encoded = "".join(parts)
+    else:
+        raise AssertionError(f"Unknown pseudo-markup family: {family}")
+    for _ in range(rounds - 1):
+        if family == "percent":
+            encoded = encoded.replace("%", "%25")
+        else:
+            encoded = encoded.replace("&", "&amp;").replace("%", "&#37;")
+    return encoded
+
+
+def one_question_answer_key(bank_name="Decode boundary bank"):
+    return json.dumps({
+        "bank_name": bank_name,
+        "questions": [{
+            "key": "bad-q",
+            "category": "Quantitative Aptitude",
+            "chapter": "Arithmetic",
+            "difficulty": "Easy",
+            "options": {"A": "1", "B": "2", "C": "3", "D": "4"},
+            "correct_answer": "A",
+        }],
+    })
+
+
+def pseudo_math_depth_matrix():
+    valid_math = '<code class="math-floor-division">a // b</code>'
+    cases = []
+    for family in ("entity", "percent", "alternating", "control-separated"):
+        for label, rounds in (
+            ("below", _MARKUP_DECODE_BOUND - 1),
+            ("exact", _MARKUP_DECODE_BOUND),
+            ("one-over", _MARKUP_DECODE_BOUND + 1),
+            ("deep", 64),
+        ):
+            cases.append((f"{family}-{label}", nested_pseudo_math(family, rounds)))
+    for label, rounds in (
+        ("below", _MARKUP_DECODE_BOUND - 1),
+        ("exact", _MARKUP_DECODE_BOUND),
+        ("one-over", _MARKUP_DECODE_BOUND + 1),
+        ("deep", 64),
+    ):
+        cases.append((
+            f"mixed-valid-and-pseudo-{label}",
+            valid_math + "<p>" + nested_pseudo_math("entity", rounds) + "</p>",
+        ))
+    return tuple(cases)
 
 
 class AssessmentReleaseTests(unittest.TestCase):
@@ -627,6 +703,36 @@ class AssessmentReleaseTests(unittest.TestCase):
         reloaded = self.verified_load(release.release_id)
         self.assertEqual(release.content_hash, reloaded.content_hash)
 
+    def test_markup_decode_bound_requires_a_fixed_point_and_rejects_hidden_pseudo_elements(self):
+        for label, fragment in pseudo_math_depth_matrix():
+            with self.subTest(label=label):
+                with self.assertRaisesRegex(ValueError, "exact explicit math markup"):
+                    canonicalize_math_floor_division_markup(fragment)
+
+        safe_prose = "AT&T retained 50% of 3 < 5 examples."
+        converged = "".join(f"&#{ord(character)};" for character in safe_prose)
+        for _ in range(_MARKUP_DECODE_BOUND - 2):
+            converged = converged.replace("&", "&amp;")
+        self.assertEqual(converged, canonicalize_math_floor_division_markup(converged))
+
+        non_converged = converged.replace("&", "&amp;")
+        with self.assertRaisesRegex(ValueError, "exact explicit math markup"):
+            canonicalize_math_floor_division_markup(non_converged)
+
+    def test_benign_markup_convergence_preserves_supported_content(self):
+        source = (
+            '<p>AT&amp;T retained 50%2C while 3 &lt; 5. '
+            '<code>alpha &amp; beta</code>.</p>'
+            '<code class="math-floor-division">total // count</code>'
+            '<code class="math-floor-division">6 // 2</code>'
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1">'
+            '<path d="M0 0"></path></svg>'
+        )
+        expected = source.replace("total // count", "⌊total ÷ count⌋").replace(
+            "6 // 2", "⌊6 ÷ 2⌋"
+        )
+        self.assertEqual(expected, canonicalize_math_floor_division_markup(source))
+
     def test_malformed_math_floor_division_markup_is_rejected_without_artifacts(self):
         malformed = (
             '<code class="math-floor-division">a // b // c</code>',
@@ -655,6 +761,8 @@ class AssessmentReleaseTests(unittest.TestCase):
             '<span><code class="math-floor-division">a // b</span></code>',
             '<code class="math-floor-division">a // b</code><code>',
             f'<code class="math-floor-division">{"a" * 65} // b</code>',
+            nested_pseudo_math("entity", _MARKUP_DECODE_BOUND + 1),
+            nested_pseudo_math("percent", 64),
         )
         for test_id, question_html in enumerate(malformed, start=160):
             with self.subTest(question_html=question_html):
@@ -941,12 +1049,17 @@ class AssessmentReleaseTests(unittest.TestCase):
             manifest = json.loads(archive.read("manifest.json"))
             asset_bytes = {name: archive.read(name) for name in manifest["asset_names"]}
 
-        for malformed_close in ("</CODE>", "</code x>", "</code></code>"):
-            with self.subTest(malformed_close=malformed_close):
+        malformed_sources = tuple(
+            '<code class="math-floor-division">left // right' + malformed_close
+            for malformed_close in ("</CODE>", "</code x>", "</code></code>")
+        ) + (
+            nested_pseudo_math("entity", _MARKUP_DECODE_BOUND + 1),
+            nested_pseudo_math("alternating", 64),
+        )
+        for malicious_html in malformed_sources:
+            with self.subTest(malicious_html=malicious_html):
                 questions = json.loads(json.dumps(original_questions))
-                questions[0]["question_html"] = (
-                    '<code class="math-floor-division">left // right' + malformed_close
-                )
+                questions[0]["question_html"] = malicious_html
                 self.install_resigned_questions(
                     release, manifest, asset_bytes, canonical_json(questions)
                 )
@@ -1550,6 +1663,77 @@ class FacultyReleaseFlowTests(unittest.TestCase):
                 current_packs = set(pack_dir.glob("*.ksatpack")) if pack_dir.exists() else set()
                 self.assertEqual(baseline_packs, current_packs)
 
+    def test_parse_question_bank_rejects_decode_depth_matrix(self):
+        for label, fragment in pseudo_math_depth_matrix():
+            with self.subTest(label=label):
+                with self.assertRaises(app.HTTPException) as captured:
+                    app.parse_question_bank(
+                        f'<section data-question-key="bad-q">{fragment}</section>',
+                        one_question_answer_key(f"Rejected parse {label}"),
+                    )
+                self.assertEqual(400, captured.exception.status_code)
+                self.assertEqual(MATH_FLOOR_DIVISION_ERROR, captured.exception.detail)
+
+    def test_import_routes_reject_decode_depth_matrix_before_persistence(self):
+        pack_dir = app.assessment_packs_dir()
+
+        def persisted_state():
+            with app.db() as connection:
+                counts = tuple(connection.execute(
+                    f"SELECT COUNT(*) FROM {table}"
+                ).fetchone()[0] for table in (
+                    "question_banks", "questions", "assessment_releases"
+                ))
+            packs = set(pack_dir.glob("*.ksatpack")) if pack_dir.exists() else set()
+            return counts, packs
+
+        for index, (label, fragment) in enumerate(pseudo_math_depth_matrix()):
+            with self.subTest(route="multipart", label=label):
+                before = persisted_state()
+                response = self.client.post(
+                    "/api/admin/question-banks/import",
+                    files={
+                        "html_file": (
+                            f"decode-bound-{index}.html",
+                            f'<section data-question-key="bad-q">{fragment}</section>',
+                            "text/html",
+                        ),
+                        "answer_key_file": (
+                            f"decode-bound-{index}.json",
+                            one_question_answer_key(f"Rejected route {index}"),
+                            "application/json",
+                        ),
+                    },
+                )
+                self.assertEqual(400, response.status_code, response.text)
+                self.assertEqual(MATH_FLOOR_DIVISION_ERROR, response.json()["detail"])
+                self.assertEqual(before, persisted_state())
+
+        staged_html = app.QUESTION_BANKS_DIR / "decode-bound-staged.html"
+        staged_answer = app.QUESTION_BANKS_DIR / "decode-bound-staged.json"
+        staged_html.parent.mkdir(parents=True, exist_ok=True)
+        staged_html.write_text(
+            '<section data-question-key="bad-q">'
+            '<code class="math-floor-division">a // b</code><p>'
+            + nested_pseudo_math("alternating", 64)
+            + "</p></section>",
+            encoding="utf-8",
+        )
+        staged_answer.write_text(
+            one_question_answer_key("Rejected deep staged route"), encoding="utf-8"
+        )
+        before = persisted_state()
+        response = self.client.post(
+            "/api/admin/question-banks/import-from-folder",
+            json={
+                "html_filename": staged_html.name,
+                "answer_key_filename": staged_answer.name,
+            },
+        )
+        self.assertEqual(400, response.status_code, response.text)
+        self.assertEqual(MATH_FLOOR_DIVISION_ERROR, response.json()["detail"])
+        self.assertEqual(before, persisted_state())
+
     def test_html_pair_import_rejects_decoded_code_pseudo_markup_before_writes(self):
         valid_math = '<code class="math-floor-division">a // b</code>'
         pseudo_math = '&lt;code class="math-floor-division"&gt;c // d&lt;/code&gt;'
@@ -1663,6 +1847,7 @@ class FacultyReleaseFlowTests(unittest.TestCase):
             '<section data-question-key="math-one"><p>Compute '
             '<code class="math-floor-division">total // count</code>.</p>'
             '<p>AT&amp;T uses 3 &lt; 5; <code>alpha &amp; beta</code>.</p>'
+            '<p>Discount token 50%2C stays ordinary prose.</p>'
             '<code>ordinary ÷ code</code><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1">'
             '<path d="M0 0"></path></svg></section>'
             '<section data-question-key="math-two"><div>'
@@ -1708,7 +1893,8 @@ class FacultyReleaseFlowTests(unittest.TestCase):
         self.assertEqual(["math-one", "math-two"], [row["source_key"] for row in stored])
         self.assertEqual(["B", "D"], [row["correct_answer"] for row in stored])
         self.assertEqual(
-            "Compute ⌊total ÷ count⌋ . AT&T uses 3 < 5; alpha & beta . ordinary ÷ code",
+            "Compute ⌊total ÷ count⌋ . AT&T uses 3 < 5; alpha & beta . "
+            "Discount token 50%2C stays ordinary prose. ordinary ÷ code",
             stored[0]["question_text"],
         )
         self.assertIn(
@@ -1717,6 +1903,7 @@ class FacultyReleaseFlowTests(unittest.TestCase):
         )
         self.assertIn("<code>ordinary ÷ code</code>", stored[0]["question_html"])
         self.assertIn("AT&amp;T uses 3 &lt; 5", stored[0]["question_html"])
+        self.assertIn("Discount token 50%2C stays ordinary prose.", stored[0]["question_html"])
         self.assertIn("<code>alpha &amp; beta</code>", stored[0]["question_html"])
         self.assertIn(
             '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1">',

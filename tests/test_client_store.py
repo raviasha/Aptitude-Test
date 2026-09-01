@@ -135,6 +135,7 @@ class ClientStoreTests(unittest.TestCase):
         self._reopen()
         active = self.store.load_attempt(self.attempt_id)
         self.assertEqual({3: "B", 1: None, 2: None}, active.responses)
+        self.assertEqual(3, active.current_question_id)
         self.assertEqual(1499, active.remaining_seconds)
         self.assertEqual(self.now + timedelta(minutes=5), active.last_wall_time)
         self.assertEqual((IntegrityEvent(event_type="focus_lost", occurred_at=self.now),), self.store.integrity_events(self.attempt_id))
@@ -156,6 +157,80 @@ class ClientStoreTests(unittest.TestCase):
         self.assertEqual("acknowledged", self.store.load_attempt(self.attempt_id).state)
         self.assertEqual(self.receipt, self.store.load_attempt(self.attempt_id).receipt)
         self.assertEqual([], self.store.pending_submissions())
+
+    def test_current_question_position_defaults_persists_and_rejects_corruption(self):
+        created = self._cache_and_create()
+        self.assertEqual(3, created.current_question_id)
+        self.store.save_position(self.attempt_id, 1)
+        self._reopen()
+        self.assertEqual(1, self.store.load_attempt(self.attempt_id).current_question_id)
+        with self.assertRaises(ValueError):
+            self.store.save_position(self.attempt_id, 999)
+        self.store.connection.execute(
+            "UPDATE local_attempts SET current_question_id=999 WHERE attempt_id=?",
+            (self.attempt_id,),
+        )
+        self.store.connection.commit()
+        with self.assertRaisesRegex(ValueError, "Stored attempt data is invalid"):
+            self.store.load_attempt(self.attempt_id)
+
+    def test_position_change_and_seal_are_serialized_without_post_seal_mutation(self):
+        self._cache_and_create()
+        self.store.save_answer(self.attempt_id, 3, "B", saved_at=self.now)
+        self.store.record_integrity_event(
+            self.attempt_id, "focus_lost", occurred_at=self.now
+        )
+        barrier = threading.Barrier(2)
+        outcomes = []
+
+        def move():
+            barrier.wait()
+            try:
+                self.store.save_position(self.attempt_id, 1)
+            except AttemptSealedError:
+                outcomes.append("sealed")
+            else:
+                outcomes.append("moved")
+
+        def seal():
+            barrier.wait()
+            self.store.seal_attempt(
+                self.attempt_id, self._bundle(), sealed_at=self.deadline
+            )
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = (pool.submit(move), pool.submit(seal))
+            for future in futures:
+                future.result(timeout=5)
+        record = self.store.load_attempt(self.attempt_id)
+        self.assertEqual("sealed_pending", record.state)
+        self.assertIn(record.current_question_id, record.question_order)
+        self.assertIn(outcomes, (["moved"], ["sealed"]))
+        with self.assertRaises(AttemptSealedError):
+            self.store.save_position(self.attempt_id, 2)
+
+    def test_schema_migrates_existing_attempt_table_with_position_column(self):
+        self.store.close()
+        self.database_path.unlink()
+        connection = sqlite3.connect(self.database_path)
+        connection.execute(
+            """CREATE TABLE local_attempts (
+               attempt_id TEXT PRIMARY KEY, student_id TEXT NOT NULL,
+               release_id TEXT NOT NULL, ticket_json TEXT NOT NULL,
+               question_order_json TEXT NOT NULL, state TEXT NOT NULL,
+               deadline TEXT NOT NULL, remaining_seconds INTEGER NOT NULL,
+               last_wall_time TEXT NOT NULL, created_at TEXT NOT NULL,
+               sealed_at TEXT, sealed_bundle_json TEXT, receipt_json TEXT
+            )"""
+        )
+        connection.commit()
+        connection.close()
+        self.store = ClientStore(self.database_path)
+        columns = {
+            row["name"]
+            for row in self.store.connection.execute("PRAGMA table_info(local_attempts)")
+        }
+        self.assertIn("current_question_id", columns)
 
     def test_timestamps_persist_in_utc_and_due_filter_compares_instants(self):
         offset = timezone(timedelta(hours=5, minutes=30))

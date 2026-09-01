@@ -275,6 +275,21 @@ class ClientRuntimeTests(unittest.TestCase):
         self.assertEqual(answered.responses[7], "B")
         self.assertEqual(self._reopen().recover().responses[7], "B")
 
+    def test_question_position_is_local_validated_and_survives_recovery(self):
+        started = self._prepare_and_start()
+        self.assertEqual(started.question_order[0], started.current_question_id)
+        target = started.question_order[1]
+        moved = self.runtime.position(target)
+        self.assertEqual(target, moved.current_question_id)
+        self.runtime = self._reopen()
+        recovered = self.runtime.recover()
+        self.assertEqual(target, recovered.current_question_id)
+        with self.assertRaises(ValueError):
+            self.runtime.position(999)
+        self.runtime.submit()
+        with self.assertRaises(AttemptSealedError):
+            self.runtime.position(started.question_order[0])
+
     def test_live_monotonic_and_restart_bounds_never_extend_remaining_time(self):
         self._prepare_and_start()
         self.clock.advance(300)

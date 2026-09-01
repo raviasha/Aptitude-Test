@@ -3,6 +3,7 @@ import os
 import re
 import sqlite3
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 from dataclasses import dataclass
@@ -27,6 +28,7 @@ class FakeSnapshot:
     responses: dict[int, str | None] = None
     remaining_seconds: int = 1200
     violations: int = 0
+    current_question_id: int = 7
 
     def __post_init__(self):
         if self.responses is None:
@@ -78,6 +80,7 @@ class FakeStore:
             receipt=self.receipt,
             ticket=SimpleNamespace(ticket=SimpleNamespace(student_id="S100")),
             last_wall_time=NOW,
+            current_question_id=self.snapshot.current_question_id,
         )
 
     def verified_pack(self, release_id, content_hash=None):
@@ -100,7 +103,9 @@ class FakeRuntime:
         self.violation_calls = []
         self.prepare_calls = []
         self.start_calls = []
+        self.position_calls = []
         self.seal_count = 0
+        self.expire_on_snapshot = False
         self.questions = {
             7: SimpleNamespace(
                 question_id=7,
@@ -138,6 +143,8 @@ class FakeRuntime:
             raise self.recovery_error
         if self.store.snapshot is None:
             raise RuntimeError("no active attempt")
+        if self.expire_on_snapshot and self.store.snapshot.state == "in_progress":
+            self.submit()
         return self.store.snapshot
 
     def question(self, question_id):
@@ -159,6 +166,11 @@ class FakeRuntime:
     def record_violation(self, event_type):
         self.violation_calls.append(event_type)
         self.store.snapshot.violations += 1
+        return self.store.snapshot
+
+    def position(self, question_id):
+        self.position_calls.append(question_id)
+        self.store.snapshot.current_question_id = question_id
         return self.store.snapshot
 
     def submit(self):
@@ -346,6 +358,93 @@ class ClientAppApiTests(unittest.TestCase):
         self.assertEqual(before, self.snapshot.responses)
         self.assertEqual(0, self.runtime.seal_count)
 
+    def test_origin_must_normalize_to_the_exact_loopback_host(self):
+        before = dict(self.snapshot.responses)
+        rejected = (
+            ("localhost:8010", "http://127.0.0.1:8010"),
+            ("127.0.0.1:8010", "http://localhost:8010"),
+            ("localhost:8010", "null"),
+            ("localhost:8010", "http://localhost:8010/path"),
+            ("localhost:8010", "http://user@localhost:8010"),
+            ("localhost.evil:8010", "http://localhost.evil:8010"),
+            ("localhost:", "http://localhost"),
+        )
+        for host, origin in rejected:
+            with self.subTest(host=host, origin=origin):
+                response = self.client.put(
+                    f"/api/attempts/{ATTEMPT_ID}/responses/7",
+                    json={"answer": "B"},
+                    headers={
+                        **self.mutation_headers,
+                        "Host": host,
+                        "Origin": origin,
+                    },
+                )
+                self.assertIn(response.status_code, (400, 403))
+        self.assertEqual([], self.runtime.answer_calls)
+        self.assertEqual(before, self.snapshot.responses)
+
+        accepted = (
+            ("LOCALHOST:80", "HTTP://LOCALHOST"),
+            ("localhost", "http://localhost:80"),
+            ("[::1]:8010", "http://[::1]:8010"),
+        )
+        for host, origin in accepted:
+            with self.subTest(host=host, origin=origin):
+                response = self.client.put(
+                    f"/api/attempts/{ATTEMPT_ID}/responses/7",
+                    json={"answer": "B"},
+                    headers={
+                        **self.mutation_headers,
+                        "Host": host,
+                        "Origin": origin,
+                    },
+                )
+                self.assertEqual(200, response.status_code)
+
+    def test_polling_expiry_wakes_once_but_ordinary_polls_do_not(self):
+        initial_wakes = self.outbox.wakes
+        for _ in range(2):
+            response = self.client.get(
+                f"/api/attempts/{ATTEMPT_ID}",
+                headers={"Host": "127.0.0.1:8010"},
+            )
+            self.assertEqual("in_progress", response.json()["state"])
+        self.assertEqual(initial_wakes, self.outbox.wakes)
+
+        self.events.clear()
+        self.runtime.expire_on_snapshot = True
+        expired = self.client.get(
+            f"/api/attempts/{ATTEMPT_ID}",
+            headers={"Host": "127.0.0.1:8010"},
+        )
+        self.assertEqual("sealed_pending", expired.json()["state"])
+        self.assertEqual(["seal", "wake"], self.events)
+        first_wake_count = self.outbox.wakes
+        for _ in range(3):
+            self.client.get(
+                f"/api/attempts/{ATTEMPT_ID}",
+                headers={"Host": "127.0.0.1:8010"},
+            )
+        self.assertEqual(first_wake_count, self.outbox.wakes)
+
+    def test_explicit_recovery_observes_durable_seal_and_wakes_once(self):
+        self.events.clear()
+        self.snapshot.state = "sealed_pending"
+        self.store.pending = [SimpleNamespace(
+            attempt_id=ATTEMPT_ID,
+            retry_count=0,
+            next_attempt_at=NOW,
+            last_error=None,
+            status="pending",
+        )]
+        context = self.app.state.client_context
+        recovered = context.recover()
+        self.assertEqual("sealed_pending", recovered.state)
+        self.assertEqual(["wake"], self.events)
+        context.recover()
+        self.assertEqual(["wake"], self.events)
+
     def test_submit_seals_before_worker_wake_and_never_calls_coordinator(self):
         self.coordinator.calls.clear()
         self.events.clear()
@@ -376,6 +475,31 @@ class ClientAppApiTests(unittest.TestCase):
         self.assertEqual(ATTEMPT_ID, state.json()["attempt"]["attempt_id"])
         self.assertEqual(1, self.runtime.recover_count)
         self.assertEqual(1, self.outbox.starts)
+
+    def test_position_route_is_local_attempt_bound_and_rejects_sealed_changes(self):
+        moved = self.client.put(
+            f"/api/attempts/{ATTEMPT_ID}/position",
+            json={"question_id": 3},
+            headers=self.mutation_headers,
+        )
+        self.assertEqual(200, moved.status_code)
+        self.assertEqual(3, moved.json()["current_question_id"])
+        self.assertEqual([3], self.runtime.position_calls)
+        self.assertEqual([], self.coordinator.calls)
+        cross = self.client.put(
+            f"/api/attempts/{OTHER_ATTEMPT_ID}/position",
+            json={"question_id": 7},
+            headers=self.mutation_headers,
+        )
+        self.assertEqual(409, cross.status_code)
+        self.snapshot.state = "sealed_pending"
+        sealed = self.client.put(
+            f"/api/attempts/{ATTEMPT_ID}/position",
+            json={"question_id": 7},
+            headers=self.mutation_headers,
+        )
+        self.assertEqual(409, sealed.status_code)
+        self.assertEqual([3], self.runtime.position_calls)
 
     def test_expiry_at_startup_is_reported_as_durably_sealed(self):
         self.snapshot.state = "sealed_pending"
@@ -843,6 +967,269 @@ class ClientOwnedLifecycleTests(unittest.TestCase):
             self.assertEqual(1, coordinator.closed)
             self.assertEqual(1, store.closed)
 
+
+class ClientPrefetchLifecycleTests(unittest.TestCase):
+    @staticmethod
+    def _entry(release_id):
+        descriptor = SimpleNamespace(
+            release_id=release_id,
+            content_hash="a" * 64,
+            content_pack_filename=f"{release_id}.ksatpack",
+        )
+        return SimpleNamespace(
+            release_id=release_id,
+            filename=f"{release_id}.ksatpack",
+            content_hash="a" * 64,
+            descriptor=descriptor,
+        )
+
+    def test_blocking_prefetch_shutdown_waits_before_closing_and_leaks_no_thread(self):
+        from client_app import ClientServices, create_client_app
+
+        entered = threading.Event()
+        release = threading.Event()
+        coordinator = FakeCoordinator()
+
+        def blocking_catalog():
+            entered.set()
+            self.assertTrue(release.wait(5))
+            return []
+
+        coordinator.prefetch_catalog = blocking_catalog
+        store = FakeStore(None)
+        services = ClientServices(
+            FakeIdentityStore(), store, FakeRuntime(store), coordinator,
+            FakeOutbox(), owns_resources=True, background_prefetch=True,
+        )
+        context = create_client_app(services).state.client_context
+        context.initialize()
+        self.assertTrue(entered.wait(2))
+        shutdown_started = threading.Event()
+
+        def shutdown():
+            shutdown_started.set()
+            context.shutdown()
+
+        worker = threading.Thread(target=shutdown)
+        worker.start()
+        self.assertTrue(shutdown_started.wait(1))
+        worker.join(0.1)
+        self.assertTrue(worker.is_alive())
+        self.assertEqual(0, coordinator.closed)
+        self.assertEqual(0, store.closed)
+        release.set()
+        worker.join(5)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(1, coordinator.closed)
+        self.assertEqual(1, store.closed)
+        self.assertIsNotNone(context._prefetch_thread)
+        self.assertFalse(context._prefetch_thread.is_alive())
+
+    def test_prefetch_timeout_retains_owned_resources_until_worker_quiesces(self):
+        from client_app import ClientServices, create_client_app
+
+        entered = threading.Event()
+        release = threading.Event()
+        coordinator = FakeCoordinator()
+        coordinator.request_timeout_seconds = 0.05
+
+        def blocking_catalog():
+            entered.set()
+            release.wait(5)
+            return []
+
+        coordinator.prefetch_catalog = blocking_catalog
+        store = FakeStore(None)
+        services = ClientServices(
+            FakeIdentityStore(), store, FakeRuntime(store), coordinator,
+            FakeOutbox(), owns_resources=True, background_prefetch=True,
+        )
+        context = create_client_app(services).state.client_context
+        context.initialize()
+        self.assertTrue(entered.wait(2))
+        context.shutdown()
+        self.assertEqual(0, coordinator.closed)
+        self.assertEqual(0, store.closed)
+        self.assertTrue(context._prefetch_thread.is_alive())
+        release.set()
+        context._prefetch_thread.join(2)
+        self.assertFalse(context._prefetch_thread.is_alive())
+        context.shutdown()
+        self.assertEqual(1, coordinator.closed)
+        self.assertEqual(1, store.closed)
+
+    def test_cancellation_between_catalog_entries_stops_before_prepare_or_next_entry(self):
+        from client_app import ClientApiProblem, ClientServices, create_client_app
+
+        first = self._entry(RELEASE_ID)
+        second = self._entry("66666666-6666-4666-8666-666666666666")
+        coordinator = FakeCoordinator()
+        coordinator.catalog = [first, second]
+        store = FakeStore(None)
+        runtime = FakeRuntime(store)
+        services = ClientServices(
+            FakeIdentityStore(), store, runtime, coordinator, FakeOutbox()
+        )
+        context = create_client_app(services).state.client_context
+        context.initialize()
+        original_download = coordinator.download_pack
+
+        def cancel_after_download(entry, path):
+            result = original_download(entry, path)
+            context._prefetch_stop.set()
+            return result
+
+        coordinator.download_pack = cancel_after_download
+        with self.assertRaises(ClientApiProblem) as raised:
+            context.prefetch()
+        self.assertEqual("prefetch_cancelled", raised.exception.code)
+        downloads = [call for call in coordinator.calls if call[0] == "download"]
+        self.assertEqual(1, len(downloads))
+        self.assertIs(first, downloads[0][1])
+        self.assertEqual([], runtime.prepare_calls)
+        self.assertEqual(set(), context.ready_releases)
+        context.shutdown()
+
+    def test_url_update_waits_for_old_prefetch_and_never_mixes_generations(self):
+        from client_app import ClientServices, create_client_app
+
+        entered = threading.Event()
+        release = threading.Event()
+        old_entry = self._entry(RELEASE_ID)
+        coordinator = FakeCoordinator()
+        coordinator.catalog = [old_entry]
+        original_download = coordinator.download_pack
+
+        def blocking_download(entry, path):
+            entered.set()
+            self.assertTrue(release.wait(5))
+            return original_download(entry, path)
+
+        coordinator.download_pack = blocking_download
+        store = FakeStore(None)
+        runtime = FakeRuntime(store)
+        old_outbox = FakeOutbox()
+        services = ClientServices(
+            FakeIdentityStore(), store, runtime, coordinator, old_outbox,
+            cache_dir=Path(tempfile.mkdtemp()) / "packs",
+            background_prefetch=True,
+        )
+        saved = []
+        candidate_created = threading.Event()
+        candidates = []
+        replacement_outboxes = []
+        services.config_store = SimpleNamespace(
+            update_base_url=lambda value: saved.append(value)
+        )
+
+        def coordinator_factory(value):
+            candidate_created.set()
+            candidate = FakeCoordinator()
+            candidate.base_url = value
+            candidate.catalog = []
+            candidates.append(candidate)
+            return candidate
+
+        def outbox_factory(candidate):
+            worker = FakeOutbox()
+            worker.coordinator = candidate
+            replacement_outboxes.append(worker)
+            return worker
+
+        services.coordinator_factory = coordinator_factory
+        services.outbox_factory = outbox_factory
+        app = create_client_app(services)
+        client_context = TestClient(app, base_url="http://127.0.0.1:8010")
+        client = client_context.__enter__()
+        self.assertTrue(entered.wait(2))
+        page = client.get("/", headers={"Host": "127.0.0.1:8010"})
+        token = re.search(
+            r'<meta name="ksat-csrf" content="([A-Za-z0-9_-]+)">', page.text
+        ).group(1)
+        result = {}
+
+        def update():
+            result["response"] = client.post(
+                "/api/device/coordinator",
+                json={
+                    "base_url": "https://new.example.edu:9443",
+                    "confirmed": True,
+                },
+                headers={
+                    "Host": "127.0.0.1:8010",
+                    "Origin": "http://127.0.0.1:8010",
+                    "X-KSAT-CSRF": token,
+                },
+            )
+
+        update_thread = threading.Thread(target=update)
+        update_thread.start()
+        candidate_started_while_old_prefetch_blocked = candidate_created.wait(0.2)
+        release.set()
+        update_thread.join(5)
+        client_context.__exit__(None, None, None)
+        self.assertFalse(candidate_started_while_old_prefetch_blocked)
+        self.assertFalse(update_thread.is_alive())
+        self.assertEqual(200, result["response"].status_code)
+        self.assertEqual(["https://new.example.edu:9443"], saved)
+        self.assertIs(services.coordinator, candidates[0])
+        self.assertEqual([], runtime.prepare_calls)
+        self.assertNotIn(RELEASE_ID, app.state.client_context.ready_releases)
+        self.assertEqual(1, replacement_outboxes[0].wakes)
+
+    def test_url_update_timeout_keeps_old_generation_and_configuration(self):
+        from client_app import ClientServices, create_client_app
+
+        entered = threading.Event()
+        release = threading.Event()
+        coordinator = FakeCoordinator()
+        coordinator.request_timeout_seconds = 0.05
+
+        def blocking_catalog():
+            entered.set()
+            release.wait(5)
+            return []
+
+        coordinator.prefetch_catalog = blocking_catalog
+        store = FakeStore(None)
+        services = ClientServices(
+            FakeIdentityStore(), store, FakeRuntime(store), coordinator,
+            FakeOutbox(), background_prefetch=True,
+        )
+        saved = []
+        candidates = []
+        services.config_store = SimpleNamespace(
+            update_base_url=lambda value: saved.append(value)
+        )
+        services.coordinator_factory = lambda value: candidates.append(value)
+        services.outbox_factory = lambda candidate: FakeOutbox()
+        app = create_client_app(services)
+        client_context = TestClient(app, base_url="http://127.0.0.1:8010")
+        client = client_context.__enter__()
+        self.assertTrue(entered.wait(2))
+        page = client.get("/", headers={"Host": "127.0.0.1:8010"})
+        token = re.search(
+            r'<meta name="ksat-csrf" content="([A-Za-z0-9_-]+)">', page.text
+        ).group(1)
+        response = client.post(
+            "/api/device/coordinator",
+            json={"base_url": "https://new.example.edu:9443", "confirmed": True},
+            headers={
+                "Host": "127.0.0.1:8010",
+                "Origin": "http://127.0.0.1:8010",
+                "X-KSAT-CSRF": token,
+            },
+        )
+        self.assertEqual(503, response.status_code)
+        self.assertEqual("prefetch_busy", response.json()["problem"]["code"])
+        self.assertEqual([], saved)
+        self.assertEqual([], candidates)
+        self.assertIs(services.coordinator, coordinator)
+        self.assertEqual(0, coordinator.closed)
+        release.set()
+        app.state.client_context._prefetch_thread.join(2)
+        client_context.__exit__(None, None, None)
+
 class ClientCoordinatorReconfigurationTests(unittest.TestCase):
     def setUp(self):
         from client_app import ClientServices, create_client_app
@@ -919,6 +1306,7 @@ class ClientCoordinatorReconfigurationTests(unittest.TestCase):
         self.assertIs(self.services.coordinator, self.candidates[0])
         self.assertIs(self.services.outbox, self.new_outboxes[0])
         self.assertEqual(1, self.new_outboxes[0].starts)
+        self.assertEqual(1, self.new_outboxes[0].wakes)
         self.assertIn(("logout",), old.calls)
         self.assertEqual(1, self.outbox.stops)
         self.assertEqual(1, self.identity_store.loads)

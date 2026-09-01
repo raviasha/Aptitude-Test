@@ -31,6 +31,31 @@ function restoreSelection(_current, previous) {
   return { selected: previous, status: 'error' };
 }
 
+function saveStatusMessage(state) {
+  if (state === 'saving') return 'Saving locally…';
+  if (state === 'error') return 'Local save failed; selection restored';
+  return 'Saved locally';
+}
+
+async function persistOptimisticAnswer(attempt, questionId, selected, write, onState) {
+  const key = String(questionId);
+  const previous = attempt.responses[key] == null ? null : attempt.responses[key];
+  const optimistic = optimisticSelection(previous, selected);
+  attempt.responses[key] = optimistic.selected;
+  onState('saving');
+  try {
+    const saved = await write();
+    attempt.responses[key] = saved.selected_answer;
+    onState('saved');
+    return saved;
+  } catch (error) {
+    const restored = restoreSelection(optimistic, previous);
+    attempt.responses[key] = restored.selected;
+    onState('error');
+    throw error;
+  }
+}
+
 function setSafeText(element, value) {
   element.textContent = value == null ? '' : String(value);
 }
@@ -49,9 +74,11 @@ const exported = {
   assetUrl,
   canEdit,
   optimisticSelection,
+  persistOptimisticAnswer,
   problemMessage,
   problemMessages,
   restoreSelection,
+  saveStatusMessage,
   sealedMessage,
   setSafeText,
 };
@@ -91,6 +118,8 @@ if (typeof document !== 'undefined') {
     fullscreenReady: false,
     pollHandle: null,
     saving: false,
+    saveState: 'saved',
+    positionSaving: false,
   };
 
   async function request(path, options = {}) {
@@ -259,6 +288,7 @@ if (typeof document !== 'undefined') {
               method: 'POST', body: JSON.stringify({ confirmed: true }),
             });
             ui.fullscreenReady = false;
+            ui.saveState = 'saved';
             await enterFullscreen();
             renderAttempt(attempt);
           } catch (error) {
@@ -309,7 +339,12 @@ if (typeof document !== 'undefined') {
     elements.gate.hidden = true;
     elements.statusPanel.hidden = true;
     elements.assessmentPanel.hidden = false;
-    ui.questionIndex = Math.min(ui.questionIndex, attempt.questions.length - 1);
+    const storedIndex = attempt.questions.findIndex(
+      question => question.question_id === attempt.current_question_id,
+    );
+    ui.questionIndex = storedIndex >= 0
+      ? storedIndex
+      : Math.min(ui.questionIndex, attempt.questions.length - 1);
     const question = attempt.questions[ui.questionIndex];
     setSafeText(elements.progress, `Question ${ui.questionIndex + 1} of ${attempt.questions.length}`);
     setSafeText(elements.questionHeading, `Question ${ui.questionIndex + 1}`);
@@ -346,38 +381,66 @@ if (typeof document !== 'undefined') {
     elements.previous.disabled = ui.questionIndex === 0;
     elements.next.disabled = ui.questionIndex === attempt.questions.length - 1;
     elements.submit.disabled = false;
-    setSafeText(elements.saveStatus, 'Saved locally');
+    setSafeText(elements.saveStatus, saveStatusMessage(ui.saveState));
     startPolling();
   }
 
   async function saveAnswer(questionId, selected) {
     if (!canEdit(ui.state) || ui.saving) return;
-    const previous = ui.attempt.responses[String(questionId)] || null;
-    const optimistic = optimisticSelection(previous, selected);
-    ui.attempt.responses[String(questionId)] = optimistic.selected;
     ui.saving = true;
-    setSafeText(elements.saveStatus, 'Saving locally…');
-    renderAttempt(ui.attempt);
-    let saveFailed = false;
     try {
-      const saved = await request(`/api/attempts/${encodeURIComponent(ui.attempt.attempt_id)}/responses/${questionId}`, {
-        method: 'PUT', body: JSON.stringify({ answer: selected }),
-      });
-      ui.attempt.responses[String(questionId)] = saved.selected_answer;
-      setSafeText(elements.saveStatus, 'Saved locally');
+      await persistOptimisticAnswer(
+        ui.attempt,
+        questionId,
+        selected,
+        () => request(`/api/attempts/${encodeURIComponent(ui.attempt.attempt_id)}/responses/${questionId}`, {
+          method: 'PUT', body: JSON.stringify({ answer: selected }),
+        }),
+        state => {
+          ui.saveState = state;
+          renderAttempt(ui.attempt);
+        },
+      );
       announce('Answer saved locally.');
     } catch (error) {
-      saveFailed = true;
-      const restored = restoreSelection(optimistic, previous);
-      ui.attempt.responses[String(questionId)] = restored.selected;
       showProblem(error.problem);
+      announce(saveStatusMessage('error'), true);
     } finally {
       ui.saving = false;
       renderAttempt(ui.attempt);
-      setSafeText(
-        elements.saveStatus,
-        saveFailed ? 'Local save failed; selection restored' : 'Saved locally',
+    }
+  }
+
+  async function persistPosition(index) {
+    if (
+      !ui.attempt
+      || !canEdit(ui.state)
+      || ui.positionSaving
+      || index < 0
+      || index >= ui.attempt.questions.length
+    ) return;
+    const previousId = ui.attempt.current_question_id;
+    const target = ui.attempt.questions[index];
+    ui.positionSaving = true;
+    ui.attempt.current_question_id = target.question_id;
+    ui.questionIndex = index;
+    renderAttempt(ui.attempt);
+    try {
+      const saved = await request(
+        `/api/attempts/${encodeURIComponent(ui.attempt.attempt_id)}/position`,
+        {
+          method: 'PUT',
+          body: JSON.stringify({ question_id: target.question_id }),
+        },
       );
+      ui.attempt.current_question_id = saved.current_question_id;
+    } catch (error) {
+      ui.attempt.current_question_id = previousId;
+      showProblem(error.problem);
+    } finally {
+      ui.positionSaving = false;
+      renderAttempt(ui.attempt);
+      elements.questionHeading.focus();
     }
   }
 
@@ -414,7 +477,7 @@ if (typeof document !== 'undefined') {
   }
 
   async function pollAttempt() {
-    if (!ui.attempt) return;
+    if (!ui.attempt || ui.saving || ui.positionSaving) return;
     try {
       const attempt = await request(`/api/attempts/${encodeURIComponent(ui.attempt.attempt_id)}`);
       if (attempt.state === 'acknowledged_result') {
@@ -486,16 +549,12 @@ if (typeof document !== 'undefined') {
 
   elements.previous.addEventListener('click', () => {
     if (ui.questionIndex > 0) {
-      ui.questionIndex -= 1;
-      renderAttempt(ui.attempt);
-      elements.questionHeading.focus();
+      persistPosition(ui.questionIndex - 1);
     }
   });
   elements.next.addEventListener('click', () => {
     if (ui.attempt && ui.questionIndex < ui.attempt.questions.length - 1) {
-      ui.questionIndex += 1;
-      renderAttempt(ui.attempt);
-      elements.questionHeading.focus();
+      persistPosition(ui.questionIndex + 1);
     }
   });
   elements.submit.addEventListener('click', async () => {

@@ -74,6 +74,7 @@ class AttemptSnapshot:
     responses: dict[int, str | None]
     remaining_seconds: int
     violations: int
+    current_question_id: int
 
 
 @dataclass(frozen=True)
@@ -362,6 +363,25 @@ class AssessmentRuntime:
             self.store.save_answer(
                 record.attempt_id, question_id, selected_answer, saved_at=now
             )
+            return self._snapshot_record(self.store.load_attempt(record.attempt_id))
+
+    def position(self, question_id: int) -> AttemptSnapshot:
+        with self._lock:
+            record = self._current_record()
+            if record.state != "in_progress":
+                raise AttemptSealedError("The attempt is sealed and cannot be changed.")
+            if type(question_id) is not int or question_id not in record.question_order:
+                raise ValueError("Question is not part of this assessment release.")
+            remaining = self._remaining()
+            if remaining == 0:
+                self._seal(record)
+                raise AttemptSealedError("The assessment time has expired.")
+            now = self._trusted_now(record)
+            self.store.update_timer_checkpoint(
+                record.attempt_id, remaining, last_wall_time=now
+            )
+            self._last_checkpoint_monotonic = self._monotonic()
+            self.store.save_position(record.attempt_id, question_id)
             return self._snapshot_record(self.store.load_attempt(record.attempt_id))
 
     def record_violation(self, event_type: str) -> AttemptSnapshot:
@@ -694,6 +714,7 @@ class AssessmentRuntime:
             responses=dict(record.responses),
             remaining_seconds=record.remaining_seconds if remaining is None else remaining,
             violations=len(self.store.integrity_events(record.attempt_id)),
+            current_question_id=record.current_question_id,
         )
 
     def _seal(self, record: LocalAttemptRecord) -> AttemptSnapshot:

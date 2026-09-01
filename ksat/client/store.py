@@ -45,6 +45,7 @@ class LocalAttemptRecord:
     state: str
     deadline: datetime
     question_order: tuple[int, ...]
+    current_question_id: int
     responses: dict[int, str | None]
     remaining_seconds: int
     sealed_at: datetime | None
@@ -303,6 +304,7 @@ class ClientStore:
                   release_id TEXT NOT NULL,
                   ticket_json TEXT NOT NULL,
                   question_order_json TEXT NOT NULL,
+                  current_question_id INTEGER,
                   state TEXT NOT NULL CHECK (state IN ('in_progress', 'sealed_pending', 'acknowledged')),
                   deadline TEXT NOT NULL,
                   remaining_seconds INTEGER NOT NULL CHECK (remaining_seconds >= 0),
@@ -349,6 +351,14 @@ class ClientStore:
                     """ALTER TABLE submission_outbox
                        ADD COLUMN status TEXT NOT NULL DEFAULT 'pending'
                        CHECK (status IN ('pending', 'faculty_intervention_required'))"""
+                )
+            attempt_columns = {
+                row["name"]
+                for row in self.connection.execute("PRAGMA table_info(local_attempts)")
+            }
+            if "current_question_id" not in attempt_columns:
+                self.connection.execute(
+                    "ALTER TABLE local_attempts ADD COLUMN current_question_id INTEGER"
                 )
             self.connection.commit()
 
@@ -570,14 +580,16 @@ class ClientStore:
                     connection.execute(
                         """INSERT INTO local_attempts
                            (attempt_id, student_id, release_id, ticket_json, question_order_json,
-                            state, deadline, remaining_seconds, last_wall_time, created_at)
-                           VALUES (?, ?, ?, ?, ?, 'in_progress', ?, ?, ?, ?)""",
+                            current_question_id, state, deadline, remaining_seconds,
+                            last_wall_time, created_at)
+                           VALUES (?, ?, ?, ?, ?, ?, 'in_progress', ?, ?, ?, ?)""",
                         (
                             attempt.attempt_id,
                             attempt.student_id,
                             attempt.release_id,
                             ticket_json,
                             order_json,
+                            question_order[0],
                             deadline_iso,
                             remaining,
                             wall_iso,
@@ -661,15 +673,16 @@ class ClientStore:
                     connection.execute(
                         """INSERT INTO local_attempts
                            (attempt_id, student_id, release_id, ticket_json,
-                            question_order_json, state, deadline, remaining_seconds,
+                            question_order_json, current_question_id, state, deadline, remaining_seconds,
                             last_wall_time, created_at)
-                           VALUES (?, ?, ?, ?, ?, 'in_progress', ?, ?, ?, ?)""",
+                           VALUES (?, ?, ?, ?, ?, ?, 'in_progress', ?, ?, ?, ?)""",
                         (
                             attempt.attempt_id,
                             attempt.student_id,
                             attempt.release_id,
                             ticket_json,
                             order_json,
+                            question_order[0],
                             deadline_iso,
                             remaining,
                             wall_iso,
@@ -728,6 +741,9 @@ class ClientStore:
             ticket = _stored_model(row["ticket_json"], SignedAttemptTicket, message)
             _validate_ticket(ticket)
             order = self._question_order(row["question_order_json"], message)
+            current_question_id = row["current_question_id"]
+            if current_question_id is None:
+                current_question_id = order[0]
             deadline = _parse_time(row["deadline"], message)
             last_wall = _parse_time(row["last_wall_time"], message)
             _parse_time(row["created_at"], message)
@@ -748,6 +764,8 @@ class ClientStore:
                 or row["student_id"] != ticket.ticket.student_id
                 or deadline != ticket.ticket.deadline.astimezone(timezone.utc)
                 or row["state"] not in (*_ACTIVE_STATES, "acknowledged")
+                or type(current_question_id) is not int
+                or current_question_id not in order
                 or type(row["remaining_seconds"]) is not int
                 or row["remaining_seconds"] < 0
                 or (row["state"] == "in_progress" and sealed_at is not None)
@@ -825,6 +843,7 @@ class ClientStore:
                 state=row["state"],
                 deadline=deadline,
                 question_order=order,
+                current_question_id=current_question_id,
                 responses=response_map,
                 remaining_seconds=row["remaining_seconds"],
                 sealed_at=sealed_at,
@@ -899,6 +918,20 @@ class ClientStore:
                    ON CONFLICT(attempt_id, question_id) DO UPDATE SET
                      selected_answer=excluded.selected_answer, saved_at=excluded.saved_at""",
                 (attempt_id, question_id, selected_answer, saved_iso),
+            )
+
+    def save_position(self, attempt_id: str, question_id: int) -> None:
+        if type(question_id) is not int or question_id <= 0:
+            raise ValueError("Question identifier is invalid.")
+        with self._transaction() as connection:
+            row = self._editable(connection, attempt_id)
+            if question_id not in self._question_order(
+                row["question_order_json"], "Stored attempt data is invalid."
+            ):
+                raise ValueError("Question is not part of the local attempt.")
+            connection.execute(
+                "UPDATE local_attempts SET current_question_id=? WHERE attempt_id=?",
+                (question_id, attempt_id),
             )
 
     def record_integrity_event(

@@ -6,12 +6,14 @@ import base64
 import binascii
 import ipaddress
 import json
+import math
 import os
 import re
 import secrets
 import sqlite3
 import tempfile
 import threading
+import time
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -39,15 +41,6 @@ from ksat.client.store import AttemptSealedError, ClientStore
 _ROOT = Path(__file__).resolve().parent
 _CLIENT_STATIC = _ROOT / "static" / "client"
 _SHARED_STATIC = _ROOT / "static"
-_SAFE_HOSTS = frozenset({
-    "127.0.0.1", "127.0.0.1:8010", "localhost", "localhost:8010",
-    "[::1]", "[::1]:8010",
-})
-_SAFE_ORIGINS = frozenset({
-    "http://127.0.0.1", "http://127.0.0.1:8010",
-    "http://localhost", "http://localhost:8010",
-    "http://[::1]", "http://[::1]:8010",
-})
 _MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 _MAX_REQUEST_BYTES = 64 * 1024
 _DIAGNOSTIC = re.compile(r"^KSAT-[A-Z0-9]{10}$")
@@ -102,6 +95,10 @@ class ViolationBody(_StrictBody):
     event_type: str = Field(min_length=1, max_length=200)
 
 
+class PositionBody(_StrictBody):
+    question_id: int = Field(gt=0)
+
+
 class CoordinatorConfigurationBody(_StrictBody):
     base_url: str = Field(min_length=9, max_length=2048)
     confirmed: bool
@@ -152,6 +149,79 @@ def _normalize_coordinator_base_url(value: str) -> str:
     if port is not None:
         authority += f":{port}"
     return f"https://{authority}"
+
+
+def _normalize_loopback_host(value: str) -> tuple[str, int] | None:
+    if (
+        not isinstance(value, str)
+        or not value
+        or value != value.strip()
+        or value.endswith(":")
+        or any(character.isspace() for character in value)
+        or any(character in value for character in (",", "@", "\\", "/", "?", "#"))
+    ):
+        return None
+    try:
+        parsed = urlsplit(f"//{value}")
+        hostname = parsed.hostname
+        port = parsed.port
+    except (TypeError, ValueError):
+        return None
+    if (
+        not hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or port is not None and not 1 <= port <= 65535
+    ):
+        return None
+    normalized = hostname.casefold()
+    try:
+        address = ipaddress.ip_address(normalized)
+    except ValueError:
+        if normalized != "localhost":
+            return None
+    else:
+        if address not in (ipaddress.ip_address("127.0.0.1"), ipaddress.ip_address("::1")):
+            return None
+        normalized = address.compressed
+    return normalized, 80 if port is None else port
+
+
+def _origin_matches_loopback_host(origin: str, host: tuple[str, int]) -> bool:
+    if (
+        not isinstance(origin, str)
+        or not origin
+        or origin != origin.strip()
+        or any(character.isspace() for character in origin)
+        or "," in origin
+        or "\\" in origin
+    ):
+        return False
+    try:
+        parsed = urlsplit(origin)
+        port = parsed.port
+    except (TypeError, ValueError):
+        return False
+    if (
+        parsed.scheme.casefold() != "http"
+        or not parsed.netloc
+        or parsed.path
+        or parsed.query
+        or parsed.fragment
+        or parsed.username is not None
+        or parsed.password is not None
+    ):
+        return False
+    origin_host = parsed.hostname
+    if origin_host is None:
+        return False
+    normalized_origin = _normalize_loopback_host(
+        f"[{origin_host}]:{port}" if ":" in origin_host and port is not None
+        else f"[{origin_host}]" if ":" in origin_host
+        else f"{origin_host}:{port}" if port is not None
+        else origin_host
+    )
+    return normalized_origin == host
 
 
 @dataclass(frozen=True)
@@ -391,7 +461,12 @@ class _ClientContext:
         self._prefetch_thread: threading.Thread | None = None
         self._prefetch_stop = threading.Event()
         self._prefetch_lock = threading.Lock()
+        self._prefetch_state_lock = threading.RLock()
+        self._prefetch_generation = 0
         self._outbox_stop_called = False
+        self._outbox_started = False
+        self._outbox_wake_lock = threading.Lock()
+        self._outbox_wake_keys: set[tuple[int, str]] = set()
         self._owned_resources_closed = False
 
     def initialize(self) -> None:
@@ -407,12 +482,13 @@ class _ClientContext:
             self.identity = self.services.identity_store.load_or_create()
             self._validate_expected_key()
             self._ensure_runtime()
-            self.recover()
+            recovered = self.recover()
             if self.startup_problem is not None:
                 return
             self.services.outbox.start()
             self._outbox_stop_called = False
-            self.services.outbox.wake()
+            self._outbox_started = True
+            self.observe_snapshot(recovered)
             if (
                 self.services.background_prefetch
                 and self.identity.device_id is not None
@@ -425,25 +501,26 @@ class _ClientContext:
             self._stop_started_services()
 
     def shutdown(self) -> None:
-        self._prefetch_stop.set()
-        thread = self._prefetch_thread
-        if thread is not None and thread is not threading.current_thread():
-            thread.join(5.0)
+        prefetch_stopped = self._quiesce_prefetch()
         if self.services is None:
             return
         self._stop_outbox()
-        self._close_owned_resources()
+        if prefetch_stopped:
+            self._close_owned_resources()
 
     def _stop_started_services(self) -> None:
         if self.services is None:
             return
+        prefetch_stopped = self._quiesce_prefetch()
         self._stop_outbox()
-        self._close_owned_resources()
+        if prefetch_stopped:
+            self._close_owned_resources()
 
     def _stop_outbox(self) -> None:
         if self.services is None or self._outbox_stop_called:
             return
         self._outbox_stop_called = True
+        self._outbox_started = False
         try:
             self.services.outbox.stop()
         except Exception:
@@ -478,11 +555,36 @@ class _ClientContext:
         if self.services is None or self.services.runtime is None:
             return None
         try:
-            return self.services.runtime.recover()
+            return self.observe_snapshot(self.services.runtime.recover())
         except (ValueError, KeyError, TypeError, OSError, sqlite3.Error):
             if self.startup_problem is None:
                 self.startup_problem = self.problem("corrupt_local_attempt", status=409)
             return None
+
+    def observe_snapshot(self, snapshot: Any | None) -> Any | None:
+        if (
+            snapshot is None
+            or snapshot.state != "sealed_pending"
+            or self.services is None
+            or not self._outbox_started
+        ):
+            return snapshot
+        pending = _queue_for(self, snapshot.attempt_id)
+        if pending is None:
+            return snapshot
+        worker = self.services.outbox
+        key = (id(worker), snapshot.attempt_id)
+        with self._outbox_wake_lock:
+            if key in self._outbox_wake_keys:
+                return snapshot
+            self._outbox_wake_keys.add(key)
+        try:
+            worker.wake()
+        except BaseException:
+            with self._outbox_wake_lock:
+                self._outbox_wake_keys.discard(key)
+            raise
+        return snapshot
 
     def problem(self, code: str, *, status: int, retryable: bool = False) -> dict[str, Any]:
         message = _KNOWN_PUBLIC_MESSAGES.get(code, "The requested action could not be completed.")
@@ -494,11 +596,99 @@ class _ClientContext:
             "status": status,
         }
 
-    def prefetch(self, release_id: str | None = None) -> list[str]:
-        if self.services is None or self.services.runtime is None:
+    @staticmethod
+    def _prefetch_wait_seconds(services: ClientServices | None) -> float:
+        if services is None:
+            return 5.0
+        coordinator = services.coordinator
+        value = getattr(coordinator, "request_timeout_seconds", None)
+        if value is None:
+            value = getattr(getattr(coordinator, "_client", None), "timeout", None)
+            value = getattr(value, "read", None)
+        if (
+            not isinstance(value, (int, float))
+            or isinstance(value, bool)
+            or not math.isfinite(value)
+            or value <= 0
+        ):
+            value = 5.0
+        return min(300.0, float(value) + 0.25)
+
+    def _prefetch_cancelled(
+        self,
+        services: ClientServices,
+        generation: int,
+        stop_event: threading.Event,
+    ) -> bool:
+        return (
+            stop_event.is_set()
+            or self.services is not services
+            or self._prefetch_generation != generation
+        )
+
+    def _require_prefetch_generation(
+        self,
+        services: ClientServices,
+        generation: int,
+        stop_event: threading.Event,
+    ) -> None:
+        if self._prefetch_cancelled(services, generation, stop_event):
+            raise ClientApiProblem(
+                "prefetch_cancelled",
+                "Assessment preparation was cancelled safely.",
+                409,
+                retryable=True,
+            )
+
+    def _quiesce_prefetch(self) -> bool:
+        services = self.services
+        with self._prefetch_state_lock:
+            stop_event = self._prefetch_stop
+            thread = self._prefetch_thread
+            stop_event.set()
+        timeout = self._prefetch_wait_seconds(services)
+        deadline = time.monotonic() + timeout
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout)
+        remaining = max(0.0, deadline - time.monotonic())
+        acquired = self._prefetch_lock.acquire(timeout=remaining)
+        if acquired:
+            self._prefetch_lock.release()
+        return acquired and (thread is None or not thread.is_alive())
+
+    def _new_prefetch_generation(self) -> None:
+        with self._prefetch_state_lock:
+            self._prefetch_generation += 1
+            self._prefetch_stop = threading.Event()
+            self._prefetch_thread = None
+
+    def _restart_background_prefetch(self) -> None:
+        if (
+            self.services is not None
+            and self.services.background_prefetch
+            and self.services.runtime is not None
+            and getattr(self.identity, "device_id", None) is not None
+        ):
+            self._start_prefetch_thread()
+
+    def prefetch(
+        self,
+        release_id: str | None = None,
+        *,
+        _services: ClientServices | None = None,
+        _generation: int | None = None,
+        _stop_event: threading.Event | None = None,
+    ) -> list[str]:
+        services = self.services if _services is None else _services
+        generation = self._prefetch_generation if _generation is None else _generation
+        stop_event = self._prefetch_stop if _stop_event is None else _stop_event
+        if services is None or services.runtime is None:
             raise ClientApiProblem("device_inactive", _KNOWN_PUBLIC_MESSAGES["device_inactive"], 403)
+        self._require_prefetch_generation(services, generation, stop_event)
         with self._prefetch_lock:
-            entries = self.services.coordinator.prefetch_catalog()
+            self._require_prefetch_generation(services, generation, stop_event)
+            entries = services.coordinator.prefetch_catalog()
+            self._require_prefetch_generation(services, generation, stop_event)
             self.catalog = {entry.release_id: entry for entry in entries}
             self.ready_releases.intersection_update(self.catalog)
             targets = entries if release_id is None else [
@@ -507,41 +697,59 @@ class _ClientContext:
             if release_id is not None and not targets:
                 raise ClientApiProblem("release_not_found", "Assessment release was not found.", 404)
             prepared: list[str] = []
-            cache_dir = Path(self.services.cache_dir or Path.cwd() / "client-packs")
+            cache_dir = Path(services.cache_dir or Path.cwd() / "client-packs")
             cache_dir.mkdir(parents=True, exist_ok=True)
             for entry in targets:
+                self._require_prefetch_generation(services, generation, stop_event)
                 self.ready_releases.discard(entry.release_id)
                 destination = cache_dir / entry.filename
-                downloaded = self.services.coordinator.download_pack(entry, destination)
+                self._require_prefetch_generation(services, generation, stop_event)
+                downloaded = services.coordinator.download_pack(entry, destination)
+                self._require_prefetch_generation(services, generation, stop_event)
                 try:
-                    self.services.runtime.prepare(entry.descriptor, downloaded)
+                    services.runtime.prepare(entry.descriptor, downloaded)
                 except ValueError as error:
                     raise ClientApiProblem(
                         "content_hash_mismatch",
                         _KNOWN_PUBLIC_MESSAGES["content_hash_mismatch"],
                         409,
                     ) from error
+                self._require_prefetch_generation(services, generation, stop_event)
                 self.ready_releases.add(entry.release_id)
                 prepared.append(entry.release_id)
             return prepared
 
     def _start_prefetch_thread(self) -> None:
-        if self._prefetch_thread is not None and self._prefetch_thread.is_alive():
-            return
+        with self._prefetch_state_lock:
+            if self._prefetch_thread is not None and self._prefetch_thread.is_alive():
+                return
+            services = self.services
+            generation = self._prefetch_generation
+            stop_event = self._prefetch_stop
 
         def run() -> None:
-            if self._prefetch_stop.is_set():
+            if stop_event.is_set() or services is None:
                 return
             try:
-                self.prefetch()
+                self.prefetch(
+                    _services=services,
+                    _generation=generation,
+                    _stop_event=stop_event,
+                )
             except (CoordinatorProblem, ClientApiProblem, ValueError, OSError):
                 return
 
-        self._prefetch_stop.clear()
-        self._prefetch_thread = threading.Thread(
-            target=run, name="ksat-content-prefetch", daemon=True
-        )
-        self._prefetch_thread.start()
+        with self._prefetch_state_lock:
+            if stop_event.is_set() or generation != self._prefetch_generation:
+                return
+            if self._prefetch_thread is not None and self._prefetch_thread.is_alive():
+                return
+            self._prefetch_thread = threading.Thread(
+                target=run,
+                name=f"ksat-content-prefetch-{generation}",
+                daemon=True,
+            )
+            self._prefetch_thread.start()
 
 
 def _load_config(path: Path) -> dict[str, str]:
@@ -662,6 +870,7 @@ def _attempt_payload(context: _ClientContext, snapshot: Any, *, include_question
         "responses": {str(key): value for key, value in snapshot.responses.items()},
         "remaining_seconds": snapshot.remaining_seconds,
         "violations": snapshot.violations,
+        "current_question_id": snapshot.current_question_id,
         "queue": queue,
         "message": message,
     }
@@ -710,8 +919,8 @@ def create_client_app(services: ClientServices | None = None) -> FastAPI:
 
     @app.middleware("http")
     async def loopback_boundary(request: Request, call_next):
-        host = request.headers.get("host", "").lower()
-        if host not in _SAFE_HOSTS:
+        host = _normalize_loopback_host(request.headers.get("host", ""))
+        if host is None:
             response = JSONResponse(
                 {"problem": {
                     "code": "invalid_loopback_host",
@@ -722,7 +931,7 @@ def create_client_app(services: ClientServices | None = None) -> FastAPI:
                 status_code=400,
             )
         elif request.method in _MUTATING_METHODS and (
-            request.headers.get("origin", "").lower() not in _SAFE_ORIGINS
+            not _origin_matches_loopback_host(request.headers.get("origin", ""), host)
             or not secrets.compare_digest(
                 request.headers.get("x-ksat-csrf", ""), context.csrf_token
             )
@@ -820,7 +1029,7 @@ def create_client_app(services: ClientServices | None = None) -> FastAPI:
         if current.runtime is None:
             return None
         try:
-            return current.runtime.snapshot()
+            return context.observe_snapshot(current.runtime.snapshot())
         except RuntimeError:
             return None
         except (ValueError, KeyError, TypeError, OSError, sqlite3.Error):
@@ -975,6 +1184,13 @@ def create_client_app(services: ClientServices | None = None) -> FastAPI:
                 "The coordinator address cannot change while saved assessment work is active.",
                 409,
             )
+        if not context._quiesce_prefetch():
+            raise ClientApiProblem(
+                "prefetch_busy",
+                "Assessment preparation is still finishing; try the configuration change again.",
+                503,
+                retryable=True,
+            )
         candidate = None
         candidate_outbox = None
         try:
@@ -991,12 +1207,16 @@ def create_client_app(services: ClientServices | None = None) -> FastAPI:
                 candidate_outbox.stop()
             if candidate is not None:
                 candidate.close()
+            context._new_prefetch_generation()
+            context._restart_background_prefetch()
             raise _map_coordinator_problem(error) from error
         except (OSError, ValueError, TypeError) as error:
             if candidate_outbox is not None:
                 candidate_outbox.stop()
             if candidate is not None:
                 candidate.close()
+            context._new_prefetch_generation()
+            context._restart_background_prefetch()
             raise ClientApiProblem(
                 "coordinator_configuration_update_failed",
                 "The coordinator address could not be saved; the previous configuration is still active.",
@@ -1012,9 +1232,12 @@ def create_client_app(services: ClientServices | None = None) -> FastAPI:
         current.coordinator = candidate
         current.outbox = candidate_outbox
         context._outbox_stop_called = False
+        context._outbox_started = True
+        context._new_prefetch_generation()
         context.catalog.clear()
         context.ready_releases.clear()
         candidate_outbox.wake()
+        context._restart_background_prefetch()
         if current.owns_resources:
             previous_coordinator.close()
         return {"state": "login", "configuration": "updated"}
@@ -1067,7 +1290,11 @@ def create_client_app(services: ClientServices | None = None) -> FastAPI:
         if current.runtime is None:
             raise ClientApiProblem("device_inactive", _KNOWN_PUBLIC_MESSAGES["device_inactive"], 403)
         response = current.coordinator.start_attempt(release_id, entry.content_hash)
-        snapshot = current.runtime.start(response, student_id=current.coordinator.session.student_id)
+        snapshot = context.observe_snapshot(
+            current.runtime.start(
+                response, student_id=current.coordinator.session.student_id
+            )
+        )
         return _attempt_payload(context, snapshot, include_questions=True)
 
     @app.get("/api/attempts/active")
@@ -1086,8 +1313,11 @@ def create_client_app(services: ClientServices | None = None) -> FastAPI:
         require_attempt(attempt_id, editable=True)
         current = require_services()
         try:
-            snapshot = current.runtime.answer(question_id, body.answer)
+            snapshot = context.observe_snapshot(
+                current.runtime.answer(question_id, body.answer)
+            )
         except AttemptSealedError as error:
+            context.observe_snapshot(current.runtime.snapshot())
             raise ClientApiProblem("attempt_sealed", _SEALED_MESSAGE, 409) from error
         return {
             "attempt_id": snapshot.attempt_id,
@@ -1097,12 +1327,32 @@ def create_client_app(services: ClientServices | None = None) -> FastAPI:
             "remaining_seconds": snapshot.remaining_seconds,
         }
 
+    @app.put("/api/attempts/{attempt_id}/position")
+    async def position(attempt_id: str, body: PositionBody):
+        require_attempt(attempt_id, editable=True)
+        current = require_services()
+        try:
+            snapshot = context.observe_snapshot(
+                current.runtime.position(body.question_id)
+            )
+        except AttemptSealedError as error:
+            context.observe_snapshot(current.runtime.snapshot())
+            raise ClientApiProblem("attempt_sealed", _SEALED_MESSAGE, 409) from error
+        return {
+            "attempt_id": snapshot.attempt_id,
+            "state": snapshot.state,
+            "current_question_id": snapshot.current_question_id,
+            "remaining_seconds": snapshot.remaining_seconds,
+        }
+
     @app.post("/api/attempts/{attempt_id}/violations")
     async def violation(attempt_id: str, body: ViolationBody):
         require_attempt(attempt_id, editable=True)
         current = require_services()
         try:
-            snapshot = current.runtime.record_violation(body.event_type.strip())
+            snapshot = context.observe_snapshot(
+                current.runtime.record_violation(body.event_type.strip())
+            )
         except AttemptSealedError as error:
             raise ClientApiProblem("attempt_sealed", _SEALED_MESSAGE, 409) from error
         return {
@@ -1118,10 +1368,9 @@ def create_client_app(services: ClientServices | None = None) -> FastAPI:
         if not body.confirmed:
             raise ClientApiProblem("confirmation_required", "Submit confirmation is required.", 422)
         current = require_services()
-        snapshot = current.runtime.submit()
+        snapshot = context.observe_snapshot(current.runtime.submit())
         if snapshot.attempt_id != attempt_id:
             raise ClientApiProblem("attempt_mismatch", "The requested attempt is not active.", 409)
-        current.outbox.wake()
         return _attempt_payload(context, snapshot, include_questions=False)
 
     @app.get("/api/attempts/{attempt_id}/result")
@@ -1135,7 +1384,7 @@ def create_client_app(services: ClientServices | None = None) -> FastAPI:
         if record.state == "acknowledged" and record.receipt is not None:
             return {"state": "acknowledged_result", "result": _jsonable(record.receipt)}
         if record.state == "sealed_pending":
-            snapshot = current.runtime.snapshot()
+            snapshot = context.observe_snapshot(current.runtime.snapshot())
             return JSONResponse(
                 _attempt_payload(context, snapshot, include_questions=False), status_code=202
             )

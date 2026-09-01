@@ -98,6 +98,74 @@ process.stdout.write(JSON.stringify({
             "Your answers are safe and will upload automatically.", result["sealedMessage"]
         )
 
+    def test_deferred_local_save_keeps_saving_visible_then_persists_success_or_error(self):
+        result = self._run_node(
+            """
+const ui = require(process.argv[1]);
+let resolveWrite;
+let rejectWrite;
+const successAttempt = {responses: {'7': 'A'}};
+const successStates = [];
+const pending = ui.persistOptimisticAnswer(
+  successAttempt, 7, 'B',
+  () => new Promise(resolve => { resolveWrite = resolve; }),
+  state => successStates.push({state, selected: successAttempt.responses['7']})
+);
+const beforeResolve = {
+  states: [...successStates], selected: successAttempt.responses['7']
+};
+resolveWrite({selected_answer: 'B'});
+pending.then(async () => {
+  const failureAttempt = {responses: {'7': 'A'}};
+  const failureStates = [];
+  const failure = ui.persistOptimisticAnswer(
+    failureAttempt, 7, 'B',
+    () => new Promise((_resolve, reject) => { rejectWrite = reject; }),
+    state => failureStates.push({state, selected: failureAttempt.responses['7']})
+  );
+  const beforeReject = {
+    states: [...failureStates], selected: failureAttempt.responses['7']
+  };
+  rejectWrite(new Error('disk full'));
+  try { await failure; } catch (_error) {}
+  process.stdout.write(JSON.stringify({
+    beforeResolve,
+    successStates,
+    beforeReject,
+    failureStates,
+    failureSelected: failureAttempt.responses['7'],
+    messages: ['saving', 'saved', 'error'].map(ui.saveStatusMessage)
+  }));
+});
+"""
+        )
+        self.assertEqual(
+            [{"state": "saving", "selected": "B"}],
+            result["beforeResolve"]["states"],
+        )
+        self.assertEqual("B", result["beforeResolve"]["selected"])
+        self.assertEqual("saved", result["successStates"][-1]["state"])
+        self.assertEqual(
+            [{"state": "saving", "selected": "B"}],
+            result["beforeReject"]["states"],
+        )
+        self.assertEqual("error", result["failureStates"][-1]["state"])
+        self.assertEqual("A", result["failureSelected"])
+        self.assertEqual(
+            [
+                "Saving locally…",
+                "Saved locally",
+                "Local save failed; selection restored",
+            ],
+            result["messages"],
+        )
+
+    def test_navigation_uses_durable_local_position_contract(self):
+        source = SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("/position", source)
+        self.assertIn("current_question_id", source)
+        self.assertIn("persistPosition", source)
+
     def test_untrusted_question_text_uses_text_content_not_html(self):
         result = self._run_node(
             """
@@ -161,6 +229,7 @@ process.stdout.write(JSON.stringify({
             [node, "-e", program, str(SCRIPT)],
             cwd=ROOT,
             text=True,
+            encoding="utf-8",
             capture_output=True,
             check=False,
         )

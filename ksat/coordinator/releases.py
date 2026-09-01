@@ -609,7 +609,7 @@ def _summary_from_row(
     pack_master_key: bytes | None = None,
 ) -> ReleaseSummary:
     _require_stored_release_id(expected_release_id)
-    if row["release_id"] != expected_release_id or row["state"] != "prepared":
+    if row["release_id"] != expected_release_id or row["state"] not in {"prepared", "launched"}:
         raise ValueError("Stored assessment release identity or state is invalid.")
     if row["content_pack_filename"] != f"{expected_release_id}.ksatpack":
         raise ValueError("Stored assessment release filename is invalid.")

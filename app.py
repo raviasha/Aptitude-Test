@@ -2500,7 +2500,7 @@ def list_tests(request: Request) -> Dict[str, Any]:
             test["release_state"] = test.get("release_state") or (
                 "failed" if has_submitted_attempt else "preparing"
             )
-            if test["release_state"] == "prepared":
+            if test["release_state"] in {"prepared", "launched"}:
                 test.pop("release_pack_filename", None)
                 try:
                     load_release_manifest(
@@ -2516,7 +2516,7 @@ def list_tests(request: Request) -> Dict[str, Any]:
                 test.pop("release_pack_filename", None)
             test["selection_rules"] = decode_selection_rules(test["composition"])
             test["difficulty_levels"] = decode_difficulties(test["difficulties"])
-            deadline = parse_timestamp(test.get("launch_expires_at"))
+            deadline = parse_timestamp(test.get("launch_closes_at") or test.get("launch_expires_at"))
             if test["launched"] and not deadline:
                 total_questions = sum(rule["quantity"] for rule in test["selection_rules"])
                 deadline = datetime.now(timezone.utc) + timedelta(seconds=total_questions * SECONDS_PER_FACULTY_QUESTION)
@@ -2657,17 +2657,47 @@ def launch_test(test_id: int, request: Request) -> Dict[str, bool]:
             ).fetchone():
                 raise HTTPException(
                     409,
-                    "This assessment release has already issued an attempt. Duplicate the assessment to run it again.",
+                    {
+                        "code": "release_already_used",
+                        "message": "This release already issued an attempt. Duplicate the assessment to run it again.",
+                        "retryable": False,
+                    },
                 )
-            deadline = (
-                datetime.now(timezone.utc) + timedelta(seconds=duration_seconds)
-            ).isoformat(timespec="seconds")
+            launch_opens_at = datetime.now(timezone.utc)
+            launch_closes_at = launch_opens_at + (
+                timedelta(seconds=duration_seconds)
+                if legacy_timer_only
+                else timedelta(minutes=10)
+            )
+            deadline = launch_closes_at.isoformat(timespec="seconds")
             connection.execute("UPDATE tests SET launched = 0, launch_expires_at = NULL WHERE mode = 'faculty'")
-            connection.execute("UPDATE tests SET launched = 1, launch_expires_at = ? WHERE test_id = ?", (deadline, test_id))
             if legacy_timer_only:
+                connection.execute(
+                    """UPDATE tests
+                       SET launched = 1, launch_expires_at = ?, launch_closes_at = NULL
+                       WHERE test_id = ?""",
+                    (deadline, test_id),
+                )
                 connection.execute(
                     "UPDATE attempts SET expires_at = ? WHERE test_id = ? AND status = 'in_progress'",
                     (deadline, test_id),
+                )
+            else:
+                connection.execute(
+                    """UPDATE tests
+                       SET launched = 1, launch_expires_at = ?, launch_closes_at = ?
+                       WHERE test_id = ?""",
+                    (deadline, deadline, test_id),
+                )
+                connection.execute(
+                    """UPDATE assessment_releases
+                       SET state = 'launched', launch_opens_at = ?, launch_closes_at = ?
+                       WHERE release_id = ?""",
+                    (
+                        launch_opens_at.isoformat(timespec="seconds"),
+                        launch_closes_at.isoformat(timespec="seconds"),
+                        release.release_id,
+                    ),
                 )
         return {"launched": True}
     except Exception:

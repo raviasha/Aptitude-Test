@@ -422,6 +422,12 @@ class SignedAttemptTicket(ProtocolModel):
     signature_b64: str
 
 
+class AttemptStartResponse(ProtocolModel):
+    ticket: SignedAttemptTicket
+    canonical_question_ids: list[int]
+    server_time: datetime
+
+
 class ResponseEntry(ProtocolModel):
     question_id: int
     selected_answer: str | None

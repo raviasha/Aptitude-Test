@@ -24,6 +24,7 @@ from ksat.protocol import (
     AttemptStartResponse,
     AttemptTicket,
     PublicQuestion,
+    PublicReleaseDescriptor,
     ReleaseManifest,
     ReleaseSummary,
     SignedAttemptTicket,
@@ -192,6 +193,64 @@ class ClientRuntimeTests(unittest.TestCase):
         self.store = ClientStore(self.db_path)
         return self._runtime()
 
+    def _alternate_artifact(self):
+        release_id = str(uuid.uuid4())
+        attempt_id = str(uuid.uuid4())
+        content_key = b"z" * 32
+        manifest = self.manifest.model_copy(
+            update={"release_id": release_id, "test_id": 42}
+        )
+        stream = io.BytesIO()
+        with zipfile.ZipFile(stream, "w") as archive:
+            archive.writestr("manifest.json", canonical_json(manifest))
+            archive.writestr(
+                "questions.json",
+                canonical_json(
+                    [item.model_dump(mode="json") for item in self.questions]
+                ),
+            )
+        path = self.root / "alternate.ksatpack"
+        path.write_bytes(encrypt_pack(content_key, release_id, stream.getvalue()))
+        digest = sha256_hex(path.read_bytes())
+        summary = ReleaseSummary(
+            release_id=release_id,
+            test_id=42,
+            state="prepared",
+            duration_seconds=1800,
+            canonical_question_ids=[7, 3],
+            content_pack_filename=f"{release_id}.ksatpack",
+            content_hash=digest,
+            content_signature_b64=sign_json(
+                self.coordinator_private,
+                {
+                    "release_id": release_id,
+                    "content_hash": digest,
+                    "manifest": manifest.model_dump(mode="json"),
+                },
+            ),
+            wrapped_content_key_b64=base64.b64encode(b"w" * 60).decode("ascii"),
+        )
+        ticket = AttemptTicket(
+            attempt_id=attempt_id,
+            student_id="S200",
+            device_id=self.device_id,
+            release_id=release_id,
+            content_hash=digest,
+            started_at=STARTED,
+            deadline=STARTED + timedelta(minutes=30),
+            order_seed_b64=base64.b64encode(b"a" * 32).decode("ascii"),
+            content_key_b64=base64.b64encode(content_key).decode("ascii"),
+        )
+        response = AttemptStartResponse(
+            ticket=SignedAttemptTicket(
+                ticket=ticket,
+                signature_b64=sign_json(self.coordinator_private, ticket),
+            ),
+            canonical_question_ids=[7, 3],
+            server_time=STARTED,
+        )
+        return summary, manifest, path, response
+
     def test_answer_is_local_and_survives_store_reopen(self):
         snapshot = self._prepare_and_start()
         self.assertEqual(snapshot.state, "in_progress")
@@ -238,6 +297,64 @@ class ClientRuntimeTests(unittest.TestCase):
         repeated = self.runtime.start(self.start_response, student_id=self.student_id)
         self.assertLessEqual(repeated.remaining_seconds, 1500)
 
+    def test_two_runtime_connections_cannot_start_different_active_assessments(self):
+        second_store = ClientStore(self.db_path)
+        second_runtime = self._runtime(second_store)
+        try:
+            alternate = self._alternate_artifact()
+            self.runtime.prepare(self.summary, self.manifest, self.pack_path)
+            second_runtime.prepare(alternate[0], alternate[1], alternate[2])
+            barrier = threading.Barrier(2)
+            outcomes = []
+
+            def start(runtime, response, student_id):
+                barrier.wait()
+                try:
+                    outcomes.append(runtime.start(response, student_id=student_id))
+                except ValueError as error:
+                    outcomes.append(error)
+
+            threads = (
+                threading.Thread(
+                    target=start,
+                    args=(self.runtime, self.start_response, self.student_id),
+                ),
+                threading.Thread(
+                    target=start,
+                    args=(second_runtime, alternate[3], "S200"),
+                ),
+            )
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+            self.assertEqual(1, sum(not isinstance(item, Exception) for item in outcomes))
+            self.assertEqual(1, sum(isinstance(item, ValueError) for item in outcomes))
+            error = next(item for item in outcomes if isinstance(item, ValueError))
+            self.assertEqual(
+                "Another local assessment attempt is already active.", str(error)
+            )
+            active = self.store.active_attempt()
+            self.assertIn(active.attempt_id, {self.attempt_id, alternate[3].ticket.ticket.attempt_id})
+        finally:
+            second_store.close()
+
+    def test_identical_start_replay_returns_same_sealed_attempt_from_second_runtime(self):
+        self._prepare_and_start()
+        sealed = self.runtime.submit()
+        self.clock.advance(300)
+        second_store = ClientStore(self.db_path)
+        try:
+            second_runtime = self._runtime(second_store)
+            second_runtime.prepare(self.summary, self.manifest, self.pack_path)
+            replayed = second_runtime.start(
+                self.start_response, student_id=self.student_id
+            )
+            self.assertEqual(replayed, sealed)
+            self.assertEqual(len(second_store.pending_submissions()), 1)
+        finally:
+            second_store.close()
+
     def test_ticket_processing_time_is_not_added_back_to_the_duration(self):
         self.runtime.prepare(self.summary, self.manifest, self.pack_path)
 
@@ -250,7 +367,60 @@ class ClientRuntimeTests(unittest.TestCase):
             started = self.runtime.start(
                 self.start_response, student_id=self.student_id
             )
-        self.assertLessEqual(started.remaining_seconds, 1795)
+        self.assertEqual(started.remaining_seconds, 1795)
+
+    def test_stale_start_processed_at_or_after_deadline_is_durably_sealed(self):
+        for wall in (
+            STARTED + timedelta(minutes=30),
+            STARTED + timedelta(hours=1),
+        ):
+            with self.subTest(wall=wall):
+                self.clock.wall = wall
+                self.runtime.prepare(self.summary, self.manifest, self.pack_path)
+                snapshot = self.runtime.start(
+                    self.start_response, student_id=self.student_id
+                )
+                self.assertEqual(snapshot.state, "sealed_pending")
+                self.assertEqual(snapshot.remaining_seconds, 0)
+                self.assertEqual(len(self.store.pending_submissions()), 1)
+                self.store.close()
+                self.store = ClientStore(self.root / f"{wall.hour}.sqlite3")
+                self.runtime = self._runtime()
+
+    def test_start_uses_strictest_server_and_local_wall_deadline_bound(self):
+        self.clock.wall = STARTED - timedelta(hours=1)
+        self.runtime.prepare(self.summary, self.manifest, self.pack_path)
+        server_limited = self.runtime.start(
+            self._start_response().model_copy(
+                update={"server_time": STARTED + timedelta(minutes=5)}
+            ),
+            student_id=self.student_id,
+        )
+        self.assertEqual(server_limited.remaining_seconds, 1500)
+
+        self.store.close()
+        self.store = ClientStore(self.root / "wall-limited.sqlite3")
+        self.runtime = self._runtime()
+        self.clock.wall = STARTED + timedelta(minutes=5)
+        self.runtime.prepare(self.summary, self.manifest, self.pack_path)
+        wall_limited = self.runtime.start(
+            self._start_response(), student_id=self.student_id
+        )
+        self.assertEqual(wall_limited.remaining_seconds, 1500)
+
+    def test_expired_start_seal_failure_preserves_zero_time_for_recovery(self):
+        self.clock.wall = STARTED + timedelta(minutes=30)
+        self.runtime.prepare(self.summary, self.manifest, self.pack_path)
+        with patch.object(self.store, "seal_attempt", side_effect=RuntimeError("disk full")):
+            with self.assertRaisesRegex(RuntimeError, "disk full"):
+                self.runtime.start(self.start_response, student_id=self.student_id)
+        record = self.store.load_attempt(self.attempt_id)
+        self.assertEqual(record.state, "in_progress")
+        self.assertEqual(record.remaining_seconds, 0)
+        self.assertEqual(self.store.pending_submissions(), [])
+        recovered = self._reopen().recover()
+        self.assertEqual(recovered.state, "sealed_pending")
+        self.assertEqual(len(self.store.pending_submissions()), 1)
 
     def test_prepare_rejects_hash_or_signature_without_verified_cache_state(self):
         for summary in (
@@ -261,6 +431,25 @@ class ClientRuntimeTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     self.runtime.prepare(summary, self.manifest, self.pack_path)
                 self.assertIsNone(self.store.verified_pack(self.release_id))
+
+    def test_prepare_consumes_the_transportable_public_descriptor(self):
+        descriptor = PublicReleaseDescriptor(
+            release_id=self.summary.release_id,
+            test_id=self.summary.test_id,
+            state=self.summary.state,
+            duration_seconds=self.summary.duration_seconds,
+            canonical_question_ids=self.summary.canonical_question_ids,
+            content_pack_filename=self.summary.content_pack_filename,
+            content_hash=self.summary.content_hash,
+            content_signature_b64=self.summary.content_signature_b64,
+            manifest=self.manifest,
+        )
+        prepared = self.runtime.prepare(descriptor, self.pack_path)
+        self.assertEqual(prepared, self.pack_path.resolve())
+        self.assertEqual(
+            self.pack_path.resolve(),
+            self.store.verified_pack(self.release_id, self.summary.content_hash),
+        )
 
     def test_prepare_and_start_reject_unsupported_protocol_versions(self):
         unsupported_manifest = self.manifest.model_copy(
@@ -301,6 +490,9 @@ class ClientRuntimeTests(unittest.TestCase):
             self._start_response(device_id=str(uuid.uuid4())),
             self._start_response(student_id="S999"),
             self._start_response(deadline=STARTED + timedelta(minutes=29)),
+            self.start_response.model_copy(
+                update={"server_time": STARTED - timedelta(seconds=1)}
+            ),
         )
         for response in cases:
             with self.subTest(ticket=response.ticket.ticket):

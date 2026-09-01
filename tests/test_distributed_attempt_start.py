@@ -19,12 +19,15 @@ from fastapi.testclient import TestClient
 from starlette.requests import ClientDisconnect, Request
 
 import app
+from ksat.client.identity import DeviceIdentity
+from ksat.client.runtime import AssessmentRuntime
+from ksat.client.store import ClientStore
 from ksat.coordinator import routes as coordinator_routes
 from ksat.coordinator.auth import issue_student_access_token
 from ksat.coordinator.attempts import AttemptProblem, issue_attempt_ticket
 from ksat.coordinator.releases import prepare_release, unwrap_release_content_key
 from ksat.crypto import generate_ed25519_keypair
-from ksat.protocol import PublicQuestion, device_request_bytes
+from ksat.protocol import PublicQuestion, PublicReleaseDescriptor, device_request_bytes
 from ksat.sqlite import connect_sqlite
 
 
@@ -296,16 +299,86 @@ class DistributedAttemptStartTests(unittest.TestCase):
         )
         self.assertNotIn("content_key_b64", item)
         self.assertNotIn("wrapped_content_key_b64", item)
+        self.assertIn("descriptor", item)
         self.assertEqual(
             {
                 "release_id", "filename", "content_hash", "pack_signature_b64",
-                "byte_size", "pack_format_version",
+                "byte_size", "pack_format_version", "descriptor",
             },
             set(item),
         )
+        descriptor = item["descriptor"]
+        self.assertEqual(
+            {
+                "release_id",
+                "test_id",
+                "state",
+                "duration_seconds",
+                "canonical_question_ids",
+                "content_pack_filename",
+                "content_hash",
+                "content_signature_b64",
+                "manifest",
+            },
+            set(descriptor),
+        )
+        self.assertEqual(
+            {
+                "protocol_version",
+                "pack_format_version",
+                "release_id",
+                "test_id",
+                "test_name",
+                "duration_seconds",
+                "canonical_question_ids",
+                "asset_names",
+            },
+            set(descriptor["manifest"]),
+        )
+        serialized_descriptor = json.dumps(descriptor, sort_keys=True).lower()
+        for private_name in (
+            "content_key",
+            "wrapped_content_key",
+            "correct_answer",
+            "solution",
+            "option_explanations",
+            "feedback",
+        ):
+            self.assertNotIn(private_name, serialized_descriptor)
         pack_response = self.device_get(f"/api/client/v1/releases/{self.release_id}/pack")
         self.assertEqual(200, pack_response.status_code, pack_response.text)
         self.assertEqual(hashlib.sha256(pack_response.content).hexdigest(), item["content_hash"])
+        downloaded = Path(self.temporary_directory.name) / "catalog-pack.ksatpack"
+        downloaded.write_bytes(pack_response.content)
+        with app.db() as connection:
+            public_key_b64 = connection.execute(
+                "SELECT public_key_b64 FROM devices WHERE device_id=?",
+                (self.devices["device-a"][0],),
+            ).fetchone()["public_key_b64"]
+        local_store = ClientStore(
+            Path(self.temporary_directory.name) / "catalog-client.sqlite3"
+        )
+        try:
+            runtime = AssessmentRuntime(
+                local_store,
+                DeviceIdentity(
+                    private_key_b64=self.devices["device-a"][1],
+                    public_key_b64=public_key_b64,
+                    device_id=self.devices["device-a"][0],
+                    coordinator_public_key_b64=self.config.signing_public_key_b64,
+                ),
+            )
+            prepared = runtime.prepare(
+                PublicReleaseDescriptor.model_validate(descriptor, strict=True),
+                downloaded,
+            )
+            self.assertEqual(downloaded.resolve(), prepared)
+            self.assertEqual(
+                downloaded.resolve(),
+                local_store.verified_pack(self.release_id, item["content_hash"]),
+            )
+        finally:
+            local_store.close()
 
     def test_pack_asgi_23_disconnect_closes_snapshot_before_response_returns(self):
         async def exercise_disconnect():

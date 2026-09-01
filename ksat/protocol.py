@@ -403,6 +403,20 @@ class ReleaseManifest(ProtocolModel):
     asset_names: list[str] = Field(default_factory=list)
 
 
+class PublicReleaseDescriptor(ProtocolModel):
+    """Public signed release metadata safe to send before attempt start."""
+
+    release_id: str
+    test_id: int
+    state: str
+    duration_seconds: int
+    canonical_question_ids: list[int]
+    content_pack_filename: str
+    content_hash: str
+    content_signature_b64: str
+    manifest: ReleaseManifest
+
+
 class AttemptTicket(ProtocolModel):
     protocol_version: int = PROTOCOL_VERSION
     attempt_id: str

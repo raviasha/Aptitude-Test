@@ -512,12 +512,13 @@ class ClientStore:
             else:
                 active = connection.execute(
                     """SELECT attempt_id FROM local_attempts
-                       WHERE student_id=? AND release_id=?
-                         AND state IN ('in_progress', 'sealed_pending')""",
-                    (attempt.student_id, attempt.release_id),
+                       WHERE state IN ('in_progress', 'sealed_pending')
+                       ORDER BY created_at, attempt_id LIMIT 1"""
                 ).fetchone()
                 if active is not None:
-                    raise ValueError("An active attempt already exists for this student and release.")
+                    raise ValueError(
+                        "Another local assessment attempt is already active."
+                    )
                 try:
                     connection.execute(
                         """INSERT INTO local_attempts
@@ -538,7 +539,7 @@ class ClientStore:
                     )
                 except sqlite3.IntegrityError as error:
                     raise ValueError(
-                        "An active attempt already exists for this student and release."
+                        "Another local assessment attempt is already active."
                     ) from error
         return self.load_attempt(attempt.attempt_id)
 

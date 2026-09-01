@@ -68,6 +68,20 @@ class ClientStoreTests(unittest.TestCase):
         self.store.cache_pack(self.release_id, self.content_hash, self.pack_path, verified=True)
         return self.store.create_attempt(self.ticket, [3, 1, 2])
 
+    def _other_ticket(self, *, release_id, attempt_id, student_id):
+        return self.ticket.model_copy(
+            update={
+                "ticket": self.ticket.ticket.model_copy(
+                    update={
+                        "release_id": release_id,
+                        "attempt_id": attempt_id,
+                        "student_id": student_id,
+                        "content_hash": "b" * 64,
+                    }
+                )
+            }
+        )
+
     def _bundle(self, *, answer="B", sealed_at=None):
         sealed_at = sealed_at or self.deadline
         bundle = ResponseBundle(
@@ -302,6 +316,65 @@ class ClientStoreTests(unittest.TestCase):
             )
         with self.assertRaisesRegex(ValueError, "Multiple active attempts"):
             self.store.active_attempt(student_id="S1", release_id=self.release_id)
+
+    def test_create_attempt_rejects_any_other_active_client_attempt(self):
+        self._cache_and_create()
+        other_release = str(uuid.uuid4())
+        other_ticket = self._other_ticket(
+            release_id=other_release,
+            attempt_id=str(uuid.uuid4()),
+            student_id="S2",
+        )
+        self.store.cache_pack(
+            other_release, "b" * 64, self.pack_path, verified=True
+        )
+        with self.assertRaisesRegex(
+            ValueError, "Another local assessment attempt is already active"
+        ):
+            self.store.create_attempt(other_ticket, [3, 1, 2])
+        self.assertEqual(self.attempt_id, self.store.active_attempt().attempt_id)
+
+    def test_two_store_connections_cannot_race_two_active_attempts(self):
+        second = ClientStore(self.database_path)
+        try:
+            other_release = str(uuid.uuid4())
+            other_ticket = self._other_ticket(
+                release_id=other_release,
+                attempt_id=str(uuid.uuid4()),
+                student_id="S2",
+            )
+            self.store.cache_pack(
+                self.release_id, self.content_hash, self.pack_path, verified=True
+            )
+            second.cache_pack(
+                other_release, "b" * 64, self.pack_path, verified=True
+            )
+            barrier = threading.Barrier(2)
+
+            def create(store, ticket):
+                barrier.wait()
+                return store.create_attempt(ticket, [3, 1, 2])
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                futures = (
+                    pool.submit(create, self.store, self.ticket),
+                    pool.submit(create, second, other_ticket),
+                )
+                outcomes = []
+                for future in futures:
+                    try:
+                        outcomes.append(future.result())
+                    except ValueError as error:
+                        outcomes.append(error)
+            self.assertEqual(1, sum(not isinstance(item, Exception) for item in outcomes))
+            self.assertEqual(1, sum(isinstance(item, ValueError) for item in outcomes))
+            error = next(item for item in outcomes if isinstance(item, ValueError))
+            self.assertEqual(
+                "Another local assessment attempt is already active.", str(error)
+            )
+            self.assertIsNotNone(self.store.active_attempt())
+        finally:
+            second.close()
 
     def test_seal_and_acknowledge_are_exactly_idempotent(self):
         self._cache_and_create()

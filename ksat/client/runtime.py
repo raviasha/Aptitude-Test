@@ -26,6 +26,7 @@ from ksat.protocol import (
     PROTOCOL_VERSION,
     AttemptStartResponse,
     PublicQuestion,
+    PublicReleaseDescriptor,
     ReleaseManifest,
     ReleaseSummary,
     ResponseBundle,
@@ -68,8 +69,7 @@ class AttemptSnapshot:
 
 @dataclass(frozen=True)
 class _PreparedPack:
-    summary: ReleaseSummary
-    manifest: ReleaseManifest
+    descriptor: PublicReleaseDescriptor
     path: Path
 
 
@@ -140,46 +140,68 @@ class AssessmentRuntime:
 
     def prepare(
         self,
-        summary: ReleaseSummary,
-        manifest: ReleaseManifest,
-        pack_path: Path,
+        release: PublicReleaseDescriptor | ReleaseSummary,
+        manifest_or_path: ReleaseManifest | Path,
+        pack_path: Path | None = None,
     ) -> Path:
         """Authenticate a complete encrypted artifact before marking it verified."""
-        path = Path(pack_path).resolve()
+        if isinstance(release, PublicReleaseDescriptor):
+            if pack_path is not None or isinstance(manifest_or_path, ReleaseManifest):
+                raise TypeError("Public descriptor preparation requires one pack path.")
+            descriptor = release
+            path = Path(manifest_or_path).resolve()
+        elif isinstance(release, ReleaseSummary):
+            if not isinstance(manifest_or_path, ReleaseManifest) or pack_path is None:
+                raise TypeError("Legacy release preparation requires a manifest and pack path.")
+            descriptor = PublicReleaseDescriptor(
+                release_id=release.release_id,
+                test_id=release.test_id,
+                state=release.state,
+                duration_seconds=release.duration_seconds,
+                canonical_question_ids=release.canonical_question_ids,
+                content_pack_filename=release.content_pack_filename,
+                content_hash=release.content_hash,
+                content_signature_b64=release.content_signature_b64,
+                manifest=manifest_or_path,
+            )
+            path = Path(pack_path).resolve()
+        else:
+            raise TypeError("Assessment release descriptor is invalid.")
+        manifest = descriptor.manifest
         if not path.is_file():
             raise ValueError("Assessment content pack is unavailable.")
         if (
-            summary.release_id != manifest.release_id
+            descriptor.release_id != manifest.release_id
             or manifest.protocol_version != PROTOCOL_VERSION
             or manifest.pack_format_version != PACK_FORMAT_VERSION
-            or summary.test_id != manifest.test_id
-            or summary.duration_seconds != manifest.duration_seconds
-            or summary.canonical_question_ids != manifest.canonical_question_ids
-            or summary.content_pack_filename != f"{summary.release_id}.ksatpack"
-            or summary.state not in {"prepared", "launched"}
+            or descriptor.test_id != manifest.test_id
+            or descriptor.duration_seconds != manifest.duration_seconds
+            or descriptor.canonical_question_ids != manifest.canonical_question_ids
+            or descriptor.content_pack_filename != f"{descriptor.release_id}.ksatpack"
+            or descriptor.state not in {"prepared", "launched"}
         ):
             raise ValueError("Assessment release metadata is inconsistent.")
         encrypted = path.read_bytes()
-        if sha256_hex(encrypted) != summary.content_hash:
+        if sha256_hex(encrypted) != descriptor.content_hash:
             raise ValueError("Assessment content hash does not match.")
         verify_json(
             self.identity.coordinator_public_key_b64,
             {
-                "release_id": summary.release_id,
-                "content_hash": summary.content_hash,
+                "release_id": descriptor.release_id,
+                "content_hash": descriptor.content_hash,
                 "manifest": manifest.model_dump(mode="json"),
             },
-            summary.content_signature_b64,
+            descriptor.content_signature_b64,
         )
         self.store.cache_pack(
-            summary.release_id,
-            summary.content_hash,
+            descriptor.release_id,
+            descriptor.content_hash,
             path,
             verified=True,
             cached_at=_utc(self.clock.utcnow(), "Cache time"),
         )
         with self._lock:
-            self._prepared[summary.release_id] = _PreparedPack(summary, manifest, path)
+            self._prepared[descriptor.release_id] = _PreparedPack(descriptor, path)
         return path
 
     def start(
@@ -220,10 +242,10 @@ class AssessmentRuntime:
             if prepared is None or pack_path is None:
                 raise ValueError("The exact verified assessment content is not prepared.")
             if (
-                prepared.summary.content_hash != ticket.content_hash
-                or prepared.manifest.duration_seconds != int(duration)
+                prepared.descriptor.content_hash != ticket.content_hash
+                or prepared.descriptor.manifest.duration_seconds != int(duration)
                 or response.canonical_question_ids
-                != prepared.manifest.canonical_question_ids
+                != prepared.descriptor.manifest.canonical_question_ids
             ):
                 raise ValueError("Attempt ticket does not match the prepared assessment release.")
             questions, manifest = self._open_pack(
@@ -232,19 +254,22 @@ class AssessmentRuntime:
                 ticket.content_hash,
                 ticket.content_key_b64,
             )
-            if manifest != prepared.manifest:
+            if manifest != prepared.descriptor.manifest:
                 raise ValueError("Assessment pack manifest does not match its signed metadata.")
             order = deterministic_question_order(
                 manifest.canonical_question_ids,
                 ticket.order_seed_b64,
                 ticket.shuffle_algorithm,
             )
-            existing = self.store.active_attempt(
-                student_id=ticket.student_id, release_id=ticket.release_id
-            )
+            existing = self.store.active_attempt()
             if existing is not None:
                 if existing.ticket != signed or existing.question_order != tuple(order):
-                    raise ValueError("Attempt start conflicts with the existing local attempt.")
+                    raise ValueError(
+                        "Another local assessment attempt is already active."
+                    )
+                if existing.state != "in_progress":
+                    self._activate(existing, questions)
+                    return self._snapshot_record(existing)
                 if (
                     self._attempt_id == existing.attempt_id
                     and self._anchor_monotonic is not None
@@ -270,22 +295,35 @@ class AssessmentRuntime:
                 if safe_remaining == 0:
                     return self._seal(existing)
                 return self._snapshot_record(existing)
+            wall_now = _utc(self.clock.utcnow(), "Local start time")
+            activated_monotonic = self._monotonic()
+            processing_elapsed = activated_monotonic - received_monotonic
             initial_remaining = min(
-                int(duration),
-                max(0, math.ceil((deadline - server_time).total_seconds())),
+                max(0, math.ceil(duration - processing_elapsed)),
+                max(
+                    0,
+                    math.ceil(
+                        (deadline - server_time).total_seconds()
+                        - processing_elapsed
+                    ),
+                ),
+                max(0, math.ceil((deadline - wall_now).total_seconds())),
             )
             record = self.store.create_attempt(
                 signed,
                 order,
                 remaining_seconds=initial_remaining,
                 created_at=started,
-                last_wall_time=server_time,
+                last_wall_time=wall_now,
             )
             self._activate(
                 record,
                 questions,
-                trusted_wall=server_time,
-                anchor_monotonic=received_monotonic,
+                trusted_wall=min(
+                    deadline,
+                    server_time + timedelta(seconds=processing_elapsed),
+                ),
+                anchor_monotonic=activated_monotonic,
             )
             if initial_remaining == 0:
                 return self._seal(record)

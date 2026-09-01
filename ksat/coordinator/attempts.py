@@ -21,6 +21,8 @@ from ksat.protocol import (
     PACK_FORMAT_VERSION,
     AttemptStartResponse,
     AttemptTicket,
+    PublicReleaseDescriptor,
+    ReleaseManifest,
     SignedAttemptTicket,
     canonical_json,
 )
@@ -61,8 +63,8 @@ def _parse_time(value: str | None) -> datetime | None:
 
 def list_prefetchable_releases(connection: sqlite3.Connection) -> list[dict[str, Any]]:
     rows = connection.execute(
-        """SELECT release_id, content_pack_filename, content_hash,
-                  content_signature_b64, manifest_json
+        """SELECT release_id, state, duration_seconds, content_pack_filename,
+                  content_hash, content_signature_b64, manifest_json
            FROM assessment_releases
            WHERE state IN ('prepared', 'launched')
            ORDER BY created_at, release_id"""
@@ -70,12 +72,29 @@ def list_prefetchable_releases(connection: sqlite3.Connection) -> list[dict[str,
     releases: list[dict[str, Any]] = []
     for row in rows:
         try:
-            manifest = json.loads(row["manifest_json"])
-            pack_format_version = int(manifest["pack_format_version"])
+            manifest_value = json.loads(row["manifest_json"])
+            manifest = ReleaseManifest.model_validate(manifest_value, strict=True)
+            pack_format_version = manifest.pack_format_version
         except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
             raise _problem("content_not_ready", "Assessment content is not ready.") from error
-        if pack_format_version != PACK_FORMAT_VERSION:
+        if (
+            pack_format_version != PACK_FORMAT_VERSION
+            or canonical_json(manifest).decode("utf-8") != row["manifest_json"]
+            or manifest.release_id != row["release_id"]
+            or manifest.duration_seconds != row["duration_seconds"]
+        ):
             raise _problem("content_not_ready", "Assessment content is not ready.")
+        descriptor = PublicReleaseDescriptor(
+            release_id=row["release_id"],
+            test_id=manifest.test_id,
+            state=row["state"],
+            duration_seconds=row["duration_seconds"],
+            canonical_question_ids=manifest.canonical_question_ids,
+            content_pack_filename=row["content_pack_filename"],
+            content_hash=row["content_hash"],
+            content_signature_b64=row["content_signature_b64"],
+            manifest=manifest,
+        )
         releases.append({
             "release_id": row["release_id"],
             "filename": row["content_pack_filename"],
@@ -83,6 +102,7 @@ def list_prefetchable_releases(connection: sqlite3.Connection) -> list[dict[str,
             "pack_signature_b64": row["content_signature_b64"],
             "byte_size": None,
             "pack_format_version": pack_format_version,
+            "descriptor": descriptor.model_dump(mode="json"),
         })
     return releases
 

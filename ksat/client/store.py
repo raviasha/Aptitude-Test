@@ -11,7 +11,7 @@ import sqlite3
 import threading
 import uuid
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterator, TypeVar
@@ -60,6 +60,14 @@ class PendingSubmission:
     retry_count: int
     next_attempt_at: datetime
     last_error: str | None
+
+
+@dataclass(frozen=True)
+class _ValidatedAttemptSnapshot:
+    record: LocalAttemptRecord
+    sealed_bundle: SignedResponseBundle | None
+    receipt_json: str | None
+    outbox_json: str | None
 
 
 def _aware(value: datetime, label: str = "Timestamp") -> datetime:
@@ -549,28 +557,32 @@ class ClientStore:
             raise ValueError(message)
         return tuple(order)
 
-    def load_attempt(self, attempt_id: str) -> LocalAttemptRecord:
-        with self._read_transaction() as connection:
-            row = connection.execute(
-                "SELECT * FROM local_attempts WHERE attempt_id=?", (attempt_id,)
-            ).fetchone()
-            if row is None:
-                raise KeyError(f"Unknown local attempt: {attempt_id}")
-            responses = connection.execute(
-                """SELECT question_id, selected_answer, saved_at
-                   FROM local_responses WHERE attempt_id=?""",
-                (attempt_id,),
-            ).fetchall()
-            event_rows = connection.execute(
-                """SELECT event_type, occurred_at FROM local_integrity_events
-                   WHERE attempt_id=? ORDER BY event_id""",
-                (attempt_id,),
-            ).fetchall()
-            outbox = connection.execute(
-                "SELECT bundle_json FROM submission_outbox WHERE attempt_id=?",
-                (attempt_id,),
-            ).fetchone()
-        message = "Stored attempt data is invalid."
+    def _validated_attempt_snapshot(
+        self,
+        connection: sqlite3.Connection,
+        attempt_id: str,
+        message: str,
+    ) -> _ValidatedAttemptSnapshot:
+        row = connection.execute(
+            "SELECT * FROM local_attempts WHERE attempt_id=?", (attempt_id,)
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"Unknown local attempt: {attempt_id}")
+        responses = connection.execute(
+            """SELECT question_id, selected_answer, saved_at
+               FROM local_responses WHERE attempt_id=?""",
+            (attempt_id,),
+        ).fetchall()
+        event_rows = connection.execute(
+            """SELECT event_type, occurred_at FROM local_integrity_events
+               WHERE attempt_id=? ORDER BY event_id""",
+            (attempt_id,),
+        ).fetchall()
+        outbox = connection.execute(
+            "SELECT bundle_json FROM submission_outbox WHERE attempt_id=?",
+            (attempt_id,),
+        ).fetchone()
+        outbox_json = None if outbox is None else outbox["bundle_json"]
         try:
             ticket = _stored_model(row["ticket_json"], SignedAttemptTicket, message)
             _validate_ticket(ticket)
@@ -612,7 +624,7 @@ class ClientStore:
                 or (row["state"] == "sealed_pending") != (outbox is not None)
                 or (
                     outbox is not None
-                    and row["sealed_bundle_json"] != outbox["bundle_json"]
+                    and row["sealed_bundle_json"] != outbox_json
                 )
             ):
                 raise ValueError(message)
@@ -665,19 +677,31 @@ class ClientStore:
             if isinstance(error, ValueError) and str(error) == message:
                 raise
             raise ValueError(message) from error
-        return LocalAttemptRecord(
-            attempt_id=row["attempt_id"],
-            release_id=row["release_id"],
-            state=row["state"],
-            deadline=deadline,
-            question_order=order,
-            responses=response_map,
-            remaining_seconds=row["remaining_seconds"],
-            sealed_at=sealed_at,
-            receipt=receipt,
-            ticket=ticket,
-            last_wall_time=last_wall,
+        return _ValidatedAttemptSnapshot(
+            record=LocalAttemptRecord(
+                attempt_id=row["attempt_id"],
+                release_id=row["release_id"],
+                state=row["state"],
+                deadline=deadline,
+                question_order=order,
+                responses=response_map,
+                remaining_seconds=row["remaining_seconds"],
+                sealed_at=sealed_at,
+                receipt=receipt,
+                ticket=ticket,
+                last_wall_time=last_wall,
+            ),
+            sealed_bundle=sealed_bundle,
+            receipt_json=row["receipt_json"],
+            outbox_json=outbox_json,
         )
+
+    def load_attempt(self, attempt_id: str) -> LocalAttemptRecord:
+        with self._read_transaction() as connection:
+            snapshot = self._validated_attempt_snapshot(
+                connection, attempt_id, "Stored attempt data is invalid."
+            )
+        return snapshot.record
 
     def active_attempt(
         self, *, student_id: str | None = None, release_id: str | None = None
@@ -881,107 +905,50 @@ class ClientStore:
         with self._read_transaction() as connection:
             rows = connection.execute(
                 f"""SELECT o.attempt_id, o.bundle_json, o.retry_count,
-                           o.next_attempt_at, o.last_error, o.created_at,
-                           a.attempt_id AS local_attempt_id, a.state,
-                           a.ticket_json, a.question_order_json,
-                           a.sealed_at, a.sealed_bundle_json
+                           o.next_attempt_at, o.last_error, o.created_at
                     FROM submission_outbox AS o
-                    LEFT JOIN local_attempts AS a ON a.attempt_id=o.attempt_id
                     {where}
                     ORDER BY o.next_attempt_at, o.created_at, o.attempt_id""",
                 values,
             ).fetchall()
-            snapshots = [
-                (
-                    row,
-                    connection.execute(
-                        """SELECT question_id, selected_answer, saved_at
-                           FROM local_responses WHERE attempt_id=?""",
-                        (row["attempt_id"],),
-                    ).fetchall(),
-                    connection.execute(
-                        """SELECT event_type, occurred_at
-                           FROM local_integrity_events
-                           WHERE attempt_id=? ORDER BY event_id""",
-                        (row["attempt_id"],),
-                    ).fetchall(),
-                )
-                for row in rows
-            ]
-        pending = []
-        for row, response_rows, event_rows in snapshots:
-            message = "Stored submission outbox data is invalid."
-            try:
-                bundle = _stored_model(row["bundle_json"], SignedResponseBundle, message)
-                _validate_bundle(bundle)
-                next_attempt = _parse_time(row["next_attempt_at"], message)
-                _parse_time(row["created_at"], message)
-                ticket = _stored_model(row["ticket_json"], SignedAttemptTicket, message)
-                _validate_ticket(ticket)
-                order = self._question_order(row["question_order_json"], message)
-                sealed_at = _parse_time(row["sealed_at"], message)
-                saved = {question_id: None for question_id in order}
-                for response in response_rows:
-                    if response["question_id"] not in saved or (
-                        response["selected_answer"] is not None
-                        and not _OPTION.fullmatch(response["selected_answer"])
-                    ):
-                        raise ValueError(message)
-                    _parse_time(response["saved_at"], message)
-                    saved[response["question_id"]] = response["selected_answer"]
-                events = []
-                for event in event_rows:
+            pending = []
+            for row in rows:
+                message = "Stored submission outbox data is invalid."
+                try:
+                    snapshot = self._validated_attempt_snapshot(
+                        connection, row["attempt_id"], message
+                    )
+                    bundle = snapshot.sealed_bundle
+                    next_attempt = _parse_time(row["next_attempt_at"], message)
+                    _parse_time(row["created_at"], message)
                     if (
-                        not isinstance(event["event_type"], str)
-                        or not event["event_type"].strip()
-                        or len(event["event_type"]) > 200
+                        snapshot.record.state != "sealed_pending"
+                        or bundle is None
+                        or snapshot.outbox_json != row["bundle_json"]
+                        or type(row["retry_count"]) is not int
+                        or row["retry_count"] < 0
+                        or (
+                            row["last_error"] is not None
+                            and (
+                                not isinstance(row["last_error"], str)
+                                or len(row["last_error"]) > 2000
+                            )
+                        )
                     ):
                         raise ValueError(message)
-                    events.append(
-                        IntegrityEvent(
-                            event_type=event["event_type"],
-                            occurred_at=_parse_time(event["occurred_at"], message),
-                        )
+                except (KeyError, TypeError, ValueError) as error:
+                    if isinstance(error, ValueError) and str(error) == message:
+                        raise
+                    raise ValueError(message) from error
+                pending.append(
+                    PendingSubmission(
+                        attempt_id=row["attempt_id"],
+                        bundle=bundle,
+                        retry_count=row["retry_count"],
+                        next_attempt_at=next_attempt,
+                        last_error=row["last_error"],
                     )
-                if (
-                    row["local_attempt_id"] != row["attempt_id"]
-                    or row["state"] != "sealed_pending"
-                    or row["sealed_bundle_json"] != row["bundle_json"]
-                    or bundle.bundle.ticket != ticket
-                    or bundle.bundle.ticket.ticket.attempt_id != row["attempt_id"]
-                    or bundle.bundle.sealed_at != sealed_at
-                    or [item.question_id for item in bundle.bundle.responses]
-                    != list(order)
-                    or {
-                        item.question_id: item.selected_answer
-                        for item in bundle.bundle.responses
-                    }
-                    != saved
-                    or bundle.bundle.integrity_events != events
-                    or type(row["retry_count"]) is not int
-                    or row["retry_count"] < 0
-                    or (
-                        row["last_error"] is not None
-                        and (
-                            not isinstance(row["last_error"], str)
-                            or len(row["last_error"]) > 2000
-                        )
-                    )
-                ):
-                    raise ValueError(message)
-            except (TypeError, ValueError) as error:
-                if isinstance(error, ValueError) and str(error) == message:
-                    raise
-                raise ValueError(message) from error
-            pending.append(
-                PendingSubmission(
-                    attempt_id=row["attempt_id"],
-                    bundle=bundle,
-                    retry_count=row["retry_count"],
-                    next_attempt_at=next_attempt,
-                    last_error=row["last_error"],
                 )
-            )
         return pending
 
     def record_retry(
@@ -1019,45 +986,30 @@ class ClientStore:
         if receipt.attempt_id != attempt_id:
             raise ValueError("Acknowledgment attempt identifier does not match.")
         with self._transaction() as connection:
-            row = connection.execute(
-                """SELECT state, sealed_at, sealed_bundle_json,
-                          question_order_json, receipt_json
-                   FROM local_attempts WHERE attempt_id=?""",
-                (attempt_id,),
-            ).fetchone()
-            if row is None:
-                raise KeyError(f"Unknown local attempt: {attempt_id}")
-            sealed_bundle = _stored_model(
-                row["sealed_bundle_json"],
-                SignedResponseBundle,
-                "Stored attempt data is invalid.",
+            snapshot = self._validated_attempt_snapshot(
+                connection, attempt_id, "Stored attempt data is invalid."
             )
-            _validate_bundle(sealed_bundle)
-            question_order = self._question_order(
-                row["question_order_json"], "Stored attempt data is invalid."
-            )
+            record = snapshot.record
+            sealed_bundle = snapshot.sealed_bundle
+            if sealed_bundle is None:
+                raise ValueError("Stored attempt data is invalid.")
             _validate_receipt_for_sealed_attempt(
                 receipt,
-                question_order,
+                record.question_order,
                 sealed_bundle,
                 "Receipt does not match the sealed attempt.",
             )
-            if row["state"] == "acknowledged":
-                if row["receipt_json"] != receipt_json:
+            if record.state == "acknowledged":
+                if snapshot.receipt_json != receipt_json:
                     raise ValueError("Acknowledgment conflicts with the stored receipt.")
-            elif row["state"] != "sealed_pending":
+                acknowledged = record
+            elif record.state != "sealed_pending":
                 raise ValueError("Only a pending sealed attempt can be acknowledged.")
             else:
-                sealed_at = _parse_time(
-                    row["sealed_at"], "Stored attempt data is invalid."
-                )
-                if receipt.accepted_at < sealed_at:
+                if record.sealed_at is None:
+                    raise ValueError("Stored attempt data is invalid.")
+                if receipt.accepted_at < record.sealed_at:
                     raise ValueError("Receipt acceptance time cannot precede the seal time.")
-                outbox = connection.execute(
-                    "SELECT 1 FROM submission_outbox WHERE attempt_id=?", (attempt_id,)
-                ).fetchone()
-                if outbox is None:
-                    raise ValueError("Sealed attempt is missing its submission outbox record.")
                 connection.execute(
                     """UPDATE local_attempts SET state='acknowledged', receipt_json=?
                        WHERE attempt_id=?""",
@@ -1066,4 +1018,5 @@ class ClientStore:
                 connection.execute(
                     "DELETE FROM submission_outbox WHERE attempt_id=?", (attempt_id,)
                 )
-        return self.load_attempt(attempt_id)
+                acknowledged = replace(record, state="acknowledged", receipt=receipt)
+        return acknowledged

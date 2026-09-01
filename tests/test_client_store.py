@@ -614,6 +614,40 @@ class ClientStoreTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, r"^Stored submission outbox data is invalid\.$"):
             self.store.pending_submissions()
 
+    def test_pending_submissions_rejects_jointly_tampered_content_hash(self):
+        self._seal_pending()
+        altered = self._resigned_bundle(content_hash="b" * 64)
+        self._tamper_sealed_snapshot(altered)
+
+        with self.assertRaisesRegex(ValueError, r"^Stored submission outbox data is invalid\.$"):
+            self.store.pending_submissions()
+
+    def test_pending_submissions_rejects_jointly_tampered_seal_chronology(self):
+        self._seal_pending()
+        altered = self._resigned_bundle(sealed_at=self.now - timedelta(seconds=1))
+        self._tamper_sealed_snapshot(altered)
+
+        with self.assertRaisesRegex(ValueError, r"^Stored submission outbox data is invalid\.$"):
+            self.store.pending_submissions()
+
+    def test_acknowledge_rejects_jointly_tampered_content_hash_atomically(self):
+        self._seal_pending()
+        altered = self._resigned_bundle(content_hash="b" * 64)
+        self._tamper_sealed_snapshot(altered)
+
+        with self.assertRaisesRegex(ValueError, r"^Stored attempt data is invalid\.$"):
+            self.store.acknowledge(self.attempt_id, self.receipt)
+        self._assert_raw_pending_state()
+
+    def test_acknowledge_rejects_jointly_tampered_seal_chronology_atomically(self):
+        self._seal_pending()
+        altered = self._resigned_bundle(sealed_at=self.now - timedelta(seconds=1))
+        self._tamper_sealed_snapshot(altered)
+
+        with self.assertRaisesRegex(ValueError, r"^Stored attempt data is invalid\.$"):
+            self.store.acknowledge(self.attempt_id, self.receipt)
+        self._assert_raw_pending_state()
+
     def test_pending_submissions_rejects_wrong_state_and_missing_attempt(self):
         self._seal_pending()
         self.store.connection.execute(
@@ -768,6 +802,36 @@ class ClientStoreTests(unittest.TestCase):
         self.store.seal_attempt(
             self.attempt_id, self._bundle(answer="B"), sealed_at=self.deadline
         )
+
+    def _resigned_bundle(self, **updates):
+        bundle = self._bundle(answer="B").bundle.model_copy(update=updates)
+        return SignedResponseBundle(
+            bundle=bundle,
+            device_signature_b64=sign_json(self.device_private, bundle),
+        )
+
+    def _tamper_sealed_snapshot(self, bundle):
+        bundle_json = canonical_json(bundle).decode("utf-8")
+        self.store.connection.execute(
+            """UPDATE local_attempts
+               SET sealed_at=?, sealed_bundle_json=? WHERE attempt_id=?""",
+            (bundle.bundle.sealed_at.isoformat(), bundle_json, self.attempt_id),
+        )
+        self.store.connection.execute(
+            "UPDATE submission_outbox SET bundle_json=? WHERE attempt_id=?",
+            (bundle_json, self.attempt_id),
+        )
+        self.store.connection.commit()
+
+    def _assert_raw_pending_state(self):
+        row = self.store.connection.execute(
+            "SELECT state FROM local_attempts WHERE attempt_id=?", (self.attempt_id,)
+        ).fetchone()
+        outbox = self.store.connection.execute(
+            "SELECT COUNT(*) FROM submission_outbox WHERE attempt_id=?", (self.attempt_id,)
+        ).fetchone()[0]
+        self.assertEqual("sealed_pending", row["state"])
+        self.assertEqual(1, outbox)
 
     def _assert_receipt_rejected(self, receipt):
         with self.assertRaisesRegex(ValueError, "receipt|Receipt|Acknowledgment"):

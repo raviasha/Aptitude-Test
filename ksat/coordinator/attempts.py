@@ -11,6 +11,11 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from ksat.coordinator.releases import unwrap_release_content_key
+from ksat.coordinator.submissions import (
+    INVALID_ANSWER_STATE,
+    ReleaseAnswerStateProblem,
+    validate_release_answer_state,
+)
 from ksat.crypto import sign_json
 from ksat.protocol import (
     PACK_FORMAT_VERSION,
@@ -229,8 +234,20 @@ def issue_attempt_ticket(
                WHERE r.release_id = ?""",
             (release_id,),
         ).fetchone()
+        if release is not None and release["state"] == INVALID_ANSWER_STATE:
+            raise _problem(
+                "release_answer_state_invalid",
+                "The release private answer snapshot is incomplete; Faculty must create a new assessment.",
+            )
         if release is None or release["state"] not in {"prepared", "launched"}:
             raise _problem("content_not_ready", "Assessment content is not ready.")
+        try:
+            validate_release_answer_state(connection, release_id)
+        except ReleaseAnswerStateProblem as error:
+            raise _problem(
+                "release_answer_state_invalid",
+                "The release private answer snapshot is incomplete; Faculty must create a new assessment.",
+            ) from error
         if confirmed_content_hash != release["content_hash"]:
             raise _problem("content_hash_mismatch", "The cached assessment content does not match.")
 

@@ -2161,6 +2161,38 @@ class FacultyReleaseFlowTests(unittest.TestCase):
                 ).fetchone()
             )
 
+    def test_private_snapshot_insert_failure_rolls_back_release_and_owned_pack(self):
+        with app.db() as connection:
+            connection.execute(
+                """CREATE TRIGGER reject_complete_private_snapshot
+                   BEFORE INSERT ON release_questions
+                   WHEN NEW.correct_answer IS NOT NULL
+                   BEGIN SELECT RAISE(ABORT, 'injected private snapshot failure'); END"""
+            )
+
+        response = self.client.post(
+            "/api/admin/tests", json=self.create_payload("Snapshot failure")
+        )
+
+        self.assertEqual(500, response.status_code, response.text)
+        self.assertEqual([], list(app.assessment_packs_dir().glob("*.ksatpack")))
+        with app.db() as connection:
+            self.assertIsNone(
+                connection.execute(
+                    "SELECT 1 FROM tests WHERE test_name='Snapshot failure'"
+                ).fetchone()
+            )
+            self.assertEqual(
+                0,
+                connection.execute(
+                    "SELECT COUNT(*) FROM assessment_releases"
+                ).fetchone()[0],
+            )
+            self.assertEqual(
+                0,
+                connection.execute("SELECT COUNT(*) FROM release_questions").fetchone()[0],
+            )
+
     def test_delete_prepared_test_removes_release_rows_and_pack(self):
         created = self.client.post("/api/admin/tests", json=self.create_payload("Delete release"))
         self.assertEqual(200, created.status_code, created.text)

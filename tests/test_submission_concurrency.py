@@ -134,6 +134,81 @@ class SubmissionWriterReliabilityTests(unittest.TestCase):
             self.assertIsInstance(receipt, SubmissionReceipt)
             writer.stop(5)
 
+    def test_rollback_and_close_failure_resolves_active_and_recovers_queued_work(self):
+        scored = self.scored()
+        writer = SubmissionWriter(app.DB_PATH)
+        entered = threading.Event()
+        release = threading.Event()
+        original_commit = writer._commit
+        connect_calls = 0
+
+        class BrokenTransactionConnection:
+            def __init__(self, delegate):
+                self.delegate = delegate
+
+            def __getattr__(self, name):
+                return getattr(self.delegate, name)
+
+            def rollback(self):
+                raise sqlite3.OperationalError("injected rollback failure")
+
+            def close(self):
+                self.delegate.close()
+                raise sqlite3.OperationalError("injected close failure")
+
+        def connect_with_first_connection_broken(path):
+            nonlocal connect_calls
+            connect_calls += 1
+            connection = connect_sqlite(path)
+            return BrokenTransactionConnection(connection) if connect_calls == 1 else connection
+
+        commit_calls = 0
+
+        def fail_first_after_partial_insert(connection, item):
+            nonlocal commit_calls
+            commit_calls += 1
+            if commit_calls != 1:
+                return original_commit(connection, item)
+            connection.execute("BEGIN IMMEDIATE")
+            question_id, selected, correct, category, chapter = item.responses[0]
+            connection.execute(
+                """INSERT INTO responses
+                   (attempt_id, question_id, selected_answer, correct,
+                    category, chapter, question_order)
+                   VALUES (?, ?, ?, ?, ?, ?, 0)""",
+                (item.attempt_id, question_id, selected, correct, category, chapter),
+            )
+            entered.set()
+            self.assertTrue(release.wait(5))
+            raise sqlite3.OperationalError("original item commit failure")
+
+        with (
+            patch("ksat.coordinator.submissions.connect_sqlite", side_effect=connect_with_first_connection_broken),
+            patch.object(writer, "_commit", side_effect=fail_first_after_partial_insert),
+        ):
+            writer.start()
+            with ThreadPoolExecutor(max_workers=3) as executor:
+                active = executor.submit(writer.submit, scored, 5)
+                self.assertTrue(entered.wait(5))
+                queued = [executor.submit(writer.submit, scored, 5) for _ in range(2)]
+                deadline = time.monotonic() + 5
+                while writer.pending_count != 2 and time.monotonic() < deadline:
+                    time.sleep(0.005)
+                self.assertEqual(2, writer.pending_count)
+                release.set()
+                before = time.monotonic()
+                with self.assertRaises(SubmissionProblem) as caught:
+                    active.result(timeout=1)
+                self.assertLess(time.monotonic() - before, 1)
+                self.assertEqual("submission_failed", caught.exception.code)
+                receipts = [future.result(timeout=5) for future in queued]
+                self.assertEqual(receipts[0], receipts[1])
+            writer.stop(5)
+
+        self.assertGreaterEqual(connect_calls, 2)
+        self.assertEqual(1, self.fixture.count("submissions"))
+        self.assertEqual(2, self.fixture.count("responses"))
+
     def test_worker_connection_failure_resolves_queued_future(self):
         scored = self.scored()
         writer = SubmissionWriter(app.DB_PATH)
@@ -147,6 +222,67 @@ class SubmissionWriterReliabilityTests(unittest.TestCase):
         self.assertEqual("submission_failed", caught.exception.code)
         self.assertTrue(caught.exception.retryable)
         writer.stop(1)
+
+    def test_reconnect_failure_enters_terminal_state_and_resolves_every_future(self):
+        scored = self.scored()
+        writer = SubmissionWriter(app.DB_PATH)
+        entered = threading.Event()
+        release = threading.Event()
+        connect_calls = 0
+
+        class RollbackFailureConnection:
+            def __init__(self, delegate):
+                self.delegate = delegate
+
+            def __getattr__(self, name):
+                return getattr(self.delegate, name)
+
+            def rollback(self):
+                raise sqlite3.OperationalError("injected rollback failure")
+
+            def close(self):
+                self.delegate.close()
+
+        def connect_then_fail(path):
+            nonlocal connect_calls
+            connect_calls += 1
+            if connect_calls > 1:
+                raise sqlite3.OperationalError("injected reconnect failure")
+            return RollbackFailureConnection(connect_sqlite(path))
+
+        def blocked_failure(connection, item):
+            connection.execute("BEGIN IMMEDIATE")
+            entered.set()
+            self.assertTrue(release.wait(5))
+            raise sqlite3.OperationalError("original item failure")
+
+        with (
+            patch("ksat.coordinator.submissions.connect_sqlite", side_effect=connect_then_fail),
+            patch.object(writer, "_commit", side_effect=blocked_failure),
+        ):
+            writer.start()
+            with ThreadPoolExecutor(max_workers=3) as executor:
+                futures = [executor.submit(writer.submit, scored, 5)]
+                self.assertTrue(entered.wait(5))
+                futures.extend(executor.submit(writer.submit, scored, 5) for _ in range(2))
+                deadline = time.monotonic() + 5
+                while writer.pending_count != 2 and time.monotonic() < deadline:
+                    time.sleep(0.005)
+                release.set()
+                errors = []
+                for future in futures:
+                    with self.assertRaises(SubmissionProblem) as caught:
+                        future.result(timeout=1)
+                    errors.append(caught.exception.code)
+                self.assertEqual(["submission_failed"] * 3, errors)
+            before = time.monotonic()
+            with self.assertRaises(SubmissionProblem) as rejected:
+                writer.submit(scored, 5)
+            self.assertLess(time.monotonic() - before, 1)
+            self.assertEqual("submission_failed", rejected.exception.code)
+            writer.stop(1)
+        self.assertEqual(0, self.fixture.count("responses"))
+        self.assertEqual(0, self.fixture.count("submissions"))
 
     def test_transaction_failure_rolls_back_every_submission_side_effect(self):
         event_bundle = self.fixture.bundle(events=(

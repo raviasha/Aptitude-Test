@@ -62,6 +62,53 @@ class CoordinatorSchemaTests(unittest.TestCase):
                 app.BACKUP_DIR = original_backup_dir
                 app.QUESTION_BANKS_DIR = original_question_banks_dir
 
+    def test_migration_preserves_responses_while_detaching_mutable_question_rows(self):
+        connection = sqlite3.connect(":memory:")
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys=ON")
+        connection.executescript("""
+            CREATE TABLE tests (test_id INTEGER PRIMARY KEY);
+            CREATE TABLE attempts (
+              attempt_id TEXT PRIMARY KEY, test_id INTEGER, student_id TEXT
+            );
+            CREATE TABLE questions (question_id INTEGER PRIMARY KEY);
+            CREATE TABLE responses (
+              response_id INTEGER PRIMARY KEY AUTOINCREMENT,
+              attempt_id TEXT NOT NULL,
+              question_id INTEGER NOT NULL,
+              selected_answer TEXT,
+              correct INTEGER,
+              category TEXT NOT NULL,
+              chapter TEXT NOT NULL DEFAULT 'Uncategorized',
+              question_order INTEGER NOT NULL,
+              FOREIGN KEY(attempt_id) REFERENCES attempts(attempt_id),
+              FOREIGN KEY(question_id) REFERENCES questions(question_id),
+              UNIQUE(attempt_id, question_id)
+            );
+            INSERT INTO attempts VALUES ('a1', 1, 's1');
+            INSERT INTO questions VALUES (7);
+            INSERT INTO responses
+              (attempt_id, question_id, selected_answer, correct, category, chapter, question_order)
+            VALUES ('a1', 7, 'B', 1, 'Quantitative Aptitude', 'Arithmetic', 0);
+        """)
+
+        migrate_distributed_schema(connection)
+
+        self.assertEqual(
+            ("a1", 7, "B", 1),
+            tuple(connection.execute(
+                """SELECT attempt_id, question_id, selected_answer, correct
+                   FROM responses"""
+            ).fetchone()),
+        )
+        foreign_tables = {
+            row[2] for row in connection.execute("PRAGMA foreign_key_list(responses)")
+        }
+        self.assertIn("attempts", foreign_tables)
+        self.assertNotIn("questions", foreign_tables)
+        connection.execute("DELETE FROM questions WHERE question_id=7")
+        self.assertEqual(1, connection.execute("SELECT COUNT(*) FROM responses").fetchone()[0])
+
 
 if __name__ == "__main__":
     unittest.main()

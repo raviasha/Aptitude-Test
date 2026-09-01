@@ -6,7 +6,7 @@ import json
 import queue
 import sqlite3
 import threading
-from concurrent.futures import Future, TimeoutError as FutureTimeout
+from concurrent.futures import Future, InvalidStateError, TimeoutError as FutureTimeout
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -41,6 +41,18 @@ class SubmissionProblem(ValueError):
         return {"code": self.code, "message": self.message, "retryable": self.retryable}
 
 
+class ReleaseAnswerStateProblem(ValueError):
+    code = "release_answer_state_invalid"
+
+    def __init__(self, message: str = "The release private answer snapshot is incomplete or invalid.") -> None:
+        super().__init__(message)
+        self.message = message
+
+
+INVALID_ANSWER_STATE = "answer_state_invalid"
+_CANONICAL_OPTION_SETS = (tuple("ABCD"), tuple("ABCDE"))
+
+
 @dataclass(frozen=True)
 class ScoredSubmission:
     attempt_id: str
@@ -57,51 +69,165 @@ class ScoredSubmission:
     violations: tuple[IntegrityEvent, ...]
 
 
-def freeze_release_answer_state(connection: sqlite3.Connection, release_id: str) -> None:
-    """Freeze coordinator-only answer and option metadata for a production release."""
-
-    rows = connection.execute(
-        """SELECT rq.question_id, q.options_json, q.option_a, q.option_b, q.option_c,
-                  q.option_d, q.correct_answer, q.category, q.chapter
-           FROM release_questions rq
-           JOIN questions q ON q.question_id=rq.question_id
-           WHERE rq.release_id=? ORDER BY rq.canonical_order""",
+def _release_and_question_ids(
+    connection: sqlite3.Connection, release_id: str
+) -> tuple[sqlite3.Row, tuple[int, ...]]:
+    release = connection.execute(
+        "SELECT state, manifest_json FROM assessment_releases WHERE release_id=?",
         (release_id,),
-    ).fetchall()
-    expected = connection.execute(
-        "SELECT COUNT(*) FROM release_questions WHERE release_id=?", (release_id,)
-    ).fetchone()[0]
-    if not rows or len(rows) != expected:
-        raise ValueError("Release questions are missing private answer state.")
-    for row in rows:
+    ).fetchone()
+    if release is None:
+        raise ReleaseAnswerStateProblem("The assessment release does not exist.")
+    try:
+        manifest = json.loads(release["manifest_json"])
+        raw_ids = manifest["canonical_question_ids"]
+    except (KeyError, TypeError, json.JSONDecodeError) as error:
+        raise ReleaseAnswerStateProblem("The release manifest question coverage is invalid.") from error
+    if (
+        not isinstance(raw_ids, list)
+        or not raw_ids
+        or any(not isinstance(question_id, int) or isinstance(question_id, bool) for question_id in raw_ids)
+        or len(raw_ids) != len(set(raw_ids))
+    ):
+        raise ReleaseAnswerStateProblem("The release manifest question coverage is invalid.")
+    return release, tuple(raw_ids)
+
+
+def validate_release_answer_state(
+    connection: sqlite3.Connection, release_id: str
+) -> tuple[sqlite3.Row, ...]:
+    """Validate exact coverage and every private field used by scoring/results."""
+
+    _release, question_ids = _release_and_question_ids(connection, release_id)
+    rows = tuple(connection.execute(
+        """SELECT question_id, canonical_order, options_json, correct_answer, category, chapter
+           FROM release_questions WHERE release_id=? ORDER BY canonical_order""",
+        (release_id,),
+    ).fetchall())
+    if len(rows) != len(question_ids):
+        raise ReleaseAnswerStateProblem("The release private snapshot question coverage is incomplete.")
+    for canonical_order, (expected_id, row) in enumerate(zip(question_ids, rows)):
+        if row["question_id"] != expected_id or row["canonical_order"] != canonical_order:
+            raise ReleaseAnswerStateProblem("The release private snapshot question coverage is invalid.")
         try:
-            options = json.loads(row["options_json"] or "{}")
+            option_keys = json.loads(row["options_json"])
         except (TypeError, json.JSONDecodeError) as error:
-            raise ValueError("Question options are invalid.") from error
-        if not isinstance(options, dict) or set(options) not in (set("ABCD"), set("ABCDE")):
-            options = {
-                key: row[f"option_{key.lower()}"]
-                for key in "ABCD"
-                if row[f"option_{key.lower()}"] is not None
-            }
-        option_keys = sorted(options)
-        if row["correct_answer"] not in option_keys:
-            raise ValueError("Question answer is not among its options.")
-        connection.execute(
-            """UPDATE release_questions
-               SET options_json=COALESCE(options_json, ?),
-                   correct_answer=COALESCE(correct_answer, ?),
-                   category=COALESCE(category, ?), chapter=COALESCE(chapter, ?)
-               WHERE release_id=? AND question_id=?""",
-            (
-                json.dumps(option_keys, separators=(",", ":")),
-                row["correct_answer"],
-                row["category"],
-                row["chapter"],
-                release_id,
-                row["question_id"],
-            ),
+            raise ReleaseAnswerStateProblem("A release question has invalid allowed options.") from error
+        if (
+            not isinstance(option_keys, list)
+            or tuple(option_keys) not in _CANONICAL_OPTION_SETS
+            or row["correct_answer"] not in option_keys
+            or not isinstance(row["category"], str)
+            or not row["category"].strip()
+            or not isinstance(row["chapter"], str)
+            or not row["chapter"].strip()
+        ):
+            raise ReleaseAnswerStateProblem("A release question has incomplete private scoring metadata.")
+    return rows
+
+
+def _source_answer_snapshot(row: sqlite3.Row) -> tuple[str, str, str, str]:
+    try:
+        options = json.loads(row["options_json"] or "{}")
+    except (TypeError, json.JSONDecodeError) as error:
+        raise ReleaseAnswerStateProblem("A source question has invalid options.") from error
+    if (
+        not isinstance(options, dict)
+        or tuple(sorted(options)) not in _CANONICAL_OPTION_SETS
+        or any(not isinstance(value, str) or not value.strip() for value in options.values())
+    ):
+        options = {
+            key: row[f"option_{key.lower()}"]
+            for key in "ABCD"
+            if isinstance(row[f"option_{key.lower()}"], str)
+            and row[f"option_{key.lower()}"].strip()
+        }
+    option_keys = tuple(sorted(options))
+    if (
+        option_keys not in _CANONICAL_OPTION_SETS
+        or row["correct_answer"] not in option_keys
+        or not isinstance(row["category"], str)
+        or not row["category"].strip()
+        or not isinstance(row["chapter"], str)
+        or not row["chapter"].strip()
+    ):
+        raise ReleaseAnswerStateProblem("A source question has incomplete private scoring metadata.")
+    return (
+        json.dumps(option_keys, separators=(",", ":")),
+        row["correct_answer"],
+        row["category"],
+        row["chapter"],
+    )
+
+
+def freeze_release_answer_state(connection: sqlite3.Connection, release_id: str) -> None:
+    """Create a complete private snapshot, or validate an immutable existing one."""
+
+    try:
+        validate_release_answer_state(connection, release_id)
+        return
+    except ReleaseAnswerStateProblem:
+        pass
+
+    release, question_ids = _release_and_question_ids(connection, release_id)
+    has_attempts = connection.execute(
+        "SELECT 1 FROM attempts WHERE release_id=? LIMIT 1", (release_id,)
+    ).fetchone()
+    if release["state"] != "prepared" or has_attempts:
+        raise ReleaseAnswerStateProblem(
+            "The used or launched release has an incomplete private answer snapshot and cannot be repaired safely."
         )
+
+    placeholders = ",".join("?" for _ in question_ids)
+    source_rows = connection.execute(
+        f"""SELECT question_id, options_json, option_a, option_b, option_c, option_d,
+                   correct_answer, category, chapter
+            FROM questions WHERE question_id IN ({placeholders})""",
+        question_ids,
+    ).fetchall()
+    source_by_id = {row["question_id"]: row for row in source_rows}
+    if set(source_by_id) != set(question_ids):
+        raise ReleaseAnswerStateProblem(
+            "The unused release cannot be repaired because a source question is missing."
+        )
+    frozen = [
+        (release_id, question_id, order, *_source_answer_snapshot(source_by_id[question_id]))
+        for order, question_id in enumerate(question_ids)
+    ]
+
+    connection.execute("SAVEPOINT freeze_release_answer_state")
+    try:
+        connection.execute("DELETE FROM release_questions WHERE release_id=?", (release_id,))
+        connection.executemany(
+            """INSERT INTO release_questions
+               (release_id, question_id, canonical_order, options_json,
+                correct_answer, category, chapter)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            frozen,
+        )
+        validate_release_answer_state(connection, release_id)
+    except Exception:
+        connection.execute("ROLLBACK TO SAVEPOINT freeze_release_answer_state")
+        connection.execute("RELEASE SAVEPOINT freeze_release_answer_state")
+        raise
+    connection.execute("RELEASE SAVEPOINT freeze_release_answer_state")
+
+
+def migrate_release_answer_states(connection: sqlite3.Connection) -> None:
+    """Repair only unused prepared releases; quarantine every unsafe partial snapshot."""
+
+    release_ids = [
+        row["release_id"]
+        for row in connection.execute("SELECT release_id FROM assessment_releases").fetchall()
+    ]
+    for release_id in release_ids:
+        try:
+            freeze_release_answer_state(connection, release_id)
+        except ReleaseAnswerStateProblem:
+            connection.execute(
+                "UPDATE assessment_releases SET state=? WHERE release_id=?",
+                (INVALID_ANSWER_STATE, release_id),
+            )
 
 
 def _problem(code: str, message: str) -> SubmissionProblem:
@@ -201,19 +327,26 @@ def validate_and_score(
         return existing
 
     release = connection.execute(
-        "SELECT test_id, content_hash FROM assessment_releases WHERE release_id=?",
+        "SELECT test_id, content_hash, state FROM assessment_releases WHERE release_id=?",
         (ticket.release_id,),
     ).fetchone()
     if release is None or release["test_id"] != attempt["test_id"]:
         raise _problem("release_identity_mismatch", "The assessment release identity is invalid.")
+    if release["state"] == INVALID_ANSWER_STATE:
+        raise _problem(
+            "release_answer_state_invalid",
+            "The release private answer snapshot is incomplete; Faculty must create a new assessment.",
+        )
     if ticket.content_hash != release["content_hash"] or bundle.content_hash != release["content_hash"]:
         raise _problem("content_hash_mismatch", "The assessment content hash does not match.")
 
-    frozen_rows = connection.execute(
-        """SELECT question_id, canonical_order, options_json, correct_answer, category, chapter
-           FROM release_questions WHERE release_id=? ORDER BY canonical_order""",
-        (ticket.release_id,),
-    ).fetchall()
+    try:
+        frozen_rows = validate_release_answer_state(connection, ticket.release_id)
+    except ReleaseAnswerStateProblem as error:
+        raise _problem(
+            "release_answer_state_invalid",
+            "The release private answer snapshot is incomplete; Faculty must create a new assessment.",
+        ) from error
     expected_ids = [row["question_id"] for row in frozen_rows]
     submitted_ids = [item.question_id for item in bundle.responses]
     if not expected_ids or len(submitted_ids) != len(set(submitted_ids)) or set(submitted_ids) != set(expected_ids):
@@ -348,13 +481,12 @@ class SubmissionWriter:
                     item = self._queue.get_nowait()
                 except queue.Empty:
                     break
-                if not item.future.done():
-                    item.future.set_exception(problem)
+                self._set_exception(item.future, problem)
                 self._queue.task_done()
             with self._lock:
                 active_future = self._active_future
-            if active_future is not None and not active_future.done():
-                active_future.set_exception(problem)
+            if active_future is not None:
+                self._set_exception(active_future, problem)
             return
         with self._lock:
             self._state = "stopped"
@@ -393,28 +525,75 @@ class SubmissionWriter:
                 retryable=True,
             ) from error
 
-    def _run(self) -> None:
+    @staticmethod
+    def _set_exception(future: Future[SubmissionReceipt], error: BaseException) -> None:
         try:
-            connection = connect_sqlite(self.db_path)
+            future.set_exception(error)
+        except InvalidStateError:
+            pass
+
+    @staticmethod
+    def _set_result(future: Future[SubmissionReceipt], receipt: SubmissionReceipt) -> None:
+        try:
+            future.set_result(receipt)
+        except InvalidStateError:
+            pass
+
+    @staticmethod
+    def _rollback(connection: sqlite3.Connection) -> bool:
+        try:
+            connection.rollback()
+        except Exception:
+            return False
+        return True
+
+    @staticmethod
+    def _close(connection: sqlite3.Connection | None) -> None:
+        if connection is None:
+            return
+        try:
+            connection.close()
+        except Exception:
+            pass
+
+    def _terminal_failure(self, problem: SubmissionProblem) -> None:
+        with self._lock:
+            self._worker_failure = problem
+            self._state = "failed"
+            active_future = self._active_future
+        if active_future is not None:
+            self._set_exception(active_future, problem)
+        while True:
+            try:
+                item = self._queue.get_nowait()
+            except queue.Empty:
+                break
+            self._set_exception(item.future, problem)
+            self._queue.task_done()
+
+    @staticmethod
+    def _failure(error: BaseException, message: str) -> SubmissionProblem:
+        problem = SubmissionProblem(
+            "submission_failed",
+            message,
+            status_code=503,
+            retryable=True,
+        )
+        problem.__cause__ = error
+        return problem
+
+    def _open_connection(self) -> sqlite3.Connection:
+        return connect_sqlite(self.db_path)
+
+    def _run(self) -> None:
+        connection: sqlite3.Connection | None = None
+        try:
+            connection = self._open_connection()
         except Exception as error:
-            problem = SubmissionProblem(
-                "submission_failed",
+            self._terminal_failure(self._failure(
+                error,
                 "The coordinator could not open the submission database; retry the sealed bundle.",
-                status_code=503,
-                retryable=True,
-            )
-            problem.__cause__ = error
-            with self._lock:
-                self._worker_failure = problem
-                self._state = "failed"
-                while True:
-                    try:
-                        item = self._queue.get_nowait()
-                    except queue.Empty:
-                        break
-                    if not item.future.done():
-                        item.future.set_exception(problem)
-                    self._queue.task_done()
+            ))
             return
         try:
             while True:
@@ -428,31 +607,47 @@ class SubmissionWriter:
                 try:
                     with self._lock:
                         self._active_future = item.future
+                    assert connection is not None
                     receipt = self._commit(connection, item.scored)
                 except SubmissionProblem as error:
-                    if not item.future.done():
-                        item.future.set_exception(error)
+                    rollback_succeeded = self._rollback(connection)
+                    self._set_exception(item.future, error)
+                    if not rollback_succeeded:
+                        self._close(connection)
+                        connection = None
                 except Exception as error:
-                    connection.rollback()
-                    problem = SubmissionProblem(
-                        "submission_failed",
+                    rollback_succeeded = self._rollback(connection)
+                    problem = self._failure(
+                        error,
                         "The coordinator could not persist the submission; retry the sealed bundle.",
-                        status_code=503,
-                        retryable=True,
                     )
-                    problem.__cause__ = error
-                    if not item.future.done():
-                        item.future.set_exception(problem)
+                    self._set_exception(item.future, problem)
+                    if not rollback_succeeded:
+                        self._close(connection)
+                        connection = None
                 else:
-                    if not item.future.done():
-                        item.future.set_result(receipt)
+                    self._set_result(item.future, receipt)
                 finally:
                     with self._lock:
                         if self._active_future is item.future:
                             self._active_future = None
                     self._queue.task_done()
+                if connection is None:
+                    try:
+                        connection = self._open_connection()
+                    except Exception as error:
+                        self._terminal_failure(self._failure(
+                            error,
+                            "The coordinator could not recover the submission database; retry the sealed bundle.",
+                        ))
+                        return
+        except Exception as error:
+            self._terminal_failure(self._failure(
+                error,
+                "The submission worker stopped unexpectedly; retry the sealed bundle.",
+            ))
         finally:
-            connection.close()
+            self._close(connection)
             with self._lock:
                 if self._state == "stopping":
                     self._state = "stopped"
@@ -460,85 +655,85 @@ class SubmissionWriter:
     @staticmethod
     def _commit(connection: sqlite3.Connection, scored: ScoredSubmission) -> SubmissionReceipt:
         connection.execute("BEGIN IMMEDIATE")
-        try:
-            existing = _stored_receipt(connection, scored.attempt_id)
-            if existing is not None:
-                connection.commit()
-                return existing
-            attempt = connection.execute(
-                "SELECT status FROM attempts WHERE attempt_id=?", (scored.attempt_id,)
-            ).fetchone()
-            if attempt is None or attempt["status"] != "in_progress":
-                raise _problem("attempt_not_submittable", "The attempt cannot be submitted.")
-            connection.executemany(
-                """INSERT INTO responses
-                   (attempt_id, question_id, selected_answer, correct, category, chapter, question_order)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                [
-                    (scored.attempt_id, question_id, selected, correct, category, chapter, order)
-                    for order, (question_id, selected, correct, category, chapter) in enumerate(scored.responses)
-                ],
-            )
-            connection.executemany(
-                "INSERT INTO exam_violations (attempt_id, violation_type, occurred_at) VALUES (?, ?, ?)",
-                [
-                    (
-                        scored.attempt_id,
-                        event.event_type,
-                        _utc(event.occurred_at).isoformat(timespec="seconds"),
-                    )
-                    for event in scored.violations
-                ],
-            )
-            accepted_at = datetime.now(timezone.utc)
-            receipt = SubmissionReceipt(
-                attempt_id=scored.attempt_id,
-                accepted_at=accepted_at,
-                score=scored.score,
-                total_questions=scored.total_questions,
-                attempted=scored.attempted,
-                percentage=scored.percentage,
-                violations=len(scored.violations),
-            )
-            updated = connection.execute(
-                """UPDATE attempts
-                   SET submitted_at=?, status='submitted', attempted=?, correct=?, score=?,
-                       percentage=?, sealed_at=?, submission_hash=?
-                   WHERE attempt_id=? AND status='in_progress'""",
-                (
-                    accepted_at.isoformat(timespec="seconds"),
-                    scored.attempted,
-                    scored.score,
-                    scored.score,
-                    scored.percentage,
-                    scored.sealed_at,
-                    scored.bundle_hash,
-                    scored.attempt_id,
-                ),
-            )
-            if updated.rowcount != 1:
-                raise _problem("attempt_not_submittable", "The attempt cannot be submitted.")
-            connection.execute(
-                """INSERT INTO submissions
-                   (attempt_id, bundle_hash, bundle_json, accepted_at, receipt_json)
-                   VALUES (?, ?, ?, ?, ?)""",
-                (
-                    scored.attempt_id,
-                    scored.bundle_hash,
-                    scored.bundle_json,
-                    accepted_at.isoformat(timespec="seconds"),
-                    canonical_json(receipt).decode("utf-8"),
-                ),
-            )
+        existing = _stored_receipt(connection, scored.attempt_id)
+        if existing is not None:
             connection.commit()
-            return receipt
-        except Exception:
-            connection.rollback()
-            raise
+            return existing
+        attempt = connection.execute(
+            "SELECT status FROM attempts WHERE attempt_id=?", (scored.attempt_id,)
+        ).fetchone()
+        if attempt is None or attempt["status"] != "in_progress":
+            raise _problem("attempt_not_submittable", "The attempt cannot be submitted.")
+        connection.executemany(
+            """INSERT INTO responses
+               (attempt_id, question_id, selected_answer, correct, category, chapter, question_order)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            [
+                (scored.attempt_id, question_id, selected, correct, category, chapter, order)
+                for order, (question_id, selected, correct, category, chapter) in enumerate(scored.responses)
+            ],
+        )
+        connection.executemany(
+            "INSERT INTO exam_violations (attempt_id, violation_type, occurred_at) VALUES (?, ?, ?)",
+            [
+                [
+                    scored.attempt_id,
+                    event.event_type,
+                    _utc(event.occurred_at).isoformat(timespec="seconds"),
+                ]
+                for event in scored.violations
+            ],
+        )
+        accepted_at = datetime.now(timezone.utc)
+        receipt = SubmissionReceipt(
+            attempt_id=scored.attempt_id,
+            accepted_at=accepted_at,
+            score=scored.score,
+            total_questions=scored.total_questions,
+            attempted=scored.attempted,
+            percentage=scored.percentage,
+            violations=len(scored.violations),
+        )
+        updated = connection.execute(
+            """UPDATE attempts
+               SET submitted_at=?, status='submitted', attempted=?, correct=?, score=?,
+                   percentage=?, sealed_at=?, submission_hash=?
+               WHERE attempt_id=? AND status='in_progress'""",
+            (
+                accepted_at.isoformat(timespec="seconds"),
+                scored.attempted,
+                scored.score,
+                scored.score,
+                scored.percentage,
+                scored.sealed_at,
+                scored.bundle_hash,
+                scored.attempt_id,
+            ),
+        )
+        if updated.rowcount != 1:
+            raise _problem("attempt_not_submittable", "The attempt cannot be submitted.")
+        connection.execute(
+            """INSERT INTO submissions
+               (attempt_id, bundle_hash, bundle_json, accepted_at, receipt_json)
+               VALUES (?, ?, ?, ?, ?)""",
+            (
+                scored.attempt_id,
+                scored.bundle_hash,
+                scored.bundle_json,
+                accepted_at.isoformat(timespec="seconds"),
+                canonical_json(receipt).decode("utf-8"),
+            ),
+        )
+        connection.commit()
+        return receipt
 
 
 __all__ = [
     "freeze_release_answer_state",
+    "migrate_release_answer_states",
+    "validate_release_answer_state",
+    "INVALID_ANSWER_STATE",
+    "ReleaseAnswerStateProblem",
     "ScoredSubmission",
     "SubmissionProblem",
     "SubmissionWriter",

@@ -8,6 +8,40 @@ def _ensure_column(connection: sqlite3.Connection, table: str, definition: str) 
         connection.execute(f"ALTER TABLE {table} ADD COLUMN {definition}")
 
 
+def _preserve_frozen_response_identity(connection: sqlite3.Connection) -> None:
+    """Remove the mutable question-bank FK while preserving all response history."""
+
+    table_exists = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='responses'"
+    ).fetchone()
+    if table_exists is None:
+        return
+    foreign_keys = connection.execute("PRAGMA foreign_key_list(responses)").fetchall()
+    if not any(row[2] == "questions" and row[3] == "question_id" for row in foreign_keys):
+        return
+    connection.execute(
+        """CREATE TABLE responses_without_question_fk (
+          response_id INTEGER PRIMARY KEY AUTOINCREMENT, attempt_id TEXT NOT NULL,
+          question_id INTEGER NOT NULL, selected_answer TEXT, correct INTEGER,
+          category TEXT NOT NULL, chapter TEXT NOT NULL DEFAULT 'Uncategorized',
+          question_order INTEGER NOT NULL,
+          FOREIGN KEY(attempt_id) REFERENCES attempts(attempt_id),
+          UNIQUE(attempt_id, question_id)
+        )"""
+    )
+    connection.execute(
+        """INSERT INTO responses_without_question_fk
+          (response_id, attempt_id, question_id, selected_answer, correct,
+           category, chapter, question_order)
+        SELECT response_id, attempt_id, question_id, selected_answer, correct,
+               category, chapter, question_order
+        FROM responses"""
+    )
+    connection.execute("DROP TABLE responses")
+    connection.execute("ALTER TABLE responses_without_question_fk RENAME TO responses")
+    connection.execute("CREATE INDEX IF NOT EXISTS idx_responses_attempt ON responses(attempt_id)")
+
+
 def migrate_distributed_schema(connection: sqlite3.Connection) -> None:
     connection.executescript(
         """
@@ -78,6 +112,7 @@ def migrate_distributed_schema(connection: sqlite3.Connection) -> None:
     _ensure_column(connection, "release_questions", "category TEXT")
     _ensure_column(connection, "release_questions", "chapter TEXT")
     _ensure_column(connection, "submissions", "receipt_json TEXT")
+    _preserve_frozen_response_identity(connection)
     connection.execute("CREATE INDEX IF NOT EXISTS idx_assessment_releases_state ON assessment_releases(state)")
     connection.execute("CREATE INDEX IF NOT EXISTS idx_attempts_release_student ON attempts(release_id, student_id)")
     connection.execute("CREATE INDEX IF NOT EXISTS idx_audit_events_attempt ON audit_events(attempt_id)")

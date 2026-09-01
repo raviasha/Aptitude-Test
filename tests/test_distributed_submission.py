@@ -12,6 +12,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi.testclient import TestClient
 
 import app
+from ksat.coordinator.attempts import AttemptProblem, issue_attempt_ticket
 from ksat.crypto import generate_ed25519_keypair, sign_json
 from ksat.protocol import (
     AttemptTicket,
@@ -261,6 +262,74 @@ class DistributedSubmissionTests(unittest.TestCase):
         response = self.submit(self.bundle(), received_at=self.deadline + timedelta(hours=1))
         self.assertEqual(200, response.status_code, response.text)
 
+    def test_legacy_deadline_reads_never_finalize_a_distributed_attempt(self):
+        with app.db() as connection:
+            connection.execute(
+                "INSERT INTO students VALUES ('LEGACY-EXPIRED', 'Legacy', 'unused', 'AIML', 'A', ?)",
+                (app.now(),),
+            )
+            legacy_test_id = connection.execute(
+                """INSERT INTO tests
+                   (test_name, composition, created_at, active, launched, mode)
+                   VALUES ('Legacy expired', '[]', ?, 1, 1, 'faculty')""",
+                (app.now(),),
+            ).lastrowid
+            connection.execute(
+                """INSERT INTO attempts
+                   (attempt_id, student_id, test_id, started_at, status,
+                    total_questions, expires_at)
+                   VALUES ('legacy-expired', 'LEGACY-EXPIRED', ?, ?, 'in_progress', 0, ?)""",
+                (legacy_test_id, app.now(), "2000-01-01T00:00:00+00:00"),
+            )
+
+            self.assertEqual(1, app.finalize_expired_attempts(connection))
+            self.assertEqual(
+                "in_progress",
+                app.serialize_attempt(
+                    connection, app.get_attempt(connection, self.attempt_id)
+                )["status"],
+            )
+
+        admin_request = app.Request({
+            "type": "http",
+            "method": "GET",
+            "path": "/api/admin/dashboard",
+            "headers": [],
+            "session": {"user": {"role": "admin", "id": "faculty", "name": "Faculty"}},
+        })
+        app.admin_dashboard(admin_request)
+
+        student_request = app.Request({
+            "type": "http",
+            "method": "POST",
+            "path": f"/api/attempts/{self.attempt_id}/submit",
+            "headers": [],
+            "session": {
+                "user": {"role": "student", "id": self.student_id, "name": "Student Six"}
+            },
+        })
+        with self.assertRaises(app.HTTPException) as legacy_submit:
+            app.submit_attempt(
+                self.attempt_id,
+                app.SubmitPayload(confirmed=True),
+                student_request,
+            )
+        self.assertEqual(409, legacy_submit.exception.status_code)
+
+        with app.db() as connection:
+            statuses = dict(connection.execute(
+                "SELECT attempt_id, status FROM attempts WHERE attempt_id IN (?, ?)",
+                (self.attempt_id, "legacy-expired"),
+            ).fetchall())
+        self.assertEqual("in_progress", statuses[self.attempt_id])
+        self.assertEqual("submitted", statuses["legacy-expired"])
+
+        uploaded = self.submit(
+            self.bundle(sealed_at=self.deadline),
+            received_at=self.deadline + timedelta(hours=1),
+        )
+        self.assertEqual(200, uploaded.status_code, uploaded.text)
+
     def test_question_set_options_hash_deadline_and_ticket_signature_are_validated(self):
         cases = []
         cases.append((self.bundle({self.q1: "B"}), "invalid_question_set"))
@@ -303,6 +372,141 @@ class DistributedSubmissionTests(unittest.TestCase):
         response = self.submit(self.bundle({self.q1: "B", self.q2: "C"}))
         self.assertEqual(200, response.status_code, response.text)
         self.assertEqual(2, response.json()["score"])
+
+    def test_later_question_bank_deletes_do_not_change_frozen_scoring(self):
+        with app.db() as connection:
+            connection.execute(
+                "DELETE FROM questions WHERE question_id IN (?, ?)",
+                (self.q1, self.q2),
+            )
+
+        response = self.submit(self.bundle({self.q1: "B", self.q2: "C"}))
+
+        self.assertEqual(200, response.status_code, response.text)
+        self.assertEqual(2, response.json()["score"])
+        self.assertEqual(2, self.count("responses"))
+
+    def test_startup_repairs_complete_unused_prepared_snapshot_from_exact_source(self):
+        with app.db() as connection:
+            connection.execute("DELETE FROM attempts WHERE attempt_id=?", (self.attempt_id,))
+            connection.execute(
+                "UPDATE assessment_releases SET state='prepared' WHERE release_id=?",
+                (self.release_id,),
+            )
+            connection.execute(
+                "DELETE FROM release_questions WHERE release_id=? AND question_id=?",
+                (self.release_id, self.q2),
+            )
+            connection.execute(
+                """UPDATE release_questions SET category=NULL
+                   WHERE release_id=? AND question_id=?""",
+                (self.release_id, self.q1),
+            )
+
+        app.ensure_schema()
+
+        with app.db() as connection:
+            rows = connection.execute(
+                """SELECT question_id, canonical_order, options_json, correct_answer,
+                          category, chapter
+                   FROM release_questions WHERE release_id=? ORDER BY canonical_order""",
+                (self.release_id,),
+            ).fetchall()
+            state = connection.execute(
+                "SELECT state FROM assessment_releases WHERE release_id=?",
+                (self.release_id,),
+            ).fetchone()[0]
+        self.assertEqual("prepared", state)
+        self.assertEqual([self.q1, self.q2], [row["question_id"] for row in rows])
+        self.assertEqual([0, 1], [row["canonical_order"] for row in rows])
+        self.assertTrue(all(row["options_json"] == '["A","B","C","D"]' for row in rows))
+        self.assertEqual(["B", "C"], [row["correct_answer"] for row in rows])
+        self.assertTrue(all(row["category"] and row["chapter"] for row in rows))
+
+    def test_incomplete_issued_snapshot_is_quarantined_before_another_ticket(self):
+        with app.db() as connection:
+            connection.execute(
+                """UPDATE release_questions SET chapter=NULL
+                   WHERE release_id=? AND question_id=?""",
+                (self.release_id, self.q1),
+            )
+
+        app.ensure_schema()
+
+        admin_request = app.Request({
+            "type": "http",
+            "method": "POST",
+            "path": "/api/admin/tests/launch",
+            "headers": [],
+            "session": {"user": {"role": "admin", "id": "faculty", "name": "Faculty"}},
+        })
+        with self.assertRaises(app.HTTPException) as launch_error:
+            app.launch_test(self._test_id(), admin_request)
+        self.assertEqual(409, launch_error.exception.status_code)
+        self.assertEqual(
+            "release_answer_state_invalid", launch_error.exception.detail["code"]
+        )
+
+        with app.db() as connection:
+            state = connection.execute(
+                "SELECT state FROM assessment_releases WHERE release_id=?",
+                (self.release_id,),
+            ).fetchone()[0]
+            connection.execute(
+                "INSERT INTO students VALUES ('S601', 'Second', 'unused', 'AIML', 'A', ?)",
+                (app.now(),),
+            )
+            with self.assertRaises(AttemptProblem) as caught:
+                issue_attempt_ticket(
+                    connection,
+                    release_id=self.release_id,
+                    student_id="S601",
+                    device_id=self.device_id,
+                    confirmed_content_hash=self.content_hash,
+                    signing_private_key_b64=self.config.signing_private_key_b64,
+                    pack_master_key=self.config.pack_master_key,
+                    now_utc=self.started_at,
+                )
+            attempt_count = connection.execute(
+                "SELECT COUNT(*) FROM attempts WHERE release_id=?",
+                (self.release_id,),
+            ).fetchone()[0]
+        self.assertEqual("answer_state_invalid", state)
+        self.assertEqual("release_answer_state_invalid", caught.exception.code)
+        self.assertEqual(1, attempt_count)
+
+    def test_quarantined_release_keeps_submitted_history_and_receipt_readable(self):
+        accepted = self.submit(self.bundle({self.q1: "B", self.q2: "C"}))
+        self.assertEqual(200, accepted.status_code, accepted.text)
+        with app.db() as connection:
+            connection.execute(
+                """UPDATE release_questions SET options_json=NULL
+                   WHERE release_id=? AND question_id=?""",
+                (self.release_id, self.q1),
+            )
+
+        app.ensure_schema()
+
+        with app.db() as connection:
+            self.assertEqual(
+                "answer_state_invalid",
+                connection.execute(
+                    "SELECT state FROM assessment_releases WHERE release_id=?",
+                    (self.release_id,),
+                ).fetchone()[0],
+            )
+            history = app.result_for_attempt(connection, self.attempt_id)
+        retried = self.submit(self.bundle({self.q1: "A", self.q2: None}))
+        self.assertEqual(accepted.json(), retried.json())
+        self.assertEqual(2, history["attempt"]["score"])
+        self.assertEqual(2, len(history["categories"]))
+
+    def _test_id(self):
+        with app.db() as connection:
+            return connection.execute(
+                "SELECT test_id FROM assessment_releases WHERE release_id=?",
+                (self.release_id,),
+            ).fetchone()[0]
 
     def test_integrity_events_and_unanswered_rows_are_persisted_atomically(self):
         event = IntegrityEvent(event_type="focus_lost", occurred_at=self.started_at + timedelta(seconds=10))

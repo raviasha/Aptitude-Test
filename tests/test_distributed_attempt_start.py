@@ -112,6 +112,13 @@ class DistributedAttemptStartTests(unittest.TestCase):
                 pack_master_key=self.config.pack_master_key,
                 now_iso="2026-08-31T08:30:00+00:00",
             )
+            connection.execute(
+                """UPDATE release_questions
+                   SET options_json='["A","B","C","D"]', correct_answer='A',
+                       category='Quantitative Aptitude', chapter='Arithmetic'
+                   WHERE release_id=?""",
+                (release.release_id,),
+            )
             self.release_id = release.release_id
             self.content_hash = release.content_hash
         self.devices = {}

@@ -44,7 +44,12 @@ from ksat.coordinator.auth import load_or_create_client_session_secret
 from ksat.coordinator.releases import load_release_manifest, prepare_release
 from ksat.coordinator.routes import CoordinatorConfig, router as coordinator_router
 from ksat.coordinator.schema import migrate_distributed_schema
-from ksat.coordinator.submissions import SubmissionWriter, freeze_release_answer_state
+from ksat.coordinator.submissions import (
+    ReleaseAnswerStateProblem,
+    SubmissionWriter,
+    freeze_release_answer_state,
+    migrate_release_answer_states,
+)
 from ksat.crypto import load_or_create_coordinator_keyring
 from ksat.protocol import (
     PublicQuestion,
@@ -1001,7 +1006,6 @@ def ensure_schema() -> None:
               question_id INTEGER NOT NULL, selected_answer TEXT, correct INTEGER,
               category TEXT NOT NULL, chapter TEXT NOT NULL DEFAULT 'Uncategorized', question_order INTEGER NOT NULL,
               FOREIGN KEY(attempt_id) REFERENCES attempts(attempt_id),
-              FOREIGN KEY(question_id) REFERENCES questions(question_id),
               UNIQUE(attempt_id, question_id)
             );
             CREATE TABLE IF NOT EXISTS exam_violations (
@@ -1039,24 +1043,7 @@ def ensure_schema() -> None:
         connection.execute("CREATE INDEX IF NOT EXISTS idx_tests_mode ON tests(mode, active, launched)")
         connection.execute("CREATE INDEX IF NOT EXISTS idx_exam_violations_attempt ON exam_violations(attempt_id)")
         migrate_distributed_schema(connection)
-        for release_row in connection.execute("SELECT release_id FROM assessment_releases").fetchall():
-            missing_answers = connection.execute(
-                """SELECT COUNT(*) FROM release_questions
-                   WHERE release_id=? AND correct_answer IS NULL""",
-                (release_row["release_id"],),
-            ).fetchone()[0]
-            linked_questions = connection.execute(
-                """SELECT COUNT(*) FROM release_questions rq
-                   JOIN questions q ON q.question_id=rq.question_id
-                   WHERE rq.release_id=?""",
-                (release_row["release_id"],),
-            ).fetchone()[0]
-            total_questions = connection.execute(
-                "SELECT COUNT(*) FROM release_questions WHERE release_id=?",
-                (release_row["release_id"],),
-            ).fetchone()[0]
-            if missing_answers and linked_questions == total_questions:
-                freeze_release_answer_state(connection, release_row["release_id"])
+        migrate_release_answer_states(connection)
 
 
 def seed_data() -> None:
@@ -1485,10 +1472,19 @@ def seconds_remaining(attempt: sqlite3.Row | Dict[str, Any]) -> Optional[int]:
     return max(0, math.ceil((expires_at - datetime.now(timezone.utc)).total_seconds()))
 
 
+def is_distributed_attempt(attempt: sqlite3.Row | Dict[str, Any]) -> bool:
+    keys = attempt.keys()
+    return bool(
+        (attempt["release_id"] if "release_id" in keys else None)
+        or (attempt["ticket_json"] if "ticket_json" in keys else None)
+    )
+
+
 def ensure_faculty_deadline(connection: sqlite3.Connection, attempt: sqlite3.Row) -> sqlite3.Row:
     """Backfill the timer for older live Faculty attempts created before expiry was stored."""
     if (
-        attempt["mode"] == "faculty"
+        not is_distributed_attempt(attempt)
+        and attempt["mode"] == "faculty"
         and attempt["launched"]
         and not attempt["expires_at"]
         and (started_at := parse_timestamp(attempt["started_at"]))
@@ -1503,6 +1499,15 @@ def finalize_attempt(connection: sqlite3.Connection, attempt_id: str) -> sqlite3
     attempt = get_attempt(connection, attempt_id)
     if attempt["status"] == "submitted":
         return attempt
+    if is_distributed_attempt(attempt):
+        raise HTTPException(
+            409,
+            {
+                "code": "distributed_submission_required",
+                "message": "This attempt must be submitted as its signed offline response bundle.",
+                "retryable": False,
+            },
+        )
     connection.execute(
         """UPDATE responses SET correct = CASE
            WHEN selected_answer IS NULL THEN 0
@@ -1526,7 +1531,11 @@ def finalize_attempt(connection: sqlite3.Connection, attempt_id: str) -> sqlite3
 
 
 def expire_attempt_if_needed(connection: sqlite3.Connection, attempt: sqlite3.Row) -> sqlite3.Row:
-    if attempt["status"] == "in_progress" and seconds_remaining(attempt) == 0:
+    if (
+        not is_distributed_attempt(attempt)
+        and attempt["status"] == "in_progress"
+        and seconds_remaining(attempt) == 0
+    ):
         return finalize_attempt(connection, attempt["attempt_id"])
     return attempt
 
@@ -1534,7 +1543,8 @@ def expire_attempt_if_needed(connection: sqlite3.Connection, attempt: sqlite3.Ro
 def finalize_expired_attempts(connection: sqlite3.Connection) -> int:
     expired = connection.execute(
         """SELECT attempt_id FROM attempts
-           WHERE status = 'in_progress' AND expires_at IS NOT NULL AND expires_at <= ?""",
+           WHERE status = 'in_progress' AND expires_at IS NOT NULL AND expires_at <= ?
+             AND release_id IS NULL AND ticket_json IS NULL""",
         (now(),),
     ).fetchall()
     for attempt in expired:
@@ -2688,6 +2698,7 @@ def launch_test(test_id: int, request: Request) -> Dict[str, bool]:
             else:
                 config = app.state.coordinator_config
                 try:
+                    freeze_release_answer_state(connection, test["release_id"])
                     release = load_release_manifest(
                         connection,
                         test["release_id"],
@@ -2695,6 +2706,15 @@ def launch_test(test_id: int, request: Request) -> Dict[str, bool]:
                         signing_public_key_b64=config.signing_public_key_b64,
                         pack_master_key=config.pack_master_key,
                     )
+                except ReleaseAnswerStateProblem as error:
+                    raise HTTPException(
+                        409,
+                        {
+                            "code": "release_answer_state_invalid",
+                            "message": "The release private answer snapshot is incomplete. Create a new assessment.",
+                            "retryable": False,
+                        },
+                    ) from error
                 except ValueError as error:
                     raise HTTPException(
                         409, "Assessment release preparation failed. Create a new assessment."

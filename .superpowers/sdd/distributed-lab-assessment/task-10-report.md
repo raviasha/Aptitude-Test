@@ -65,17 +65,23 @@ Fix Cycle 1 RED reproduced all five review findings before implementation: expir
 - normalized default-port/casing/IPv6 same-origin acceptance plus malformed, opaque, cross-pair, and Host-trick rejection with zero mutation;
 - a deferred JavaScript promise proving optimistic selection plus persistent saving/saved/error and rollback behavior.
 
+Fix Cycle 2 reproduced three residual concurrency/parsing findings before production changes:
+
+- A deterministic real `OutboxWorker` test paused after an empty durable query, delivered the app's sole wake, and then released the worker into its condition wait. The original notify-only implementation slept indefinitely. The worker now increments a monotonic wake generation under its `Condition`, captures it before processing/querying, and atomically rechecks it with stop state before every recovery, empty, or scheduled wait. The same test drains exactly once without a second wake; twenty coalesced wakes cause one re-query and no busy loop.
+- A timed-out configuration swap originally left the old service's only prefetch token permanently cancelled. One generation-bound recovery thread now waits for the exact old thread and whole-run lock, verifies service/generation/token ownership and shutdown state, installs a fresh token, and resumes background prefetch where configured. Repeated busy swaps share that recovery owner. The test proves no candidate creation/persistence on either busy response, automatic old-service recovery, a normal manual prefetch, a later successful real swap, and clean shutdown without a recovery/prefetch thread leak.
+- Raw `http://localhost:`, `http://localhost?`, and `http://localhost#` Origins were accepted because semantic URL parsing erased their empty delimiter components. Origin validation now uses an anchored ASCII loopback grammar before normalized Host comparison, rejecting raw query/fragment/userinfo/path/percent/control/whitespace/backslash ambiguity and noncanonical ports while accepting exact IPv4, bracketed IPv6, case-normalized localhost, and matching default/explicit ports.
+
 ## Verification
 
-- Fresh Fix Cycle 1 API/UI/runtime/store/outbox run with bundled Node enabled: 136 tests, OK in 8.284s.
-- Fresh affected coordinator/auth/release/start/submission modules: 287 substantive tests, OK; the root feedback module separately ran 7 tests, OK (294 affected tests total).
-- Fresh canonical discovery with bundled Node enabled: `python -m unittest discover -q` — 377 tests, OK in 62.445s.
-- `python -m py_compile client_app.py ksat/client/runtime.py ksat/client/store.py tests/test_client_app_api.py tests/test_client_ui_contract.py tests/test_client_runtime.py tests/test_client_store.py` — exit 0.
+- Fresh Fix Cycle 2 API/UI/runtime/store/outbox run with bundled Node enabled: 138 tests, OK in 11.069s.
+- Fresh affected coordinator/auth/release/start/submission/feedback run: 296 tests, OK in 74.881s.
+- Fresh canonical diagnostic discovery: 379 tests, OK in 79.763s; immediate repeat `python -m unittest discover -q`: 379 tests, OK in 79.860s.
+- `python -m py_compile client_app.py ksat/client/outbox.py tests/test_client_app_api.py tests/test_client_outbox.py` — exit 0.
 - Bundled `node.exe --check static/client/app.js` — exit 0.
 - `git diff --check` and the static/config leakage scan completed without an error or browser-visible coordinator value.
 
 ## Concerns
 
 - Task 12 must apply the restrictive `%ProgramData%\KSAT Client` ACL, install the trusted CA, and use `ClientConfigStore.save()` or its exact strict file shape for first installation.
-- The isolated verification environment emitted only Starlette's dependency-level deprecation notice about its `httpx` TestClient import; all 377 canonical tests passed and the Fix Cycle lifecycle tests did not hang.
+- The isolated verification environment emitted only Starlette's dependency-level deprecation notice about its `httpx` TestClient import; both 379-test canonical runs passed. One earlier quiet discovery invocation stopped making progress in its process wrapper and was interrupted; a verbose diagnostic run and an immediate quiet repeat both completed normally, with no test or lifecycle thread left running.
 - The Task 8 runtime change is intentionally narrow: it exposes no path, key, answer metadata, decrypted pack, or mutable buffer. `client_app.py` does not reopen or decrypt pack state.

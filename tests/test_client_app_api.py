@@ -4,6 +4,7 @@ import re
 import sqlite3
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import patch
 from dataclasses import dataclass
@@ -359,6 +360,18 @@ class ClientAppApiTests(unittest.TestCase):
         self.assertEqual(0, self.runtime.seal_count)
 
     def test_origin_must_normalize_to_the_exact_loopback_host(self):
+        from client_app import _origin_matches_loopback_host
+
+        for malformed in (
+            "http://localhost\x00",
+            "http://localhost\r",
+            "http://localhost\t",
+            "http://localhost:00080",
+        ):
+            with self.subTest(malformed=repr(malformed)):
+                self.assertFalse(
+                    _origin_matches_loopback_host(malformed, ("localhost", 80))
+                )
         before = dict(self.snapshot.responses)
         rejected = (
             ("localhost:8010", "http://127.0.0.1:8010"),
@@ -368,6 +381,12 @@ class ClientAppApiTests(unittest.TestCase):
             ("localhost:8010", "http://user@localhost:8010"),
             ("localhost.evil:8010", "http://localhost.evil:8010"),
             ("localhost:", "http://localhost"),
+            ("localhost", "http://localhost:"),
+            ("localhost", "http://localhost?"),
+            ("localhost", "http://localhost#"),
+            ("localhost", "http://localhost/%2e"),
+            ("localhost", "http://local%68ost"),
+            ("localhost", "http://localhost\\evil"),
         )
         for host, origin in rejected:
             with self.subTest(host=host, origin=origin):
@@ -387,6 +406,9 @@ class ClientAppApiTests(unittest.TestCase):
         accepted = (
             ("LOCALHOST:80", "HTTP://LOCALHOST"),
             ("localhost", "http://localhost:80"),
+            ("127.0.0.1", "http://127.0.0.1"),
+            ("127.0.0.1:8010", "http://127.0.0.1:8010"),
+            ("[::1]", "http://[::1]"),
             ("[::1]:8010", "http://[::1]:8010"),
         )
         for host, origin in accepted:
@@ -1177,7 +1199,7 @@ class ClientPrefetchLifecycleTests(unittest.TestCase):
         self.assertNotIn(RELEASE_ID, app.state.client_context.ready_releases)
         self.assertEqual(1, replacement_outboxes[0].wakes)
 
-    def test_url_update_timeout_keeps_old_generation_and_configuration(self):
+    def test_url_update_timeout_recovers_old_generation_then_allows_real_swap(self):
         from client_app import ClientServices, create_client_app
 
         entered = threading.Event()
@@ -1185,7 +1207,11 @@ class ClientPrefetchLifecycleTests(unittest.TestCase):
         coordinator = FakeCoordinator()
         coordinator.request_timeout_seconds = 0.05
 
+        catalog_calls = 0
+
         def blocking_catalog():
+            nonlocal catalog_calls
+            catalog_calls += 1
             entered.set()
             release.wait(5)
             return []
@@ -1198,11 +1224,26 @@ class ClientPrefetchLifecycleTests(unittest.TestCase):
         )
         saved = []
         candidates = []
+        replacement_outboxes = []
         services.config_store = SimpleNamespace(
             update_base_url=lambda value: saved.append(value)
         )
-        services.coordinator_factory = lambda value: candidates.append(value)
-        services.outbox_factory = lambda candidate: FakeOutbox()
+
+        def coordinator_factory(value):
+            candidate = FakeCoordinator()
+            candidate.base_url = value
+            candidate.catalog = []
+            candidates.append(candidate)
+            return candidate
+
+        def outbox_factory(candidate):
+            outbox = FakeOutbox()
+            outbox.coordinator = candidate
+            replacement_outboxes.append(outbox)
+            return outbox
+
+        services.coordinator_factory = coordinator_factory
+        services.outbox_factory = outbox_factory
         app = create_client_app(services)
         client_context = TestClient(app, base_url="http://127.0.0.1:8010")
         client = client_context.__enter__()
@@ -1226,9 +1267,57 @@ class ClientPrefetchLifecycleTests(unittest.TestCase):
         self.assertEqual([], candidates)
         self.assertIs(services.coordinator, coordinator)
         self.assertEqual(0, coordinator.closed)
+        recovery_thread = app.state.client_context._prefetch_recovery_thread
+        retry_while_busy = client.post(
+            "/api/device/coordinator",
+            json={"base_url": "https://new.example.edu:9443", "confirmed": True},
+            headers={
+                "Host": "127.0.0.1:8010",
+                "Origin": "http://127.0.0.1:8010",
+                "X-KSAT-CSRF": token,
+            },
+        )
+        self.assertEqual(503, retry_while_busy.status_code)
+        self.assertIs(
+            recovery_thread, app.state.client_context._prefetch_recovery_thread
+        )
+        self.assertEqual([], candidates)
+        old_generation = app.state.client_context._prefetch_generation
+        old_prefetch_thread = app.state.client_context._prefetch_thread
         release.set()
-        app.state.client_context._prefetch_thread.join(2)
+        old_prefetch_thread.join(2)
+        deadline = time.monotonic() + 2
+        while (
+            app.state.client_context._prefetch_generation == old_generation
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.01)
+        self.assertGreater(
+            app.state.client_context._prefetch_generation, old_generation
+        )
+        self.assertFalse(app.state.client_context._prefetch_stop.is_set())
+        self.assertEqual([], app.state.client_context.prefetch())
+        self.assertGreaterEqual(catalog_calls, 2)
+
+        swapped = client.post(
+            "/api/device/coordinator",
+            json={"base_url": "https://new.example.edu:9443", "confirmed": True},
+            headers={
+                "Host": "127.0.0.1:8010",
+                "Origin": "http://127.0.0.1:8010",
+                "X-KSAT-CSRF": token,
+            },
+        )
+        self.assertEqual(200, swapped.status_code)
+        self.assertEqual(["https://new.example.edu:9443"], saved)
+        self.assertEqual(1, len(candidates))
+        self.assertIs(services.coordinator, candidates[0])
+        self.assertEqual(1, replacement_outboxes[0].starts)
         client_context.__exit__(None, None, None)
+        self.assertGreaterEqual(replacement_outboxes[0].stops, 1)
+        self.assertIsNone(app.state.client_context._prefetch_recovery_thread)
+        final_prefetch = app.state.client_context._prefetch_thread
+        self.assertTrue(final_prefetch is None or not final_prefetch.is_alive())
 
 class ClientCoordinatorReconfigurationTests(unittest.TestCase):
     def setUp(self):

@@ -274,6 +274,69 @@ class ClientOutboxTests(unittest.TestCase):
         self.assertEqual([], self.store.pending_submissions())
         self.assertEqual(1, coordinator.calls)
 
+    def test_wake_between_empty_query_and_condition_wait_is_not_lost(self):
+        coordinator = FakeCoordinator([self.receipt])
+        worker = self.make_worker(coordinator)
+        real_pending = self.store.pending_submissions
+        empty_query_reached = threading.Event()
+        release_empty_query = threading.Event()
+        first_due_query = True
+        first_schedule_query = True
+
+        def pause_after_empty_query(*args, **kwargs):
+            nonlocal first_due_query, first_schedule_query
+            if kwargs.get("due_at") is not None and first_due_query:
+                first_due_query = False
+                return []
+            if kwargs.get("due_at") is None and first_schedule_query:
+                first_schedule_query = False
+                empty_query_reached.set()
+                self.assertTrue(release_empty_query.wait(2))
+                return []
+            return real_pending(*args, **kwargs)
+
+        self.store.pending_submissions = pause_after_empty_query
+        worker.start()
+        try:
+            self.assertTrue(empty_query_reached.wait(1))
+            worker.wake()
+            release_empty_query.set()
+            self.wait_until(
+                lambda: self.store.load_attempt(self.attempt_id).state == "acknowledged"
+            )
+        finally:
+            release_empty_query.set()
+            worker.stop()
+        self.assertEqual(1, coordinator.calls)
+
+    def test_multiple_wakes_coalesce_without_busy_loop(self):
+        self.store.acknowledge(self.attempt_id, self.receipt)
+        calls = 0
+        waiting = threading.Event()
+        real_pending = self.store.pending_submissions
+
+        def counted_pending(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            result = real_pending(*args, **kwargs)
+            if calls >= 2:
+                waiting.set()
+            return result
+
+        self.store.pending_submissions = counted_pending
+        worker = self.make_worker(FakeCoordinator([]))
+        worker.start()
+        try:
+            self.assertTrue(waiting.wait(1))
+            with worker._condition:
+                for _ in range(20):
+                    worker.wake()
+            self.wait_until(lambda: calls >= 4)
+            time.sleep(0.08)
+            self.assertEqual(4, calls)
+        finally:
+            worker.stop()
+
     def test_bounded_stop_during_inflight_send_returns_and_keeps_outbox(self):
         entered = threading.Event()
         release = threading.Event()

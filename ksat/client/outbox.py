@@ -36,6 +36,7 @@ class OutboxWorker:
         self._process_lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._stop_requested = False
+        self._wake_generation = 0
 
     def start(self) -> None:
         with self._condition:
@@ -67,6 +68,7 @@ class OutboxWorker:
 
     def wake(self) -> None:
         with self._condition:
+            self._wake_generation += 1
             self._condition.notify_all()
 
     def process_due_once(self) -> int:
@@ -154,6 +156,7 @@ class OutboxWorker:
                 with self._condition:
                     if self._stop_requested:
                         return
+                    observed_wake_generation = self._wake_generation
                 try:
                     self.process_due_once()
                     now = _utc_now(self.clock)
@@ -165,11 +168,15 @@ class OutboxWorker:
                     with self._condition:
                         if self._stop_requested:
                             return
+                        if self._wake_generation != observed_wake_generation:
+                            continue
                         self._condition.wait(_LOCAL_STORE_RECOVERY_SECONDS)
                     continue
                 with self._condition:
                     if self._stop_requested:
                         return
+                    if self._wake_generation != observed_wake_generation:
+                        continue
                     if not pending:
                         self._condition.wait()
                     else:

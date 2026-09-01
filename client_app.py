@@ -44,6 +44,11 @@ _SHARED_STATIC = _ROOT / "static"
 _MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 _MAX_REQUEST_BYTES = 64 * 1024
 _DIAGNOSTIC = re.compile(r"^KSAT-[A-Z0-9]{10}$")
+_LOOPBACK_ORIGIN = re.compile(
+    r"\Ahttp://(?P<authority>(?:localhost|127\.0\.0\.1|\[::1\])"
+    r"(?::[1-9][0-9]{0,4})?)\Z",
+    re.ASCII | re.IGNORECASE,
+)
 _PUBLIC_ASSET_FILENAME = re.compile(r"^[0-9a-f]{64}\.(?:png|jpe?g|webp|svg)$")
 _SEALED_MESSAGE = "Your answers are safe and will upload automatically."
 _INTERVENTION_MESSAGE = (
@@ -188,39 +193,12 @@ def _normalize_loopback_host(value: str) -> tuple[str, int] | None:
 
 
 def _origin_matches_loopback_host(origin: str, host: tuple[str, int]) -> bool:
-    if (
-        not isinstance(origin, str)
-        or not origin
-        or origin != origin.strip()
-        or any(character.isspace() for character in origin)
-        or "," in origin
-        or "\\" in origin
-    ):
+    if not isinstance(origin, str):
         return False
-    try:
-        parsed = urlsplit(origin)
-        port = parsed.port
-    except (TypeError, ValueError):
+    matched = _LOOPBACK_ORIGIN.fullmatch(origin)
+    if matched is None:
         return False
-    if (
-        parsed.scheme.casefold() != "http"
-        or not parsed.netloc
-        or parsed.path
-        or parsed.query
-        or parsed.fragment
-        or parsed.username is not None
-        or parsed.password is not None
-    ):
-        return False
-    origin_host = parsed.hostname
-    if origin_host is None:
-        return False
-    normalized_origin = _normalize_loopback_host(
-        f"[{origin_host}]:{port}" if ":" in origin_host and port is not None
-        else f"[{origin_host}]" if ":" in origin_host
-        else f"{origin_host}:{port}" if port is not None
-        else origin_host
-    )
+    normalized_origin = _normalize_loopback_host(matched.group("authority"))
     return normalized_origin == host
 
 
@@ -463,6 +441,8 @@ class _ClientContext:
         self._prefetch_lock = threading.Lock()
         self._prefetch_state_lock = threading.RLock()
         self._prefetch_generation = 0
+        self._prefetch_recovery_thread: threading.Thread | None = None
+        self._prefetch_shutdown_requested = False
         self._outbox_stop_called = False
         self._outbox_started = False
         self._outbox_wake_lock = threading.Lock()
@@ -470,6 +450,8 @@ class _ClientContext:
         self._owned_resources_closed = False
 
     def initialize(self) -> None:
+        with self._prefetch_state_lock:
+            self._prefetch_shutdown_requested = False
         if self.services is None:
             try:
                 self.services = _load_production_services()
@@ -501,6 +483,8 @@ class _ClientContext:
             self._stop_started_services()
 
     def shutdown(self) -> None:
+        with self._prefetch_state_lock:
+            self._prefetch_shutdown_requested = True
         prefetch_stopped = self._quiesce_prefetch()
         if self.services is None:
             return
@@ -511,6 +495,8 @@ class _ClientContext:
     def _stop_started_services(self) -> None:
         if self.services is None:
             return
+        with self._prefetch_state_lock:
+            self._prefetch_shutdown_requested = True
         prefetch_stopped = self._quiesce_prefetch()
         self._stop_outbox()
         if prefetch_stopped:
@@ -642,19 +628,77 @@ class _ClientContext:
 
     def _quiesce_prefetch(self) -> bool:
         services = self.services
+        timeout = self._prefetch_wait_seconds(services)
+        deadline = time.monotonic() + timeout
+        with self._prefetch_state_lock:
+            recovery_thread = self._prefetch_recovery_thread
+        if (
+            recovery_thread is not None
+            and recovery_thread is not threading.current_thread()
+            and recovery_thread.is_alive()
+        ):
+            recovery_thread.join(timeout)
+            if recovery_thread.is_alive():
+                return False
         with self._prefetch_state_lock:
             stop_event = self._prefetch_stop
             thread = self._prefetch_thread
             stop_event.set()
-        timeout = self._prefetch_wait_seconds(services)
-        deadline = time.monotonic() + timeout
         if thread is not None and thread is not threading.current_thread():
-            thread.join(timeout)
+            thread.join(max(0.0, deadline - time.monotonic()))
         remaining = max(0.0, deadline - time.monotonic())
         acquired = self._prefetch_lock.acquire(timeout=remaining)
         if acquired:
             self._prefetch_lock.release()
         return acquired and (thread is None or not thread.is_alive())
+
+    def _schedule_prefetch_recovery(self) -> None:
+        with self._prefetch_state_lock:
+            services = self.services
+            generation = self._prefetch_generation
+            stop_event = self._prefetch_stop
+            prefetch_thread = self._prefetch_thread
+            recovery_thread = self._prefetch_recovery_thread
+            if (
+                services is None
+                or self._prefetch_shutdown_requested
+                or recovery_thread is not None and recovery_thread.is_alive()
+            ):
+                return
+
+            def recover_generation() -> None:
+                current_thread = threading.current_thread()
+                try:
+                    if (
+                        prefetch_thread is not None
+                        and prefetch_thread is not current_thread
+                    ):
+                        prefetch_thread.join()
+                    with self._prefetch_lock:
+                        pass
+                    with self._prefetch_state_lock:
+                        if (
+                            self._prefetch_shutdown_requested
+                            or self.services is not services
+                            or self._prefetch_generation != generation
+                            or self._prefetch_stop is not stop_event
+                        ):
+                            return
+                        self._prefetch_generation += 1
+                        self._prefetch_stop = threading.Event()
+                        self._prefetch_thread = None
+                    self._restart_background_prefetch()
+                finally:
+                    with self._prefetch_state_lock:
+                        if self._prefetch_recovery_thread is current_thread:
+                            self._prefetch_recovery_thread = None
+
+            self._prefetch_recovery_thread = threading.Thread(
+                target=recover_generation,
+                name=f"ksat-prefetch-recovery-{generation}",
+                daemon=True,
+            )
+            self._prefetch_recovery_thread.start()
 
     def _new_prefetch_generation(self) -> None:
         with self._prefetch_state_lock:
@@ -1185,6 +1229,7 @@ def create_client_app(services: ClientServices | None = None) -> FastAPI:
                 409,
             )
         if not context._quiesce_prefetch():
+            context._schedule_prefetch_recovery()
             raise ClientApiProblem(
                 "prefetch_busy",
                 "Assessment preparation is still finishing; try the configuration change again.",

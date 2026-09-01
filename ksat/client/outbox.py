@@ -14,6 +14,7 @@ from ksat.client.coordinator import CoordinatorProblem
 
 
 _BACKOFF_SECONDS = (1.0, 2.0, 4.0, 8.0, 16.0, 30.0)
+_LOCAL_STORE_RECOVERY_SECONDS = 0.25
 
 
 def _utc_now(clock) -> datetime:
@@ -125,7 +126,7 @@ class OutboxWorker:
         ):
             raise ValueError("Outbox random source returned an invalid value.")
         base = _BACKOFF_SECONDS[min(item.retry_count, len(_BACKOFF_SECONDS) - 1)]
-        delay = base * (0.8 + 0.4 * float(sampled))
+        delay = min(30.0, base * (0.8 + 0.4 * float(sampled)))
         if retry_after is not None:
             if not math.isfinite(retry_after) or retry_after < 0:
                 raise ValueError("Coordinator retry delay is invalid.")
@@ -153,15 +154,22 @@ class OutboxWorker:
                 with self._condition:
                     if self._stop_requested:
                         return
-                self.process_due_once()
-                with self._condition:
-                    if self._stop_requested:
-                        return
+                try:
+                    self.process_due_once()
                     now = _utc_now(self.clock)
                     pending = [
                         item for item in self.store.pending_submissions()
                         if item.status == "pending"
                     ]
+                except (sqlite3.Error, OSError):
+                    with self._condition:
+                        if self._stop_requested:
+                            return
+                        self._condition.wait(_LOCAL_STORE_RECOVERY_SECONDS)
+                    continue
+                with self._condition:
+                    if self._stop_requested:
+                        return
                     if not pending:
                         self._condition.wait()
                     else:

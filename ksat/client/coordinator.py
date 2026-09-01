@@ -473,8 +473,11 @@ class CoordinatorClient:
     def login(self, student_id: str, password: str) -> ClientSession:
         self._session = None
         identity = self._current_identity(enrolled=True)
+        normalized_student_id = student_id.strip().upper()
         payload = ClientLoginRequest(
-            student_id=student_id, password=password, device_id=identity.device_id
+            student_id=normalized_student_id,
+            password=password,
+            device_id=identity.device_id,
         )
         body = canonical_json(payload)
         session = self._typed(
@@ -490,7 +493,7 @@ class CoordinatorClient:
             )
         if (
             not session.access_token.strip()
-            or not session.student_id.strip()
+            or session.student_id != normalized_student_id
             or not session.student_name.strip()
             or session.expires_in_seconds <= 0
         ):

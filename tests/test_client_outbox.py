@@ -88,6 +88,12 @@ class ClientOutboxTests(unittest.TestCase):
 
         return OutboxWorker(store or self.store, coordinator, self.clock, random_source=random_source)
 
+    def wait_until(self, predicate, timeout=2.0):
+        deadline = time.monotonic() + timeout
+        while not predicate() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertTrue(predicate())
+
     def test_offline_retry_survives_store_restart_and_acknowledges(self):
         coordinator = FakeCoordinator([ConnectionError("offline"), self.receipt])
         worker = self.make_worker(coordinator)
@@ -128,6 +134,34 @@ class ClientOutboxTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.make_worker(coordinator, random_source=lambda: 1.1).process_due_once()
         self.assertEqual(count, self.store.pending_submissions()[0].retry_count)
+
+    def test_positive_jitter_never_exceeds_client_backoff_cap(self):
+        coordinator = FakeCoordinator([ConnectionError("offline")] * 8)
+        worker = self.make_worker(coordinator, random_source=lambda: 1.0)
+        delays = []
+        for _ in range(7):
+            worker.process_due_once()
+            pending = self.store.pending_submissions()[0]
+            delays.append((pending.next_attempt_at - self.clock.now).total_seconds())
+            self.clock.now = pending.next_attempt_at
+        self.assertEqual([1.2, 2.4, 4.8, 9.6, 19.2, 30.0, 30.0], delays)
+
+    def test_retry_after_is_applied_after_capped_client_delay(self):
+        from ksat.client.coordinator import CoordinatorProblem
+
+        coordinator = FakeCoordinator([
+            CoordinatorProblem("submission_busy", "Busy.", True, 45.0, status_code=503)
+        ])
+        # Put the client-computed delay at the 30-second cap before the request.
+        for _ in range(5):
+            self.store.record_retry(
+                self.attempt_id,
+                next_attempt_at=self.clock.now,
+                last_error="offline",
+            )
+        self.make_worker(coordinator, random_source=lambda: 1.0).process_due_once()
+        pending = self.store.pending_submissions()[0]
+        self.assertEqual(self.clock.now + timedelta(seconds=45), pending.next_attempt_at)
 
     def test_retry_after_is_respected_and_never_schedules_in_past(self):
         from ksat.client.coordinator import CoordinatorProblem
@@ -259,6 +293,135 @@ class ClientOutboxTests(unittest.TestCase):
         self.assertEqual(self.bundle, self.store.pending_submissions()[0].bundle)
         release.set()
         worker.stop(timeout_seconds=1)
+
+    def test_daemon_recovers_from_one_shot_sqlite_outbox_read_failure(self):
+        coordinator = FakeCoordinator([self.receipt])
+        original = self.store.pending_submissions
+        failed = threading.Event()
+        calls = 0
+
+        def flaky_pending(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                failed.set()
+                raise sqlite3.OperationalError("database temporarily busy")
+            return original(*args, **kwargs)
+
+        self.store.pending_submissions = flaky_pending
+        worker = self.make_worker(coordinator)
+        worker.start()
+        self.assertTrue(failed.wait(1))
+        time.sleep(0.08)
+        self.assertLessEqual(calls, 2)
+        worker.wake()
+        self.wait_until(lambda: self.store.load_attempt(self.attempt_id).state == "acknowledged")
+        self.assertEqual(1, coordinator.calls)
+        worker.stop()
+
+    def test_daemon_recovers_when_retry_persistence_fails_once_without_fabricating_state(self):
+        coordinator = FakeCoordinator([ConnectionError("offline"), self.receipt])
+        original = self.store.record_retry
+        failed = threading.Event()
+
+        def flaky_retry(*args, **kwargs):
+            if not failed.is_set():
+                failed.set()
+                raise sqlite3.OperationalError("retry persistence busy")
+            return original(*args, **kwargs)
+
+        self.store.record_retry = flaky_retry
+        worker = self.make_worker(coordinator)
+        worker.start()
+        self.assertTrue(failed.wait(1))
+        pending = self.store.pending_submissions()[0]
+        self.assertEqual(0, pending.retry_count)
+        self.assertIsNone(pending.last_error)
+        worker.wake()
+        self.wait_until(lambda: self.store.load_attempt(self.attempt_id).state == "acknowledged")
+        self.assertEqual(2, coordinator.calls)
+        worker.stop()
+
+    def test_daemon_recovers_when_intervention_persistence_fails_once(self):
+        from ksat.client.coordinator import CoordinatorProblem
+
+        problem = CoordinatorProblem("invalid_bundle_signature", "Invalid.", False)
+        coordinator = FakeCoordinator([problem, problem])
+        original = self.store.require_faculty_intervention
+        failed = threading.Event()
+
+        def flaky_intervention(*args, **kwargs):
+            if not failed.is_set():
+                failed.set()
+                raise OSError("intervention persistence busy")
+            return original(*args, **kwargs)
+
+        self.store.require_faculty_intervention = flaky_intervention
+        worker = self.make_worker(coordinator)
+        worker.start()
+        self.assertTrue(failed.wait(1))
+        self.assertEqual("pending", self.store.pending_submissions()[0].status)
+        worker.wake()
+        self.wait_until(
+            lambda: self.store.pending_submissions()[0].status
+            == "faculty_intervention_required"
+        )
+        self.assertEqual(2, coordinator.calls)
+        worker.stop()
+
+    def test_daemon_recovers_when_ack_and_retry_persistence_each_fail_once(self):
+        coordinator = FakeCoordinator([self.receipt, self.receipt])
+        real_acknowledge = self.store.acknowledge
+        real_retry = self.store.record_retry
+        ack_failed = threading.Event()
+        retry_failed = threading.Event()
+
+        def flaky_acknowledge(*args, **kwargs):
+            if not ack_failed.is_set():
+                ack_failed.set()
+                raise sqlite3.OperationalError("ack persistence busy")
+            return real_acknowledge(*args, **kwargs)
+
+        def flaky_retry(*args, **kwargs):
+            if not retry_failed.is_set():
+                retry_failed.set()
+                raise sqlite3.OperationalError("retry persistence busy")
+            return real_retry(*args, **kwargs)
+
+        self.store.acknowledge = flaky_acknowledge
+        self.store.record_retry = flaky_retry
+        worker = self.make_worker(coordinator)
+        worker.start()
+        self.assertTrue(ack_failed.wait(1))
+        self.assertTrue(retry_failed.wait(1))
+        self.assertEqual("sealed_pending", self.store.load_attempt(self.attempt_id).state)
+        self.assertEqual(0, self.store.pending_submissions()[0].retry_count)
+        worker.wake()
+        self.wait_until(lambda: self.store.load_attempt(self.attempt_id).state == "acknowledged")
+        self.assertEqual(2, coordinator.calls)
+        worker.stop()
+
+    def test_stop_interrupts_local_store_recovery_wait_without_hot_loop(self):
+        calls = 0
+        failed = threading.Event()
+
+        def unavailable_store(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            failed.set()
+            raise OSError("store unavailable")
+
+        self.store.pending_submissions = unavailable_store
+        worker = self.make_worker(FakeCoordinator([]))
+        worker.start()
+        self.assertTrue(failed.wait(1))
+        time.sleep(0.08)
+        self.assertIsNotNone(worker._thread)
+        self.assertTrue(worker._thread.is_alive())
+        before = time.monotonic()
+        worker.stop(timeout_seconds=0.5)
+        self.assertLess(time.monotonic() - before, 0.2)
+        self.assertLessEqual(calls, 2)
 
 
 if __name__ == "__main__":

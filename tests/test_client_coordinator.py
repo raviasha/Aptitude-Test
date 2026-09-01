@@ -198,6 +198,46 @@ class CoordinatorClientTests(unittest.TestCase):
             client.login("S100", "wrong")
         self.assertIsNone(client.session)
 
+    def test_login_normalizes_requested_student_id_to_server_contract(self):
+        def handler(request):
+            payload = json.loads(request.content)
+            self.assertEqual("S100", payload["student_id"])
+            return httpx.Response(200, json={
+                "access_token": "memory-token", "student_id": "S100",
+                "student_name": "Student", "device_id": self.device_id,
+                "expires_in_seconds": 43200,
+            })
+
+        session = self.make_client(handler).login("  s100  ", "secret")
+        self.assertEqual("S100", session.student_id)
+
+    def test_mismatched_login_response_clears_previous_session_and_token(self):
+        from ksat.client.coordinator import CoordinatorProblem
+
+        calls = 0
+
+        def handler(request):
+            nonlocal calls
+            calls += 1
+            returned_student = "S100" if calls == 1 else "S999"
+            return httpx.Response(200, json={
+                "access_token": f"token-{calls}", "student_id": returned_student,
+                "student_name": "Student", "device_id": self.device_id,
+                "expires_in_seconds": 43200,
+            })
+
+        client = self.make_client(handler)
+        self.assertEqual("token-1", client.login("S100", "secret").access_token)
+        with self.assertRaises(CoordinatorProblem) as caught:
+            client.login(" s100 ", "replacement")
+        self.assertEqual("invalid_coordinator_response", caught.exception.code)
+        self.assertFalse(caught.exception.retryable)
+        self.assertIsNone(client.session)
+        with self.assertRaises(CoordinatorProblem) as missing:
+            client.assessments()
+        self.assertEqual("client_session_required", missing.exception.code)
+        self.assertEqual(2, calls)
+
     def test_bearer_is_scoped_only_to_assessments_and_start_not_submission_or_catalog(self):
         seen = set()
         ticket = AttemptTicket(

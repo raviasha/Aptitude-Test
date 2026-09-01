@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="ksat-csrf" content="__KSAT_CSRF_TOKEN__">
+  <title>KSAT Lab Assessment</title>
+  <link rel="stylesheet" href="/branding.css">
+  <link rel="stylesheet" href="/math.css">
+  <link rel="stylesheet" href="/client/styles.css">
+  <script src="/client/app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#client-main">Skip to assessment</a>
+  <header class="client-header">
+    <img src="/branding/ksat-logo.png" alt="KSAT" class="brand-logo">
+    <div>
+      <p class="eyebrow">Installed lab client</p>
+      <h1>KSAT Assessment</h1>
+    </div>
+    <output id="timer" class="timer" aria-label="Time remaining">--:--</output>
+  </header>
+
+  <main id="client-main" tabindex="-1">
+    <section id="status-panel" class="panel" aria-labelledby="status-title">
+      <h2 id="status-title">Preparing the client</h2>
+      <p id="status-copy">Checking this computer and saved assessment state.</p>
+      <div id="action-area"></div>
+    </section>
+    <section id="assessment-panel" class="panel" hidden aria-labelledby="question-heading">
+      <div class="question-meta">
+        <span id="progress-label">Question</span>
+        <span id="save-status" role="status" aria-live="polite">Saved locally</span>
+      </div>
+      <h2 id="question-heading" tabindex="-1"></h2>
+      <p id="question-text"></p>
+      <div id="question-media" class="question-media"></div>
+      <div id="options" class="options" role="group" aria-labelledby="question-heading"></div>
+      <nav class="assessment-actions" aria-label="Assessment navigation">
+        <button id="previous-question" type="button">Previous</button>
+        <button id="next-question" type="button">Next</button>
+        <button id="submit-attempt" type="button" class="danger">Submit assessment</button>
+      </nav>
+    </section>
+  </main>
+
+  <div id="fullscreen-gate" class="fullscreen-gate" hidden role="dialog" aria-modal="true" aria-labelledby="fullscreen-title">
+    <div class="panel gate-card">
+      <h2 id="fullscreen-title">Return to full screen</h2>
+      <p>Your saved assessment will be shown after you re-enter full screen.</p>
+      <button id="enter-fullscreen" type="button">Enter full screen</button>
+    </div>
+  </div>
+
+  <div id="announcer" class="sr-only" role="status" aria-live="polite"></div>
+  <div id="error-announcer" class="sr-only" role="alert" aria-live="assertive"></div>
+</body>
+</html>

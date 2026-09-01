@@ -41,6 +41,15 @@ _FORBIDDEN_PUBLIC_KEYS = frozenset(
     ("correctanswer", "solution", "solutionsteps", "optionexplanations", "feedback")
 )
 _ASSET_NAME = re.compile(r"assets/([0-9a-f]{64})\.(?:png|jpe?g|webp|svg)\Z")
+_PUBLIC_ASSET_MIME = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".svg": "image/svg+xml",
+}
+_MAX_PUBLIC_ASSET_BYTES = 25 * 1024 * 1024
+_MAX_PUBLIC_ASSETS_TOTAL_BYTES = 64 * 1024 * 1024
 
 
 class Clock(Protocol):
@@ -65,6 +74,15 @@ class AttemptSnapshot:
     responses: dict[int, str | None]
     remaining_seconds: int
     violations: int
+
+
+@dataclass(frozen=True)
+class PublicAsset:
+    """Immutable, verified public media from the active attempt's signed pack."""
+
+    reference: str
+    media_type: str
+    content: bytes
 
 
 @dataclass(frozen=True)
@@ -132,6 +150,7 @@ class AssessmentRuntime:
         self._prepared: dict[str, _PreparedPack] = {}
         self._attempt_id: str | None = None
         self._questions: dict[int, PublicQuestion] = {}
+        self._assets: dict[str, PublicAsset] = {}
         self._anchor_monotonic: float | None = None
         self._anchor_remaining = 0.0
         self._anchor_trusted_wall: datetime | None = None
@@ -248,7 +267,7 @@ class AssessmentRuntime:
                 != prepared.descriptor.manifest.canonical_question_ids
             ):
                 raise ValueError("Attempt ticket does not match the prepared assessment release.")
-            questions, manifest = self._open_pack(
+            questions, manifest, assets = self._open_pack(
                 pack_path,
                 ticket.release_id,
                 ticket.content_hash,
@@ -283,7 +302,7 @@ class AssessmentRuntime:
                 last_wall_time=wall_now,
             )
             if record.state != "in_progress":
-                self._activate(record, questions)
+                self._activate(record, questions, assets)
                 return self._snapshot_record(record)
             if (
                 self._attempt_id == record.attempt_id
@@ -313,6 +332,7 @@ class AssessmentRuntime:
             self._activate(
                 record,
                 questions,
+                assets,
                 trusted_wall=record.deadline - timedelta(seconds=safe_remaining),
                 anchor_monotonic=resumed_monotonic,
             )
@@ -373,6 +393,21 @@ class AssessmentRuntime:
         except KeyError as error:
             raise KeyError(f"Question is not loaded: {question_id}") from error
 
+    def public_asset(self, attempt_id: str, reference: str) -> PublicAsset:
+        """Return only verified public bytes bound to the exact active attempt."""
+        with self._lock:
+            if not isinstance(attempt_id, str) or attempt_id != self._attempt_id:
+                raise ValueError("Public asset does not belong to the active attempt.")
+            if not isinstance(reference, str) or _ASSET_NAME.fullmatch(reference) is None:
+                raise ValueError("Public asset reference is invalid.")
+            record = self._current_record()
+            if record.attempt_id != attempt_id:
+                raise ValueError("Public asset does not belong to the active attempt.")
+            try:
+                return self._assets[reference]
+            except KeyError as error:
+                raise KeyError("Public asset is not part of the active attempt.") from error
+
     def snapshot(self) -> AttemptSnapshot:
         with self._lock:
             record = self._current_record()
@@ -414,7 +449,7 @@ class AssessmentRuntime:
             )
             if ticket.device_id != self.identity.device_id:
                 raise ValueError("Local attempt cannot be recovered on this device.")
-            questions, manifest = self._open_pack(
+            questions, manifest, assets = self._open_pack(
                 self._verified_attempt_pack(record),
                 ticket.release_id,
                 ticket.content_hash,
@@ -436,7 +471,7 @@ class AssessmentRuntime:
             ):
                 raise ValueError("Local attempt cannot be recovered on this device.")
             if record.state != "in_progress":
-                self._activate(record, questions)
+                self._activate(record, questions, assets)
                 return self._snapshot_record(record)
             wall_now = _utc(self.clock.utcnow(), "Recovery time")
             wall_remaining = max(
@@ -449,7 +484,7 @@ class AssessmentRuntime:
                 )
                 record = self.store.load_attempt(record.attempt_id)
             trusted_wall = record.deadline - timedelta(seconds=safe_remaining)
-            self._activate(record, questions, trusted_wall=trusted_wall)
+            self._activate(record, questions, assets, trusted_wall=trusted_wall)
             if safe_remaining == 0:
                 return self._seal(record)
             return self._snapshot_record(record, remaining=safe_remaining)
@@ -460,7 +495,7 @@ class AssessmentRuntime:
         release_id: str,
         content_hash: str,
         content_key_b64: str,
-    ) -> tuple[dict[int, PublicQuestion], ReleaseManifest]:
+    ) -> tuple[dict[int, PublicQuestion], ReleaseManifest, dict[str, PublicAsset]]:
         encrypted = Path(path).read_bytes()
         if sha256_hex(encrypted) != content_hash:
             raise ValueError("Cached assessment content hash does not match.")
@@ -500,11 +535,43 @@ class AssessmentRuntime:
                     raise ValueError("Assessment pack questions are not canonical.")
                 if names != ["manifest.json", "questions.json", *manifest.asset_names]:
                     raise ValueError("Assessment pack entries do not match its manifest.")
+                if manifest.asset_names != sorted(set(manifest.asset_names)):
+                    raise ValueError("Assessment pack asset list is not canonical.")
+                referenced_assets: set[str] = set()
+                for question in question_list:
+                    if question.stimulus is not None and question.stimulus.type == "image":
+                        referenced_assets.add(question.stimulus.url)
+                    if question.display_media.question is not None:
+                        referenced_assets.add(question.display_media.question.url)
+                    referenced_assets.update(
+                        media.url for media in question.display_media.options.values()
+                    )
+                if referenced_assets != set(manifest.asset_names):
+                    raise ValueError("Assessment pack asset references do not match its manifest.")
+                assets: dict[str, PublicAsset] = {}
+                total_asset_bytes = 0
                 for name in manifest.asset_names:
                     match = _ASSET_NAME.fullmatch(name)
-                    actual_hash = hashlib.sha256(archive.read(name)).hexdigest()
-                    if match is None or actual_hash != match.group(1):
+                    suffix = Path(name).suffix
+                    info = archive.getinfo(name)
+                    if (
+                        match is None
+                        or suffix not in _PUBLIC_ASSET_MIME
+                        or info.file_size < 0
+                        or info.file_size > _MAX_PUBLIC_ASSET_BYTES
+                    ):
                         raise ValueError("Assessment pack asset is invalid.")
+                    total_asset_bytes += info.file_size
+                    if total_asset_bytes > _MAX_PUBLIC_ASSETS_TOTAL_BYTES:
+                        raise ValueError("Assessment pack assets are too large.")
+                    content = bytes(archive.read(name))
+                    if len(content) != info.file_size or hashlib.sha256(content).hexdigest() != match.group(1):
+                        raise ValueError("Assessment pack asset is invalid.")
+                    assets[name] = PublicAsset(
+                        reference=name,
+                        media_type=_PUBLIC_ASSET_MIME[suffix],
+                        content=content,
+                    )
         except (KeyError, OSError, ValidationError, zipfile.BadZipFile) as error:
             raise ValueError("Assessment pack public content is invalid.") from error
         ids = [item.question_id for item in question_list]
@@ -518,7 +585,7 @@ class AssessmentRuntime:
             or any(type(item) is not int or item <= 0 for item in ids)
         ):
             raise ValueError("Assessment pack question linkage is invalid.")
-        return {item.question_id: item for item in question_list}, manifest
+        return {item.question_id: item for item in question_list}, manifest, assets
 
     def _verified_attempt_pack(self, record: LocalAttemptRecord) -> Path:
         path = self.store.verified_pack(
@@ -532,6 +599,7 @@ class AssessmentRuntime:
         self,
         record: LocalAttemptRecord,
         questions: dict[int, PublicQuestion],
+        assets: dict[str, PublicAsset],
         *,
         trusted_wall: datetime | None = None,
         anchor_monotonic: float | None = None,
@@ -540,6 +608,7 @@ class AssessmentRuntime:
         now_mono = self._monotonic() if anchor_monotonic is None else anchor_monotonic
         self._attempt_id = record.attempt_id
         self._questions = dict(questions)
+        self._assets = dict(assets)
         self._anchor_monotonic = now_mono
         self._anchor_remaining = float(record.remaining_seconds)
         self._anchor_trusted_wall = trusted_wall or (
@@ -563,6 +632,7 @@ class AssessmentRuntime:
     def _clear_active(self) -> None:
         self._attempt_id = None
         self._questions = {}
+        self._assets = {}
         self._anchor_monotonic = None
         self._anchor_trusted_wall = None
         self._last_checkpoint_monotonic = None
@@ -676,4 +746,4 @@ class AssessmentRuntime:
         return self._snapshot_record(sealed)
 
 
-__all__ = ["AssessmentRuntime", "AttemptSnapshot", "Clock", "SystemClock"]
+__all__ = ["AssessmentRuntime", "AttemptSnapshot", "Clock", "PublicAsset", "SystemClock"]

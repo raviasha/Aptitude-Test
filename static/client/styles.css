@@ -1,0 +1,120 @@
+:root {
+  color-scheme: light;
+  font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --ink: #14213d;
+  --muted: #52617a;
+  --surface: #ffffff;
+  --canvas: #eef3f8;
+  --brand: #164e63;
+  --brand-strong: #0e3a4a;
+  --focus: #f59e0b;
+  --danger: #a71d31;
+  --success: #17643a;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  color: var(--ink);
+  background: linear-gradient(145deg, #f7fafc, var(--canvas));
+}
+
+button, input { font: inherit; }
+
+button {
+  min-height: 44px;
+  padding: .7rem 1rem;
+  border: 2px solid var(--brand);
+  border-radius: .6rem;
+  background: var(--brand);
+  color: white;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) { background: var(--brand-strong); }
+button:disabled { cursor: not-allowed; opacity: .58; }
+button:focus-visible, input:focus-visible, [tabindex]:focus-visible {
+  outline: 4px solid var(--focus);
+  outline-offset: 3px;
+}
+
+.skip-link {
+  position: fixed;
+  left: 1rem;
+  top: -5rem;
+  z-index: 20;
+  padding: .75rem;
+  background: white;
+  color: var(--ink);
+}
+.skip-link:focus { top: 1rem; }
+
+.client-header {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 1rem clamp(1rem, 4vw, 3rem);
+  color: white;
+  background: var(--brand-strong);
+  box-shadow: 0 3px 18px rgb(15 23 42 / 20%);
+}
+.client-header h1 { margin: 0; font-size: clamp(1.3rem, 3vw, 2rem); }
+.brand-logo { width: 58px; height: 58px; object-fit: contain; background: white; border-radius: .5rem; }
+.eyebrow { margin: 0 0 .1rem; text-transform: uppercase; letter-spacing: .08em; font-size: .75rem; }
+.timer { margin-left: auto; font-variant-numeric: tabular-nums; font-size: clamp(1.35rem, 4vw, 2.2rem); font-weight: 800; }
+
+main { width: min(960px, calc(100% - 2rem)); margin: 2rem auto; }
+.panel {
+  padding: clamp(1.2rem, 4vw, 2.5rem);
+  border: 1px solid #ced7e3;
+  border-radius: 1rem;
+  background: var(--surface);
+  box-shadow: 0 14px 40px rgb(30 41 59 / 10%);
+}
+.panel h2 { margin-top: 0; }
+
+form, .field { display: grid; gap: .5rem; }
+form { gap: 1rem; max-width: 32rem; }
+.field span { font-weight: 700; }
+input { min-height: 44px; padding: .65rem .75rem; border: 2px solid #8b9bb0; border-radius: .5rem; }
+
+.assessment-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-top: 1rem;
+  padding: 1rem;
+  border: 1px solid #cbd5e1;
+  border-radius: .75rem;
+}
+.question-meta, .assessment-actions { display: flex; flex-wrap: wrap; gap: .75rem; justify-content: space-between; align-items: center; }
+#save-status { color: var(--success); font-weight: 700; }
+#question-text { white-space: pre-wrap; font-size: 1.15rem; line-height: 1.6; }
+.question-media { display: grid; gap: .75rem; justify-items: start; }
+.public-media { display: block; max-width: 100%; height: auto; object-fit: contain; }
+.options { display: grid; gap: .75rem; margin: 1.5rem 0; }
+.answer { display: flex; flex-wrap: wrap; align-items: center; width: 100%; gap: .3rem; text-align: left; color: var(--ink); background: white; }
+.answer .public-media { flex-basis: 100%; margin-top: .5rem; }
+.answer:hover:not(:disabled) { color: white; }
+.answer.selected { border-color: var(--success); background: #d9f4e4; box-shadow: inset .4rem 0 0 var(--success); }
+.answer.selected::after { content: "Selected"; margin-left: auto; font-weight: 800; }
+.danger { border-color: var(--danger); background: var(--danger); }
+.result-score { font-size: 2rem; font-weight: 800; }
+
+.fullscreen-gate { position: fixed; inset: 0; z-index: 10; display: grid; place-items: center; padding: 1rem; background: rgb(15 23 42 / 92%); }
+.fullscreen-gate[hidden] { display: none; }
+.gate-card { width: min(34rem, 100%); }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+
+@media (max-width: 620px) {
+  .client-header { align-items: flex-start; }
+  .brand-logo { width: 44px; height: 44px; }
+  .assessment-actions button { flex: 1 1 8rem; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { scroll-behavior: auto !important; transition: none !important; }
+}

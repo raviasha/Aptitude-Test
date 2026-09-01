@@ -5,6 +5,7 @@ import threading
 import unittest
 import uuid
 import zipfile
+from dataclasses import FrozenInstanceError
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -24,6 +25,8 @@ from ksat.protocol import (
     AttemptStartResponse,
     AttemptTicket,
     PublicQuestion,
+    PublicDisplayMedia,
+    PublicMediaItem,
     PublicReleaseDescriptor,
     ReleaseManifest,
     ReleaseSummary,
@@ -557,6 +560,115 @@ class ClientRuntimeTests(unittest.TestCase):
             self.pack_path.resolve(),
             self.store.verified_pack(self.release_id, self.summary.content_hash),
         )
+
+    def test_public_asset_accessor_is_immutable_attempt_bound_and_survives_recovery(self):
+        content = b"\x89PNG\r\n\x1a\ntrusted-public-image"
+        reference = f"assets/{sha256_hex(content)}.png"
+        media = PublicMediaItem(
+            url=reference, alt_text="A small chart", width=40, height=30
+        )
+        self.questions[0] = self.questions[0].model_copy(update={
+            "display_media": PublicDisplayMedia(question=media)
+        })
+        self.manifest = self.manifest.model_copy(update={"asset_names": [reference]})
+        self._write_pack(self.questions, extra_entries=((reference, content),))
+        self.summary = self._summary()
+        self.start_response = self._start_response()
+        self._prepare_and_start()
+
+        asset = self.runtime.public_asset(self.attempt_id, reference)
+        self.assertEqual(reference, asset.reference)
+        self.assertEqual("image/png", asset.media_type)
+        self.assertEqual(content, asset.content)
+        self.assertIsInstance(asset.content, bytes)
+        with self.assertRaises(FrozenInstanceError):
+            asset.media_type = "text/html"
+        for invalid_attempt, invalid_reference in (
+            (str(uuid.uuid4()), reference),
+            (self.attempt_id, "assets/../private.json"),
+            (self.attempt_id, "assets/%2e%2e%2fprivate.json"),
+            (self.attempt_id, "assets/" + "0" * 64 + ".png"),
+        ):
+            with self.subTest(reference=invalid_reference):
+                with self.assertRaises((KeyError, ValueError)):
+                    self.runtime.public_asset(invalid_attempt, invalid_reference)
+
+        recovered = self._reopen()
+        recovered.recover()
+        self.assertEqual(content, recovered.public_asset(self.attempt_id, reference).content)
+
+    def test_pack_rejects_unreferenced_mismatched_and_oversized_public_assets(self):
+        content = b"small-public-image"
+        reference = f"assets/{sha256_hex(content)}.png"
+        base_manifest = self.manifest
+        question_with_asset = self.questions[0].model_copy(update={
+            "display_media": PublicDisplayMedia(question=PublicMediaItem(
+                url=reference, alt_text="Chart", width=10, height=10
+            ))
+        })
+        malformed_question = self.questions[0].model_dump(mode="json")
+        malformed_question["display_media"] = {
+            "question": {
+                "url": "assets/%2e%2e%2fprivate.json",
+                "alt_text": "Unsafe",
+                "width": 10,
+                "height": 10,
+            },
+            "options": {},
+        }
+        cases = (
+            (
+                self.questions,
+                base_manifest.model_copy(update={"asset_names": [reference]}),
+                ((reference, content),),
+            ),
+            (
+                [question_with_asset, self.questions[1]],
+                base_manifest,
+                (),
+            ),
+            (
+                [question_with_asset, self.questions[1]],
+                base_manifest.model_copy(update={"asset_names": [reference]}),
+                ((reference, b"tampered-public-image"),),
+            ),
+            (
+                [malformed_question, self.questions[1]],
+                base_manifest,
+                (),
+            ),
+        )
+        for index, (questions, manifest, entries) in enumerate(cases):
+            with self.subTest(index=index):
+                self.store.close()
+                self.db_path = self.root / f"asset-case-{index}.sqlite3"
+                self.store = ClientStore(self.db_path)
+                self.runtime = self._runtime()
+                self.manifest = manifest
+                self._write_pack(
+                    questions, manifest=manifest, extra_entries=entries
+                )
+                self.summary = self._summary()
+                self.runtime.prepare(self.summary, manifest, self.pack_path)
+                with self.assertRaises(ValueError):
+                    self.runtime.start(
+                        self._start_response(), student_id=self.student_id
+                    )
+
+        self.store.close()
+        self.db_path = self.root / "asset-case-oversized.sqlite3"
+        self.store = ClientStore(self.db_path)
+        self.runtime = self._runtime()
+        question = question_with_asset
+        manifest = base_manifest.model_copy(update={"asset_names": [reference]})
+        self.manifest = manifest
+        self._write_pack([question, self.questions[1]], manifest=manifest,
+                         extra_entries=((reference, content),))
+        self.summary = self._summary()
+        self.runtime.prepare(self.summary, manifest, self.pack_path)
+        with patch("ksat.client.runtime._MAX_PUBLIC_ASSET_BYTES", len(content) - 1):
+            with self.assertRaises(ValueError):
+                self.runtime.start(self._start_response(), student_id=self.student_id)
 
     def test_prepare_and_start_reject_unsupported_protocol_versions(self):
         unsupported_manifest = self.manifest.model_copy(

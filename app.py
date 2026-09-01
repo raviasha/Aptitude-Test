@@ -34,7 +34,8 @@ from typing import Any, Dict, List, Optional
 
 import bcrypt
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.middleware.sessions import SessionMiddleware
@@ -43,6 +44,7 @@ from ksat.coordinator.auth import load_or_create_client_session_secret
 from ksat.coordinator.releases import load_release_manifest, prepare_release
 from ksat.coordinator.routes import CoordinatorConfig, router as coordinator_router
 from ksat.coordinator.schema import migrate_distributed_schema
+from ksat.coordinator.submissions import SubmissionWriter, freeze_release_answer_state
 from ksat.crypto import load_or_create_coordinator_keyring
 from ksat.protocol import (
     PublicQuestion,
@@ -174,6 +176,7 @@ def configure_coordinator_state(application: FastAPI) -> None:
         signing_private_key_b64=keyring.signing_private_key_b64,
         signing_public_key_b64=keyring.signing_public_key_b64,
         pack_master_key=keyring.pack_master_key,
+        submission_writer=SubmissionWriter(DB_PATH),
     )
 
 
@@ -182,6 +185,24 @@ configure_coordinator_state(app)
 app.include_router(coordinator_router)
 app.add_middleware(SessionMiddleware, secret_key=os.getenv("SESSION_SECRET", "replace-this-before-production"), https_only=False, same_site="lax")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+
+def _json_safe_validation_value(value: Any) -> Any:
+    if isinstance(value, float) and not math.isfinite(value):
+        return str(value)
+    if isinstance(value, dict):
+        return {key: _json_safe_validation_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe_validation_value(item) for item in value]
+    return value
+
+
+@app.exception_handler(RequestValidationError)
+async def safe_request_validation_error(
+    request: Request, error: RequestValidationError
+) -> JSONResponse:
+    del request
+    return JSONResponse(status_code=422, content={"detail": _json_safe_validation_value(error.errors())})
 
 
 @app.middleware("http")
@@ -1018,6 +1039,24 @@ def ensure_schema() -> None:
         connection.execute("CREATE INDEX IF NOT EXISTS idx_tests_mode ON tests(mode, active, launched)")
         connection.execute("CREATE INDEX IF NOT EXISTS idx_exam_violations_attempt ON exam_violations(attempt_id)")
         migrate_distributed_schema(connection)
+        for release_row in connection.execute("SELECT release_id FROM assessment_releases").fetchall():
+            missing_answers = connection.execute(
+                """SELECT COUNT(*) FROM release_questions
+                   WHERE release_id=? AND correct_answer IS NULL""",
+                (release_row["release_id"],),
+            ).fetchone()[0]
+            linked_questions = connection.execute(
+                """SELECT COUNT(*) FROM release_questions rq
+                   JOIN questions q ON q.question_id=rq.question_id
+                   WHERE rq.release_id=?""",
+                (release_row["release_id"],),
+            ).fetchone()[0]
+            total_questions = connection.execute(
+                "SELECT COUNT(*) FROM release_questions WHERE release_id=?",
+                (release_row["release_id"],),
+            ).fetchone()[0]
+            if missing_answers and linked_questions == total_questions:
+                freeze_release_answer_state(connection, release_row["release_id"])
 
 
 def seed_data() -> None:
@@ -1635,6 +1674,7 @@ def prepare_faculty_release(
         raise ValueError("Assessment test no longer exists.")
     if test["release_id"]:
         config = app.state.coordinator_config
+        freeze_release_answer_state(connection, test["release_id"])
         return load_release_manifest(
             connection,
             test["release_id"],
@@ -1653,7 +1693,7 @@ def prepare_faculty_release(
     selected = sample_questions(connection, test["bank_id"], rules, difficulties)
     questions, assets = public_release_material(connection, selected)
     config = app.state.coordinator_config
-    return prepare_release(
+    release = prepare_release(
         connection,
         test_id=test["test_id"],
         selected_questions=questions,
@@ -1664,6 +1704,8 @@ def prepare_faculty_release(
         now_iso=now(),
         _created_artifact_paths=_created_artifact_paths,
     )
+    freeze_release_answer_state(connection, release.release_id)
+    return release
 
 
 def serialize_attempt(connection: sqlite3.Connection, attempt: sqlite3.Row, include_answers: bool = False) -> Dict[str, Any]:
@@ -1784,8 +1826,14 @@ def result_for_attempt(connection: sqlite3.Connection, attempt_id: str) -> Dict[
 @app.on_event("startup")
 def startup() -> None:
     ensure_schema()
+    app.state.coordinator_config.submission_writer.start()
     seed_data()
     copy_starter_question_files()
+
+
+@app.on_event("shutdown")
+def shutdown_submission_writer() -> None:
+    app.state.coordinator_config.submission_writer.stop()
 
 
 @app.get("/")

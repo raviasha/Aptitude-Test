@@ -38,6 +38,10 @@ def migrate_distributed_schema(connection: sqlite3.Connection) -> None:
           release_id TEXT NOT NULL,
           question_id INTEGER NOT NULL,
           canonical_order INTEGER NOT NULL,
+          options_json TEXT,
+          correct_answer TEXT,
+          category TEXT,
+          chapter TEXT,
           PRIMARY KEY(release_id, question_id),
           UNIQUE(release_id, canonical_order),
           FOREIGN KEY(release_id) REFERENCES assessment_releases(release_id)
@@ -47,6 +51,7 @@ def migrate_distributed_schema(connection: sqlite3.Connection) -> None:
           bundle_hash TEXT NOT NULL,
           bundle_json TEXT NOT NULL,
           accepted_at TEXT NOT NULL,
+          receipt_json TEXT,
           FOREIGN KEY(attempt_id) REFERENCES attempts(attempt_id)
         );
         CREATE TABLE IF NOT EXISTS audit_events (
@@ -68,6 +73,11 @@ def migrate_distributed_schema(connection: sqlite3.Connection) -> None:
     _ensure_column(connection, "attempts", "ticket_json TEXT")
     _ensure_column(connection, "attempts", "sealed_at TEXT")
     _ensure_column(connection, "attempts", "submission_hash TEXT")
+    _ensure_column(connection, "release_questions", "options_json TEXT")
+    _ensure_column(connection, "release_questions", "correct_answer TEXT")
+    _ensure_column(connection, "release_questions", "category TEXT")
+    _ensure_column(connection, "release_questions", "chapter TEXT")
+    _ensure_column(connection, "submissions", "receipt_json TEXT")
     connection.execute("CREATE INDEX IF NOT EXISTS idx_assessment_releases_state ON assessment_releases(state)")
     connection.execute("CREATE INDEX IF NOT EXISTS idx_attempts_release_student ON attempts(release_id, student_id)")
     connection.execute("CREATE INDEX IF NOT EXISTS idx_audit_events_attempt ON audit_events(attempt_id)")

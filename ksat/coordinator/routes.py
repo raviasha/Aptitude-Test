@@ -31,12 +31,15 @@ from ksat.coordinator.attempts import (
     list_prefetchable_releases,
 )
 from ksat.coordinator.releases import load_release_manifest
+from ksat.coordinator.submissions import SubmissionProblem, validate_and_score
 from ksat.protocol import (
     AttemptStartResponse,
     ClientLoginRequest,
     ClientSession,
     DeviceEnrollmentReceipt,
     DeviceEnrollmentRequest,
+    SignedResponseBundle,
+    SubmissionReceipt,
 )
 from ksat.sqlite import connect_sqlite
 
@@ -78,6 +81,15 @@ def _raise_http(error: AuthenticationProblem) -> None:
 
 def _raise_attempt_http(error: AttemptProblem) -> None:
     raise HTTPException(status_code=error.status_code, detail=error.detail()) from error
+
+
+def _raise_submission_http(error: SubmissionProblem) -> None:
+    headers = {"Retry-After": "1"} if error.retryable and error.status_code == 503 else None
+    raise HTTPException(
+        status_code=error.status_code,
+        detail=error.detail(),
+        headers=headers,
+    ) from error
 
 
 def utc_now() -> datetime:
@@ -473,5 +485,43 @@ async def start_attempt(payload: AttemptStartRequest, request: Request) -> Attem
         _raise_http(error)
     except AttemptProblem as error:
         _raise_attempt_http(error)
+    finally:
+        connection.close()
+
+
+@router.post("/submissions", response_model=SubmissionReceipt)
+async def submit_assessment(
+    payload: SignedResponseBundle, request: Request
+) -> SubmissionReceipt:
+    config = _config(request)
+    connection = connect_sqlite(config.db_path)
+    try:
+        device_id = await _verified_device(request, connection)
+        if device_id != payload.bundle.ticket.ticket.device_id:
+            raise SubmissionProblem(
+                "device_identity_mismatch",
+                "The request device does not match the attempt ticket.",
+                status_code=403,
+            )
+        scored_or_receipt = validate_and_score(
+            connection,
+            payload,
+            coordinator_public_key_b64=config.signing_public_key_b64,
+            received_at=utc_now(),
+        )
+        if isinstance(scored_or_receipt, SubmissionReceipt):
+            return scored_or_receipt
+        if config.submission_writer is None:
+            raise SubmissionProblem(
+                "submission_writer_not_running",
+                "The submission service is not running.",
+                status_code=503,
+                retryable=True,
+            )
+        return await run_in_threadpool(config.submission_writer.submit, scored_or_receipt)
+    except AuthenticationProblem as error:
+        _raise_http(error)
+    except SubmissionProblem as error:
+        _raise_submission_http(error)
     finally:
         connection.close()

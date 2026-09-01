@@ -6,8 +6,10 @@ import html
 import json
 import math
 import re
+import unicodedata
 from datetime import datetime
 from typing import Any, Literal, Sequence
+from urllib.parse import unquote
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -29,6 +31,66 @@ _CANONICAL_MATH_FLOOR_DIVISION = re.compile(
     rf"⌊({_MATH_OPERAND}) ÷ ({_MATH_OPERAND})⌋\Z"
 )
 _CODE_TAG = re.compile(r"<\s*(?P<closing>/?)\s*code\b[^>]*>", re.IGNORECASE)
+_MATH_FLOOR_DIVISION_CLASS_TOKEN = re.compile(
+    re.escape(MATH_FLOOR_DIVISION_CLASS), re.IGNORECASE
+)
+_ORDINARY_CODE_CLOSE = re.compile(r"</\s*code\s*>\Z", re.IGNORECASE)
+
+
+def _markup_structure_signature(value: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    return (
+        tuple(match.group(0) for match in _CODE_TAG.finditer(value)),
+        tuple(match.group(0) for match in _MATH_FLOOR_DIVISION_CLASS_TOKEN.finditer(value)),
+    )
+
+
+def _compact_markup_marker(value: str, marker: str) -> str:
+    separated = re.compile(r"\s*".join(map(re.escape, marker)), re.IGNORECASE)
+    return separated.sub(
+        lambda match: "".join(character for character in match.group(0) if not character.isspace()),
+        value,
+    )
+
+
+def _normalize_markup_detection(value: str) -> str:
+    normalized = "".join(
+        character
+        for character in value
+        if not unicodedata.category(character).startswith("C")
+    )
+    normalized = _compact_markup_marker(normalized, "code")
+    return _compact_markup_marker(normalized, MATH_FLOOR_DIVISION_CLASS)
+
+
+def _validate_stable_markup_structure(fragment: str) -> None:
+    raw_signature = _markup_structure_signature(fragment)
+    decoded = fragment
+    for _ in range(8):
+        normalized = _normalize_markup_detection(decoded)
+        if _markup_structure_signature(normalized) != raw_signature:
+            raise ValueError(MATH_FLOOR_DIVISION_ERROR)
+        expanded = html.unescape(unquote(decoded))
+        if _markup_structure_signature(expanded) != raw_signature:
+            raise ValueError(MATH_FLOOR_DIVISION_ERROR)
+        if expanded == decoded:
+            break
+        decoded = expanded
+
+
+def _contains_normalized_double_slash(value: str) -> bool:
+    decoded = value
+    for _ in range(8):
+        expanded = html.unescape(unquote(decoded))
+        if expanded == decoded:
+            break
+        decoded = expanded
+    compact = "".join(
+        character
+        for character in decoded
+        if not character.isspace()
+        and not unicodedata.category(character).startswith("C")
+    )
+    return "//" in compact
 
 
 def canonicalize_math_floor_division_expression(value: str) -> str:
@@ -44,19 +106,20 @@ def canonicalize_math_floor_division_expression(value: str) -> str:
 
 def canonicalize_math_floor_division_markup(fragment: str) -> str:
     """Validate exact explicit-math source and replace expressions with canonical Unicode."""
-    if MATH_FLOOR_DIVISION_CLASS not in html.unescape(fragment):
-        return fragment
+    _validate_stable_markup_structure(fragment)
 
     stack: list[tuple[str, int, int]] = []
     replacements: list[tuple[int, int, str]] = []
-    found_math = False
+    math_element_count = 0
     for token in _CODE_TAG.finditer(fragment):
         raw = token.group(0)
         if token.group("closing"):
-            if raw != MATH_FLOOR_DIVISION_CLOSE or not stack:
+            if not stack:
                 raise ValueError(MATH_FLOOR_DIVISION_ERROR)
             kind, start, body_start = stack.pop()
             if kind == "math":
+                if raw != MATH_FLOOR_DIVISION_CLOSE:
+                    raise ValueError(MATH_FLOOR_DIVISION_ERROR)
                 canonical = canonicalize_math_floor_division_expression(
                     fragment[body_start:token.start()]
                 )
@@ -65,19 +128,28 @@ def canonicalize_math_floor_division_markup(fragment: str) -> str:
                     token.end(),
                     f"{MATH_FLOOR_DIVISION_OPEN}{canonical}{MATH_FLOOR_DIVISION_CLOSE}",
                 ))
+            elif _ORDINARY_CODE_CLOSE.fullmatch(raw) is None or _contains_normalized_double_slash(
+                fragment[body_start:token.start()]
+            ):
+                raise ValueError(MATH_FLOOR_DIVISION_ERROR)
             continue
 
         if stack:
             raise ValueError(MATH_FLOOR_DIVISION_ERROR)
         if raw == MATH_FLOOR_DIVISION_OPEN:
-            found_math = True
+            math_element_count += 1
             stack.append(("math", token.start(), token.end()))
             continue
-        if MATH_FLOOR_DIVISION_CLASS in html.unescape(raw) or raw.rstrip().endswith("/>"):
+        if _MATH_FLOOR_DIVISION_CLASS_TOKEN.search(raw) or raw.rstrip().endswith("/>"):
             raise ValueError(MATH_FLOOR_DIVISION_ERROR)
         stack.append(("code", token.start(), token.end()))
 
-    if stack or not found_math:
+    class_occurrences = tuple(_MATH_FLOOR_DIVISION_CLASS_TOKEN.finditer(fragment))
+    if (
+        stack
+        or len(class_occurrences) != math_element_count
+        or any(match.group(0) != MATH_FLOOR_DIVISION_CLASS for match in class_occurrences)
+    ):
         raise ValueError(MATH_FLOOR_DIVISION_ERROR)
     for start, end, replacement in reversed(replacements):
         fragment = fragment[:start] + replacement + fragment[end:]

@@ -1550,11 +1550,120 @@ class FacultyReleaseFlowTests(unittest.TestCase):
                 current_packs = set(pack_dir.glob("*.ksatpack")) if pack_dir.exists() else set()
                 self.assertEqual(baseline_packs, current_packs)
 
+    def test_html_pair_import_rejects_decoded_code_pseudo_markup_before_writes(self):
+        valid_math = '<code class="math-floor-division">a // b</code>'
+        pseudo_math = '&lt;code class="math-floor-division"&gt;c // d&lt;/code&gt;'
+        malformed_fragments = (
+            valid_math + f"<p>{pseudo_math}</p>",
+            f"<p>{pseudo_math}</p>" + valid_math,
+            valid_math + f"<p>{pseudo_math}</p>" + valid_math,
+            valid_math + "<p>&amp;lt;code class=\"math-floor-division\"&amp;gt;c // d"
+            "&amp;lt;/code&amp;gt;</p>",
+            valid_math + "<p>%3Ccode%20class%3D%22math-floor-division%22%3Ec%20%2F%2F%20d"
+            "%3C%2Fcode%3E</p>",
+            valid_math + "<p>&lt;&#99;ode class=\"math-floor-division\"&gt;c // d"
+            "&lt;/code&gt;</p>",
+            valid_math + '<p>&lt;code class="math-floor-division">c // d</code></p>',
+            valid_math + '<p><code class="math-floor-division">c // d&lt;/code&gt;</p>',
+            valid_math + "<p>&lt;CoDe class=\"math-floor-division\"&gt;c // d"
+            "&lt;/cOdE&gt;</p>",
+            valid_math + "<p>&lt;code class=\"math-floor-&#100;ivision\"&gt;c // d"
+            "&lt;/code&gt;</p>",
+            valid_math + '<p title="&lt;code class=&quot;math-floor-division&quot;&gt;'
+            'c // d&lt;/code&gt;">safe text</p>',
+            valid_math + '<svg aria-label="&lt;code class=&quot;math-floor-division&quot;&gt;'
+            'c // d&lt;/code&gt;"><path d="M0 0"></path></svg>',
+            valid_math + '<p class="math-floor-division">safe text</p>',
+            valid_math + '<p>math-floor-division</p>',
+            valid_math + '<p><co\u200dde class="math-floor-division">c // d</code></p>',
+            valid_math + '<p><c o d e class="math-floor-division">c // d</code></p>',
+            valid_math + '<p>%3Cc%6F\u200Dd%65 class="math-floor-division">c // d%3C/%63ode%3E</p>',
+            '<code>c // d</code>',
+            '<code>c /&#47; d</code>',
+            '<code>c /\u200d / d</code>',
+            '&lt;code&gt;c // d&lt;/code&gt;',
+        )
+        with app.db() as connection:
+            baseline = tuple(connection.execute(
+                f"SELECT COUNT(*) FROM {table}"
+            ).fetchone()[0] for table in ("question_banks", "questions", "assessment_releases"))
+        pack_dir = app.assessment_packs_dir()
+        baseline_packs = set(pack_dir.glob("*.ksatpack")) if pack_dir.exists() else set()
+
+        def assert_unchanged() -> None:
+            with app.db() as connection:
+                current = tuple(connection.execute(
+                    f"SELECT COUNT(*) FROM {table}"
+                ).fetchone()[0] for table in (
+                    "question_banks", "questions", "assessment_releases"
+                ))
+            self.assertEqual(baseline, current)
+            current_packs = set(pack_dir.glob("*.ksatpack")) if pack_dir.exists() else set()
+            self.assertEqual(baseline_packs, current_packs)
+
+        for index, fragment in enumerate(malformed_fragments):
+            with self.subTest(route="multipart", fragment=fragment):
+                answer_key = json.dumps({
+                    "bank_name": f"Rejected decoded math {index}",
+                    "questions": [{
+                        "key": "bad-q",
+                        "category": "Quantitative Aptitude",
+                        "chapter": "Arithmetic",
+                        "difficulty": "Easy",
+                        "options": {"A": "1", "B": "2", "C": "3", "D": "4"},
+                        "correct_answer": "A",
+                    }],
+                })
+                response = self.client.post(
+                    "/api/admin/question-banks/import",
+                    files={
+                        "html_file": (
+                            f"decoded-{index}.html",
+                            f'<section data-question-key="bad-q">{fragment}</section>',
+                            "text/html",
+                        ),
+                        "answer_key_file": (
+                            f"decoded-{index}.json", answer_key, "application/json"
+                        ),
+                    },
+                )
+                self.assertEqual(400, response.status_code, response.text)
+                assert_unchanged()
+
+        staged_html = app.QUESTION_BANKS_DIR / "decoded-staged.html"
+        staged_answer = app.QUESTION_BANKS_DIR / "decoded-staged.json"
+        staged_html.parent.mkdir(parents=True, exist_ok=True)
+        staged_html.write_text(
+            f'<section data-question-key="bad-q">{valid_math}<p>{pseudo_math}</p></section>',
+            encoding="utf-8",
+        )
+        staged_answer.write_text(json.dumps({
+            "bank_name": "Rejected decoded staged math",
+            "questions": [{
+                "key": "bad-q",
+                "category": "Quantitative Aptitude",
+                "chapter": "Arithmetic",
+                "difficulty": "Easy",
+                "options": {"A": "1", "B": "2", "C": "3", "D": "4"},
+                "correct_answer": "A",
+            }],
+        }), encoding="utf-8")
+        response = self.client.post(
+            "/api/admin/question-banks/import-from-folder",
+            json={
+                "html_filename": staged_html.name,
+                "answer_key_filename": staged_answer.name,
+            },
+        )
+        self.assertEqual(400, response.status_code, response.text)
+        assert_unchanged()
+
     def test_html_pair_import_route_preserves_valid_math_code_svg_and_pairing(self):
         html_source = (
             '<section data-question-key="math-one"><p>Compute '
             '<code class="math-floor-division">total // count</code>.</p>'
-            '<code>ordinary ÷ code</code><svg viewBox="0 0 1 1">'
+            '<p>AT&amp;T uses 3 &lt; 5; <code>alpha &amp; beta</code>.</p>'
+            '<code>ordinary ÷ code</code><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1">'
             '<path d="M0 0"></path></svg></section>'
             '<section data-question-key="math-two"><div>'
             '<code class="math-floor-division">6 // 2</code> then '
@@ -1599,7 +1708,7 @@ class FacultyReleaseFlowTests(unittest.TestCase):
         self.assertEqual(["math-one", "math-two"], [row["source_key"] for row in stored])
         self.assertEqual(["B", "D"], [row["correct_answer"] for row in stored])
         self.assertEqual(
-            "Compute ⌊total ÷ count⌋ . ordinary ÷ code",
+            "Compute ⌊total ÷ count⌋ . AT&T uses 3 < 5; alpha & beta . ordinary ÷ code",
             stored[0]["question_text"],
         )
         self.assertIn(
@@ -1607,7 +1716,12 @@ class FacultyReleaseFlowTests(unittest.TestCase):
             stored[0]["question_html"],
         )
         self.assertIn("<code>ordinary ÷ code</code>", stored[0]["question_html"])
-        self.assertIn('<svg viewBox="0 0 1 1">', stored[0]["question_html"])
+        self.assertIn("AT&amp;T uses 3 &lt; 5", stored[0]["question_html"])
+        self.assertIn("<code>alpha &amp; beta</code>", stored[0]["question_html"])
+        self.assertIn(
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1">',
+            stored[0]["question_html"],
+        )
         self.assertEqual(2, stored[1]["question_html"].count("math-floor-division"))
         self.assertNotIn("//", stored[1]["question_html"])
 

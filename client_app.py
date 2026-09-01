@@ -607,7 +607,8 @@ class _ClientContext:
         stop_event: threading.Event,
     ) -> bool:
         return (
-            stop_event.is_set()
+            self._prefetch_shutdown_requested
+            or stop_event.is_set()
             or self.services is not services
             or self._prefetch_generation != generation
         )
@@ -644,7 +645,11 @@ class _ClientContext:
             stop_event = self._prefetch_stop
             thread = self._prefetch_thread
             stop_event.set()
-        if thread is not None and thread is not threading.current_thread():
+        if (
+            thread is not None
+            and thread is not threading.current_thread()
+            and thread.ident is not None
+        ):
             thread.join(max(0.0, deadline - time.monotonic()))
         remaining = max(0.0, deadline - time.monotonic())
         acquired = self._prefetch_lock.acquire(timeout=remaining)
@@ -687,7 +692,12 @@ class _ClientContext:
                         self._prefetch_generation += 1
                         self._prefetch_stop = threading.Event()
                         self._prefetch_thread = None
-                    self._restart_background_prefetch()
+                        recovered_thread = self._publish_prefetch_thread_locked(
+                            services,
+                            self._prefetch_generation,
+                            self._prefetch_stop,
+                        )
+                    self._start_published_prefetch_thread(recovered_thread)
                 finally:
                     with self._prefetch_state_lock:
                         if self._prefetch_recovery_thread is current_thread:
@@ -707,13 +717,13 @@ class _ClientContext:
             self._prefetch_thread = None
 
     def _restart_background_prefetch(self) -> None:
-        if (
-            self.services is not None
-            and self.services.background_prefetch
-            and self.services.runtime is not None
-            and getattr(self.identity, "device_id", None) is not None
-        ):
-            self._start_prefetch_thread()
+        with self._prefetch_state_lock:
+            thread = self._publish_prefetch_thread_locked(
+                self.services,
+                self._prefetch_generation,
+                self._prefetch_stop,
+            )
+        self._start_published_prefetch_thread(thread)
 
     def prefetch(
         self,
@@ -765,15 +775,47 @@ class _ClientContext:
 
     def _start_prefetch_thread(self) -> None:
         with self._prefetch_state_lock:
-            if self._prefetch_thread is not None and self._prefetch_thread.is_alive():
-                return
-            services = self.services
-            generation = self._prefetch_generation
-            stop_event = self._prefetch_stop
+            thread = self._publish_prefetch_thread_locked(
+                self.services,
+                self._prefetch_generation,
+                self._prefetch_stop,
+            )
+        self._start_published_prefetch_thread(thread)
+
+    def _publish_prefetch_thread_locked(
+        self,
+        services: ClientServices | None,
+        generation: int,
+        stop_event: threading.Event,
+    ) -> threading.Thread | None:
+        if (
+            self._prefetch_shutdown_requested
+            or services is None
+            or self.services is not services
+            or self._prefetch_generation != generation
+            or self._prefetch_stop is not stop_event
+            or stop_event.is_set()
+            or not services.background_prefetch
+            or services.runtime is None
+            or getattr(self.identity, "device_id", None) is None
+        ):
+            return None
+        existing = self._prefetch_thread
+        if existing is not None and (existing.ident is None or existing.is_alive()):
+            return None
 
         def run() -> None:
-            if stop_event.is_set() or services is None:
-                return
+            current_thread = threading.current_thread()
+            with self._prefetch_state_lock:
+                if (
+                    self._prefetch_shutdown_requested
+                    or self.services is not services
+                    or self._prefetch_generation != generation
+                    or self._prefetch_stop is not stop_event
+                    or stop_event.is_set()
+                    or self._prefetch_thread is not current_thread
+                ):
+                    return
             try:
                 self.prefetch(
                     _services=services,
@@ -783,17 +825,26 @@ class _ClientContext:
             except (CoordinatorProblem, ClientApiProblem, ValueError, OSError):
                 return
 
-        with self._prefetch_state_lock:
-            if stop_event.is_set() or generation != self._prefetch_generation:
-                return
-            if self._prefetch_thread is not None and self._prefetch_thread.is_alive():
-                return
-            self._prefetch_thread = threading.Thread(
-                target=run,
-                name=f"ksat-content-prefetch-{generation}",
-                daemon=True,
-            )
-            self._prefetch_thread.start()
+        thread = threading.Thread(
+            target=run,
+            name=f"ksat-content-prefetch-{generation}",
+            daemon=True,
+        )
+        self._prefetch_thread = thread
+        return thread
+
+    def _start_published_prefetch_thread(
+        self, thread: threading.Thread | None
+    ) -> None:
+        if thread is None:
+            return
+        try:
+            thread.start()
+        except BaseException:
+            with self._prefetch_state_lock:
+                if self._prefetch_thread is thread and thread.ident is None:
+                    self._prefetch_thread = None
+            raise
 
 
 def _load_config(path: Path) -> dict[str, str]:

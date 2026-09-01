@@ -71,17 +71,18 @@ Fix Cycle 2 reproduced three residual concurrency/parsing findings before produc
 - A timed-out configuration swap originally left the old service's only prefetch token permanently cancelled. One generation-bound recovery thread now waits for the exact old thread and whole-run lock, verifies service/generation/token ownership and shutdown state, installs a fresh token, and resumes background prefetch where configured. Repeated busy swaps share that recovery owner. The test proves no candidate creation/persistence on either busy response, automatic old-service recovery, a normal manual prefetch, a later successful real swap, and clean shutdown without a recovery/prefetch thread leak.
 - Raw `http://localhost:`, `http://localhost?`, and `http://localhost#` Origins were accepted because semantic URL parsing erased their empty delimiter components. Origin validation now uses an anchored ASCII loopback grammar before normalized Host comparison, rejecting raw query/fragment/userinfo/path/percent/control/whitespace/backslash ambiguity and noncanonical ports while accepting exact IPv4, bracketed IPv6, case-normalized localhost, and matching default/explicit ports.
 
+Fix Cycle 3 closed the remaining shutdown/reaper publication race with the reviewer's deterministic barrier orchestration. The RED test paused a recovered content thread immediately inside `Thread.start()`, invoked shutdown, and proved the prior implementation started a coordinator catalog call before shutdown could acquire the state lock. The GREEN implementation now validates shutdown and the exact expected services/generation/stop token, creates the thread, and publishes its sole ownership atomically under `_prefetch_state_lock`, but starts it outside the lock. Shutdown atomically cancels the published token; the worker reacquires the state lock and verifies shutdown, generation, token, and thread ownership before its first prefetch operation. Quiescence recognizes a published-but-not-yet-started thread without joining it, while workers that passed the gate remain joinable before resource closure. No state lock is held across a join or coordinator work. The barrier test also proves repeated shutdown is idempotent with no coordinator call, prefetch thread, recovery thread, or outbox stop leak; the normal recovery/later-swap test remains green.
+
 ## Verification
 
-- Fresh Fix Cycle 2 API/UI/runtime/store/outbox run with bundled Node enabled: 138 tests, OK in 11.069s.
-- Fresh affected coordinator/auth/release/start/submission/feedback run: 296 tests, OK in 74.881s.
-- Fresh canonical diagnostic discovery: 379 tests, OK in 79.763s; immediate repeat `python -m unittest discover -q`: 379 tests, OK in 79.860s.
-- `python -m py_compile client_app.py ksat/client/outbox.py tests/test_client_app_api.py tests/test_client_outbox.py` — exit 0.
+- Fresh Fix Cycle 3 prefetch lifecycle class: 6 tests, OK in 2.153s; focused API/UI/runtime/store/outbox run: 139 tests, OK in 9.638s.
+- Fresh canonical `python -m unittest discover -q`: 380 tests, OK in 61.444s.
+- `python -m py_compile client_app.py tests/test_client_app_api.py` — exit 0.
 - Bundled `node.exe --check static/client/app.js` — exit 0.
 - `git diff --check` and the static/config leakage scan completed without an error or browser-visible coordinator value.
 
 ## Concerns
 
 - Task 12 must apply the restrictive `%ProgramData%\KSAT Client` ACL, install the trusted CA, and use `ClientConfigStore.save()` or its exact strict file shape for first installation.
-- The isolated verification environment emitted only Starlette's dependency-level deprecation notice about its `httpx` TestClient import; both 379-test canonical runs passed. One earlier quiet discovery invocation stopped making progress in its process wrapper and was interrupted; a verbose diagnostic run and an immediate quiet repeat both completed normally, with no test or lifecycle thread left running.
+- The isolated verification environment emitted only Starlette's dependency-level deprecation notice about its `httpx` TestClient import; all 380 canonical tests passed with no lifecycle hang.
 - The Task 8 runtime change is intentionally narrow: it exposes no path, key, answer metadata, decrypted pack, or mutable buffer. `client_app.py` does not reopen or decrypt pack state.

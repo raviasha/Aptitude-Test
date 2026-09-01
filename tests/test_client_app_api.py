@@ -1319,6 +1319,101 @@ class ClientPrefetchLifecycleTests(unittest.TestCase):
         final_prefetch = app.state.client_context._prefetch_thread
         self.assertTrue(final_prefetch is None or not final_prefetch.is_alive())
 
+    def test_shutdown_cancels_reaper_before_recovered_worker_can_start(self):
+        from client_app import ClientServices, create_client_app
+
+        first_catalog_entered = threading.Event()
+        release_first_catalog = threading.Event()
+        recovered_catalog_started = threading.Event()
+        before_recovered_start = threading.Event()
+        release_recovered_start = threading.Event()
+        coordinator = FakeCoordinator()
+        coordinator.request_timeout_seconds = 0.05
+        catalog_calls = 0
+
+        def controlled_catalog():
+            nonlocal catalog_calls
+            catalog_calls += 1
+            if catalog_calls == 1:
+                first_catalog_entered.set()
+                release_first_catalog.wait(5)
+            else:
+                recovered_catalog_started.set()
+            return []
+
+        coordinator.prefetch_catalog = controlled_catalog
+        store = FakeStore(None)
+        outbox = FakeOutbox()
+        services = ClientServices(
+            FakeIdentityStore(), store, FakeRuntime(store), coordinator,
+            outbox, background_prefetch=True,
+        )
+        services.config_store = SimpleNamespace(update_base_url=lambda _value: None)
+        services.coordinator_factory = lambda _value: self.fail(
+            "busy swap must not construct a candidate"
+        )
+        services.outbox_factory = lambda _candidate: self.fail(
+            "busy swap must not construct an outbox"
+        )
+        app = create_client_app(services)
+        client_context = TestClient(app, base_url="http://127.0.0.1:8010")
+        client = client_context.__enter__()
+        self.assertTrue(first_catalog_entered.wait(2))
+        page = client.get("/", headers={"Host": "127.0.0.1:8010"})
+        token = re.search(
+            r'<meta name="ksat-csrf" content="([A-Za-z0-9_-]+)">', page.text
+        ).group(1)
+        busy = client.post(
+            "/api/device/coordinator",
+            json={"base_url": "https://new.example.edu:9443", "confirmed": True},
+            headers={
+                "Host": "127.0.0.1:8010",
+                "Origin": "http://127.0.0.1:8010",
+                "X-KSAT-CSRF": token,
+            },
+        )
+        self.assertEqual(503, busy.status_code)
+
+        real_thread_start = threading.Thread.start
+
+        def barrier_start(thread):
+            if thread.name == "ksat-content-prefetch-1":
+                before_recovered_start.set()
+                self.assertTrue(release_recovered_start.wait(2))
+                real_thread_start(thread)
+                recovered_catalog_started.wait(0.2)
+                return
+            real_thread_start(thread)
+
+        shutdown_called = threading.Event()
+        shutdown_returned = threading.Event()
+
+        def shutdown():
+            shutdown_called.set()
+            app.state.client_context.shutdown()
+            shutdown_returned.set()
+
+        with patch.object(threading.Thread, "start", barrier_start):
+            release_first_catalog.set()
+            self.assertTrue(before_recovered_start.wait(2))
+            shutdown_thread = threading.Thread(target=shutdown, name="test-shutdown")
+            shutdown_thread.start()
+            self.assertTrue(shutdown_called.wait(1))
+            time.sleep(0.05)
+            release_recovered_start.set()
+            shutdown_thread.join(3)
+
+        self.assertTrue(shutdown_returned.is_set())
+        self.assertFalse(recovered_catalog_started.is_set())
+        self.assertEqual(1, catalog_calls)
+        app.state.client_context.shutdown()
+        self.assertEqual(1, outbox.stops)
+        recovery = app.state.client_context._prefetch_recovery_thread
+        self.assertTrue(recovery is None or not recovery.is_alive())
+        prefetch = app.state.client_context._prefetch_thread
+        self.assertTrue(prefetch is None or not prefetch.is_alive())
+        client_context.__exit__(None, None, None)
+
 class ClientCoordinatorReconfigurationTests(unittest.TestCase):
     def setUp(self):
         from client_app import ClientServices, create_client_app

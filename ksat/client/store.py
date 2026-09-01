@@ -60,6 +60,7 @@ class PendingSubmission:
     retry_count: int
     next_attempt_at: datetime
     last_error: str | None
+    status: str = "pending"
 
 
 @dataclass(frozen=True)
@@ -333,10 +334,22 @@ class ClientStore:
                   retry_count INTEGER NOT NULL CHECK (retry_count >= 0),
                   next_attempt_at TEXT NOT NULL,
                   last_error TEXT,
+                  status TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending', 'faculty_intervention_required')),
                   created_at TEXT NOT NULL
                 );
                 """
             )
+            columns = {
+                row["name"]
+                for row in self.connection.execute("PRAGMA table_info(submission_outbox)")
+            }
+            if "status" not in columns:
+                self.connection.execute(
+                    """ALTER TABLE submission_outbox
+                       ADD COLUMN status TEXT NOT NULL DEFAULT 'pending'
+                       CHECK (status IN ('pending', 'faculty_intervention_required'))"""
+                )
             self.connection.commit()
 
     def _ensure_open(self) -> None:
@@ -1016,8 +1029,8 @@ class ClientStore:
                 )
                 connection.execute(
                     """INSERT INTO submission_outbox
-                       (attempt_id, bundle_json, retry_count, next_attempt_at, last_error, created_at)
-                       VALUES (?, ?, 0, ?, NULL, ?)""",
+                       (attempt_id, bundle_json, retry_count, next_attempt_at, last_error, status, created_at)
+                       VALUES (?, ?, 0, ?, NULL, 'pending', ?)""",
                     (attempt_id, bundle_json, sealed_iso, sealed_iso),
                 )
         return self.load_attempt(attempt_id)
@@ -1028,12 +1041,12 @@ class ClientStore:
         values: tuple[str, ...] = ()
         where = ""
         if due_at is not None:
-            where = "WHERE o.next_attempt_at<=?"
+            where = "WHERE o.status='pending' AND o.next_attempt_at<=?"
             values = (_iso(due_at, "Outbox due time"),)
         with self._read_transaction() as connection:
             rows = connection.execute(
                 f"""SELECT o.attempt_id, o.bundle_json, o.retry_count,
-                           o.next_attempt_at, o.last_error, o.created_at
+                            o.next_attempt_at, o.last_error, o.status, o.created_at
                     FROM submission_outbox AS o
                     {where}
                     ORDER BY o.next_attempt_at, o.created_at, o.attempt_id""",
@@ -1055,6 +1068,13 @@ class ClientStore:
                         or snapshot.outbox_json != row["bundle_json"]
                         or type(row["retry_count"]) is not int
                         or row["retry_count"] < 0
+                        or row["status"] not in {
+                            "pending", "faculty_intervention_required"
+                        }
+                        or (
+                            row["status"] == "faculty_intervention_required"
+                            and not row["last_error"]
+                        )
                         or (
                             row["last_error"] is not None
                             and (
@@ -1075,6 +1095,7 @@ class ClientStore:
                         retry_count=row["retry_count"],
                         next_attempt_at=next_attempt,
                         last_error=row["last_error"],
+                        status=row["status"],
                     )
                 )
         return pending
@@ -1101,9 +1122,32 @@ class ClientStore:
                 raise ValueError("Only a pending sealed attempt can be retried.")
             cursor = connection.execute(
                 """UPDATE submission_outbox
-                   SET retry_count=retry_count+1, next_attempt_at=?, last_error=?
-                   WHERE attempt_id=?""",
+                   SET retry_count=retry_count+1, next_attempt_at=?, last_error=?, status='pending'
+                   WHERE attempt_id=? AND status='pending'""",
                 (next_iso, last_error, attempt_id),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("Sealed attempt is missing its submission outbox record.")
+        return next(item for item in self.pending_submissions() if item.attempt_id == attempt_id)
+
+    def require_faculty_intervention(
+        self, attempt_id: str, *, last_error: str
+    ) -> PendingSubmission:
+        if not isinstance(last_error, str) or not last_error or len(last_error) > 2000:
+            raise ValueError("Intervention error is invalid.")
+        with self._transaction() as connection:
+            state = connection.execute(
+                "SELECT state FROM local_attempts WHERE attempt_id=?", (attempt_id,)
+            ).fetchone()
+            if state is None:
+                raise KeyError(f"Unknown local attempt: {attempt_id}")
+            if state["state"] != "sealed_pending":
+                raise ValueError("Only a pending sealed attempt can require intervention.")
+            cursor = connection.execute(
+                """UPDATE submission_outbox
+                   SET status='faculty_intervention_required', last_error=?
+                   WHERE attempt_id=?""",
+                (last_error, attempt_id),
             )
             if cursor.rowcount != 1:
                 raise ValueError("Sealed attempt is missing its submission outbox record.")

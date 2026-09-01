@@ -8,12 +8,13 @@ import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, BinaryIO, Iterator
+from typing import Any, AsyncIterator, BinaryIO
 
 import bcrypt
 from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict
+from starlette.concurrency import run_in_threadpool
 
 from ksat.coordinator.auth import (
     CLIENT_SESSION_SECONDS,
@@ -219,15 +220,31 @@ def _verified_pack_snapshot(
         raise
 
 
-def _stream_pack_snapshot(snapshot: BinaryIO) -> Iterator[bytes]:
-    try:
-        while True:
-            chunk = snapshot.read(_PACK_COPY_CHUNK_BYTES)
-            if not chunk:
-                break
-            yield chunk
-    finally:
-        snapshot.close()
+async def _stream_pack_snapshot(snapshot: BinaryIO) -> AsyncIterator[bytes]:
+    while True:
+        chunk = await run_in_threadpool(snapshot.read, _PACK_COPY_CHUNK_BYTES)
+        if not chunk:
+            break
+        yield chunk
+
+
+class _PackSnapshotResponse(StreamingResponse):
+    def __init__(self, snapshot: BinaryIO, **kwargs: Any) -> None:
+        self._snapshot = snapshot
+        self._snapshot_closed = False
+        super().__init__(_stream_pack_snapshot(snapshot), **kwargs)
+
+    def _close_snapshot(self) -> None:
+        if self._snapshot_closed:
+            return
+        self._snapshot_closed = True
+        self._snapshot.close()
+
+    async def __call__(self, scope, receive, send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            self._close_snapshot()
 
 
 def _etag_matches(header_value: str, content_hash: str) -> bool:
@@ -389,8 +406,8 @@ async def release_pack(release_id: str, request: Request) -> Response:
         )
         headers["Content-Length"] = str(byte_size)
         try:
-            return StreamingResponse(
-                _stream_pack_snapshot(snapshot),
+            return _PackSnapshotResponse(
+                snapshot,
                 media_type="application/octet-stream",
                 headers=headers,
             )

@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import hashlib
 import io
@@ -15,6 +16,7 @@ from unittest.mock import patch
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi.testclient import TestClient
+from starlette.requests import ClientDisconnect, Request
 
 import app
 from ksat.coordinator import routes as coordinator_routes
@@ -37,6 +39,19 @@ class FrozenDateTime(datetime):
 
 def _json_bytes(value):
     return json.dumps(value, separators=(",", ":")).encode("utf-8")
+
+
+class CountingSnapshot:
+    def __init__(self, wrapped):
+        self.wrapped = wrapped
+        self.close_calls = 0
+
+    def close(self):
+        self.close_calls += 1
+        self.wrapped.close()
+
+    def __getattr__(self, name):
+        return getattr(self.wrapped, name)
 
 
 class DistributedAttemptStartTests(unittest.TestCase):
@@ -192,6 +207,59 @@ class DistributedAttemptStartTests(unittest.TestCase):
         with patch("ksat.coordinator.routes.utc_now", return_value=datetime.fromisoformat(at)):
             return request()
 
+    async def pack_response(self, *, label="device-a", count_closes=False, force_roll=False):
+        path = f"/api/client/v1/releases/{self.release_id}/pack"
+        headers = self.headers("GET", path, label)
+        scope = {
+            "type": "http",
+            "asgi": {"spec_version": "2.3"},
+            "method": "GET",
+            "scheme": "http",
+            "server": ("testserver", 80),
+            "client": ("testclient", 50000),
+            "root_path": "",
+            "path": path,
+            "raw_path": path.encode("ascii"),
+            "query_string": b"",
+            "headers": [
+                (name.lower().encode("latin-1"), value.encode("latin-1"))
+                for name, value in headers.items()
+            ],
+            "app": app.app,
+        }
+        request_received = False
+
+        async def receive_request():
+            nonlocal request_received
+            if request_received:
+                return {"type": "http.disconnect"}
+            request_received = True
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        snapshots = []
+        real_new_snapshot = coordinator_routes._new_pack_snapshot
+
+        def capture_snapshot():
+            snapshot = (
+                tempfile.SpooledTemporaryFile(max_size=1, mode="w+b")
+                if force_roll
+                else real_new_snapshot()
+            )
+            if count_closes:
+                snapshot = CountingSnapshot(snapshot)
+            snapshots.append(snapshot)
+            return snapshot
+
+        with patch(
+            "ksat.coordinator.routes._new_pack_snapshot",
+            side_effect=capture_snapshot,
+        ):
+            response = await coordinator_routes.release_pack(
+                self.release_id, Request(scope, receive_request)
+            )
+        self.assertEqual(1, len(snapshots))
+        return response, snapshots[0]
+
     def start(self, student_id, label, *, at, payload=None, token_label=None):
         path = "/api/client/v1/attempts/start"
         body_value = payload or {
@@ -230,6 +298,219 @@ class DistributedAttemptStartTests(unittest.TestCase):
         pack_response = self.device_get(f"/api/client/v1/releases/{self.release_id}/pack")
         self.assertEqual(200, pack_response.status_code, pack_response.text)
         self.assertEqual(hashlib.sha256(pack_response.content).hexdigest(), item["content_hash"])
+
+    def test_pack_asgi_23_disconnect_closes_snapshot_before_response_returns(self):
+        async def exercise_disconnect():
+            response, snapshot = await self.pack_response(force_roll=True)
+            retained_iterator = response.body_iterator
+            first_body_chunk = asyncio.Event()
+
+            async def receive():
+                await first_body_chunk.wait()
+                return {"type": "http.disconnect"}
+
+            async def send(message):
+                if message["type"] == "http.response.body" and message.get("body"):
+                    first_body_chunk.set()
+
+            scope = {"type": "http", "asgi": {"spec_version": "2.3"}}
+            with patch("ksat.coordinator.routes._PACK_COPY_CHUNK_BYTES", 32):
+                await response(scope, receive, send)
+            self.assertIs(retained_iterator, response.body_iterator)
+            self.assertTrue(snapshot._rolled)
+            self.assertTrue(snapshot.closed)
+
+        asyncio.run(exercise_disconnect())
+
+    def test_pack_asgi_normal_completion_preserves_bytes_headers_and_closes_snapshot(self):
+        expected = (app.assessment_packs_dir() / f"{self.release_id}.ksatpack").read_bytes()
+
+        async def exercise_completion():
+            response, snapshot = await self.pack_response(force_roll=True)
+            retained_response = response
+            retained_iterator = response.body_iterator
+            messages = []
+
+            async def receive():
+                return {"type": "http.request", "body": b"", "more_body": False}
+
+            async def send(message):
+                messages.append(message)
+
+            await response(
+                {"type": "http", "asgi": {"spec_version": "2.4"}},
+                receive,
+                send,
+            )
+            body = b"".join(
+                message.get("body", b"")
+                for message in messages
+                if message["type"] == "http.response.body"
+            )
+            start = next(
+                message for message in messages
+                if message["type"] == "http.response.start"
+            )
+            headers = {
+                name.decode("latin-1"): value.decode("latin-1")
+                for name, value in start["headers"]
+            }
+            self.assertIs(response, retained_response)
+            self.assertIs(response.body_iterator, retained_iterator)
+            self.assertEqual(expected, body)
+            self.assertEqual(self.content_hash, hashlib.sha256(body).hexdigest())
+            self.assertEqual(f'"{self.content_hash}"', headers["etag"])
+            self.assertEqual(str(len(expected)), headers["content-length"])
+            self.assertTrue(snapshot._rolled)
+            self.assertTrue(snapshot.closed)
+
+        asyncio.run(exercise_completion())
+
+    def test_pack_asgi_24_send_failure_closes_snapshot_before_raise(self):
+        async def exercise_send_failure():
+            response, snapshot = await self.pack_response(force_roll=True)
+
+            async def receive():
+                return {"type": "http.request", "body": b"", "more_body": False}
+
+            async def send(message):
+                if message["type"] == "http.response.body" and message.get("body"):
+                    raise OSError("client disconnected")
+
+            with self.assertRaises(ClientDisconnect):
+                await response(
+                    {"type": "http", "asgi": {"spec_version": "2.4"}},
+                    receive,
+                    send,
+                )
+            self.assertTrue(snapshot._rolled)
+            self.assertTrue(snapshot.closed)
+
+        asyncio.run(exercise_send_failure())
+
+    def test_pack_asgi_task_cancellation_closes_snapshot_before_raise(self):
+        async def exercise_cancellation():
+            response, snapshot = await self.pack_response(force_roll=True)
+            send_started = asyncio.Event()
+            block_send = asyncio.Event()
+
+            async def receive():
+                return {"type": "http.request", "body": b"", "more_body": False}
+
+            async def send(message):
+                if message["type"] == "http.response.body" and message.get("body"):
+                    send_started.set()
+                    await block_send.wait()
+
+            task = asyncio.create_task(
+                response(
+                    {"type": "http", "asgi": {"spec_version": "2.4"}},
+                    receive,
+                    send,
+                )
+            )
+            await send_started.wait()
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+            self.assertTrue(snapshot._rolled)
+            self.assertTrue(snapshot.closed)
+
+        asyncio.run(exercise_cancellation())
+
+    def test_pack_asgi_cleanup_is_idempotent_with_retained_body_iterator(self):
+        async def exercise_double_close():
+            response, snapshot = await self.pack_response(
+                count_closes=True,
+                force_roll=True,
+            )
+            retained_iterator = response.body_iterator
+            messages = []
+
+            async def receive():
+                return {"type": "http.request", "body": b"", "more_body": False}
+
+            async def send(message):
+                messages.append(message)
+
+            scope = {"type": "http", "asgi": {"spec_version": "2.4"}}
+            await response(scope, receive, send)
+            await retained_iterator.aclose()
+            await response(scope, receive, send)
+            self.assertTrue(snapshot.closed)
+            self.assertEqual(1, snapshot.close_calls)
+
+        asyncio.run(exercise_double_close())
+
+    def test_repeated_aborted_pack_downloads_close_all_rolled_snapshots(self):
+        async def exercise_repeated_aborts():
+            retained = []
+            for _ in range(6):
+                response, snapshot = await self.pack_response(force_roll=True)
+                snapshot_path = Path(snapshot._file.name)
+                self.assertTrue(snapshot_path.exists())
+                retained.append((response, response.body_iterator, snapshot, snapshot_path))
+                first_body_chunk = asyncio.Event()
+
+                async def receive():
+                    await first_body_chunk.wait()
+                    return {"type": "http.disconnect"}
+
+                async def send(message):
+                    if message["type"] == "http.response.body" and message.get("body"):
+                        first_body_chunk.set()
+
+                with patch("ksat.coordinator.routes._PACK_COPY_CHUNK_BYTES", 32):
+                    await response(
+                        {"type": "http", "asgi": {"spec_version": "2.3"}},
+                        receive,
+                        send,
+                    )
+                self.assertTrue(snapshot._rolled)
+                self.assertTrue(snapshot.closed)
+                self.assertFalse(snapshot_path.exists())
+            self.assertTrue(all(item[2].closed for item in retained))
+            self.assertTrue(all(not item[3].exists() for item in retained))
+
+        asyncio.run(exercise_repeated_aborts())
+
+    def test_concurrent_pack_responses_own_independent_snapshots(self):
+        async def exercise_concurrent_responses():
+            first_response, first_snapshot = await self.pack_response(force_roll=True)
+            second_response, second_snapshot = await self.pack_response(
+                label="device-b", force_roll=True
+            )
+            self.assertIsNot(first_snapshot, second_snapshot)
+            second_send_started = asyncio.Event()
+            release_second_send = asyncio.Event()
+
+            async def receive():
+                return {"type": "http.request", "body": b"", "more_body": False}
+
+            async def fail_first_send(message):
+                if message["type"] == "http.response.body" and message.get("body"):
+                    raise OSError("first client disconnected")
+
+            async def hold_second_send(message):
+                if message["type"] == "http.response.body" and message.get("body"):
+                    second_send_started.set()
+                    await release_second_send.wait()
+                    raise OSError("second client disconnected")
+
+            scope = {"type": "http", "asgi": {"spec_version": "2.4"}}
+            first_task = asyncio.create_task(first_response(scope, receive, fail_first_send))
+            second_task = asyncio.create_task(second_response(scope, receive, hold_second_send))
+            await second_send_started.wait()
+            with self.assertRaises(ClientDisconnect):
+                await first_task
+            self.assertTrue(first_snapshot.closed)
+            self.assertFalse(second_snapshot.closed)
+            release_second_send.set()
+            with self.assertRaises(ClientDisconnect):
+                await second_task
+            self.assertTrue(second_snapshot.closed)
+
+        asyncio.run(exercise_concurrent_responses())
 
     def test_students_get_same_questions_different_orders_and_independent_deadlines(self):
         first = self.start("S100", "device-a", at="2026-08-31T09:02:00+00:00")
@@ -634,15 +915,6 @@ class DistributedAttemptStartTests(unittest.TestCase):
         self.assertEqual(409, rejected.status_code, rejected.text)
         self.assertTrue(created_snapshots)
         self.assertTrue(all(snapshot.closed for snapshot in created_snapshots))
-
-        interrupted = tempfile.SpooledTemporaryFile(max_size=1, mode="w+b")
-        interrupted.write(b"two chunks")
-        interrupted.seek(0)
-        with patch("ksat.coordinator.routes._PACK_COPY_CHUNK_BYTES", 3):
-            stream = coordinator_routes._stream_pack_snapshot(interrupted)
-            self.assertEqual(b"two", next(stream))
-            stream.close()
-        self.assertTrue(interrupted.closed)
 
     def test_pack_validation_never_reads_the_entire_snapshot_into_memory(self):
         snapshots = []

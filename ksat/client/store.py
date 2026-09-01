@@ -455,15 +455,14 @@ class ClientStore:
             return None
         return Path(row["pack_path"])
 
-    def create_attempt(
-        self,
+    @staticmethod
+    def _attempt_creation_values(
         ticket: SignedAttemptTicket,
         question_order: list[int] | tuple[int, ...],
-        *,
-        remaining_seconds: int | None = None,
-        created_at: datetime | None = None,
-        last_wall_time: datetime | None = None,
-    ) -> LocalAttemptRecord:
+        remaining_seconds: int | None,
+        created_at: datetime | None,
+        last_wall_time: datetime | None,
+    ) -> tuple[SignedAttemptTicket, str, str, int, str, str, str]:
         ticket, ticket_json = _validate_ticket(ticket)
         if (
             not isinstance(question_order, (list, tuple))
@@ -483,6 +482,41 @@ class ClientStore:
         created_iso = _iso(created, "Attempt creation time")
         wall_iso = _iso(wall, "Wall checkpoint")
         deadline_iso = _iso(attempt.deadline, "Attempt deadline")
+        return (
+            ticket,
+            ticket_json,
+            order_json,
+            remaining,
+            created_iso,
+            wall_iso,
+            deadline_iso,
+        )
+
+    def create_attempt(
+        self,
+        ticket: SignedAttemptTicket,
+        question_order: list[int] | tuple[int, ...],
+        *,
+        remaining_seconds: int | None = None,
+        created_at: datetime | None = None,
+        last_wall_time: datetime | None = None,
+    ) -> LocalAttemptRecord:
+        (
+            ticket,
+            ticket_json,
+            order_json,
+            remaining,
+            created_iso,
+            wall_iso,
+            deadline_iso,
+        ) = self._attempt_creation_values(
+            ticket,
+            question_order,
+            remaining_seconds,
+            created_at,
+            last_wall_time,
+        )
+        attempt = ticket.ticket
         with self._transaction() as connection:
             cached = connection.execute(
                 """SELECT 1 FROM cached_content_packs
@@ -542,6 +576,99 @@ class ClientStore:
                         "Another local assessment attempt is already active."
                     ) from error
         return self.load_attempt(attempt.attempt_id)
+
+    def start_or_resume_attempt(
+        self,
+        ticket: SignedAttemptTicket,
+        question_order: list[int] | tuple[int, ...],
+        *,
+        remaining_seconds: int,
+        created_at: datetime,
+        last_wall_time: datetime,
+    ) -> LocalAttemptRecord:
+        """Create one runtime attempt or return the exact active ticket winner."""
+        (
+            ticket,
+            ticket_json,
+            order_json,
+            remaining,
+            created_iso,
+            wall_iso,
+            deadline_iso,
+        ) = self._attempt_creation_values(
+            ticket,
+            question_order,
+            remaining_seconds,
+            created_at,
+            last_wall_time,
+        )
+        attempt = ticket.ticket
+        with self._transaction() as connection:
+            cached = connection.execute(
+                """SELECT 1 FROM cached_content_packs
+                   WHERE release_id=? AND content_hash=? AND verified=1""",
+                (attempt.release_id, attempt.content_hash),
+            ).fetchone()
+            if cached is None:
+                raise ValueError("Attempt requires the exact verified content pack.")
+            active_rows = connection.execute(
+                """SELECT attempt_id, student_id, release_id, ticket_json,
+                          question_order_json
+                   FROM local_attempts
+                   WHERE state IN ('in_progress', 'sealed_pending')
+                   ORDER BY created_at, attempt_id"""
+            ).fetchall()
+            if len(active_rows) > 1:
+                raise ValueError(
+                    "Multiple active attempts require recovery intervention."
+                )
+            active = None if not active_rows else active_rows[0]
+            if active is not None:
+                if (
+                    active["attempt_id"] != attempt.attempt_id
+                    or active["student_id"] != attempt.student_id
+                    or active["release_id"] != attempt.release_id
+                    or active["ticket_json"] != ticket_json
+                    or active["question_order_json"] != order_json
+                ):
+                    raise ValueError(
+                        "Another local assessment attempt is already active."
+                    )
+                winner_id = active["attempt_id"]
+            else:
+                existing = connection.execute(
+                    "SELECT 1 FROM local_attempts WHERE attempt_id=?",
+                    (attempt.attempt_id,),
+                ).fetchone()
+                if existing is not None:
+                    raise ValueError(
+                        "Attempt identifier conflicts with the stored creation parameters."
+                    )
+                try:
+                    connection.execute(
+                        """INSERT INTO local_attempts
+                           (attempt_id, student_id, release_id, ticket_json,
+                            question_order_json, state, deadline, remaining_seconds,
+                            last_wall_time, created_at)
+                           VALUES (?, ?, ?, ?, ?, 'in_progress', ?, ?, ?, ?)""",
+                        (
+                            attempt.attempt_id,
+                            attempt.student_id,
+                            attempt.release_id,
+                            ticket_json,
+                            order_json,
+                            deadline_iso,
+                            remaining,
+                            wall_iso,
+                            created_iso,
+                        ),
+                    )
+                except sqlite3.IntegrityError as error:
+                    raise ValueError(
+                        "Another local assessment attempt is already active."
+                    ) from error
+                winner_id = attempt.attempt_id
+        return self.load_attempt(winner_id)
 
     @staticmethod
     def _question_order(raw: object, message: str) -> tuple[int, ...]:

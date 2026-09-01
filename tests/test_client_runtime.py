@@ -55,6 +55,19 @@ class FakeClock:
             self.monotonic_value += seconds
 
 
+class StartBarrierClock(FakeClock):
+    def __init__(self, barrier, *, wall):
+        super().__init__(wall=wall)
+        self.barrier = barrier
+        self.armed = False
+
+    def utcnow(self):
+        if self.armed:
+            self.armed = False
+            self.barrier.wait(timeout=5)
+        return super().utcnow()
+
+
 class ClientRuntimeTests(unittest.TestCase):
     def setUp(self):
         self.temporary_directory = tempfile.TemporaryDirectory()
@@ -355,6 +368,53 @@ class ClientRuntimeTests(unittest.TestCase):
         finally:
             second_store.close()
 
+    def test_identical_concurrent_start_returns_one_stored_winner(self):
+        barrier = threading.Barrier(2)
+        first_clock = StartBarrierClock(
+            barrier, wall=STARTED + timedelta(seconds=0.1)
+        )
+        second_clock = StartBarrierClock(
+            barrier, wall=STARTED + timedelta(seconds=0.75)
+        )
+        second_store = ClientStore(self.db_path)
+        first_runtime = AssessmentRuntime(self.store, self.identity, first_clock)
+        second_runtime = AssessmentRuntime(second_store, self.identity, second_clock)
+        try:
+            first_runtime.prepare(self.summary, self.manifest, self.pack_path)
+            second_runtime.prepare(self.summary, self.manifest, self.pack_path)
+            first_clock.armed = True
+            second_clock.armed = True
+            outcomes = []
+
+            def start(runtime):
+                try:
+                    outcomes.append(
+                        runtime.start(self.start_response, student_id=self.student_id)
+                    )
+                except Exception as error:
+                    outcomes.append(error)
+
+            threads = (
+                threading.Thread(target=start, args=(first_runtime,)),
+                threading.Thread(target=start, args=(second_runtime,)),
+            )
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+            self.assertEqual(2, len(outcomes))
+            self.assertTrue(
+                all(not isinstance(item, Exception) for item in outcomes), outcomes
+            )
+            self.assertEqual(outcomes[0], outcomes[1])
+            self.assertEqual(1799, outcomes[0].remaining_seconds)
+            count = self.store.connection.execute(
+                "SELECT COUNT(*) FROM local_attempts"
+            ).fetchone()[0]
+            self.assertEqual(1, count)
+        finally:
+            second_store.close()
+
     def test_ticket_processing_time_is_not_added_back_to_the_duration(self):
         self.runtime.prepare(self.summary, self.manifest, self.pack_path)
 
@@ -368,6 +428,53 @@ class ClientRuntimeTests(unittest.TestCase):
                 self.start_response, student_id=self.student_id
             )
         self.assertEqual(started.remaining_seconds, 1795)
+
+    def test_fractional_processing_tick_at_deadline_seals_without_rounding_up(self):
+        self.runtime.prepare(self.summary, self.manifest, self.pack_path)
+
+        def fractional_decrypt(*args):
+            value = decrypt_pack(*args)
+            self.clock.advance(0.25)
+            return value
+
+        with patch("ksat.client.runtime.decrypt_pack", side_effect=fractional_decrypt):
+            started = self.runtime.start(
+                self.start_response, student_id=self.student_id
+            )
+        self.assertEqual(1799, started.remaining_seconds)
+        self.clock.advance(1799.75)
+        expired = self.runtime.tick()
+        self.assertEqual("sealed_pending", expired.state)
+        self.assertEqual(0, expired.remaining_seconds)
+
+    def test_fractional_wall_bound_is_conservative_before_and_after_deadline(self):
+        for index, offset in enumerate((-0.25, 0.0, 0.25)):
+            with self.subTest(offset=offset):
+                self.store.close()
+                self.store = ClientStore(self.root / f"fractional-{index}.sqlite3")
+                self.clock = FakeClock(wall=STARTED + timedelta(seconds=1800 + offset))
+                self.runtime = self._runtime()
+                self.runtime.prepare(self.summary, self.manifest, self.pack_path)
+                snapshot = self.runtime.start(
+                    self.start_response, student_id=self.student_id
+                )
+                self.assertEqual("sealed_pending", snapshot.state)
+                self.assertEqual(0, snapshot.remaining_seconds)
+
+    def test_fractional_remaining_is_conservative_after_restart(self):
+        self.runtime.prepare(self.summary, self.manifest, self.pack_path)
+
+        def fractional_decrypt(*args):
+            value = decrypt_pack(*args)
+            self.clock.advance(0.25)
+            return value
+
+        with patch("ksat.client.runtime.decrypt_pack", side_effect=fractional_decrypt):
+            self.runtime.start(self.start_response, student_id=self.student_id)
+        self.clock.advance(1799.5)
+        recovered = self._reopen().recover()
+        self.assertEqual("sealed_pending", recovered.state)
+        self.assertEqual(0, recovered.remaining_seconds)
 
     def test_stale_start_processed_at_or_after_deadline_is_durably_sealed(self):
         for wall in (

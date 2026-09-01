@@ -261,81 +261,64 @@ class AssessmentRuntime:
                 ticket.order_seed_b64,
                 ticket.shuffle_algorithm,
             )
-            existing = self.store.active_attempt()
-            if existing is not None:
-                if existing.ticket != signed or existing.question_order != tuple(order):
-                    raise ValueError(
-                        "Another local assessment attempt is already active."
-                    )
-                if existing.state != "in_progress":
-                    self._activate(existing, questions)
-                    return self._snapshot_record(existing)
-                if (
-                    self._attempt_id == existing.attempt_id
-                    and self._anchor_monotonic is not None
-                ):
-                    return self.snapshot()
-                wall_now = _utc(self.clock.utcnow(), "Recovery time")
-                safe_remaining = min(
-                    existing.remaining_seconds,
-                    max(0, math.ceil((existing.deadline - wall_now).total_seconds())),
-                )
-                if safe_remaining < existing.remaining_seconds:
-                    self.store.update_timer_checkpoint(
-                        existing.attempt_id,
-                        safe_remaining,
-                        last_wall_time=wall_now,
-                    )
-                    existing = self.store.load_attempt(existing.attempt_id)
-                self._activate(
-                    existing,
-                    questions,
-                    trusted_wall=existing.deadline - timedelta(seconds=safe_remaining),
-                )
-                if safe_remaining == 0:
-                    return self._seal(existing)
-                return self._snapshot_record(existing)
             wall_now = _utc(self.clock.utcnow(), "Local start time")
             activated_monotonic = self._monotonic()
             processing_elapsed = activated_monotonic - received_monotonic
             initial_remaining = min(
-                max(0, math.ceil(duration - processing_elapsed)),
+                max(0, math.floor(duration - processing_elapsed)),
                 max(
                     0,
-                    math.ceil(
+                    math.floor(
                         (deadline - server_time).total_seconds()
                         - processing_elapsed
                     ),
                 ),
-                max(0, math.ceil((deadline - wall_now).total_seconds())),
+                max(0, math.floor((deadline - wall_now).total_seconds())),
             )
-            record = self.store.create_attempt(
+            record = self.store.start_or_resume_attempt(
                 signed,
                 order,
                 remaining_seconds=initial_remaining,
                 created_at=started,
                 last_wall_time=wall_now,
             )
+            if record.state != "in_progress":
+                self._activate(record, questions)
+                return self._snapshot_record(record)
+            if (
+                self._attempt_id == record.attempt_id
+                and self._anchor_monotonic is not None
+            ):
+                return self.snapshot()
+            resumed_wall = _utc(self.clock.utcnow(), "Local start completion time")
+            resumed_monotonic = self._monotonic()
+            safe_remaining = min(
+                record.remaining_seconds,
+                max(
+                    0,
+                    math.floor(
+                        record.remaining_seconds
+                        - (resumed_monotonic - activated_monotonic)
+                    ),
+                ),
+                max(0, math.floor((record.deadline - resumed_wall).total_seconds())),
+            )
+            if safe_remaining < record.remaining_seconds:
+                self.store.update_timer_checkpoint(
+                    record.attempt_id,
+                    safe_remaining,
+                    last_wall_time=resumed_wall,
+                )
+                record = self.store.load_attempt(record.attempt_id)
             self._activate(
                 record,
                 questions,
-                trusted_wall=min(
-                    deadline,
-                    server_time + timedelta(seconds=processing_elapsed),
-                ),
-                anchor_monotonic=activated_monotonic,
+                trusted_wall=record.deadline - timedelta(seconds=safe_remaining),
+                anchor_monotonic=resumed_monotonic,
             )
-            if initial_remaining == 0:
+            if safe_remaining == 0:
                 return self._seal(record)
-            current_remaining = self._remaining()
-            if current_remaining < initial_remaining:
-                self.store.update_timer_checkpoint(
-                    record.attempt_id,
-                    current_remaining,
-                    last_wall_time=self._trusted_now(record),
-                )
-                record = self.store.load_attempt(record.attempt_id)
-            return self._snapshot_record(record, remaining=current_remaining)
+            return self._snapshot_record(record, remaining=safe_remaining)
 
     def answer(self, question_id: int, selected_answer: str | None) -> AttemptSnapshot:
         with self._lock:
@@ -457,7 +440,7 @@ class AssessmentRuntime:
                 return self._snapshot_record(record)
             wall_now = _utc(self.clock.utcnow(), "Recovery time")
             wall_remaining = max(
-                0, math.ceil((record.deadline - wall_now).total_seconds())
+                0, math.floor((record.deadline - wall_now).total_seconds())
             )
             safe_remaining = min(record.remaining_seconds, wall_remaining)
             if safe_remaining < record.remaining_seconds:
@@ -618,7 +601,7 @@ class AssessmentRuntime:
         return self._monotonic() - self._anchor_monotonic
 
     def _remaining(self) -> int:
-        return max(0, math.ceil(self._anchor_remaining - self._elapsed()))
+        return max(0, math.floor(self._anchor_remaining - self._elapsed()))
 
     def _trusted_now(self, record: LocalAttemptRecord) -> datetime:
         if self._anchor_trusted_wall is None:

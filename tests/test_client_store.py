@@ -294,6 +294,38 @@ class ClientStoreTests(unittest.TestCase):
                 self.assertEqual(1700, unchanged.remaining_seconds)
                 self.assertEqual(last_wall_time, unchanged.last_wall_time)
 
+    def test_start_or_resume_attempt_returns_the_stored_winner_samples(self):
+        self.store.cache_pack(
+            self.release_id, self.content_hash, self.pack_path, verified=True
+        )
+        winner_created = self.now + timedelta(seconds=0.1)
+        winner_wall = self.now + timedelta(seconds=0.25)
+        winner = self.store.start_or_resume_attempt(
+            self.ticket,
+            [3, 1, 2],
+            remaining_seconds=1799,
+            created_at=winner_created,
+            last_wall_time=winner_wall,
+        )
+        second = ClientStore(self.database_path)
+        try:
+            replayed = second.start_or_resume_attempt(
+                self.ticket,
+                [3, 1, 2],
+                remaining_seconds=1798,
+                created_at=winner_created + timedelta(seconds=1),
+                last_wall_time=winner_wall + timedelta(seconds=1),
+            )
+        finally:
+            second.close()
+        self.assertEqual(winner, replayed)
+        self.assertEqual(1799, replayed.remaining_seconds)
+        self.assertEqual(winner_wall, replayed.last_wall_time)
+        count = self.store.connection.execute(
+            "SELECT COUNT(*) FROM local_attempts"
+        ).fetchone()[0]
+        self.assertEqual(1, count)
+
     def test_active_attempt_refuses_ambiguous_persisted_state(self):
         self._cache_and_create()
         second_ticket = self.ticket.model_copy(
@@ -316,6 +348,14 @@ class ClientStoreTests(unittest.TestCase):
             )
         with self.assertRaisesRegex(ValueError, "Multiple active attempts"):
             self.store.active_attempt(student_id="S1", release_id=self.release_id)
+        with self.assertRaisesRegex(ValueError, "Multiple active attempts"):
+            self.store.start_or_resume_attempt(
+                self.ticket,
+                [3, 1, 2],
+                remaining_seconds=1800,
+                created_at=self.now,
+                last_wall_time=self.now,
+            )
 
     def test_create_attempt_rejects_any_other_active_client_attempt(self):
         self._cache_and_create()

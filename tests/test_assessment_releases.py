@@ -1490,6 +1490,127 @@ class FacultyReleaseFlowTests(unittest.TestCase):
             "difficulties": ["Easy"],
         }
 
+    def test_html_pair_import_rejects_raw_malformed_explicit_math_before_writes(self):
+        malformed_fragments = (
+            '<code class="math-floor-division">left // right</CODE>',
+            '<code class="math-floor-division">left // right</code x>',
+            '<code class="math-floor-division">left // right</code></code>',
+            '</code><code class="math-floor-division">left // right</code>',
+            '<code class="math-floor-division"/>',
+            '<code><code class="math-floor-division">left // right</code></code>',
+            '<code class="math-floor-division">left // right</span></code>',
+            '&lt;code class="math-floor-division"&gt;left // right&lt;/code&gt;',
+            '<CODE class="math-floor-division">left // right</code>',
+            (
+                '<p>Otherwise valid before.</p><div><code class="math-floor-division">'
+                'left // right</CODE></div><svg viewBox="0 0 1 1"><path d="M0 0"></path></svg>'
+            ),
+        )
+        with app.db() as connection:
+            baseline = tuple(connection.execute(
+                f"SELECT COUNT(*) FROM {table}"
+            ).fetchone()[0] for table in ("question_banks", "questions", "assessment_releases"))
+        pack_dir = app.assessment_packs_dir()
+        baseline_packs = set(pack_dir.glob("*.ksatpack")) if pack_dir.exists() else set()
+
+        for index, fragment in enumerate(malformed_fragments):
+            with self.subTest(fragment=fragment):
+                answer_key = json.dumps({
+                    "bank_name": f"Rejected raw math {index}",
+                    "questions": [{
+                        "key": "bad-q",
+                        "category": "Quantitative Aptitude",
+                        "chapter": "Arithmetic",
+                        "difficulty": "Easy",
+                        "options": {"A": "1", "B": "2", "C": "3", "D": "4"},
+                        "correct_answer": "A",
+                    }],
+                })
+                response = self.client.post(
+                    "/api/admin/question-banks/import",
+                    files={
+                        "html_file": (
+                            f"rejected-{index}.html",
+                            f'<section data-question-key="bad-q">{fragment}</section>',
+                            "text/html",
+                        ),
+                        "answer_key_file": (
+                            f"rejected-{index}.json", answer_key, "application/json"
+                        ),
+                    },
+                )
+                self.assertEqual(400, response.status_code, response.text)
+                with app.db() as connection:
+                    current = tuple(connection.execute(
+                        f"SELECT COUNT(*) FROM {table}"
+                    ).fetchone()[0] for table in (
+                        "question_banks", "questions", "assessment_releases"
+                    ))
+                self.assertEqual(baseline, current)
+                current_packs = set(pack_dir.glob("*.ksatpack")) if pack_dir.exists() else set()
+                self.assertEqual(baseline_packs, current_packs)
+
+    def test_html_pair_import_route_preserves_valid_math_code_svg_and_pairing(self):
+        html_source = (
+            '<section data-question-key="math-one"><p>Compute '
+            '<code class="math-floor-division">total // count</code>.</p>'
+            '<code>ordinary ÷ code</code><svg viewBox="0 0 1 1">'
+            '<path d="M0 0"></path></svg></section>'
+            '<section data-question-key="math-two"><div>'
+            '<code class="math-floor-division">6 // 2</code> then '
+            '<code class="math-floor-division">items // groups</code>.</div></section>'
+        )
+        answer_key = json.dumps({
+            "bank_name": "Valid raw math pairing",
+            "questions": [
+                {
+                    "key": "math-two",
+                    "category": "Quantitative Aptitude",
+                    "chapter": "Arithmetic",
+                    "difficulty": "Medium",
+                    "options": {"A": "5", "B": "6", "C": "7", "D": "8"},
+                    "correct_answer": "D",
+                },
+                {
+                    "key": "math-one",
+                    "category": "Quantitative Aptitude",
+                    "chapter": "Arithmetic",
+                    "difficulty": "Easy",
+                    "options": {"A": "1", "B": "2", "C": "3", "D": "4"},
+                    "correct_answer": "B",
+                },
+            ],
+        })
+        response = self.client.post(
+            "/api/admin/question-banks/import",
+            files={
+                "html_file": ("valid-math.html", html_source, "text/html"),
+                "answer_key_file": ("valid-math.json", answer_key, "application/json"),
+            },
+        )
+        self.assertEqual(200, response.status_code, response.text)
+
+        with app.db() as connection:
+            stored = connection.execute(
+                """SELECT source_key, question_text, question_html, correct_answer
+                   FROM questions WHERE bank_id = ? ORDER BY source_key""",
+                (response.json()["bank_id"],),
+            ).fetchall()
+        self.assertEqual(["math-one", "math-two"], [row["source_key"] for row in stored])
+        self.assertEqual(["B", "D"], [row["correct_answer"] for row in stored])
+        self.assertEqual(
+            "Compute ⌊total ÷ count⌋ . ordinary ÷ code",
+            stored[0]["question_text"],
+        )
+        self.assertIn(
+            '<code class="math-floor-division">⌊total ÷ count⌋</code>',
+            stored[0]["question_html"],
+        )
+        self.assertIn("<code>ordinary ÷ code</code>", stored[0]["question_html"])
+        self.assertIn('<svg viewBox="0 0 1 1">', stored[0]["question_html"])
+        self.assertEqual(2, stored[1]["question_html"].count("math-floor-division"))
+        self.assertNotIn("//", stored[1]["question_html"])
+
     def test_public_release_material_embeds_only_public_media(self):
         with app.db() as connection:
             selected = connection.execute(
@@ -1597,6 +1718,15 @@ class FacultyReleaseFlowTests(unittest.TestCase):
         self.assertEqual(expected_html, packed["question_html"])
         self.assertNotIn("//", packed["question_text"])
         self.assertNotIn("//", packed["question_html"])
+        with app.db() as connection:
+            reloaded = load_release_manifest(
+                connection,
+                release.release_id,
+                pack_dir=app.assessment_packs_dir(),
+                signing_public_key_b64=config.signing_public_key_b64,
+                pack_master_key=config.pack_master_key,
+            )
+        self.assertEqual(release, reloaded)
 
     def test_create_and_legacy_launch_prepare_once_without_resampling_history(self):
         created = self.client.post("/api/admin/tests", json=self.create_payload())

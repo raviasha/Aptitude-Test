@@ -843,6 +843,10 @@ def question_summary(fragment: str) -> str:
 
 
 def parse_question_bank(html_source: str, answer_key_source: str) -> tuple[str, List[Dict[str, Any]]]:
+    try:
+        html_source = canonicalize_math_floor_division_markup(html_source)
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
     parser = QuestionSectionParser()
     parser.feed(html_source)
     parser.close()

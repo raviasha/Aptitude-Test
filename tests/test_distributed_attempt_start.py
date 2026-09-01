@@ -1,5 +1,6 @@
 import base64
 import hashlib
+import io
 import json
 import os
 import tempfile
@@ -7,6 +8,7 @@ import threading
 import unittest
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -15,6 +17,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi.testclient import TestClient
 
 import app
+from ksat.coordinator import routes as coordinator_routes
 from ksat.coordinator.auth import issue_student_access_token
 from ksat.coordinator.releases import prepare_release, unwrap_release_content_key
 from ksat.crypto import generate_ed25519_keypair
@@ -418,6 +421,291 @@ class DistributedAttemptStartTests(unittest.TestCase):
         self.assertEqual(409, escaped.status_code)
         self.assertEqual("content_not_ready", escaped.json()["detail"]["code"])
 
+    def test_pack_304_does_not_open_or_validate_content(self):
+        path = f"/api/client/v1/releases/{self.release_id}/pack"
+        with (
+            patch(
+                "ksat.coordinator.routes._pack_path",
+                side_effect=AssertionError("304 must not resolve or open the pack"),
+            ),
+            patch(
+                "ksat.coordinator.routes.load_release_manifest",
+                side_effect=AssertionError("304 must not validate the pack"),
+            ),
+        ):
+            cached = self.device_get(
+                path, **{"If-None-Match": f'W/"other", "{self.content_hash}"'}
+            )
+        self.assertEqual(304, cached.status_code, cached.text)
+        self.assertEqual(b"", cached.content)
+        self.assertEqual(f'"{self.content_hash}"', cached.headers["etag"])
+        self.assertEqual("private, immutable", cached.headers["cache-control"])
+
+    def test_pack_confines_database_path_before_task4_loader(self):
+        with app.db() as connection:
+            connection.execute(
+                """UPDATE assessment_releases SET content_pack_filename = '../escape.ksatpack'
+                   WHERE release_id = ?""",
+                (self.release_id,),
+            )
+        with patch(
+            "ksat.coordinator.routes.load_release_manifest",
+            side_effect=AssertionError("unsafe path reached the Task 4 loader"),
+        ) as loader:
+            response = self.device_get(f"/api/client/v1/releases/{self.release_id}/pack")
+        self.assertEqual(409, response.status_code, response.text)
+        self.assertEqual("content_not_ready", response.json()["detail"]["code"])
+        loader.assert_not_called()
+
+    def test_pack_rejects_symlink_escape_before_task4_loader(self):
+        pack_path = app.assessment_packs_dir() / f"{self.release_id}.ksatpack"
+        escaped_path = app.DATA_DIR / "outside-release-root.ksatpack"
+        original = pack_path.read_bytes()
+        escaped_path.write_bytes(original)
+        pack_path.unlink()
+        try:
+            pack_path.symlink_to(escaped_path)
+            resolve_context = nullcontext()
+        except OSError:
+            pack_path.write_bytes(original)
+            real_resolve = Path.resolve
+            root = app.assessment_packs_dir().resolve()
+
+            def escaped_resolution(path, strict=False):
+                if path == root / pack_path.name:
+                    return escaped_path
+                return real_resolve(path, strict=strict)
+
+            resolve_context = patch.object(
+                Path, "resolve", autospec=True, side_effect=escaped_resolution
+            )
+        with (
+            resolve_context,
+            patch(
+                "ksat.coordinator.routes.load_release_manifest",
+                side_effect=AssertionError("symlink escape reached the Task 4 loader"),
+            ) as loader,
+        ):
+            response = self.device_get(
+                f"/api/client/v1/releases/{self.release_id}/pack"
+            )
+        self.assertEqual(409, response.status_code, response.text)
+        self.assertEqual("content_not_ready", response.json()["detail"]["code"])
+        loader.assert_not_called()
+
+    def test_pack_streams_verified_snapshot_after_source_replacement(self):
+        path = f"/api/client/v1/releases/{self.release_id}/pack"
+        pack_path = app.assessment_packs_dir() / f"{self.release_id}.ksatpack"
+        expected = pack_path.read_bytes()
+        unchecked_replacement = b"unchecked replacement bytes"
+        real_loader = coordinator_routes.load_release_manifest
+
+        def validate_then_replace(*args, **kwargs):
+            summary = real_loader(*args, **kwargs)
+            pack_path.write_bytes(unchecked_replacement)
+            return summary
+
+        with patch(
+            "ksat.coordinator.routes.load_release_manifest",
+            side_effect=validate_then_replace,
+        ):
+            response = self.device_get(path)
+        self.assertEqual(200, response.status_code, response.text)
+        self.assertEqual(expected, response.content)
+        self.assertEqual(self.content_hash, hashlib.sha256(response.content).hexdigest())
+        self.assertNotEqual(unchecked_replacement, response.content)
+
+    def test_concurrent_pack_requests_stream_their_verified_snapshots(self):
+        path = f"/api/client/v1/releases/{self.release_id}/pack"
+        pack_path = app.assessment_packs_dir() / f"{self.release_id}.ksatpack"
+        expected = pack_path.read_bytes()
+        barrier = threading.Barrier(2)
+        real_loader = coordinator_routes.load_release_manifest
+
+        def validate_then_replace(*args, **kwargs):
+            summary = real_loader(*args, **kwargs)
+            position = barrier.wait(timeout=10)
+            if position == 0:
+                pack_path.write_bytes(b"unchecked concurrent replacement")
+            barrier.wait(timeout=10)
+            return summary
+
+        def fetch(label):
+            return self.client.get(path, headers=self.headers("GET", path, label))
+
+        with (
+            patch(
+                "ksat.coordinator.routes.load_release_manifest",
+                side_effect=validate_then_replace,
+            ),
+            ThreadPoolExecutor(max_workers=2) as executor,
+        ):
+            responses = [
+                future.result(timeout=20)
+                for future in (
+                    executor.submit(fetch, "device-a"),
+                    executor.submit(fetch, "device-b"),
+                )
+            ]
+        self.assertEqual([200, 200], [response.status_code for response in responses])
+        self.assertEqual([expected, expected], [response.content for response in responses])
+        self.assertEqual(
+            [self.content_hash, self.content_hash],
+            [hashlib.sha256(response.content).hexdigest() for response in responses],
+        )
+
+    def test_pack_rejects_a_truncated_snapshot_copy(self):
+        def copy_only_prefix(source, snapshot):
+            copied = source.read(16)
+            snapshot.write(copied)
+            return hashlib.sha256(copied).hexdigest(), len(copied)
+
+        with patch(
+            "ksat.coordinator.routes._copy_pack_to_snapshot",
+            side_effect=copy_only_prefix,
+            create=True,
+        ):
+            response = self.device_get(f"/api/client/v1/releases/{self.release_id}/pack")
+        self.assertEqual(409, response.status_code, response.text)
+        self.assertEqual("content_not_ready", response.json()["detail"]["code"])
+
+    def test_pack_rejects_source_mutation_during_snapshot_copy(self):
+        pack_path = app.assessment_packs_dir() / f"{self.release_id}.ksatpack"
+        original = pack_path.read_bytes()
+
+        class MutatingSource(io.BytesIO):
+            def __init__(self, content):
+                super().__init__(content)
+                self.read_count = 0
+
+            def read(self, size=-1):
+                self.read_count += 1
+                if self.read_count == 2:
+                    position = self.tell()
+                    changed = bytearray(self.getvalue())
+                    changed[position] ^= 1
+                    self.seek(0)
+                    self.write(changed)
+                    self.seek(position)
+                return super().read(size)
+
+        with (
+            patch(
+                "ksat.coordinator.routes._open_pack_source",
+                return_value=MutatingSource(original),
+            ),
+            patch("ksat.coordinator.routes._PACK_COPY_CHUNK_BYTES", 32),
+        ):
+            response = self.device_get(f"/api/client/v1/releases/{self.release_id}/pack")
+        self.assertEqual(409, response.status_code, response.text)
+        self.assertEqual("content_not_ready", response.json()["detail"]["code"])
+
+    def test_pack_snapshot_handle_closes_on_success_and_validation_error(self):
+        created_snapshots = []
+
+        def new_snapshot():
+            snapshot = tempfile.SpooledTemporaryFile(max_size=1, mode="w+b")
+            created_snapshots.append(snapshot)
+            return snapshot
+
+        with patch(
+            "ksat.coordinator.routes._new_pack_snapshot",
+            side_effect=new_snapshot,
+            create=True,
+        ):
+            success = self.device_get(f"/api/client/v1/releases/{self.release_id}/pack")
+        self.assertEqual(200, success.status_code, success.text)
+        self.assertTrue(created_snapshots)
+        self.assertTrue(all(snapshot.closed for snapshot in created_snapshots))
+
+        created_snapshots.clear()
+        with (
+            patch(
+                "ksat.coordinator.routes._new_pack_snapshot",
+                side_effect=new_snapshot,
+                create=True,
+            ),
+            patch(
+                "ksat.coordinator.routes.load_release_manifest",
+                side_effect=ValueError("invalid snapshot"),
+            ),
+        ):
+            rejected = self.device_get(f"/api/client/v1/releases/{self.release_id}/pack")
+        self.assertEqual(409, rejected.status_code, rejected.text)
+        self.assertTrue(created_snapshots)
+        self.assertTrue(all(snapshot.closed for snapshot in created_snapshots))
+
+        interrupted = tempfile.SpooledTemporaryFile(max_size=1, mode="w+b")
+        interrupted.write(b"two chunks")
+        interrupted.seek(0)
+        with patch("ksat.coordinator.routes._PACK_COPY_CHUNK_BYTES", 3):
+            stream = coordinator_routes._stream_pack_snapshot(interrupted)
+            self.assertEqual(b"two", next(stream))
+            stream.close()
+        self.assertTrue(interrupted.closed)
+
+    def test_pack_validation_never_reads_the_entire_snapshot_into_memory(self):
+        snapshots = []
+
+        class BoundedReadSnapshot:
+            def __init__(self):
+                self.wrapped = tempfile.SpooledTemporaryFile(max_size=1, mode="w+b")
+
+            def read(self, size=-1):
+                if size is None or size < 0:
+                    raise AssertionError("pack validation attempted an unbounded read")
+                return self.wrapped.read(size)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                self.close()
+
+            def __getattr__(self, name):
+                return getattr(self.wrapped, name)
+
+        def new_snapshot():
+            snapshot = BoundedReadSnapshot()
+            snapshots.append(snapshot)
+            return snapshot
+
+        with patch(
+            "ksat.coordinator.routes._new_pack_snapshot",
+            side_effect=new_snapshot,
+        ):
+            response = self.device_get(f"/api/client/v1/releases/{self.release_id}/pack")
+        self.assertEqual(200, response.status_code, response.text)
+        self.assertEqual(self.content_hash, hashlib.sha256(response.content).hexdigest())
+        self.assertTrue(snapshots)
+        self.assertTrue(all(snapshot.closed for snapshot in snapshots))
+
+    def test_pack_internal_error_returns_safe_500_and_closes_snapshot(self):
+        snapshots = []
+
+        def new_snapshot():
+            snapshot = tempfile.SpooledTemporaryFile(max_size=1, mode="w+b")
+            snapshots.append(snapshot)
+            return snapshot
+
+        path = f"/api/client/v1/releases/{self.release_id}/pack"
+        with (
+            TestClient(app.app, raise_server_exceptions=False) as safe_client,
+            patch(
+                "ksat.coordinator.routes._new_pack_snapshot",
+                side_effect=new_snapshot,
+            ),
+            patch(
+                "ksat.coordinator.routes._copy_pack_to_snapshot",
+                side_effect=RuntimeError("unexpected local I/O failure with secret marker"),
+            ),
+        ):
+            response = safe_client.get(path, headers=self.headers("GET", path, "device-a"))
+        self.assertEqual(500, response.status_code)
+        self.assertNotIn("secret marker", response.text)
+        self.assertTrue(snapshots)
+        self.assertTrue(all(snapshot.closed for snapshot in snapshots))
+
     def test_concurrent_duplicate_starts_store_one_attempt_one_ticket_and_no_responses(self):
         from ksat.coordinator.attempts import issue_attempt_ticket
 
@@ -461,6 +749,72 @@ class DistributedAttemptStartTests(unittest.TestCase):
                 "SELECT expires_at FROM attempts WHERE release_id = ?", (self.release_id,)
             ).fetchone()[0]
         self.assertEqual(deadline.replace("Z", "+00:00"), stored)
+
+    def test_extend_and_close_preserve_issued_tickets_but_control_new_starts(self):
+        first = self.start("S100", "device-a", at="2026-08-31T09:02:00+00:00")
+        second = self.start("S101", "device-b", at="2026-08-31T09:07:00+00:00")
+        self.assertEqual(200, first.status_code, first.text)
+        self.assertEqual(200, second.status_code, second.text)
+        with app.db() as connection:
+            before = {
+                row["attempt_id"]: (
+                    row["started_at"], row["expires_at"], row["ticket_json"]
+                )
+                for row in connection.execute(
+                    """SELECT attempt_id, started_at, expires_at, ticket_json
+                       FROM attempts WHERE release_id = ? ORDER BY attempt_id""",
+                    (self.release_id,),
+                ).fetchall()
+            }
+
+        with patch("app.require_user", return_value={"role": "admin"}):
+            extended = self.client.post(
+                f"/api/admin/tests/{self.test_id}/extend", json={"minutes": 5}
+            )
+        self.assertEqual(200, extended.status_code, extended.text)
+        self.assertEqual(0, extended.json()["attempts_extended"])
+        after_extension = self.start(
+            "S102", "device-c", at="2026-08-31T09:12:00+00:00"
+        )
+        self.assertEqual(200, after_extension.status_code, after_extension.text)
+        self.assertEqual(
+            "2026-08-31T09:42:00Z",
+            after_extension.json()["ticket"]["ticket"]["deadline"],
+        )
+
+        with patch("app.require_user", return_value={"role": "admin"}):
+            closed = self.client.post(f"/api/admin/tests/{self.test_id}/close")
+        self.assertEqual(200, closed.status_code, closed.text)
+        rejected = self.start("S103", "device-d", at="2026-08-31T09:13:00+00:00")
+        self.assertEqual(409, rejected.status_code, rejected.text)
+        self.assertEqual("assessment_not_launched", rejected.json()["detail"]["code"])
+
+        resumed_first = self.start(
+            "S100", "device-a", at="2026-08-31T09:14:00+00:00"
+        )
+        resumed_second = self.start(
+            "S101", "device-b", at="2026-08-31T09:14:00+00:00"
+        )
+        self.assertEqual(first.json()["ticket"], resumed_first.json()["ticket"])
+        self.assertEqual(second.json()["ticket"], resumed_second.json()["ticket"])
+        with app.db() as connection:
+            after = {
+                row["attempt_id"]: (
+                    row["started_at"], row["expires_at"], row["ticket_json"]
+                )
+                for row in connection.execute(
+                    """SELECT attempt_id, started_at, expires_at, ticket_json
+                       FROM attempts WHERE release_id = ? AND student_id IN ('S100', 'S101')
+                       ORDER BY attempt_id""",
+                    (self.release_id,),
+                ).fetchall()
+            }
+            release_close = connection.execute(
+                "SELECT launch_closes_at FROM assessment_releases WHERE release_id = ?",
+                (self.release_id,),
+            ).fetchone()["launch_closes_at"]
+        self.assertEqual(before, after)
+        self.assertEqual("2026-08-31T09:15:00+00:00", release_close)
 
     def test_faculty_launch_sets_exact_ten_minute_window_without_creating_attempt_deadlines(self):
         self.set_launch_state(False)

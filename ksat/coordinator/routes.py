@@ -1,14 +1,18 @@
 """Installed-client coordinator API routes."""
 
 import hashlib
+import os
+import re
+import stat
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO, Iterator
 
 import bcrypt
 from fastapi import APIRouter, HTTPException, Request, Response
-from fastapi.responses import FileResponse
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict
 
 from ksat.coordinator.auth import (
@@ -49,6 +53,11 @@ class CoordinatorConfig:
 
 
 router = APIRouter(prefix="/api/client/v1")
+
+_CONTENT_HASH = re.compile(r"[0-9a-f]{64}\Z")
+_PACK_COPY_CHUNK_BYTES = 1024 * 1024
+_PACK_SPOOL_MEMORY_BYTES = 1024 * 1024
+_MAX_PACK_SNAPSHOT_BYTES = 64 * 1024 * 1024
 
 
 class AttemptStartRequest(BaseModel):
@@ -102,14 +111,123 @@ def _verified_student(request: Request, config: CoordinatorConfig, device_id: st
 
 
 def _pack_path(config: CoordinatorConfig, filename: str) -> Path:
-    root = (config.data_dir / "Assessment Releases").resolve()
+    if not isinstance(filename, str) or Path(filename).name != filename:
+        raise AttemptProblem("content_not_ready", "Assessment content is not ready.")
     try:
+        root = (config.data_dir / "Assessment Releases").resolve(strict=True)
         candidate = (root / filename).resolve(strict=True)
-    except OSError as error:
+    except (OSError, RuntimeError) as error:
         raise AttemptProblem("content_not_ready", "Assessment content is not ready.") from error
-    if Path(filename).name != filename or not candidate.is_relative_to(root) or not candidate.is_file():
+    if not candidate.is_relative_to(root) or not candidate.is_file():
         raise AttemptProblem("content_not_ready", "Assessment content is not ready.")
     return candidate
+
+
+def _file_identity(value: os.stat_result) -> tuple[int, int]:
+    return value.st_dev, value.st_ino
+
+
+def _is_reparse_point(value: os.stat_result) -> bool:
+    attribute = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    return bool(getattr(value, "st_file_attributes", 0) & attribute)
+
+
+def _open_pack_source(path: Path) -> BinaryIO:
+    source: BinaryIO | None = None
+    try:
+        before = os.stat(path, follow_symlinks=False)
+        if stat.S_ISLNK(before.st_mode) or _is_reparse_point(before):
+            raise OSError("Assessment pack path is not a regular file.")
+        source = path.open("rb")
+        opened = os.fstat(source.fileno())
+        after = os.stat(path, follow_symlinks=False)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or stat.S_ISLNK(after.st_mode)
+            or _is_reparse_point(after)
+            or _file_identity(before) != _file_identity(opened)
+            or _file_identity(after) != _file_identity(opened)
+        ):
+            raise OSError("Assessment pack changed while it was opened.")
+        return source
+    except Exception:
+        if source is not None:
+            source.close()
+        raise
+
+
+def _new_pack_snapshot() -> BinaryIO:
+    return tempfile.SpooledTemporaryFile(
+        max_size=_PACK_SPOOL_MEMORY_BYTES,
+        mode="w+b",
+    )
+
+
+def _copy_pack_to_snapshot(source: BinaryIO, snapshot: BinaryIO) -> tuple[str, int]:
+    digest = hashlib.sha256()
+    byte_size = 0
+    while True:
+        chunk = source.read(_PACK_COPY_CHUNK_BYTES)
+        if not chunk:
+            break
+        byte_size += len(chunk)
+        if byte_size > _MAX_PACK_SNAPSHOT_BYTES:
+            raise AttemptProblem("content_not_ready", "Assessment content is not ready.")
+        digest.update(chunk)
+        snapshot.write(chunk)
+    return digest.hexdigest(), byte_size
+
+
+def _verified_pack_snapshot(
+    connection,
+    config: CoordinatorConfig,
+    *,
+    release_id: str,
+    filename: str,
+    expected_hash: str,
+) -> tuple[BinaryIO, int]:
+    snapshot: BinaryIO | None = None
+    try:
+        path = _pack_path(config, filename)
+        snapshot = _new_pack_snapshot()
+        with _open_pack_source(path) as source:
+            actual_hash, byte_size = _copy_pack_to_snapshot(source, snapshot)
+        if actual_hash != expected_hash:
+            raise AttemptProblem("content_not_ready", "Assessment content is not ready.")
+        load_release_manifest(
+            connection,
+            release_id,
+            signing_public_key_b64=config.signing_public_key_b64,
+            pack_master_key=config.pack_master_key,
+            encrypted_pack_file=snapshot,
+        )
+        snapshot.seek(0)
+        return snapshot, byte_size
+    except AttemptProblem:
+        if snapshot is not None:
+            snapshot.close()
+        raise
+    except (KeyError, OSError, ValueError) as error:
+        if snapshot is not None:
+            snapshot.close()
+        raise AttemptProblem(
+            "content_not_ready", "Assessment content is not ready."
+        ) from error
+    except Exception:
+        if snapshot is not None:
+            snapshot.close()
+        raise
+
+
+def _stream_pack_snapshot(snapshot: BinaryIO) -> Iterator[bytes]:
+    try:
+        while True:
+            chunk = snapshot.read(_PACK_COPY_CHUNK_BYTES)
+            if not chunk:
+                break
+            yield chunk
+    finally:
+        snapshot.close()
 
 
 def _etag_matches(header_value: str, content_hash: str) -> bool:
@@ -220,19 +338,15 @@ async def releases_catalog(request: Request) -> dict[str, Any]:
         await _verified_device(request, connection)
         items = list_prefetchable_releases(connection)
         for item in items:
-            try:
-                load_release_manifest(
-                    connection,
-                    item["release_id"],
-                    pack_dir=config.data_dir / "Assessment Releases",
-                    signing_public_key_b64=config.signing_public_key_b64,
-                    pack_master_key=config.pack_master_key,
-                )
-                item["byte_size"] = _pack_path(config, item["filename"]).stat().st_size
-            except (KeyError, OSError, ValueError) as error:
-                raise AttemptProblem(
-                    "content_not_ready", "Assessment content is not ready."
-                ) from error
+            snapshot, byte_size = _verified_pack_snapshot(
+                connection,
+                config,
+                release_id=item["release_id"],
+                filename=item["filename"],
+                expected_hash=item["content_hash"],
+            )
+            snapshot.close()
+            item["byte_size"] = byte_size
         return {"releases": items}
     except AuthenticationProblem as error:
         _raise_http(error)
@@ -249,30 +363,40 @@ async def release_pack(release_id: str, request: Request) -> Response:
     try:
         await _verified_device(request, connection)
         row = connection.execute(
-            """SELECT content_pack_filename, content_hash
+            """SELECT content_pack_filename, content_hash, state
                FROM assessment_releases WHERE release_id = ?""",
             (release_id,),
         ).fetchone()
-        if row is None:
+        if (
+            row is None
+            or row["state"] not in {"prepared", "launched"}
+            or not isinstance(row["content_hash"], str)
+            or not _CONTENT_HASH.fullmatch(row["content_hash"])
+        ):
             raise AttemptProblem("content_not_ready", "Assessment content is not ready.")
-        try:
-            load_release_manifest(
-                connection,
-                release_id,
-                pack_dir=config.data_dir / "Assessment Releases",
-                signing_public_key_b64=config.signing_public_key_b64,
-                pack_master_key=config.pack_master_key,
-            )
-            path = _pack_path(config, row["content_pack_filename"])
-        except (KeyError, OSError, ValueError) as error:
-            raise AttemptProblem("content_not_ready", "Assessment content is not ready.") from error
         headers = {
             "ETag": f'"{row["content_hash"]}"',
             "Cache-Control": "private, immutable",
         }
         if _etag_matches(request.headers.get("If-None-Match", ""), row["content_hash"]):
             return Response(status_code=304, headers=headers)
-        return FileResponse(path, media_type="application/octet-stream", headers=headers)
+        snapshot, byte_size = _verified_pack_snapshot(
+            connection,
+            config,
+            release_id=release_id,
+            filename=row["content_pack_filename"],
+            expected_hash=row["content_hash"],
+        )
+        headers["Content-Length"] = str(byte_size)
+        try:
+            return StreamingResponse(
+                _stream_pack_snapshot(snapshot),
+                media_type="application/octet-stream",
+                headers=headers,
+            )
+        except Exception:
+            snapshot.close()
+            raise
     except AuthenticationProblem as error:
         _raise_http(error)
     except AttemptProblem as error:

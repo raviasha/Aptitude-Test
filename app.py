@@ -2718,17 +2718,50 @@ def close_test(test_id: int, request: Request) -> Dict[str, bool]:
 def extend_test_duration(test_id: int, payload: DurationExtensionPayload, request: Request) -> Dict[str, Any]:
     require_user(request, "admin")
     with db() as connection:
-        test = connection.execute("SELECT launched, mode, launch_expires_at FROM tests WHERE test_id = ?", (test_id,)).fetchone()
+        test = connection.execute(
+            """SELECT launched, mode, release_id, launch_expires_at, launch_closes_at
+               FROM tests WHERE test_id = ?""",
+            (test_id,),
+        ).fetchone()
         if not test or test["mode"] != "faculty":
             raise HTTPException(404, "Faculty assessment not found.")
         if not test["launched"]:
             raise HTTPException(409, "Launch the assessment before extending its duration.")
-        deadline = parse_timestamp(test["launch_expires_at"]) or datetime.now(timezone.utc)
+        deadline = parse_timestamp(
+            test["launch_closes_at"] or test["launch_expires_at"]
+        ) or datetime.now(timezone.utc)
         extended_deadline = deadline + timedelta(minutes=payload.minutes)
-        connection.execute("UPDATE tests SET launch_expires_at = ? WHERE test_id = ?", (extended_deadline.isoformat(timespec="seconds"), test_id))
-        attempts = connection.execute("SELECT attempt_id FROM attempts WHERE test_id = ? AND status = 'in_progress'", (test_id,)).fetchall()
-        for attempt in attempts:
-            connection.execute("UPDATE attempts SET expires_at = ? WHERE attempt_id = ?", (extended_deadline.isoformat(timespec="seconds"), attempt["attempt_id"]))
+        deadline_iso = extended_deadline.isoformat(timespec="seconds")
+        if test["release_id"]:
+            connection.execute(
+                """UPDATE tests
+                   SET launch_expires_at = ?, launch_closes_at = ?
+                   WHERE test_id = ?""",
+                (deadline_iso, deadline_iso, test_id),
+            )
+            updated_release = connection.execute(
+                """UPDATE assessment_releases SET launch_closes_at = ?
+                   WHERE release_id = ? AND state = 'launched'""",
+                (deadline_iso, test["release_id"]),
+            )
+            if updated_release.rowcount != 1:
+                raise HTTPException(409, "Assessment release is not ready to extend.")
+            attempts = []
+        else:
+            connection.execute(
+                "UPDATE tests SET launch_expires_at = ? WHERE test_id = ?",
+                (deadline_iso, test_id),
+            )
+            attempts = connection.execute(
+                """SELECT attempt_id FROM attempts
+                   WHERE test_id = ? AND status = 'in_progress'""",
+                (test_id,),
+            ).fetchall()
+            for attempt in attempts:
+                connection.execute(
+                    "UPDATE attempts SET expires_at = ? WHERE attempt_id = ?",
+                    (deadline_iso, attempt["attempt_id"]),
+                )
     return {"extended": True, "minutes": payload.minutes, "attempts_extended": len(attempts)}
 
 

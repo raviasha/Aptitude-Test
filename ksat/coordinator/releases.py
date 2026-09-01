@@ -17,10 +17,12 @@ import uuid
 import zipfile
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, BinaryIO, Mapping, Sequence
 from urllib.parse import unquote
 
+from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 from ksat.crypto import decrypt_pack, encrypt_pack, sha256_hex, sign_json, verify_json
@@ -39,6 +41,10 @@ from ksat.protocol import (
 
 
 _FIXED_ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
+_PACK_NONCE_BYTES = 12
+_PACK_TAG_BYTES = 16
+_PACK_VALIDATION_CHUNK_BYTES = 1024 * 1024
+_PACK_VALIDATION_SPOOL_MEMORY_BYTES = 1024 * 1024
 _SAFE_ASSET_NAME = re.compile(r"assets/[0-9a-f]{64}\.(?:png|jpe?g|webp|svg)\Z")
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _PRIVATE_MARKERS = ("answer", "correct", "feedback", "score", "solution", "explanation")
@@ -563,11 +569,66 @@ def _load_pack_json(content: bytes, label: str) -> Any:
     )
 
 
-def _inspect_pack(
-    plaintext: bytes, manifest: ReleaseManifest, canonical_question_ids: list[int]
-) -> None:
+def _stream_sha256(stream: BinaryIO) -> str:
+    digest = hashlib.sha256()
+    stream.seek(0)
+    while True:
+        chunk = stream.read(_PACK_VALIDATION_CHUNK_BYTES)
+        if not chunk:
+            break
+        digest.update(chunk)
+    stream.seek(0)
+    return digest.hexdigest()
+
+
+def _decrypt_pack_stream(
+    key: bytes, release_id: str, encrypted: BinaryIO
+) -> BinaryIO:
+    key = _require_key(key, "Release content key")
+    plaintext = tempfile.SpooledTemporaryFile(
+        max_size=_PACK_VALIDATION_SPOOL_MEMORY_BYTES,
+        mode="w+b",
+    )
     try:
-        with zipfile.ZipFile(io.BytesIO(plaintext)) as archive:
+        encrypted.seek(0, os.SEEK_END)
+        envelope_size = encrypted.tell()
+        if envelope_size <= _PACK_NONCE_BYTES + _PACK_TAG_BYTES:
+            raise ValueError("Stored assessment pack encryption is invalid.")
+        encrypted.seek(0)
+        nonce = encrypted.read(_PACK_NONCE_BYTES)
+        encrypted.seek(-_PACK_TAG_BYTES, os.SEEK_END)
+        tag = encrypted.read(_PACK_TAG_BYTES)
+        if len(nonce) != _PACK_NONCE_BYTES or len(tag) != _PACK_TAG_BYTES:
+            raise ValueError("Stored assessment pack encryption is invalid.")
+
+        decryptor = Cipher(algorithms.AES(key), modes.GCM(nonce, tag)).decryptor()
+        decryptor.authenticate_additional_data(release_id.encode("utf-8"))
+        encrypted.seek(_PACK_NONCE_BYTES)
+        remaining = envelope_size - _PACK_NONCE_BYTES - _PACK_TAG_BYTES
+        while remaining:
+            chunk = encrypted.read(min(_PACK_VALIDATION_CHUNK_BYTES, remaining))
+            if not chunk:
+                raise ValueError("Stored assessment pack encryption is invalid.")
+            remaining -= len(chunk)
+            plaintext.write(decryptor.update(chunk))
+        plaintext.write(decryptor.finalize())
+        plaintext.seek(0)
+        encrypted.seek(0)
+        return plaintext
+    except (InvalidTag, OSError, ValueError) as error:
+        plaintext.close()
+        raise ValueError("Stored assessment pack encryption is invalid.") from error
+
+
+def _inspect_pack(
+    plaintext: bytes | BinaryIO,
+    manifest: ReleaseManifest,
+    canonical_question_ids: list[int],
+) -> None:
+    source = io.BytesIO(plaintext) if isinstance(plaintext, bytes) else plaintext
+    source.seek(0)
+    try:
+        with zipfile.ZipFile(source) as archive:
             infos = archive.infolist()
             names = [info.filename for info in infos]
             expected_names = ["manifest.json", "questions.json", *manifest.asset_names]
@@ -579,9 +640,10 @@ def _inspect_pack(
             packed_questions_json = archive.read("questions.json")
             packed_questions = _load_pack_json(packed_questions_json, "questions")
             for asset_name in manifest.asset_names:
-                content = archive.read(asset_name)
                 digest = asset_name.split("/", 1)[1].split(".", 1)[0]
-                if hashlib.sha256(content).hexdigest() != digest:
+                with archive.open(asset_name) as asset:
+                    actual_digest = hashlib.file_digest(asset, "sha256").hexdigest()
+                if actual_digest != digest:
                     raise ValueError("Stored assessment pack asset hash is invalid.")
     except (KeyError, zipfile.BadZipFile, OSError) as error:
         raise ValueError("Stored assessment pack is invalid.") from error
@@ -607,6 +669,7 @@ def _summary_from_row(
     pack_dir: Path | None = None,
     signing_public_key_b64: str | None = None,
     pack_master_key: bytes | None = None,
+    encrypted_pack_file: BinaryIO | None = None,
 ) -> ReleaseSummary:
     _require_stored_release_id(expected_release_id)
     if row["release_id"] != expected_release_id or row["state"] not in {"prepared", "launched"}:
@@ -663,22 +726,46 @@ def _summary_from_row(
     ):
         raise ValueError("Stored assessment release manifest/linkage is inconsistent.")
 
-    verification_values = (pack_dir, signing_public_key_b64, pack_master_key)
-    if any(value is not None for value in verification_values) and not all(
-        value is not None for value in verification_values
+    content_source_count = sum(
+        value is not None for value in (pack_dir, encrypted_pack_file)
+    )
+    verification_requested = any(
+        value is not None
+        for value in (
+            pack_dir,
+            signing_public_key_b64,
+            pack_master_key,
+            encrypted_pack_file,
+        )
+    )
+    if verification_requested and (
+        content_source_count != 1
+        or signing_public_key_b64 is None
+        or pack_master_key is None
     ):
         raise ValueError("Complete release verification inputs are required.")
-    if pack_dir is not None and signing_public_key_b64 is not None and pack_master_key is not None:
+    if verification_requested:
         _strict_base64(
             signing_public_key_b64, length=32, message="Stored assessment signing public key is invalid."
         )
         pack_master_key = _require_key(pack_master_key, "Pack master key")
-        pack_path = Path(pack_dir) / row["content_pack_filename"]
+        owned_encrypted_file: BinaryIO | None = None
         try:
-            encrypted = pack_path.read_bytes()
-        except OSError as error:
+            if encrypted_pack_file is None:
+                pack_root = Path(pack_dir).resolve(strict=True)
+                pack_path = (pack_root / row["content_pack_filename"]).resolve(strict=True)
+                if not pack_path.is_relative_to(pack_root) or not pack_path.is_file():
+                    raise OSError("Stored assessment pack path is invalid.")
+                owned_encrypted_file = pack_path.open("rb")
+                encrypted_pack_file = owned_encrypted_file
+            actual_hash = _stream_sha256(encrypted_pack_file)
+        except (OSError, RuntimeError, ValueError) as error:
+            if owned_encrypted_file is not None:
+                owned_encrypted_file.close()
             raise ValueError("Stored assessment pack is missing.") from error
-        if sha256_hex(encrypted) != row["content_hash"]:
+        if actual_hash != row["content_hash"]:
+            if owned_encrypted_file is not None:
+                owned_encrypted_file.close()
             raise ValueError("Stored assessment pack hash is invalid.")
         signature_value = {
             "release_id": expected_release_id,
@@ -688,15 +775,28 @@ def _summary_from_row(
         try:
             verify_json(signing_public_key_b64, signature_value, row["content_signature_b64"])
         except ValueError as error:
+            if owned_encrypted_file is not None:
+                owned_encrypted_file.close()
             raise ValueError("Stored assessment release signature is invalid.") from error
-        content_key = unwrap_release_content_key(
-            pack_master_key, expected_release_id, row["wrapped_content_key_b64"]
-        )
         try:
-            plaintext = decrypt_pack(content_key, expected_release_id, encrypted)
-        except ValueError as error:
-            raise ValueError("Stored assessment pack encryption is invalid.") from error
-        _inspect_pack(plaintext, manifest, question_ids)
+            content_key = unwrap_release_content_key(
+                pack_master_key, expected_release_id, row["wrapped_content_key_b64"]
+            )
+        except ValueError:
+            if owned_encrypted_file is not None:
+                owned_encrypted_file.close()
+            raise
+        plaintext_file: BinaryIO | None = None
+        try:
+            plaintext_file = _decrypt_pack_stream(
+                content_key, expected_release_id, encrypted_pack_file
+            )
+            _inspect_pack(plaintext_file, manifest, question_ids)
+        finally:
+            if plaintext_file is not None:
+                plaintext_file.close()
+            if owned_encrypted_file is not None:
+                owned_encrypted_file.close()
     return ReleaseSummary(
         release_id=row["release_id"],
         test_id=row["test_id"],
@@ -717,6 +817,7 @@ def load_release_manifest(
     pack_dir: Path | None = None,
     signing_public_key_b64: str | None = None,
     pack_master_key: bytes | None = None,
+    encrypted_pack_file: BinaryIO | None = None,
 ) -> ReleaseSummary:
     _require_stored_release_id(release_id)
     row = _release_row(connection, release_id=release_id)
@@ -729,6 +830,7 @@ def load_release_manifest(
         pack_dir=pack_dir,
         signing_public_key_b64=signing_public_key_b64,
         pack_master_key=pack_master_key,
+        encrypted_pack_file=encrypted_pack_file,
     )
 
 

@@ -21,6 +21,7 @@ from starlette.requests import ClientDisconnect, Request
 import app
 from ksat.coordinator import routes as coordinator_routes
 from ksat.coordinator.auth import issue_student_access_token
+from ksat.coordinator.attempts import AttemptProblem, issue_attempt_ticket
 from ksat.coordinator.releases import prepare_release, unwrap_release_content_key
 from ksat.crypto import generate_ed25519_keypair
 from ksat.protocol import PublicQuestion, device_request_bytes
@@ -600,6 +601,112 @@ class DistributedAttemptStartTests(unittest.TestCase):
         self.assertEqual("content_not_ready", response.json()["detail"]["code"])
         with app.db() as connection:
             self.assertEqual(0, connection.execute("SELECT COUNT(*) FROM attempts").fetchone()[0])
+
+    def test_quarantined_new_start_preempts_pack_access_without_mutation(self):
+        with app.db() as connection:
+            connection.execute(
+                "UPDATE assessment_releases SET state='answer_state_invalid' WHERE release_id=?",
+                (self.release_id,),
+            )
+
+        path = "/api/client/v1/attempts/start"
+        body = _json_bytes({
+            "release_id": self.release_id,
+            "confirmed_content_hash": self.content_hash,
+        })
+        unauthenticated = self.client.post(
+            path,
+            content=body,
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(403, unauthenticated.status_code, unauthenticated.text)
+        self.assertEqual("device_inactive", unauthenticated.json()["detail"]["code"])
+        device_only = self.client.post(
+            path,
+            content=body,
+            headers={
+                "Content-Type": "application/json",
+                **self.headers("POST", path, "device-a", body),
+            },
+        )
+        self.assertEqual(401, device_only.status_code, device_only.text)
+        self.assertEqual(
+            "invalid_client_session", device_only.json()["detail"]["code"]
+        )
+
+        with (
+            patch(
+                "ksat.coordinator.routes._assert_encrypted_pack_ready",
+                wraps=coordinator_routes._assert_encrypted_pack_ready,
+            ) as pack_validator,
+            patch(
+                "ksat.coordinator.routes._pack_path",
+                wraps=coordinator_routes._pack_path,
+            ) as pack_path,
+        ):
+            response = self.start(
+                "S100", "device-a", at="2026-08-31T09:02:00+00:00"
+            )
+
+        self.assertEqual(409, response.status_code, response.text)
+        self.assertEqual(
+            "release_answer_state_invalid", response.json()["detail"]["code"]
+        )
+        pack_validator.assert_not_called()
+        pack_path.assert_not_called()
+        with app.db() as connection:
+            self.assertEqual(0, connection.execute("SELECT COUNT(*) FROM attempts").fetchone()[0])
+            self.assertEqual(0, connection.execute("SELECT COUNT(*) FROM responses").fetchone()[0])
+            self.assertEqual(0, connection.execute("SELECT COUNT(*) FROM submissions").fetchone()[0])
+
+        releases = self.device_get("/api/client/v1/releases")
+        assessments = self.device_get(
+            "/api/client/v1/assessments",
+            student_id="S100",
+            at="2026-08-31T09:02:00+00:00",
+        )
+        self.assertEqual(200, releases.status_code, releases.text)
+        self.assertNotIn(
+            self.release_id, [item["release_id"] for item in releases.json()["releases"]]
+        )
+        self.assertEqual(200, assessments.status_code, assessments.text)
+        self.assertNotIn(
+            self.release_id,
+            [item["release_id"] for item in assessments.json()["assessments"]],
+        )
+
+    def test_direct_start_service_quarantines_existing_attempt_without_key_access(self):
+        started = self.start("S100", "device-a", at="2026-08-31T09:02:00+00:00")
+        self.assertEqual(200, started.status_code, started.text)
+        with app.db() as connection:
+            connection.execute(
+                "UPDATE assessment_releases SET state='answer_state_invalid' WHERE release_id=?",
+                (self.release_id,),
+            )
+            with (
+                patch(
+                    "ksat.coordinator.attempts.unwrap_release_content_key",
+                    side_effect=AssertionError("quarantined start must not reveal the key"),
+                ) as unwrap_key,
+                self.assertRaises(AttemptProblem) as caught,
+            ):
+                issue_attempt_ticket(
+                    connection,
+                    release_id=self.release_id,
+                    student_id="S100",
+                    device_id=self.devices["device-a"][0],
+                    confirmed_content_hash=self.content_hash,
+                    signing_private_key_b64=self.config.signing_private_key_b64,
+                    pack_master_key=self.config.pack_master_key,
+                    now_utc=datetime(2026, 8, 31, 9, 3, tzinfo=timezone.utc),
+                )
+            attempt_count = connection.execute(
+                "SELECT COUNT(*) FROM attempts WHERE release_id=?", (self.release_id,)
+            ).fetchone()[0]
+
+        self.assertEqual("release_answer_state_invalid", caught.exception.code)
+        unwrap_key.assert_not_called()
+        self.assertEqual(1, attempt_count)
 
     def test_start_uses_encrypted_hash_readiness_without_redecrypting_the_pack(self):
         with patch(

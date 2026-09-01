@@ -29,6 +29,7 @@ from ksat.coordinator.attempts import (
     issue_attempt_ticket,
     list_launched_assessments,
     list_prefetchable_releases,
+    preflight_attempt_start,
 )
 from ksat.coordinator.releases import load_release_manifest
 from ksat.coordinator.submissions import SubmissionProblem, validate_and_score
@@ -464,6 +465,7 @@ async def start_attempt(payload: AttemptStartRequest, request: Request) -> Attem
     try:
         device_id = await _verified_device(request, connection)
         student_id = _verified_student(request, config, device_id)
+        preflight_attempt_start(connection, payload.release_id)
         existing_attempt = connection.execute(
             """SELECT 1 FROM attempts
                WHERE release_id = ? AND student_id = ? LIMIT 1""",

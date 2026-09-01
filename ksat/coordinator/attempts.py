@@ -154,6 +154,19 @@ def _existing_attempt(
     ).fetchone()
 
 
+def preflight_attempt_start(connection: sqlite3.Connection, release_id: str) -> None:
+    """Reject quarantined release state before any content-pack access."""
+
+    release = connection.execute(
+        "SELECT state FROM assessment_releases WHERE release_id = ?", (release_id,)
+    ).fetchone()
+    if release is not None and release["state"] == INVALID_ANSWER_STATE:
+        raise _problem(
+            "release_answer_state_invalid",
+            "The release private answer snapshot is incomplete; Faculty must create a new assessment.",
+        )
+
+
 def _stored_start_response(
     connection: sqlite3.Connection,
     *,
@@ -227,6 +240,7 @@ def issue_attempt_ticket(
             "SELECT 1 FROM students WHERE student_id = ?", (student_id,)
         ).fetchone() is None:
             raise _problem("invalid_client_session", "The client session is invalid.", status_code=401)
+        preflight_attempt_start(connection, release_id)
         release = connection.execute(
             """SELECT r.*, t.launched AS test_launched
                FROM assessment_releases r
@@ -234,11 +248,6 @@ def issue_attempt_ticket(
                WHERE r.release_id = ?""",
             (release_id,),
         ).fetchone()
-        if release is not None and release["state"] == INVALID_ANSWER_STATE:
-            raise _problem(
-                "release_answer_state_invalid",
-                "The release private answer snapshot is incomplete; Faculty must create a new assessment.",
-            )
         if release is None or release["state"] not in {"prepared", "launched"}:
             raise _problem("content_not_ready", "Assessment content is not ready.")
         try:

@@ -487,6 +487,32 @@ class CoordinatorClientTests(unittest.TestCase):
         self.assertFalse(kwargs["follow_redirects"])
         self.assertIsInstance(kwargs["timeout"], httpx.Timeout)
 
+    def test_request_timeout_property_is_validated_immutable_and_matches_transport(self):
+        from ksat.client.coordinator import CoordinatorClient
+
+        default = self.make_client(lambda request: httpx.Response(200, json={}))
+        self.assertEqual(10.0, default.request_timeout_seconds)
+        custom = CoordinatorClient(
+            "http://coordinator.test",
+            self.directory / "unused-ca.pem",
+            self.identity,
+            transport=httpx.MockTransport(lambda request: httpx.Response(200, json={})),
+            timeout_seconds=2.75,
+        )
+        self.assertEqual(2.75, custom.request_timeout_seconds)
+        self.assertEqual(2.75, custom._client.timeout.read)
+        with self.assertRaises(AttributeError):
+            custom.request_timeout_seconds = 99
+        for invalid in (0, -1, 301, float("nan"), float("inf"), True, "10"):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                CoordinatorClient(
+                    "http://coordinator.test",
+                    self.directory / "unused-ca.pem",
+                    self.identity,
+                    transport=httpx.MockTransport(lambda request: httpx.Response(200)),
+                    timeout_seconds=invalid,
+                )
+
     def test_redirect_is_rejected(self):
         from ksat.client.coordinator import CoordinatorProblem
 

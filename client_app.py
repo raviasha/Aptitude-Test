@@ -453,6 +453,7 @@ class _ClientContext:
         self._control_stop = False
         self._control_thread: threading.Thread | None = None
         self._control_reaper_thread: threading.Thread | None = None
+        self._control_restart_thread: threading.Thread | None = None
 
     def initialize(self) -> None:
         with self._prefetch_state_lock:
@@ -649,21 +650,37 @@ class _ClientContext:
                 target=poll, name="ksat-attempt-control", daemon=True
             )
             thread = self._control_thread
-        thread.start()
+        try:
+            thread.start()
+        except BaseException:
+            with self._control_condition:
+                if self._control_thread is thread and thread.ident is None:
+                    self._control_thread = None
+                self._control_condition.notify_all()
+            raise
 
     def _control_join_timeout(self) -> float:
-        coordinator = self.services.coordinator if self.services is not None else None
-        request_timeout = getattr(coordinator, "request_timeout_seconds", 5.0)
-        try:
-            return max(0.25, min(30.0, float(request_timeout) + 0.5))
-        except (TypeError, ValueError):
-            return 5.5
+        if self.services is None:
+            raise RuntimeError("Coordinator services are unavailable during control shutdown.")
+        request_timeout = self.services.coordinator.request_timeout_seconds
+        if (
+            not isinstance(request_timeout, (int, float))
+            or isinstance(request_timeout, bool)
+            or not math.isfinite(request_timeout)
+            or request_timeout <= 0
+            or request_timeout > 300
+        ):
+            raise RuntimeError("Coordinator request timeout contract is invalid.")
+        return float(request_timeout) + 0.5
 
     def _stop_control_thread(self) -> bool:
         with self._control_condition:
             self._control_stop = True
             self._control_condition.notify_all()
             thread = self._control_thread
+            if thread is not None and thread.ident is None:
+                self._control_thread = None
+                return True
         if thread is not None and thread is not threading.current_thread():
             thread.join(timeout=self._control_join_timeout())
         with self._control_condition:
@@ -690,6 +707,38 @@ class _ClientContext:
             )
             reaper = self._control_reaper_thread
         reaper.start()
+
+    def _schedule_control_restart(self, services: ClientServices) -> None:
+        """Restart the retained service poll only after its old request returns."""
+
+        with self._control_condition:
+            existing = self._control_restart_thread
+            if existing is not None and existing.is_alive():
+                return
+            control_thread = self._control_thread
+
+            def finish() -> None:
+                current_thread = threading.current_thread()
+                try:
+                    if control_thread is not None:
+                        control_thread.join()
+                    with self._prefetch_state_lock:
+                        restart = (
+                            self.services is services
+                            and not self._prefetch_shutdown_requested
+                        )
+                    if restart:
+                        self._start_control_thread()
+                finally:
+                    with self._control_condition:
+                        if self._control_restart_thread is current_thread:
+                            self._control_restart_thread = None
+
+            self._control_restart_thread = threading.Thread(
+                target=finish, name="ksat-attempt-control-restart", daemon=True
+            )
+            restart_thread = self._control_restart_thread
+        restart_thread.start()
 
     def problem(self, code: str, *, status: int, retryable: bool = False) -> dict[str, Any]:
         message = _KNOWN_PUBLIC_MESSAGES.get(code, "The requested action could not be completed.")
@@ -1406,8 +1455,39 @@ def create_client_app(services: ClientServices | None = None) -> FastAPI:
                 503,
                 retryable=True,
             )
+        previous_config = None
+        load_config = getattr(current.config_store, "load", None)
+        if callable(load_config):
+            try:
+                previous_config = load_config()
+            except (OSError, ValueError, TypeError) as error:
+                context._new_prefetch_generation()
+                context._restart_background_prefetch()
+                raise ClientApiProblem(
+                    "coordinator_configuration_update_failed",
+                    "The coordinator address could not be saved; the previous configuration is still active.",
+                    500,
+                ) from error
         candidate = None
         candidate_outbox = None
+        candidate_cleaned = False
+
+        def cleanup_candidate() -> None:
+            nonlocal candidate_cleaned
+            if candidate_cleaned:
+                return
+            candidate_cleaned = True
+            if candidate_outbox is not None:
+                try:
+                    candidate_outbox.stop()
+                except Exception:
+                    pass
+            if candidate is not None:
+                try:
+                    candidate.close()
+                except Exception:
+                    pass
+
         try:
             candidate = current.coordinator_factory(normalized)
             if getattr(context.identity, "device_id", None) is not None:
@@ -1417,18 +1497,12 @@ def create_client_app(services: ClientServices | None = None) -> FastAPI:
             candidate_outbox = current.outbox_factory(candidate)
             candidate_outbox.start()
         except CoordinatorProblem as error:
-            if candidate_outbox is not None:
-                candidate_outbox.stop()
-            if candidate is not None:
-                candidate.close()
+            cleanup_candidate()
             context._new_prefetch_generation()
             context._restart_background_prefetch()
             raise _map_coordinator_problem(error) from error
         except (OSError, ValueError, TypeError) as error:
-            if candidate_outbox is not None:
-                candidate_outbox.stop()
-            if candidate is not None:
-                candidate.close()
+            cleanup_candidate()
             context._new_prefetch_generation()
             context._restart_background_prefetch()
             raise ClientApiProblem(
@@ -1438,33 +1512,87 @@ def create_client_app(services: ClientServices | None = None) -> FastAPI:
             ) from error
 
         if not context._stop_control_thread():
-            candidate_outbox.stop()
-            candidate.close()
+            cleanup_candidate()
+            context._new_prefetch_generation()
+            context._restart_background_prefetch()
+            context._schedule_control_restart(current)
             raise ClientApiProblem(
                 "control_poll_busy",
                 "A timer update is still finishing; try the configuration change again.",
                 503,
                 retryable=True,
             )
-        current.config_store.update_base_url(normalized)
         previous_coordinator = current.coordinator
         previous_outbox = current.outbox
+        previous_catalog = dict(context.catalog)
+        previous_ready_releases = set(context.ready_releases)
+        previous_outbox_stop_called = context._outbox_stop_called
+        previous_outbox_started = context._outbox_started
+        config_persisted = False
+        old_outbox_stopped = False
+        try:
+            current.config_store.update_base_url(normalized)
+            config_persisted = True
+            current.coordinator = candidate
+            current.outbox = candidate_outbox
+            context._outbox_stop_called = False
+            context._outbox_started = True
+            context._new_prefetch_generation()
+            context.catalog.clear()
+            context.ready_releases.clear()
+            candidate_outbox.wake()
+            previous_outbox.stop()
+            old_outbox_stopped = True
+            context._start_control_thread()
+            context._restart_background_prefetch()
+        except Exception as error:
+            # Active work was rejected before the transaction, so a candidate
+            # control thread can only be waiting. Quiesce it before restoring
+            # retained services; never close a resource below a live poll.
+            if current.coordinator is candidate:
+                try:
+                    context._stop_control_thread()
+                except Exception:
+                    pass
+            current.coordinator = previous_coordinator
+            current.outbox = previous_outbox
+            context._outbox_stop_called = previous_outbox_stop_called
+            context._outbox_started = previous_outbox_started
+            context.catalog.clear()
+            context.catalog.update(previous_catalog)
+            context.ready_releases.clear()
+            context.ready_releases.update(previous_ready_releases)
+            if config_persisted and previous_config is not None:
+                save_config = getattr(current.config_store, "save", None)
+                if callable(save_config):
+                    try:
+                        save_config(previous_config)
+                    except (OSError, ValueError, TypeError):
+                        pass
+            cleanup_candidate()
+            if old_outbox_stopped:
+                try:
+                    previous_outbox.start()
+                except Exception:
+                    pass
+            context._new_prefetch_generation()
+            context._restart_background_prefetch()
+            context._start_control_thread()
+            raise ClientApiProblem(
+                "coordinator_configuration_update_failed",
+                "The coordinator address could not be saved; the previous configuration is still active.",
+                500,
+            ) from error
+
         try:
             previous_coordinator.logout()
-        finally:
-            previous_outbox.stop()
-        current.coordinator = candidate
-        current.outbox = candidate_outbox
-        context._outbox_stop_called = False
-        context._outbox_started = True
-        context._new_prefetch_generation()
-        context.catalog.clear()
-        context.ready_releases.clear()
-        candidate_outbox.wake()
-        context._start_control_thread()
-        context._restart_background_prefetch()
+        except Exception:
+            pass
         if current.owns_resources:
-            previous_coordinator.close()
+            try:
+                previous_coordinator.close()
+            except Exception:
+                pass
         return {"state": "login", "configuration": "updated"}
 
     @app.post("/api/login")

@@ -205,6 +205,7 @@ class FakeCoordinator:
         self.assessment_rows = []
         self.start_response = object()
         self.closed = 0
+        self.request_timeout_seconds = 10.0
 
     @property
     def session(self):
@@ -1414,6 +1415,31 @@ class ClientPrefetchLifecycleTests(unittest.TestCase):
         client_context.__exit__(None, None, None)
 
 class ClientControlLifecycleTests(unittest.TestCase):
+    def test_control_join_bound_uses_real_coordinator_timeout_contract(self):
+        import httpx
+        from client_app import ClientServices, create_client_app
+        from ksat.client.coordinator import CoordinatorClient
+        from ksat.client.identity import DeviceIdentity
+
+        fake_identity = FakeIdentityStore().identity
+        coordinator = CoordinatorClient(
+            "http://coordinator.test", Path("unused"),
+            DeviceIdentity(
+                private_key_b64=fake_identity.private_key_b64,
+                public_key_b64=fake_identity.public_key_b64,
+                device_id=fake_identity.device_id,
+                coordinator_public_key_b64=fake_identity.coordinator_public_key_b64,
+            ),
+            transport=httpx.MockTransport(lambda request: httpx.Response(404)),
+            timeout_seconds=10,
+        )
+        store = FakeStore(None)
+        services = ClientServices(
+            FakeIdentityStore(), store, FakeRuntime(store), coordinator, FakeOutbox()
+        )
+        context = create_client_app(services).state.client_context
+        self.assertEqual(10.5, context._control_join_timeout())
+
     def test_control_poll_is_jittered_only_in_progress_and_stops_on_seal(self):
         from client_app import ClientServices, create_client_app
 
@@ -1488,6 +1514,56 @@ class ClientControlLifecycleTests(unittest.TestCase):
             while store.closed == 0 and time.monotonic() < deadline:
                 time.sleep(0.01)
             self.assertEqual(1, coordinator.closed)
+            self.assertEqual(1, store.closed)
+
+    def test_real_coordinator_blocked_fetch_quiesces_before_owned_resources_close(self):
+        import httpx
+        from client_app import ClientServices, create_client_app
+        from ksat.client.coordinator import CoordinatorClient
+        from ksat.client.identity import DeviceIdentity
+        from ksat.crypto import generate_ed25519_keypair
+
+        entered = threading.Event()
+        release = threading.Event()
+
+        def blocked_response(_request):
+            entered.set()
+            release.wait(10)
+            return httpx.Response(404)
+
+        device_private, device_public = generate_ed25519_keypair()
+        _coordinator_private, coordinator_public = generate_ed25519_keypair()
+        coordinator = CoordinatorClient(
+            "http://coordinator.test",
+            Path("unused"),
+            DeviceIdentity(
+                private_key_b64=device_private,
+                public_key_b64=device_public,
+                device_id="44444444-4444-4444-8444-444444444444",
+                coordinator_public_key_b64=coordinator_public,
+            ),
+            transport=httpx.MockTransport(blocked_response),
+            timeout_seconds=0.05,
+        )
+        store = FakeStore(FakeSnapshot())
+        services = ClientServices(
+            FakeIdentityStore(), store, FakeRuntime(store), coordinator,
+            FakeOutbox(), owns_resources=True,
+        )
+        context = create_client_app(services).state.client_context
+        with patch("client_app.random.uniform", return_value=0.01):
+            context.initialize()
+            self.assertTrue(entered.wait(1))
+            started = time.monotonic()
+            context.shutdown()
+            self.assertLess(time.monotonic() - started, 2)
+            self.assertFalse(coordinator._client.is_closed)
+            self.assertEqual(0, store.closed)
+            release.set()
+            deadline = time.monotonic() + 2
+            while store.closed == 0 and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertTrue(coordinator._client.is_closed)
             self.assertEqual(1, store.closed)
 
 
@@ -1592,6 +1668,88 @@ class ClientCoordinatorReconfigurationTests(unittest.TestCase):
         self.assertEqual([], self.config_updates)
         self.assertEqual([], self.candidates)
         self.assertIs(old, self.services.coordinator)
+        self.assertIsNotNone(old.session)
+
+    def test_config_write_failure_cleans_candidate_and_restarts_old_control(self):
+        old = self.services.coordinator
+        context = self.client_context.app.state.client_context
+        old_control = context._control_thread
+
+        class FailingConfig:
+            def load(self):
+                return SimpleNamespace(coordinator_base_url="https://old.example.edu")
+
+            def update_base_url(self, _value):
+                raise OSError("injected durable write failure")
+
+            def save(self, value):
+                return value
+
+        self.services.config_store = FailingConfig()
+        context.catalog = {"keep": object()}
+        context.ready_releases = {"keep"}
+        response = self.client.post(
+            "/api/device/coordinator",
+            json={"base_url": "https://ksat-new.example.edu:9443", "confirmed": True},
+            headers=self.mutation_headers,
+        )
+        self.assertEqual(500, response.status_code)
+        self.assertIs(old, self.services.coordinator)
+        self.assertIsNotNone(old.session)
+        self.assertEqual({"keep"}, set(context.catalog))
+        self.assertEqual({"keep"}, context.ready_releases)
+        self.assertEqual(1, self.candidates[0].closed)
+        self.assertEqual(1, self.new_outboxes[0].stops)
+        self.assertFalse(old_control.is_alive())
+        self.assertIsNot(old_control, context._control_thread)
+        self.assertTrue(context._control_thread.is_alive())
+
+    def test_failure_after_persistence_restores_config_services_and_ready_state(self):
+        old = self.services.coordinator
+        context = self.client_context.app.state.client_context
+
+        class RecoverableConfig:
+            def __init__(self):
+                self.current = SimpleNamespace(coordinator_base_url="https://old.example.edu")
+
+            def load(self):
+                return self.current
+
+            def update_base_url(self, value):
+                self.current = SimpleNamespace(coordinator_base_url=value)
+                return self.current
+
+            def save(self, value):
+                self.current = value
+                return value
+
+        config = RecoverableConfig()
+        self.services.config_store = config
+        context.catalog = {"keep": object()}
+        context.ready_releases = {"keep"}
+
+        def outbox_factory(coordinator):
+            worker = FakeOutbox()
+            worker.coordinator = coordinator
+            worker.wake = lambda: (_ for _ in ()).throw(OSError("injected publication failure"))
+            self.new_outboxes.append(worker)
+            return worker
+
+        self.services.outbox_factory = outbox_factory
+        response = self.client.post(
+            "/api/device/coordinator",
+            json={"base_url": "https://ksat-new.example.edu:9443", "confirmed": True},
+            headers=self.mutation_headers,
+        )
+        self.assertEqual(500, response.status_code)
+        self.assertEqual("https://old.example.edu", config.current.coordinator_base_url)
+        self.assertIs(old, self.services.coordinator)
+        self.assertIsNotNone(old.session)
+        self.assertIs(self.outbox, self.services.outbox)
+        self.assertEqual({"keep"}, set(context.catalog))
+        self.assertEqual({"keep"}, context.ready_releases)
+        self.assertEqual(1, self.candidates[0].closed)
+        self.assertEqual(1, self.new_outboxes[0].stops)
 
     def test_active_and_sealed_attempts_both_block_configuration_change(self):
         for state in ("in_progress", "sealed_pending"):
@@ -1653,6 +1811,7 @@ class ClientCoordinatorReconfigurationTests(unittest.TestCase):
         with patch("client_app.random.uniform", return_value=0.01):
             context.observe_snapshot(self.store.snapshot)
             self.assertTrue(entered.wait(1))
+            old_control_thread = context._control_thread
             self.store.snapshot = None
             response = self.client.post(
                 "/api/device/coordinator",
@@ -1667,6 +1826,16 @@ class ClientCoordinatorReconfigurationTests(unittest.TestCase):
         self.assertEqual(1, self.candidates[0].closed)
         self.assertEqual(1, self.new_outboxes[0].stops)
         release.set()
+        deadline = time.monotonic() + 2
+        while (
+            context._control_thread is None
+            or context._control_thread is old_control_thread
+            or not context._control_thread.is_alive()
+        ) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertFalse(old_control_thread.is_alive())
+        self.assertIsNot(old_control_thread, context._control_thread)
+        self.assertTrue(context._control_thread.is_alive())
 
 
 if __name__ == "__main__":

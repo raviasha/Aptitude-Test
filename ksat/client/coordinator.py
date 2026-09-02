@@ -241,8 +241,9 @@ class CoordinatorClient:
             or isinstance(timeout_seconds, bool)
             or not math.isfinite(timeout_seconds)
             or timeout_seconds <= 0
+            or timeout_seconds > 300
         ):
-            raise ValueError("Coordinator timeout must be a positive finite number.")
+            raise ValueError("Coordinator timeout must be a positive finite number at most 300 seconds.")
         raw_url = str(base_url).rstrip("/")
         try:
             url = httpx.URL(raw_url)
@@ -261,6 +262,7 @@ class CoordinatorClient:
             raise ValueError("Coordinator URL is invalid or insecure.")
 
         self.base_url = raw_url
+        self._request_timeout_seconds = float(timeout_seconds)
         self._identity_source = identity if hasattr(identity, "load_or_create") else None
         self._identity = identity.load_or_create() if self._identity_source is not None else identity
         if not isinstance(self._identity, DeviceIdentity):
@@ -268,11 +270,11 @@ class CoordinatorClient:
         self._session: ClientSession | None = None
         self._catalog_sizes: dict[tuple[str, str], int] = {}
         timeout = httpx.Timeout(
-            timeout_seconds,
-            connect=timeout_seconds,
-            read=timeout_seconds,
-            write=timeout_seconds,
-            pool=timeout_seconds,
+            self._request_timeout_seconds,
+            connect=self._request_timeout_seconds,
+            read=self._request_timeout_seconds,
+            write=self._request_timeout_seconds,
+            pool=self._request_timeout_seconds,
         )
         client_options = {
             "base_url": self.base_url,
@@ -304,6 +306,12 @@ class CoordinatorClient:
     @property
     def session(self) -> ClientSession | None:
         return self._session
+
+    @property
+    def request_timeout_seconds(self) -> float:
+        """Immutable worst-case bound used by HTTP requests and lifecycle joins."""
+
+        return self._request_timeout_seconds
 
     def close(self) -> None:
         self._session = None

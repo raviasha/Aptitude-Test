@@ -56,7 +56,7 @@ class DistributedMigrationTests(unittest.TestCase):
         return {
             path.relative_to(self.data_dir).as_posix(): path.read_bytes()
             for path in self.data_dir.rglob("*")
-            if path.is_file()
+            if path.is_file() and path.name != ".coordinator.lock"
         }
 
     def test_dry_run_is_complete_without_modifying_live_database_or_data(self):

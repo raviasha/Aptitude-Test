@@ -1704,6 +1704,135 @@ class ClientCoordinatorReconfigurationTests(unittest.TestCase):
         self.assertIsNot(old_control, context._control_thread)
         self.assertTrue(context._control_thread.is_alive())
 
+    def test_config_update_that_publishes_then_raises_is_rolled_back_and_verified(self):
+        old = self.services.coordinator
+        context = self.client_context.app.state.client_context
+        old_control = context._control_thread
+        previous = SimpleNamespace(coordinator_base_url="https://old.example.edu")
+
+        class AmbiguousConfig:
+            def __init__(self):
+                self.current = previous
+                self.loads = 0
+                self.saves = 0
+
+            def load(self):
+                self.loads += 1
+                return self.current
+
+            def update_base_url(self, value):
+                self.current = SimpleNamespace(coordinator_base_url=value)
+                raise OSError("injected failure after durable publication")
+
+            def save(self, value):
+                self.saves += 1
+                self.current = value
+                return value
+
+        config = AmbiguousConfig()
+        self.services.config_store = config
+        context.catalog = {"keep": object()}
+        context.ready_releases = {"keep"}
+
+        response = self.client.post(
+            "/api/device/coordinator",
+            json={"base_url": "https://ksat-new.example.edu:9443", "confirmed": True},
+            headers=self.mutation_headers,
+        )
+
+        self.assertEqual(500, response.status_code)
+        self.assertEqual(
+            "coordinator_configuration_update_failed", response.json()["problem"]["code"]
+        )
+        self.assertEqual(previous, config.current)
+        self.assertEqual(1, config.saves)
+        self.assertEqual(2, config.loads)
+        self.assertIs(old, self.services.coordinator)
+        self.assertIsNotNone(old.session)
+        self.assertIs(self.outbox, self.services.outbox)
+        self.assertEqual({"keep"}, set(context.catalog))
+        self.assertEqual({"keep"}, context.ready_releases)
+        self.assertEqual(1, self.candidates[0].closed)
+        self.assertEqual(1, self.new_outboxes[0].stops)
+        self.assertFalse(old_control.is_alive())
+        self.assertIsNot(old_control, context._control_thread)
+        self.assertTrue(context._control_thread.is_alive())
+
+    def test_unverifiable_config_rollback_latches_opaque_intervention_and_blocks_start(self):
+        old = self.services.coordinator
+        context = self.client_context.app.state.client_context
+        old_control = context._control_thread
+        previous = SimpleNamespace(coordinator_base_url="https://old.example.edu")
+
+        class UnrecoverableConfig:
+            def __init__(self):
+                self.current = previous
+                self.loads = 0
+                self.saves = 0
+
+            def load(self):
+                self.loads += 1
+                return self.current
+
+            def update_base_url(self, value):
+                self.current = SimpleNamespace(coordinator_base_url=value)
+                raise OSError("primary private filesystem detail")
+
+            def save(self, _value):
+                self.saves += 1
+                raise OSError("rollback private filesystem detail")
+
+        config = UnrecoverableConfig()
+        self.services.config_store = config
+        context.catalog = {RELEASE_ID: object()}
+        context.ready_releases = {RELEASE_ID}
+
+        failed = self.client.post(
+            "/api/device/coordinator",
+            json={"base_url": "https://ksat-new.example.edu:9443", "confirmed": True},
+            headers=self.mutation_headers,
+        )
+        self.assertEqual(503, failed.status_code)
+        problem = failed.json()["problem"]
+        self.assertEqual("client_configuration_rollback_failed", problem["code"])
+        self.assertRegex(problem["diagnostic_reference"], r"^KSAT-[A-Z0-9]{10}$")
+        self.assertNotIn("filesystem", failed.text.lower())
+        self.assertEqual(1, config.saves)
+        self.assertEqual(2, config.loads)
+        self.assertIs(old, self.services.coordinator)
+        self.assertIsNotNone(old.session)
+        self.assertIs(self.outbox, self.services.outbox)
+        self.assertEqual({RELEASE_ID}, set(context.catalog))
+        self.assertEqual({RELEASE_ID}, context.ready_releases)
+        self.assertEqual(1, self.candidates[0].closed)
+        self.assertEqual(1, self.new_outboxes[0].stops)
+        self.assertFalse(old_control.is_alive())
+        self.assertIsNot(old_control, context._control_thread)
+        self.assertTrue(context._control_thread.is_alive())
+
+        state = self.client.get("/api/state")
+        self.assertEqual("faculty_intervention_required", state.json()["state"])
+        self.assertEqual("client_configuration_rollback_failed", state.json()["problem"]["code"])
+        self.assertEqual(problem["diagnostic_reference"], state.json()["problem"]["diagnostic_reference"])
+
+        candidate_count = len(self.candidates)
+        retry = self.client.post(
+            "/api/device/coordinator",
+            json={"base_url": "https://other.example.edu", "confirmed": True},
+            headers=self.mutation_headers,
+        )
+        self.assertEqual(503, retry.status_code)
+        self.assertEqual("client_configuration_rollback_failed", retry.json()["problem"]["code"])
+        self.assertEqual(candidate_count, len(self.candidates))
+
+        start = self.client.post(
+            f"/api/assessments/{RELEASE_ID}/start",
+            json={"confirmed": True},
+            headers=self.mutation_headers,
+        )
+        self.assertEqual(503, start.status_code)
+        self.assertEqual("client_configuration_rollback_failed", start.json()["problem"]["code"])
+
     def test_failure_after_persistence_restores_config_services_and_ready_state(self):
         old = self.services.coordinator
         context = self.client_context.app.state.client_context

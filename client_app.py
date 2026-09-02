@@ -68,6 +68,10 @@ _KNOWN_PUBLIC_MESSAGES = {
     "device_inactive": "This lab computer is not registered. Ask Faculty or IT for help.",
     "corrupt_local_attempt": "Saved assessment data could not be verified. Do not close the application; ask Faculty for help.",
     "faculty_intervention_required": _INTERVENTION_MESSAGE,
+    "client_configuration_rollback_failed": (
+        "The saved assessment server configuration could not be verified. "
+        "Ask IT for help before starting an assessment."
+    ),
 }
 
 
@@ -1285,6 +1289,18 @@ def create_client_app(services: ClientServices | None = None) -> FastAPI:
             raise ClientApiProblem("client_configuration_invalid", "The requested action could not be completed.", 500)
         return context.services
 
+    def require_configuration_integrity() -> None:
+        problem = context.startup_problem
+        if problem is None or problem.get("code") != "client_configuration_rollback_failed":
+            return
+        raise ClientApiProblem(
+            problem["code"],
+            problem["message"],
+            problem["status"],
+            retryable=problem["retryable"],
+            diagnostic_reference=problem["diagnostic_reference"],
+        )
+
     def current_snapshot() -> Any | None:
         if context.startup_problem is not None:
             return None
@@ -1410,6 +1426,7 @@ def create_client_app(services: ClientServices | None = None) -> FastAPI:
 
     @app.post("/api/device/coordinator")
     async def configure_coordinator(body: CoordinatorConfigurationBody):
+        require_configuration_integrity()
         if not body.confirmed:
             raise ClientApiProblem(
                 "confirmation_required", "Configuration confirmation is required.", 422
@@ -1528,11 +1545,9 @@ def create_client_app(services: ClientServices | None = None) -> FastAPI:
         previous_ready_releases = set(context.ready_releases)
         previous_outbox_stop_called = context._outbox_stop_called
         previous_outbox_started = context._outbox_started
-        config_persisted = False
         old_outbox_stopped = False
         try:
             current.config_store.update_base_url(normalized)
-            config_persisted = True
             current.coordinator = candidate
             current.outbox = candidate_outbox
             context._outbox_stop_called = False
@@ -1562,13 +1577,26 @@ def create_client_app(services: ClientServices | None = None) -> FastAPI:
             context.catalog.update(previous_catalog)
             context.ready_releases.clear()
             context.ready_releases.update(previous_ready_releases)
-            if config_persisted and previous_config is not None:
-                save_config = getattr(current.config_store, "save", None)
-                if callable(save_config):
-                    try:
-                        save_config(previous_config)
-                    except (OSError, ValueError, TypeError):
-                        pass
+            rollback_errors: list[Exception] = []
+            save_config = getattr(current.config_store, "save", None)
+            if previous_config is None or not callable(save_config) or not callable(load_config):
+                rollback_errors.append(
+                    RuntimeError("The previous client configuration is unavailable for rollback.")
+                )
+            else:
+                try:
+                    save_config(previous_config)
+                except Exception as rollback_error:
+                    rollback_errors.append(rollback_error)
+                try:
+                    restored_config = load_config()
+                except Exception as rollback_error:
+                    rollback_errors.append(rollback_error)
+                else:
+                    if restored_config != previous_config:
+                        rollback_errors.append(
+                            ValueError("The restored client configuration does not match its prior value.")
+                        )
             cleanup_candidate()
             if old_outbox_stopped:
                 try:
@@ -1578,6 +1606,22 @@ def create_client_app(services: ClientServices | None = None) -> FastAPI:
             context._new_prefetch_generation()
             context._restart_background_prefetch()
             context._start_control_thread()
+            if rollback_errors:
+                problem = context.problem(
+                    "client_configuration_rollback_failed", status=503
+                )
+                context.startup_problem = problem
+                combined = ExceptionGroup(
+                    "Coordinator configuration update and rollback both failed.",
+                    [error, *rollback_errors],
+                )
+                raise ClientApiProblem(
+                    problem["code"],
+                    problem["message"],
+                    problem["status"],
+                    retryable=problem["retryable"],
+                    diagnostic_reference=problem["diagnostic_reference"],
+                ) from combined
             raise ClientApiProblem(
                 "coordinator_configuration_update_failed",
                 "The coordinator address could not be saved; the previous configuration is still active.",
@@ -1634,6 +1678,7 @@ def create_client_app(services: ClientServices | None = None) -> FastAPI:
         release_id = _strict_uuid(release_id, "Release identifier")
         if not body.confirmed:
             raise ClientApiProblem("confirmation_required", "Start confirmation is required.", 422)
+        require_configuration_integrity()
         current = require_services()
         if current.coordinator.session is None:
             raise ClientApiProblem("client_session_required", "Student login is required.", 401)

@@ -97,6 +97,11 @@ def migrate_distributed_schema(connection: sqlite3.Connection) -> None:
           details_json TEXT NOT NULL DEFAULT '{}',
           occurred_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS coordinator_settings (
+          setting_key TEXT PRIMARY KEY,
+          setting_value TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
         """
     )
     _ensure_column(connection, "tests", "release_id TEXT")

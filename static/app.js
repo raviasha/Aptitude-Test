@@ -1,7 +1,7 @@
 const app = document.querySelector('#app');
 const toast = document.querySelector('#toast');
 const BUILD_VERSION = '1.3.3';
-let state = { user: null, attempt: null, questionIndex: 0 };
+let state = { user: null, csrfToken: null, attempt: null, questionIndex: 0 };
 let examGuard = {active:false, deadlineMs:null, timerId:null, syncTimerId:null, submitting:false, lastViolation:null, needsResume:false};
 let facultyTimerId = null;
 let facultySyncTimerId = null;
@@ -100,6 +100,7 @@ const date = value => value ? new Intl.DateTimeFormat('en-IN', {day:'2-digit',mo
 async function api(path, options = {}) {
   const form = options.body instanceof FormData;
   const headers = {...(options.headers || {})};
+  if (state.csrfToken && ['POST','PUT','PATCH','DELETE'].includes(String(options.method || 'GET').toUpperCase())) headers['X-KSAT-CSRF'] = state.csrfToken;
   if (options.body && !form && !headers['Content-Type']) headers['Content-Type'] = 'application/json';
   const config = {cache:'no-store', ...options, headers};
   if (config.body && !form && typeof config.body !== 'string') config.body = JSON.stringify(config.body);
@@ -254,7 +255,7 @@ function loginScreen() {
   }));
   document.querySelector('#login-form').addEventListener('submit', async event => {
     event.preventDefault();
-    try { state.user = (await api('/api/login', {method:'POST', body:{identifier:document.querySelector('#identifier').value,password:document.querySelector('#password').value,role,department:document.querySelector('#department').value}})).user; home(); }
+    try { const result=await api('/api/login', {method:'POST', body:{identifier:document.querySelector('#identifier').value,password:document.querySelector('#password').value,role,department:document.querySelector('#department').value}}); state.user=result.user; state.csrfToken=result.csrf_token || null; home(); }
     catch (error) { notify(error.message, true); }
   });
   document.querySelector('#register-link').addEventListener('click', registerScreen);
@@ -473,5 +474,5 @@ async function students() {
   document.querySelector('#delete-selected').addEventListener('click', async () => { const selected = [...document.querySelectorAll('.student-choice:checked')].map(choice => choice.value); if (!selected.length) { notify('Select at least one student.', true); return; } if (!confirm(`Delete ${selected.length} selected student(s) and all practice records? This cannot be undone.`)) return; try { for (const studentId of selected) await api(`/api/admin/students/${encodeURIComponent(studentId)}`, {method:'DELETE'}); notify('Selected students deleted.'); students(); } catch(error) { notify(error.message,true); } });
 }
 
-async function boot() { try { state.user = (await api('/api/me')).user; state.user ? home() : loginScreen(); } catch { loginScreen(); } }
+async function boot() { try { const result=await api('/api/me'); state.user=result.user; state.csrfToken=result.csrf_token || null; state.user ? home() : loginScreen(); } catch { loginScreen(); } }
 boot();

@@ -47,19 +47,23 @@ import question_media
 from ksat.coordinator.auth import load_or_create_client_session_secret
 from ksat.coordinator.releases import load_release_manifest, prepare_release
 from ksat.coordinator.routes import CoordinatorConfig, router as coordinator_router
+from ksat.coordinator.process_lock import CoordinatorProcessLock
 from ksat.coordinator.schema import migrate_distributed_schema
 from ksat.coordinator.submissions import (
+    INVALID_ANSWER_STATE,
     ReleaseAnswerStateProblem,
     SubmissionWriter,
     freeze_release_answer_state,
     migrate_release_answer_states,
+    validate_release_answer_state,
 )
-from ksat.crypto import load_or_create_coordinator_keyring, sign_json
+from ksat.crypto import load_or_create_coordinator_keyring, sign_json, verify_json
 from ksat.protocol import (
     AttemptDeadlineUpdate,
     PublicQuestion,
     ReleaseSummary,
     SignedAttemptDeadlineUpdate,
+    SignedAttemptTicket,
     canonicalize_math_floor_division_markup,
     canonical_json,
     deterministic_question_order,
@@ -181,11 +185,25 @@ def configure_coordinator_state(application: FastAPI) -> None:
         client_session_secret = load_or_create_client_session_secret(secrets_dir)
     elif not client_session_secret.strip():
         raise ValueError("KSAT_SESSION_SECRET must not be blank.")
+    enrollment_code = os.getenv("KSAT_DEVICE_ENROLLMENT_CODE")
+    if enrollment_code is None and DB_PATH.is_file():
+        settings_connection = sqlite3.connect(DB_PATH)
+        try:
+            if settings_connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='coordinator_settings'"
+            ).fetchone():
+                row = settings_connection.execute(
+                    "SELECT setting_value FROM coordinator_settings WHERE setting_key='device_enrollment_code'"
+                ).fetchone()
+                if row is not None:
+                    enrollment_code = row[0]
+        finally:
+            settings_connection.close()
     application.state.coordinator_config = CoordinatorConfig(
         db_path=DB_PATH,
         data_dir=DATA_DIR,
         session_secret=client_session_secret,
-        device_enrollment_code=os.getenv("KSAT_DEVICE_ENROLLMENT_CODE") or keyring.enrollment_code,
+        device_enrollment_code=enrollment_code or keyring.enrollment_code,
         signing_private_key_b64=keyring.signing_private_key_b64,
         signing_public_key_b64=keyring.signing_public_key_b64,
         pack_master_key=keyring.pack_master_key,
@@ -1479,6 +1497,24 @@ def require_user(request: Request, role: Optional[str] = None) -> Dict[str, str]
     return user
 
 
+def require_admin_mutation(request: Request) -> Dict[str, str]:
+    """Authenticate a faculty mutation and bind it to this exact browser session."""
+
+    user = require_user(request, "admin")
+    expected = request.session.get("admin_csrf")
+    supplied = request.headers.get("x-ksat-csrf")
+    origin = request.headers.get("origin")
+    expected_origin = f"{request.url.scheme}://{request.headers.get('host', '')}"
+    if (
+        not isinstance(expected, str)
+        or not isinstance(supplied, str)
+        or not secrets.compare_digest(expected, supplied)
+        or (origin is not None and origin != expected_origin)
+    ):
+        raise HTTPException(403, "Faculty request verification failed.")
+    return user
+
+
 def get_attempt(connection: sqlite3.Connection, attempt_id: str) -> sqlite3.Row:
     attempt = connection.execute(
         """SELECT a.*, t.launched, t.mode, t.owner_student_id, t.bank_id
@@ -1867,15 +1903,28 @@ def result_for_attempt(connection: sqlite3.Connection, attempt_id: str) -> Dict[
 
 @app.on_event("startup")
 def startup() -> None:
-    ensure_schema()
-    app.state.coordinator_config.submission_writer.start()
-    seed_data()
-    copy_starter_question_files()
+    process_lock = CoordinatorProcessLock(DATA_DIR).acquire()
+    app.state.coordinator_process_lock = process_lock
+    try:
+        ensure_schema()
+        app.state.coordinator_config.submission_writer.start()
+        seed_data()
+        copy_starter_question_files()
+    except BaseException:
+        process_lock.release()
+        app.state.coordinator_process_lock = None
+        raise
 
 
 @app.on_event("shutdown")
 def shutdown_submission_writer() -> None:
-    app.state.coordinator_config.submission_writer.stop()
+    try:
+        app.state.coordinator_config.submission_writer.stop()
+    finally:
+        process_lock = getattr(app.state, "coordinator_process_lock", None)
+        if process_lock is not None:
+            process_lock.release()
+            app.state.coordinator_process_lock = None
 
 
 @app.get("/")
@@ -1887,7 +1936,13 @@ def home() -> FileResponse:
 def me(request: Request) -> Dict[str, Any]:
     if request.session.get("user", {}).get("role") == "student":
         require_user(request, "student")
-    return {"user": request.session.get("user")}
+    user = request.session.get("user")
+    return {
+        "user": user,
+        "csrf_token": request.session.get("admin_csrf")
+        if user and user.get("role") == "admin"
+        else None,
+    }
 
 
 @app.post("/api/login")
@@ -1920,7 +1975,14 @@ def login(payload: LoginPayload, request: Request) -> Dict[str, Any]:
                 ) from error
             user["login_token"] = login_token
         request.session["user"] = user
-    return {"user": request.session["user"]}
+        if role == "admin":
+            request.session["admin_csrf"] = secrets.token_urlsafe(32)
+        else:
+            request.session.pop("admin_csrf", None)
+    return {
+        "user": request.session["user"],
+        "csrf_token": request.session.get("admin_csrf") if role == "admin" else None,
+    }
 
 
 @app.post("/api/session/heartbeat")
@@ -2319,7 +2381,7 @@ def list_distributed_devices(request: Request) -> Dict[str, Any]:
 
 
 def _set_device_status(device_id: str, target: str, payload: AdminReasonPayload, request: Request) -> Dict[str, Any]:
-    user = require_user(request, "admin")
+    user = require_admin_mutation(request)
     reason = bounded_admin_reason(payload.reason)
     event_type = "device_revoked" if target == "revoked" else "device_reactivated"
     with db() as connection:
@@ -2349,38 +2411,33 @@ def reactivate_device(device_id: str, payload: AdminReasonPayload, request: Requ
     return _set_device_status(device_id, "active", payload, request)
 
 
-def _durable_replace_ascii(path: Path, value: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    temporary_path = Path(temporary_name)
-    try:
-        with os.fdopen(descriptor, "wb") as stream:
-            stream.write(value.encode("ascii")); stream.flush(); os.fsync(stream.fileno())
-        os.replace(temporary_path, path)
-    finally:
-        temporary_path.unlink(missing_ok=True)
-
-
 @app.post("/api/admin/devices/enrollment-code/rotate")
 def rotate_device_enrollment_code(payload: AdminReasonPayload, request: Request) -> Dict[str, Any]:
-    user = require_user(request, "admin")
+    user = require_admin_mutation(request)
     reason = bounded_admin_reason(payload.reason)
+    if os.getenv("KSAT_DEVICE_ENROLLMENT_CODE") is not None:
+        raise HTTPException(409, {
+            "code": "enrollment_code_managed_externally",
+            "message": "The enrollment code is managed by IT and cannot be rotated here.",
+            "retryable": False,
+        })
     new_code = secrets.token_urlsafe(18)
     with _ENROLLMENT_ROTATION_LOCK:
-        code_path = DATA_DIR / "secrets" / "enrollment.code"
-        old_code = app.state.coordinator_config.device_enrollment_code
-        try:
-            _durable_replace_ascii(code_path, new_code)
-            app.state.coordinator_config.device_enrollment_code = new_code
-            with db() as connection:
-                connection.execute(
-                    "INSERT INTO audit_events (event_type,actor_id,details_json,occurred_at) VALUES ('device_enrollment_code_rotated',?,?,?)",
-                    (user["id"], audit_details({"reason": reason}), now()),
-                )
-        except BaseException:
-            app.state.coordinator_config.device_enrollment_code = old_code
-            _durable_replace_ascii(code_path, old_code)
-            raise
+        with db() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            rotated_at = now()
+            connection.execute(
+                """INSERT INTO coordinator_settings(setting_key,setting_value,updated_at)
+                   VALUES ('device_enrollment_code',?,?)
+                   ON CONFLICT(setting_key) DO UPDATE SET
+                     setting_value=excluded.setting_value,updated_at=excluded.updated_at""",
+                (new_code, rotated_at),
+            )
+            connection.execute(
+                "INSERT INTO audit_events (event_type,actor_id,details_json,occurred_at) VALUES ('device_enrollment_code_rotated',?,?,?)",
+                (user["id"], audit_details({"reason": reason}), rotated_at),
+            )
+        app.state.coordinator_config.device_enrollment_code = new_code
     return {"rotated": True, "enrollment_code": new_code}
 
 
@@ -2701,6 +2758,7 @@ def list_tests(request: Request) -> Dict[str, Any]:
             test["difficulty_levels"] = decode_difficulties(test["difficulties"])
             content_hash = test.get("content_hash")
             test["content_hash_prefix"] = content_hash[:12] if isinstance(content_hash, str) else None
+            test.pop("content_hash", None)
             counts = connection.execute(
                 """SELECT
                      SUM(CASE WHEN status='in_progress' THEN 1 ELSE 0 END) AS started,
@@ -2770,7 +2828,7 @@ def create_test(payload: TestPayload, request: Request) -> Dict[str, Any]:
 
 @app.post("/api/admin/tests/{test_id}/duplicate")
 def duplicate_distributed_test(test_id: int, request: Request) -> Dict[str, Any]:
-    require_user(request, "admin")
+    require_admin_mutation(request)
     created_artifact_paths: list[Path] = []
     try:
         with db() as connection:
@@ -2822,30 +2880,36 @@ def distributed_test_detail(test_id: int, request: Request) -> Dict[str, Any]:
 @app.get("/api/admin/attempts/{attempt_id}/order")
 def inspect_distributed_attempt_order(attempt_id: str, request: Request) -> Dict[str, Any]:
     require_user(request, "admin")
+    exact_order = None
+    invalid_snapshot = False
     with db() as connection:
         attempt = connection.execute(
             "SELECT attempt_id,release_id,order_seed FROM attempts WHERE attempt_id=?", (attempt_id,)
         ).fetchone()
         if attempt is None:
             raise HTTPException(404, "Assessment attempt not found.")
-        canonical_ids = [row["question_id"] for row in connection.execute(
-            "SELECT question_id FROM release_questions WHERE release_id=? ORDER BY canonical_order",
-            (attempt["release_id"],),
-        ).fetchall()]
         try:
+            frozen = validate_release_answer_state(connection, attempt["release_id"])
+            canonical_ids = [row["question_id"] for row in frozen]
             if not canonical_ids or len(canonical_ids) != len(set(canonical_ids)):
                 raise ValueError
             exact_order = deterministic_question_order(canonical_ids, attempt["order_seed"])
-        except (TypeError, ValueError, binascii.Error) as error:
-            raise HTTPException(409, {"code":"attempt_order_invalid",
-                "message":"The stored attempt order requires faculty intervention.","retryable":False}) from error
+        except (ReleaseAnswerStateProblem, TypeError, ValueError, binascii.Error):
+            invalid_snapshot = True
+            connection.execute(
+                "UPDATE assessment_releases SET state=? WHERE release_id=?",
+                (INVALID_ANSWER_STATE, attempt["release_id"]),
+            )
+    if invalid_snapshot:
+        raise HTTPException(409, {"code":"attempt_order_invalid",
+            "message":"The stored attempt order requires faculty intervention.","retryable":False})
     return {"attempt_id": attempt_id, "release_id": attempt["release_id"],
             "question_order": exact_order}
 
 
 @app.post("/api/admin/attempts/{attempt_id}/void")
 def void_distributed_attempt(attempt_id: str, payload: VoidAttemptPayload, request: Request) -> Dict[str, Any]:
-    user = require_user(request, "admin")
+    user = require_admin_mutation(request)
     reason = bounded_admin_reason(payload.reason)
     with db() as connection:
         connection.execute("BEGIN IMMEDIATE")
@@ -2897,9 +2961,30 @@ def _extend_active_attempt(
     cumulative = int(attempt["deadline_extension_seconds"] or 0) + delta_seconds
     if cumulative > 86_400:
         raise HTTPException(400, "The cumulative attempt extension is too large.")
+    try:
+        signed_ticket = SignedAttemptTicket.model_validate_json(
+            attempt["ticket_json"], strict=True
+        )
+        verify_json(
+            app.state.coordinator_config.signing_public_key_b64,
+            signed_ticket.ticket,
+            signed_ticket.signature_b64,
+        )
+        base_deadline = signed_ticket.ticket.deadline.astimezone(timezone.utc)
+    except Exception as error:
+        raise HTTPException(409, "The active attempt ticket is invalid.") from error
+    if (
+        signed_ticket.ticket.attempt_id != attempt["attempt_id"]
+        or signed_ticket.ticket.release_id != attempt["release_id"]
+        or signed_ticket.ticket.device_id != attempt["device_id"]
+        or int((prior - base_deadline).total_seconds())
+           != int(attempt["deadline_extension_seconds"] or 0)
+    ):
+        raise HTTPException(409, "The active attempt ticket is invalid.")
     update = AttemptDeadlineUpdate(
         attempt_id=attempt["attempt_id"], release_id=attempt["release_id"],
-        device_id=attempt["device_id"], prior_deadline=prior, deadline=deadline,
+        device_id=attempt["device_id"], base_deadline=base_deadline,
+        prior_deadline=prior, deadline=deadline,
         cumulative_extension_seconds=cumulative, revision=revision,
         issued_at=datetime.now(timezone.utc),
     )
@@ -2932,7 +3017,7 @@ def _extend_active_attempt(
 def extend_distributed_attempt(
     attempt_id: str, payload: DurationExtensionPayload, request: Request
 ) -> Dict[str, Any]:
-    user = require_user(request, "admin")
+    user = require_admin_mutation(request)
     reason = bounded_admin_reason(payload.reason or "")
     delta = payload.minutes * 60
     with db() as connection:
@@ -3110,7 +3195,7 @@ def close_test(test_id: int, request: Request) -> Dict[str, bool]:
 
 @app.post("/api/admin/tests/{test_id}/extend")
 def extend_test_duration(test_id: int, payload: DurationExtensionPayload, request: Request) -> Dict[str, Any]:
-    user = require_user(request, "admin")
+    user = require_admin_mutation(request)
     if payload.reason is not None:
         reason = bounded_admin_reason(payload.reason)
         delta = payload.minutes * 60

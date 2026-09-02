@@ -793,6 +793,8 @@ class ClientStore:
                     or deadline_update.update.attempt_id != row["attempt_id"]
                     or deadline_update.update.release_id != row["release_id"]
                     or deadline_update.update.device_id != ticket.ticket.device_id
+                    or deadline_update.update.base_deadline.astimezone(timezone.utc)
+                       != ticket.ticket.deadline.astimezone(timezone.utc)
                     or deadline_update.update.deadline.astimezone(timezone.utc) != deadline
                     or deadline <= ticket.ticket.deadline.astimezone(timezone.utc)
                     or int((deadline - ticket.ticket.deadline.astimezone(timezone.utc)).total_seconds())
@@ -1058,18 +1060,20 @@ class ClientStore:
                 row["ticket_json"], SignedAttemptTicket, "Stored attempt data is invalid."
             ).ticket
             current_deadline = _parse_time(row["deadline"], "Stored attempt data is invalid.")
-            prior = _aware(update.prior_deadline).astimezone(timezone.utc)
             deadline = _aware(update.deadline).astimezone(timezone.utc)
-            delta = int((deadline - prior).total_seconds())
             baseline = ticket.deadline.astimezone(timezone.utc)
+            update_baseline = _aware(update.base_deadline).astimezone(timezone.utc)
+            current_cumulative = int((current_deadline - baseline).total_seconds())
             cumulative = int((deadline - baseline).total_seconds())
+            delta = cumulative - current_cumulative
             if (
                 update.attempt_id != attempt_id
                 or update.release_id != row["release_id"]
                 or update.device_id != ticket.device_id
-                or update.revision != row["deadline_revision"] + 1
-                or prior != current_deadline
-                or delta <= 0
+                or update.revision <= row["deadline_revision"]
+                or update_baseline != baseline
+                or deadline < current_deadline
+                or delta < 0
                 or cumulative != update.cumulative_extension_seconds
                 or remaining_before > row["remaining_seconds"]
             ):

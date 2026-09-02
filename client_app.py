@@ -452,6 +452,7 @@ class _ClientContext:
         self._control_condition = threading.Condition()
         self._control_stop = False
         self._control_thread: threading.Thread | None = None
+        self._control_reaper_thread: threading.Thread | None = None
 
     def initialize(self) -> None:
         with self._prefetch_state_lock:
@@ -491,8 +492,11 @@ class _ClientContext:
         with self._prefetch_state_lock:
             self._prefetch_shutdown_requested = True
         prefetch_stopped = self._quiesce_prefetch()
-        self._stop_control_thread()
+        control_stopped = self._stop_control_thread()
         if self.services is None:
+            return
+        if not control_stopped:
+            self._schedule_control_cleanup(prefetch_stopped)
             return
         self._stop_outbox()
         if prefetch_stopped:
@@ -504,7 +508,10 @@ class _ClientContext:
         with self._prefetch_state_lock:
             self._prefetch_shutdown_requested = True
         prefetch_stopped = self._quiesce_prefetch()
-        self._stop_control_thread()
+        control_stopped = self._stop_control_thread()
+        if not control_stopped:
+            self._schedule_control_cleanup(prefetch_stopped)
+            return
         self._stop_outbox()
         if prefetch_stopped:
             self._close_owned_resources()
@@ -644,16 +651,45 @@ class _ClientContext:
             thread = self._control_thread
         thread.start()
 
-    def _stop_control_thread(self) -> None:
+    def _control_join_timeout(self) -> float:
+        coordinator = self.services.coordinator if self.services is not None else None
+        request_timeout = getattr(coordinator, "request_timeout_seconds", 5.0)
+        try:
+            return max(0.25, min(30.0, float(request_timeout) + 0.5))
+        except (TypeError, ValueError):
+            return 5.5
+
+    def _stop_control_thread(self) -> bool:
         with self._control_condition:
             self._control_stop = True
             self._control_condition.notify_all()
             thread = self._control_thread
         if thread is not None and thread is not threading.current_thread():
-            thread.join(timeout=5.0)
+            thread.join(timeout=self._control_join_timeout())
         with self._control_condition:
             if self._control_thread is thread and (thread is None or not thread.is_alive()):
                 self._control_thread = None
+            return self._control_thread is None or not self._control_thread.is_alive()
+
+    def _schedule_control_cleanup(self, prefetch_stopped: bool) -> None:
+        with self._control_condition:
+            existing = self._control_reaper_thread
+            if existing is not None and existing.is_alive():
+                return
+            control_thread = self._control_thread
+
+            def finish() -> None:
+                if control_thread is not None:
+                    control_thread.join()
+                self._stop_outbox()
+                if prefetch_stopped:
+                    self._close_owned_resources()
+
+            self._control_reaper_thread = threading.Thread(
+                target=finish, name="ksat-attempt-control-cleanup", daemon=True
+            )
+            reaper = self._control_reaper_thread
+        reaper.start()
 
     def problem(self, code: str, *, status: int, retryable: bool = False) -> dict[str, Any]:
         message = _KNOWN_PUBLIC_MESSAGES.get(code, "The requested action could not be completed.")
@@ -1380,7 +1416,6 @@ def create_client_app(services: ClientServices | None = None) -> FastAPI:
                 candidate.prefetch_catalog()
             candidate_outbox = current.outbox_factory(candidate)
             candidate_outbox.start()
-            current.config_store.update_base_url(normalized)
         except CoordinatorProblem as error:
             if candidate_outbox is not None:
                 candidate_outbox.stop()
@@ -1402,7 +1437,16 @@ def create_client_app(services: ClientServices | None = None) -> FastAPI:
                 500,
             ) from error
 
-        context._stop_control_thread()
+        if not context._stop_control_thread():
+            candidate_outbox.stop()
+            candidate.close()
+            raise ClientApiProblem(
+                "control_poll_busy",
+                "A timer update is still finishing; try the configuration change again.",
+                503,
+                retryable=True,
+            )
+        current.config_store.update_base_url(normalized)
         previous_coordinator = current.coordinator
         previous_outbox = current.outbox
         try:

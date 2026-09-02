@@ -6,7 +6,7 @@ import re
 import stat
 import tempfile
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, AsyncIterator, BinaryIO
 
@@ -33,6 +33,7 @@ from ksat.coordinator.attempts import (
 )
 from ksat.coordinator.releases import load_release_manifest
 from ksat.coordinator.submissions import SubmissionProblem, validate_and_score
+from ksat.crypto import verify_json
 from ksat.protocol import (
     AttemptStartResponse,
     ClientLoginRequest,
@@ -41,6 +42,7 @@ from ksat.protocol import (
     DeviceEnrollmentRequest,
     SignedResponseBundle,
     SignedAttemptDeadlineUpdate,
+    SignedAttemptTicket,
     SubmissionReceipt,
 )
 from ksat.sqlite import connect_sqlite
@@ -506,7 +508,8 @@ async def attempt_deadline_update(
     try:
         device_id = await _verified_device(request, connection)
         row = connection.execute(
-            """SELECT device_id,status,deadline_revision,deadline_update_json
+            """SELECT device_id,release_id,status,expires_at,ticket_json,
+                      deadline_revision,deadline_update_json
                FROM attempts WHERE attempt_id=?""",
             (attempt_id,),
         ).fetchone()
@@ -523,6 +526,10 @@ async def attempt_deadline_update(
             signed = SignedAttemptDeadlineUpdate.model_validate_json(
                 row["deadline_update_json"], strict=True
             )
+            ticket = SignedAttemptTicket.model_validate_json(row["ticket_json"], strict=True)
+            verify_json(config.signing_public_key_b64, signed.update, signed.signature_b64)
+            verify_json(config.signing_public_key_b64, ticket.ticket, ticket.signature_b64)
+            stored_deadline = datetime.fromisoformat(row["expires_at"].replace("Z", "+00:00"))
         except Exception as error:
             raise AttemptProblem(
                 "deadline_update_invalid",
@@ -531,7 +538,13 @@ async def attempt_deadline_update(
         if (
             signed.update.attempt_id != attempt_id
             or signed.update.device_id != device_id
+            or signed.update.release_id != row["release_id"]
             or signed.update.revision != row["deadline_revision"]
+            or signed.update.base_deadline != ticket.ticket.deadline
+            or signed.update.deadline
+               != ticket.ticket.deadline
+                  + timedelta(seconds=signed.update.cumulative_extension_seconds)
+            or signed.update.deadline != stored_deadline
         ):
             raise AttemptProblem(
                 "deadline_update_invalid",

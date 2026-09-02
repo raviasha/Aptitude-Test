@@ -452,6 +452,7 @@ class AttemptDeadlineUpdate(ProtocolModel):
     attempt_id: str
     release_id: str
     device_id: str
+    base_deadline: datetime
     prior_deadline: datetime
     deadline: datetime
     cumulative_extension_seconds: int = Field(ge=1, le=86_400)

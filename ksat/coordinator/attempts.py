@@ -216,7 +216,7 @@ def _stored_start_response(
         or signed.ticket.release_id != release_id
         or signed.ticket.student_id != student_id
         or signed.ticket.device_id != device_id
-        or signed.ticket.deadline != deadline
+        or signed.ticket.deadline > deadline
     ):
         raise _problem("content_not_ready", "The stored attempt ticket is invalid.")
     question_ids = [

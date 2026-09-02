@@ -2037,7 +2037,8 @@ class FacultyReleaseFlowTests(unittest.TestCase):
         self.assertEqual(200, listing.status_code, listing.text)
         item = next(test for test in listing.json()["tests"] if test["test_id"] == created_test_id)
         self.assertEqual("prepared", item["release_state"])
-        self.assertEqual(64, len(item["content_hash"]))
+        self.assertNotIn("content_hash", item)
+        self.assertEqual(12, len(item["content_hash_prefix"]))
         self.assertTrue(item["release_id"])
         pack_path = app.DATA_DIR / "Assessment Releases" / f"{item['release_id']}.ksatpack"
         pack_bytes = pack_path.read_bytes()

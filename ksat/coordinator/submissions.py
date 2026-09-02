@@ -328,6 +328,10 @@ def validate_and_score(
                 or deadline_update.update.release_id != attempt["release_id"]
                 or deadline_update.update.device_id != attempt["device_id"]
                 or deadline_update.update.revision != attempt["deadline_revision"]
+                or _utc(deadline_update.update.base_deadline) != _utc(ticket.deadline)
+                or _utc(deadline_update.update.deadline)
+                   != _utc(ticket.deadline)
+                      + timedelta(seconds=deadline_update.update.cumulative_extension_seconds)
                 or _utc(deadline_update.update.deadline) != _utc(stored_deadline)
             ):
                 raise ValueError

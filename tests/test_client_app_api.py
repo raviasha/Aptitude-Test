@@ -1455,6 +1455,41 @@ class ClientControlLifecycleTests(unittest.TestCase):
             self.assertIsNone(context._control_thread)
             context.shutdown()
 
+    def test_blocked_control_request_never_closes_resources_until_it_quiesces(self):
+        from client_app import ClientServices, create_client_app
+
+        entered = threading.Event()
+        release = threading.Event()
+        coordinator = FakeCoordinator()
+        coordinator.request_timeout_seconds = 0.05
+
+        def blocked_update(_attempt_id):
+            entered.set()
+            release.wait(10)
+            return None
+
+        coordinator.deadline_update = blocked_update
+        store = FakeStore(FakeSnapshot())
+        services = ClientServices(
+            FakeIdentityStore(), store, FakeRuntime(store), coordinator,
+            FakeOutbox(), owns_resources=True,
+        )
+        context = create_client_app(services).state.client_context
+        with patch("client_app.random.uniform", return_value=0.01):
+            context.initialize()
+            self.assertTrue(entered.wait(1))
+            started = time.monotonic()
+            context.shutdown()
+            self.assertLess(time.monotonic() - started, 2)
+            self.assertEqual(0, coordinator.closed)
+            self.assertEqual(0, store.closed)
+            release.set()
+            deadline = time.monotonic() + 2
+            while store.closed == 0 and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertEqual(1, coordinator.closed)
+            self.assertEqual(1, store.closed)
+
 
 class ClientCoordinatorReconfigurationTests(unittest.TestCase):
     def setUp(self):
@@ -1601,6 +1636,37 @@ class ClientCoordinatorReconfigurationTests(unittest.TestCase):
         self.assertEqual([], self.config_updates)
         self.assertIs(old, self.services.coordinator)
         self.assertIsNotNone(old.session)
+
+    def test_blocked_control_poll_makes_configuration_swap_busy_without_closing_old_services(self):
+        entered = threading.Event()
+        release = threading.Event()
+        self.coordinator.request_timeout_seconds = 0.05
+
+        def blocked_update(_attempt_id):
+            entered.set()
+            release.wait(10)
+            return None
+
+        self.coordinator.deadline_update = blocked_update
+        self.store.snapshot = FakeSnapshot()
+        context = self.client_context.app.state.client_context
+        with patch("client_app.random.uniform", return_value=0.01):
+            context.observe_snapshot(self.store.snapshot)
+            self.assertTrue(entered.wait(1))
+            self.store.snapshot = None
+            response = self.client.post(
+                "/api/device/coordinator",
+                json={"base_url": "https://ksat-new.example.edu:9443", "confirmed": True},
+                headers=self.mutation_headers,
+            )
+        self.assertEqual(503, response.status_code)
+        self.assertEqual("control_poll_busy", response.json()["problem"]["code"])
+        self.assertIs(self.coordinator, self.services.coordinator)
+        self.assertEqual([], self.config_updates)
+        self.assertEqual(0, self.coordinator.closed)
+        self.assertEqual(1, self.candidates[0].closed)
+        self.assertEqual(1, self.new_outboxes[0].stops)
+        release.set()
 
 
 if __name__ == "__main__":

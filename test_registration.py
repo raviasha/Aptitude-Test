@@ -855,7 +855,12 @@ class StudentRegistrationTests(unittest.TestCase):
                 "INSERT INTO tests (test_name, composition, created_at, active, launched, mode) VALUES (?, ?, ?, 1, 0, 'faculty')",
                 ("Timed faculty test", json.dumps(rules), app.now()),
             ).lastrowid
-        request = app.Request({"type": "http", "method": "POST", "path": "/", "headers": [], "session": {"user": {"role": "admin", "id": "admin", "name": "Admin"}}})
+        request = app.Request({
+            "type": "http", "method": "POST", "scheme": "http", "server": ("testserver", 80),
+            "path": "/", "headers": [(b"host", b"testserver"), (b"x-ksat-csrf", b"test-token")],
+            "session": {"user": {"role": "admin", "id": "admin", "name": "Admin"},
+                        "admin_csrf": "test-token"},
+        })
         app.launch_test(test_id, request)
         initial = next(test for test in app.list_tests(request)["tests"] if test["test_id"] == test_id)
         self.assertGreater(initial["remaining_seconds"], 0)

@@ -50,10 +50,12 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(ticket.duration_extension_seconds, 0)
 
     def test_deadline_update_is_a_strict_answer_free_signed_payload(self):
+        self.assertIn("base_deadline", AttemptDeadlineUpdate.model_fields)
         update = AttemptDeadlineUpdate(
             attempt_id="attempt-1",
             release_id="release-1",
             device_id="device-1",
+            base_deadline=datetime(2026, 8, 31, 1, tzinfo=timezone.utc),
             prior_deadline=datetime(2026, 8, 31, 1, tzinfo=timezone.utc),
             deadline=datetime(2026, 8, 31, 1, 5, tzinfo=timezone.utc),
             cumulative_extension_seconds=300,

@@ -4,14 +4,22 @@ import tempfile
 import threading
 import unittest
 import uuid
+import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
 import app
-from ksat.crypto import generate_ed25519_keypair
-from ksat.protocol import PublicQuestion, deterministic_question_order
+from ksat.crypto import generate_ed25519_keypair, sign_json
+from ksat.protocol import (
+    AttemptTicket,
+    PublicQuestion,
+    SignedAttemptTicket,
+    canonical_json,
+    deterministic_question_order,
+)
 from ksat.coordinator.releases import prepare_release
 from ksat.coordinator.attempts import issue_attempt_ticket
 
@@ -101,12 +109,30 @@ class DistributedAdminTests(unittest.TestCase):
             )
             self.seed = base64.b64encode(b"o" * 32).decode("ascii")
             self.attempt_id = str(uuid.uuid4())
+            ticket = AttemptTicket(
+                attempt_id=self.attempt_id,
+                student_id="S0",
+                device_id=self.device_id,
+                release_id=self.release_id,
+                content_hash=release.content_hash,
+                started_at=NOW,
+                deadline=NOW + timedelta(minutes=30),
+                order_seed_b64=self.seed,
+                content_key_b64=base64.b64encode(b"k" * 32).decode("ascii"),
+            )
+            signed_ticket = SignedAttemptTicket(
+                ticket=ticket,
+                signature_b64=sign_json(
+                    app.app.state.coordinator_config.signing_private_key_b64, ticket
+                ),
+            )
             connection.execute(
                 """INSERT INTO attempts
                 (attempt_id,student_id,test_id,release_id,device_id,order_seed,ticket_json,started_at,status,total_questions,expires_at)
                 VALUES (?,?,?,?,?,?,?,?,'in_progress',3,?)""",
                 (self.attempt_id, "S0", self.test_id, self.release_id, self.device_id, self.seed,
-                 '{}', NOW.isoformat(), (NOW + timedelta(minutes=30)).isoformat()),
+                 canonical_json(signed_ticket).decode("utf-8"), NOW.isoformat(),
+                 (NOW + timedelta(minutes=30)).isoformat()),
             )
         self.client = TestClient(app.app)
         login = self.client.post(
@@ -114,6 +140,7 @@ class DistributedAdminTests(unittest.TestCase):
             json={"identifier": "faculty", "password": "faculty123", "role": "admin"},
         )
         self.assertEqual(login.status_code, 200)
+        self.csrf_token = login.json()["csrf_token"]
 
     def tearDown(self):
         self.client.close()
@@ -124,12 +151,17 @@ class DistributedAdminTests(unittest.TestCase):
         return self.client.get(path)
 
     def admin_post(self, path, payload=None):
-        return self.client.post(path, json=payload or {})
+        return self.client.post(
+            path,
+            json=payload or {},
+            headers={"X-KSAT-CSRF": self.csrf_token},
+        )
 
     def test_status_and_devices_are_operational_only(self):
         response = self.admin_get("/api/admin/tests")
         self.assertEqual(response.status_code, 200)
         item = next(value for value in response.json()["tests"] if value["test_id"] == self.test_id)
+        self.assertNotIn("content_hash", item)
         self.assertEqual(item["distributed_status"], {"eligible": 3, "started": 1, "submitted": 0, "voided": 0})
         self.assertEqual(len(item["content_hash_prefix"]), 12)
         self.assertIsInstance(response.json()["submission_queue_pending"], int)
@@ -160,6 +192,26 @@ class DistributedAdminTests(unittest.TestCase):
         self.assertGreaterEqual(len(new), 24)
         self.assertNotIn(new, json.dumps(self.admin_get("/api/admin/devices").json()))
         self.assertEqual(app.app.state.coordinator_config.device_enrollment_code, new)
+        app.configure_coordinator_state(app.app)
+        self.assertEqual(new, app.app.state.coordinator_config.device_enrollment_code)
+
+    def test_externally_managed_enrollment_code_rejects_rotation_without_mutation(self):
+        before = app.app.state.coordinator_config.device_enrollment_code
+        with patch.dict(os.environ, {"KSAT_DEVICE_ENROLLMENT_CODE": "managed-by-it"}):
+            response = self.admin_post(
+                "/api/admin/devices/enrollment-code/rotate",
+                {"reason": "Must not override IT"},
+            )
+        self.assertEqual(409, response.status_code)
+        self.assertEqual("enrollment_code_managed_externally", response.json()["detail"]["code"])
+        self.assertEqual(before, app.app.state.coordinator_config.device_enrollment_code)
+        with app.db() as connection:
+            self.assertEqual(
+                0,
+                connection.execute(
+                    "SELECT COUNT(*) FROM audit_events WHERE event_type='device_enrollment_code_rotated'"
+                ).fetchone()[0],
+            )
 
     def test_exact_attempt_order_is_derived_without_answers(self):
         response = self.admin_get(f"/api/admin/attempts/{self.attempt_id}/order")
@@ -170,6 +222,19 @@ class DistributedAdminTests(unittest.TestCase):
             ).fetchall()]
         self.assertEqual(response.json()["question_order"], deterministic_question_order(canonical, self.seed))
         self.assertNotIn("answer", json.dumps(response.json()).lower())
+
+    def test_attempt_order_fails_closed_when_private_snapshot_is_invalid(self):
+        with app.db() as connection:
+            connection.execute(
+                "UPDATE release_questions SET correct_answer=NULL WHERE release_id=?",
+                (self.release_id,),
+            )
+        response = self.admin_get(f"/api/admin/attempts/{self.attempt_id}/order")
+        self.assertEqual(409, response.status_code)
+        serialized = json.dumps(response.json()).lower()
+        self.assertIn("faculty intervention", serialized)
+        self.assertNotIn("correct_answer", serialized)
+        self.assertNotIn("private answer", serialized)
 
     def test_void_requires_confirmation_for_submission_and_preserves_evidence(self):
         with app.db() as connection:
@@ -273,6 +338,30 @@ class DistributedAdminTests(unittest.TestCase):
         self.assertEqual(stranger.post(f"/api/admin/attempts/{self.attempt_id}/void", json={"reason":"Not allowed"}).status_code, 401)
         self.assertEqual(app.app.state.coordinator_config.device_enrollment_code, before)
         stranger.close()
+
+    def test_hostile_origin_and_cross_session_csrf_fail_before_duplicate_side_effects(self):
+        before = None
+        with app.db() as connection:
+            before = connection.execute("SELECT COUNT(*) FROM tests").fetchone()[0]
+        hostile = self.client.post(
+            f"/api/admin/tests/{self.test_id}/duplicate",
+            headers={"Origin": "https://evil.example", "X-KSAT-CSRF": self.csrf_token},
+        )
+        other = TestClient(app.app)
+        other_login = other.post(
+            "/api/login",
+            json={"identifier": "faculty", "password": "faculty123", "role": "admin"},
+        )
+        cross = other.post(
+            f"/api/admin/tests/{self.test_id}/duplicate",
+            headers={"X-KSAT-CSRF": self.csrf_token},
+        )
+        self.assertEqual(403, hostile.status_code)
+        self.assertEqual(403, cross.status_code)
+        self.assertNotEqual(self.csrf_token, other_login.json()["csrf_token"])
+        with app.db() as connection:
+            self.assertEqual(before, connection.execute("SELECT COUNT(*) FROM tests").fetchone()[0])
+        other.close()
 
 
 if __name__ == "__main__":

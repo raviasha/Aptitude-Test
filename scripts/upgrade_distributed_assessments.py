@@ -3,13 +3,18 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import sqlite3
+import subprocess
+import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from ksat.coordinator.process_lock import CoordinatorLockHeld, CoordinatorProcessLock
 
 
 def _resolved_regular_file(path: Path) -> Path:
@@ -64,6 +69,15 @@ def _sqlite_backup(source_path: Path, destination: Path) -> Path:
         os.replace(temporary, destination)
         with destination.open("rb+") as stream:
             os.fsync(stream.fileno())
+        try:
+            parent_descriptor = os.open(destination.parent, os.O_RDONLY)
+        except OSError:
+            parent_descriptor = None
+        if parent_descriptor is not None:
+            try:
+                os.fsync(parent_descriptor)
+            finally:
+                os.close(parent_descriptor)
         return destination
     finally:
         temporary.unlink(missing_ok=True)
@@ -121,7 +135,7 @@ def _counts(db_path: Path) -> dict[str, int]:
         connection.close()
 
 
-def _run_additive_upgrade(db_path: Path, data_dir: Path) -> dict[str, int]:
+def _run_additive_upgrade_in_worker(db_path: Path, data_dir: Path) -> dict[str, int]:
     import app as coordinator_app
 
     originals = (
@@ -175,6 +189,39 @@ def _run_additive_upgrade(db_path: Path, data_dir: Path) -> dict[str, int]:
         ) = originals
 
 
+def _run_additive_upgrade(
+    db_path: Path, data_dir: Path, *, isolated_secrets: bool = False
+) -> dict[str, Any]:
+    environment = os.environ.copy()
+    source_root = Path(__file__).resolve().parents[1]
+    environment["PYTHONPATH"] = os.pathsep.join(
+        [str(source_root), environment.get("PYTHONPATH", "")]
+    ).rstrip(os.pathsep)
+    environment["KSAT_DATA_DIR"] = str(data_dir)
+    if isolated_secrets:
+        for name in (
+            "KSAT_DEVICE_ENROLLMENT_CODE", "KSAT_SESSION_SECRET", "SESSION_SECRET"
+        ):
+            environment.pop(name, None)
+    completed = subprocess.run(
+        [sys.executable, str(Path(__file__).resolve()), "--isolated-worker", str(db_path), str(data_dir)],
+        cwd=source_root,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(
+            "The isolated upgrade worker failed without modifying the coordinator process."
+        ) from RuntimeError(completed.stderr[-2000:])
+    marker = "KSAT_UPGRADE_RESULT="
+    line = next((item for item in completed.stdout.splitlines() if item.startswith(marker)), None)
+    if line is None:
+        raise RuntimeError("The isolated upgrade worker returned no result.")
+    return json.loads(line[len(marker):])
+
+
 def upgrade(db_path: Path, data_dir: Path, *, dry_run: bool = False) -> dict[str, int]:
     """Back up, migrate additively, and prepare only safe legacy assessments."""
 
@@ -184,33 +231,51 @@ def upgrade(db_path: Path, data_dir: Path, *, dry_run: bool = False) -> dict[str
         raise ValueError("Live database, backup, and data output paths must not overlap.")
     if any(path.is_symlink() for path in live_data.rglob("*")):
         raise ValueError("Coordinator data contains a symbolic-link alias and cannot be upgraded safely.")
-    _assert_idle(live_db)
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-
-    if dry_run:
-        with tempfile.TemporaryDirectory(prefix="ksat-upgrade-dry-run-") as temporary_name:
-            root = Path(temporary_name)
-            copied_db = _sqlite_backup(live_db, root / "aptitude-dry-run.db")
+    try:
+        lock = CoordinatorProcessLock(live_data).acquire()
+    except CoordinatorLockHeld as error:
+        raise RuntimeError(str(error)) from error
+    try:
+        for candidate in live_data.rglob("*"):
+            if not candidate.is_file() or candidate.resolve() == live_db:
+                continue
+            try:
+                if os.path.samefile(candidate, live_db):
+                    raise ValueError("The live database has a hard-link alias inside coordinator data.")
+            except FileNotFoundError:
+                continue
+        _assert_idle(live_db)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        if dry_run:
+            root = Path(tempfile.mkdtemp(prefix="ksat-upgrade-dry-run-"))
             copied_data = root / "data"
-            shutil.copytree(live_data, copied_data, symlinks=False)
-            before_live = live_db.stat().st_mtime_ns, live_db.stat().st_size
-            result = _run_additive_upgrade(copied_db, copied_data)
-            after_live = live_db.stat().st_mtime_ns, live_db.stat().st_size
-            if before_live != after_live:
-                raise RuntimeError("Dry-run detected an unexpected live database change.")
+            ignored = {"secrets", "backups", "Assessment Releases", ".coordinator.lock"}
+            if live_db.parent == live_data:
+                ignored.add(live_db.name)
+            shutil.copytree(
+                live_data, copied_data, symlinks=False,
+                ignore=lambda _path, names: [name for name in names if name in ignored],
+            )
+            copied_db = _sqlite_backup(live_db, copied_data / "aptitude.db")
+            result = _run_additive_upgrade(copied_db, copied_data, isolated_secrets=True)
             result["planned_prepared_releases"] = result["prepared_releases"]
-            result["backup_path"] = str(copied_db)  # type: ignore[assignment]
+            result["backup_path"] = None
+            result["dry_run_workspace"] = str(root)
             return result
 
-    backup = live_data / "backups" / f"aptitude-pre-distributed-{stamp}.db"
-    _sqlite_backup(live_db, backup)
-    try:
-        result = _run_additive_upgrade(live_db, live_data)
-        _integrity_check(live_db)
-    except Exception as error:
-        raise RuntimeError(f"Upgrade failed; recover from backup: {backup}") from error
-    result["backup_path"] = str(backup)  # type: ignore[assignment]
-    return result
+        backup = live_data / "backups" / f"aptitude-pre-distributed-{stamp}.db"
+        if not backup.parent.resolve(strict=False).is_relative_to(live_data):
+            raise ValueError("The backup path must remain inside coordinator data.")
+        _sqlite_backup(live_db, backup)
+        try:
+            result = _run_additive_upgrade(live_db, live_data)
+            _integrity_check(live_db)
+        except Exception as error:
+            raise RuntimeError(f"Upgrade failed; recover from backup: {backup}") from error
+        result["backup_path"] = str(backup)
+        return result
+    finally:
+        lock.release()
 
 
 def main() -> int:
@@ -226,4 +291,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    if len(sys.argv) == 4 and sys.argv[1] == "--isolated-worker":
+        worker_result = _run_additive_upgrade_in_worker(Path(sys.argv[2]), Path(sys.argv[3]))
+        print("KSAT_UPGRADE_RESULT=" + json.dumps(worker_result, separators=(",", ":")))
+    else:
+        raise SystemExit(main())

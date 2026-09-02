@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 from scripts.upgrade_distributed_assessments import upgrade
+from ksat.coordinator.process_lock import CoordinatorProcessLock
 
 
 class DistributedMigrationTests(unittest.TestCase):
@@ -51,14 +52,36 @@ class DistributedMigrationTests(unittest.TestCase):
         connection.close()
         return value
 
+    def tree_snapshot(self):
+        return {
+            path.relative_to(self.data_dir).as_posix(): path.read_bytes()
+            for path in self.data_dir.rglob("*")
+            if path.is_file()
+        }
+
     def test_dry_run_is_complete_without_modifying_live_database_or_data(self):
         before_bytes = self.db_path.read_bytes()
-        before_files = sorted(path.relative_to(self.data_dir) for path in self.data_dir.rglob('*'))
+        before_files = self.tree_snapshot()
         result = upgrade(self.db_path, self.data_dir, dry_run=True)
         self.assertEqual(self.db_path.read_bytes(), before_bytes)
-        self.assertEqual(sorted(path.relative_to(self.data_dir) for path in self.data_dir.rglob('*')), before_files)
+        self.assertEqual(self.tree_snapshot(), before_files)
         self.assertEqual(result["prepared_releases"], 1)
         self.assertEqual(result["preserved_attempts"], 1)
+        self.assertIsNone(result["backup_path"])
+        self.assertTrue(Path(result["dry_run_workspace"]).is_dir())
+        self.assertFalse((self.data_dir / "secrets").exists())
+
+    def test_upgrade_refuses_live_coordinator_lock_and_hardlink_alias(self):
+        with CoordinatorProcessLock(self.data_dir):
+            with self.assertRaisesRegex(RuntimeError, "already in use|lock"):
+                upgrade(self.db_path, self.data_dir, dry_run=True)
+        alias = self.data_dir / "database-alias.db"
+        try:
+            alias.hardlink_to(self.db_path)
+        except OSError:
+            self.skipTest("Hard links are unavailable on this filesystem")
+        with self.assertRaisesRegex(ValueError, "alias|overlap"):
+            upgrade(self.db_path, self.data_dir, dry_run=True)
 
     def test_live_upgrade_is_backed_up_idempotent_and_preserves_history(self):
         before = self.snapshot()

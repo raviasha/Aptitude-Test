@@ -1209,6 +1209,33 @@ class DistributedAttemptStartTests(unittest.TestCase):
             ).fetchone()[0]
         self.assertEqual(deadline.replace("Z", "+00:00"), stored)
 
+    def test_retry_after_two_extensions_returns_original_ticket_and_attempt(self):
+        first = self.start("S100", "device-a", at="2026-08-31T09:02:00+00:00")
+        self.assertEqual(200, first.status_code, first.text)
+        original = first.json()
+        attempt_id = original["ticket"]["ticket"]["attempt_id"]
+        with patch("app.require_admin_mutation", return_value={"id": "faculty", "role": "admin"}), patch(
+            "app.datetime", FrozenDateTime
+        ):
+            for reason in ("Power interruption", "Additional interruption"):
+                extended = self.client.post(
+                    f"/api/admin/attempts/{attempt_id}/extend",
+                    json={"minutes": 5, "reason": reason},
+                )
+                self.assertEqual(200, extended.status_code, extended.text)
+        retried = self.start("S100", "device-a", at="2026-08-31T09:06:00+00:00")
+        self.assertEqual(200, retried.status_code, retried.text)
+        self.assertEqual(original["ticket"], retried.json()["ticket"])
+        self.assertEqual(original["canonical_question_ids"], retried.json()["canonical_question_ids"])
+        with app.db() as connection:
+            rows = connection.execute(
+                "SELECT attempt_id,expires_at,deadline_revision FROM attempts WHERE student_id='S100'"
+            ).fetchall()
+        self.assertEqual(1, len(rows))
+        self.assertEqual(attempt_id, rows[0]["attempt_id"])
+        self.assertEqual(2, rows[0]["deadline_revision"])
+        self.assertEqual("2026-08-31T09:42:00+00:00", rows[0]["expires_at"])
+
     def test_extend_and_close_preserve_issued_tickets_but_control_new_starts(self):
         first = self.start("S100", "device-a", at="2026-08-31T09:02:00+00:00")
         second = self.start("S101", "device-b", at="2026-08-31T09:07:00+00:00")
@@ -1226,7 +1253,7 @@ class DistributedAttemptStartTests(unittest.TestCase):
                 ).fetchall()
             }
 
-        with patch("app.require_user", return_value={"role": "admin"}):
+        with patch("app.require_admin_mutation", return_value={"id": "faculty", "role": "admin"}):
             extended = self.client.post(
                 f"/api/admin/tests/{self.test_id}/extend", json={"minutes": 5}
             )

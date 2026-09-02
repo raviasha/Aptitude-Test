@@ -543,6 +543,12 @@ class AssessmentRuntime:
                 or update.release_id != record.release_id
                 or update.device_id != self.identity.device_id
                 or update.device_id != ticket.device_id
+                or _utc(update.base_deadline, "Deadline update base")
+                   != _utc(ticket.deadline, "Attempt deadline")
+                or _utc(update.deadline, "Deadline update deadline")
+                   != _utc(ticket.deadline, "Attempt deadline")
+                      + timedelta(seconds=update.cumulative_extension_seconds)
+                or _utc(update.deadline, "Deadline update deadline") < record.deadline
             ):
                 raise ValueError("Deadline update does not match this attempt and device.")
             if (

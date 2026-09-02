@@ -841,6 +841,7 @@ class ClientRuntimeTests(unittest.TestCase):
             attempt_id=self.attempt_id,
             release_id=self.release_id,
             device_id=self.device_id,
+            base_deadline=STARTED + timedelta(minutes=30),
             prior_deadline=STARTED + timedelta(minutes=30),
             deadline=STARTED + timedelta(minutes=35),
             cumulative_extension_seconds=300,
@@ -862,6 +863,7 @@ class ClientRuntimeTests(unittest.TestCase):
         self._prepare_and_start()
         valid = AttemptDeadlineUpdate(
             attempt_id=self.attempt_id, release_id=self.release_id, device_id=self.device_id,
+            base_deadline=STARTED + timedelta(minutes=30),
             prior_deadline=STARTED + timedelta(minutes=30), deadline=STARTED + timedelta(minutes=35),
             cumulative_extension_seconds=300, revision=1, issued_at=STARTED,
         )
@@ -875,6 +877,32 @@ class ClientRuntimeTests(unittest.TestCase):
         newer = valid.model_copy(update={"prior_deadline":valid.deadline,"deadline":valid.deadline+timedelta(minutes=5),"revision":2,"cumulative_extension_seconds":600})
         with self.assertRaises(AttemptSealedError):
             self.runtime.apply_deadline_update(SignedAttemptDeadlineUpdate(update=newer, signature_b64=sign_json(self.coordinator_private,newer)))
+
+    def test_missed_first_revision_accepts_latest_cumulative_update_after_restart(self):
+        self._prepare_and_start()
+        self.clock.advance(600)
+        latest = AttemptDeadlineUpdate(
+            attempt_id=self.attempt_id,
+            release_id=self.release_id,
+            device_id=self.device_id,
+            base_deadline=STARTED + timedelta(minutes=30),
+            prior_deadline=STARTED + timedelta(minutes=35),
+            deadline=STARTED + timedelta(minutes=40),
+            cumulative_extension_seconds=600,
+            revision=2,
+            issued_at=STARTED + timedelta(minutes=12),
+        )
+        signed = SignedAttemptDeadlineUpdate(
+            update=latest,
+            signature_b64=sign_json(self.coordinator_private, latest),
+        )
+        snapshot = self.runtime.apply_deadline_update(signed)
+        self.assertEqual(1800, snapshot.remaining_seconds)
+        reopened = self._reopen()
+        recovered = reopened.recover()
+        self.assertEqual(2, self.store.load_attempt(self.attempt_id).deadline_revision)
+        self.assertEqual(latest.deadline, self.store.load_attempt(self.attempt_id).deadline)
+        self.assertEqual(snapshot.remaining_seconds, recovered.remaining_seconds)
 
     def test_concurrent_tick_and_submit_create_exactly_one_bundle(self):
         self._prepare_and_start()

@@ -15,11 +15,13 @@ import app
 from ksat.coordinator.attempts import AttemptProblem, issue_attempt_ticket
 from ksat.crypto import generate_ed25519_keypair, sign_json
 from ksat.protocol import (
+    AttemptDeadlineUpdate,
     AttemptTicket,
     IntegrityEvent,
     ResponseBundle,
     ResponseEntry,
     SignedAttemptTicket,
+    SignedAttemptDeadlineUpdate,
     SignedResponseBundle,
     canonical_json,
     device_request_bytes,
@@ -260,6 +262,35 @@ class DistributedSubmissionTests(unittest.TestCase):
 
     def test_late_offline_upload_is_accepted_when_sealed_by_deadline(self):
         response = self.submit(self.bundle(), received_at=self.deadline + timedelta(hours=1))
+        self.assertEqual(200, response.status_code, response.text)
+
+    def test_latest_cumulative_revision_authorizes_missed_updates_submission_deadline(self):
+        effective = self.deadline + timedelta(minutes=10)
+        update = AttemptDeadlineUpdate(
+            attempt_id=self.attempt_id,
+            release_id=self.release_id,
+            device_id=self.device_id,
+            base_deadline=self.deadline,
+            prior_deadline=self.deadline + timedelta(minutes=5),
+            deadline=effective,
+            cumulative_extension_seconds=600,
+            revision=2,
+            issued_at=self.started_at + timedelta(minutes=1),
+        )
+        signed = SignedAttemptDeadlineUpdate(
+            update=update,
+            signature_b64=sign_json(self.config.signing_private_key_b64, update),
+        )
+        with app.db() as connection:
+            connection.execute(
+                """UPDATE attempts SET expires_at=?,deadline_revision=2,
+                     deadline_extension_seconds=600,deadline_update_json=?
+                   WHERE attempt_id=?""",
+                (effective.isoformat(timespec="seconds"), canonical_json(signed).decode(), self.attempt_id),
+            )
+        response = self.submit(
+            self.bundle(sealed_at=effective), received_at=effective + timedelta(hours=1)
+        )
         self.assertEqual(200, response.status_code, response.text)
 
     def test_legacy_deadline_reads_never_finalize_a_distributed_attempt(self):

@@ -93,3 +93,42 @@ Install that file on the designated lab server. The installer adds a private-net
 - Faculty: `faculty` / `faculty123`
 
 Change demo passwords and set a strong `SESSION_SECRET` before production use.
+
+## Distributed lab assessments
+
+Faculty assessments are prepared as immutable encrypted releases for the installed
+KSAT Client. Answer selection, navigation, autosave, and the per-student timer run
+on the lab computer; the coordinator receives only the sealed final response and
+scores it centrally. Personal practice continues to use the coordinator browser
+workflow unchanged.
+
+The Faculty **Tests** page shows release readiness, a short content-hash prefix,
+the ten-minute start window, eligible/started/submitted/voided counts, submission
+queue pressure, and enrolled lab computers. Faculty can revoke or reactivate a
+computer, rotate the one-time enrollment code, duplicate a used assessment into
+a new immutable release, inspect an attempt's deterministic question order, and
+perform reasoned/audited void, retake, and timer-extension operations. Enrollment
+codes are displayed only in the successful rotation response.
+
+Timer extensions do not rewrite the signed assessment pack. New attempts receive
+the current audited release-extension policy in their signed ticket. Active
+clients poll a small, answer-free, device-bound control endpoint at a jittered
+interval and apply only a newer coordinator-signed deadline revision; offline
+clients continue safely and apply it when connectivity returns.
+
+Before first distributed deployment, stop/close every active faculty assessment
+and run the compatibility upgrade against the coordinator data paths. Always
+preview it first:
+
+```powershell
+python scripts/upgrade_distributed_assessments.py `
+  "C:\ProgramData\Aptitude Lab\aptitude.db" `
+  "C:\ProgramData\Aptitude Lab" --dry-run
+```
+
+Remove `--dry-run` to perform the live additive migration. A timestamped,
+integrity-checked SQLite backup is created in `backups` before any live schema or
+release change. Re-running the command is safe: it preserves existing students,
+questions, practice/history, attempts, responses, scores, and violations, and
+prepares only eligible unlaunched faculty tests that have no historical
+submission or release.

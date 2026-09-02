@@ -5,8 +5,10 @@ from datetime import datetime, timezone
 from pydantic import ValidationError
 
 from ksat.protocol import (
+    AttemptDeadlineUpdate,
     AttemptTicket,
     ReleaseManifest,
+    SignedAttemptDeadlineUpdate,
     canonical_json,
     deterministic_question_order,
     device_request_bytes,
@@ -44,6 +46,26 @@ class ProtocolTests(unittest.TestCase):
         serialized = canonical_json(ticket).lower()
         self.assertNotIn(b"correct", serialized)
         self.assertNotIn(b"solution", serialized)
+        self.assertNotIn(b"duration_extension_seconds", serialized)
+        self.assertEqual(ticket.duration_extension_seconds, 0)
+
+    def test_deadline_update_is_a_strict_answer_free_signed_payload(self):
+        update = AttemptDeadlineUpdate(
+            attempt_id="attempt-1",
+            release_id="release-1",
+            device_id="device-1",
+            prior_deadline=datetime(2026, 8, 31, 1, tzinfo=timezone.utc),
+            deadline=datetime(2026, 8, 31, 1, 5, tzinfo=timezone.utc),
+            cumulative_extension_seconds=300,
+            revision=1,
+            issued_at=datetime(2026, 8, 31, tzinfo=timezone.utc),
+        )
+        signed = SignedAttemptDeadlineUpdate(update=update, signature_b64="c2ln")
+        serialized = canonical_json(signed).lower()
+        self.assertNotIn(b"answer", serialized)
+        self.assertNotIn(b"content_key", serialized)
+        with self.assertRaises(ValidationError):
+            AttemptDeadlineUpdate(**{**update.model_dump(), "revision": 0})
 
     def test_device_request_bytes_bind_all_request_components(self):
         request = device_request_bytes(

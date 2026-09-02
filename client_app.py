@@ -9,6 +9,7 @@ import json
 import math
 import os
 import re
+import random
 import secrets
 import sqlite3
 import tempfile
@@ -448,6 +449,9 @@ class _ClientContext:
         self._outbox_wake_lock = threading.Lock()
         self._outbox_wake_keys: set[tuple[int, str]] = set()
         self._owned_resources_closed = False
+        self._control_condition = threading.Condition()
+        self._control_stop = False
+        self._control_thread: threading.Thread | None = None
 
     def initialize(self) -> None:
         with self._prefetch_state_lock:
@@ -471,6 +475,7 @@ class _ClientContext:
             self._outbox_stop_called = False
             self._outbox_started = True
             self.observe_snapshot(recovered)
+            self._start_control_thread()
             if (
                 self.services.background_prefetch
                 and self.identity.device_id is not None
@@ -486,6 +491,7 @@ class _ClientContext:
         with self._prefetch_state_lock:
             self._prefetch_shutdown_requested = True
         prefetch_stopped = self._quiesce_prefetch()
+        self._stop_control_thread()
         if self.services is None:
             return
         self._stop_outbox()
@@ -498,6 +504,7 @@ class _ClientContext:
         with self._prefetch_state_lock:
             self._prefetch_shutdown_requested = True
         prefetch_stopped = self._quiesce_prefetch()
+        self._stop_control_thread()
         self._stop_outbox()
         if prefetch_stopped:
             self._close_owned_resources()
@@ -548,6 +555,12 @@ class _ClientContext:
             return None
 
     def observe_snapshot(self, snapshot: Any | None) -> Any | None:
+        with self._control_condition:
+            self._control_condition.notify_all()
+        if snapshot is not None and snapshot.state == "in_progress":
+            self._start_control_thread()
+        elif snapshot is not None:
+            self._stop_control_thread()
         if (
             snapshot is None
             or snapshot.state != "sealed_pending"
@@ -571,6 +584,76 @@ class _ClientContext:
                 self._outbox_wake_keys.discard(key)
             raise
         return snapshot
+
+    def _start_control_thread(self) -> None:
+        if (
+            self.services is None
+            or self.services.runtime is None
+            or self._prefetch_shutdown_requested
+        ):
+            return
+        with self._control_condition:
+            if self._control_thread is not None and self._control_thread.is_alive():
+                self._control_condition.notify_all()
+                return
+            self._control_stop = False
+
+            def poll() -> None:
+                current_thread = threading.current_thread()
+                try:
+                    while True:
+                        with self._control_condition:
+                            if self._control_stop:
+                                return
+                            services = self.services
+                            record = services.store.active_attempt() if services is not None else None
+                            if record is None:
+                                self._control_condition.wait()
+                                continue
+                            if record.state != "in_progress":
+                                return
+                            attempt_id = record.attempt_id
+                            self._control_condition.wait(timeout=random.uniform(10.0, 20.0))
+                            if self._control_stop:
+                                return
+                        services = self.services
+                        if (
+                            services is None
+                            or services.runtime is None
+                            or not hasattr(services.coordinator, "deadline_update")
+                        ):
+                            continue
+                        latest = services.store.active_attempt()
+                        if latest is None or latest.state != "in_progress" or latest.attempt_id != attempt_id:
+                            continue
+                        try:
+                            update = services.coordinator.deadline_update(attempt_id)
+                            if update is not None:
+                                self.observe_snapshot(services.runtime.apply_deadline_update(update))
+                        except (CoordinatorProblem, ValueError, KeyError, OSError, sqlite3.Error):
+                            continue
+                finally:
+                    with self._control_condition:
+                        if self._control_thread is current_thread:
+                            self._control_thread = None
+                        self._control_condition.notify_all()
+
+            self._control_thread = threading.Thread(
+                target=poll, name="ksat-attempt-control", daemon=True
+            )
+            thread = self._control_thread
+        thread.start()
+
+    def _stop_control_thread(self) -> None:
+        with self._control_condition:
+            self._control_stop = True
+            self._control_condition.notify_all()
+            thread = self._control_thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=5.0)
+        with self._control_condition:
+            if self._control_thread is thread and (thread is None or not thread.is_alive()):
+                self._control_thread = None
 
     def problem(self, code: str, *, status: int, retryable: bool = False) -> dict[str, Any]:
         message = _KNOWN_PUBLIC_MESSAGES.get(code, "The requested action could not be completed.")
@@ -1319,6 +1402,7 @@ def create_client_app(services: ClientServices | None = None) -> FastAPI:
                 500,
             ) from error
 
+        context._stop_control_thread()
         previous_coordinator = current.coordinator
         previous_outbox = current.outbox
         try:
@@ -1333,6 +1417,7 @@ def create_client_app(services: ClientServices | None = None) -> FastAPI:
         context.catalog.clear()
         context.ready_releases.clear()
         candidate_outbox.wake()
+        context._start_control_thread()
         context._restart_background_prefetch()
         if current.owns_resources:
             previous_coordinator.close()

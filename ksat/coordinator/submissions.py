@@ -16,6 +16,7 @@ from ksat.crypto import sha256_hex, verify_json
 from ksat.protocol import (
     IntegrityEvent,
     SignedResponseBundle,
+    SignedAttemptDeadlineUpdate,
     SubmissionReceipt,
     canonical_json,
 )
@@ -311,6 +312,28 @@ def validate_and_score(
         stored_deadline = datetime.fromisoformat(attempt["expires_at"].replace("Z", "+00:00"))
     except (AttributeError, TypeError, ValueError) as error:
         raise _problem("attempt_identity_mismatch", "The stored attempt identity is invalid.") from error
+    effective_deadline = _utc(ticket.deadline)
+    if int(attempt["deadline_revision"] or 0) > 0:
+        try:
+            deadline_update = SignedAttemptDeadlineUpdate.model_validate_json(
+                attempt["deadline_update_json"], strict=True
+            )
+            verify_json(
+                coordinator_public_key_b64,
+                deadline_update.update,
+                deadline_update.signature_b64,
+            )
+            if (
+                deadline_update.update.attempt_id != attempt["attempt_id"]
+                or deadline_update.update.release_id != attempt["release_id"]
+                or deadline_update.update.device_id != attempt["device_id"]
+                or deadline_update.update.revision != attempt["deadline_revision"]
+                or _utc(deadline_update.update.deadline) != _utc(stored_deadline)
+            ):
+                raise ValueError
+            effective_deadline = _utc(deadline_update.update.deadline)
+        except Exception as error:
+            raise _problem("attempt_identity_mismatch", "The stored attempt identity is invalid.") from error
     if (
         attempt["student_id"] != ticket.student_id
         or attempt["release_id"] != ticket.release_id
@@ -318,7 +341,7 @@ def validate_and_score(
         or attempt["order_seed"] != ticket.order_seed_b64
         or not stored_ticket_matches
         or _utc(stored_started) != _utc(ticket.started_at)
-        or _utc(stored_deadline) != _utc(ticket.deadline)
+        or _utc(stored_deadline) != effective_deadline
     ):
         raise _problem("attempt_identity_mismatch", "The submitted attempt identity is invalid.")
 
@@ -357,7 +380,7 @@ def validate_and_score(
 
     sealed_at = _utc(bundle.sealed_at)
     started_at = _utc(ticket.started_at)
-    deadline = _utc(ticket.deadline)
+    deadline = effective_deadline
     if sealed_at < started_at:
         raise _problem("invalid_timestamp", "The submission seal timestamp is invalid.")
     if sealed_at > deadline + timedelta(seconds=5):

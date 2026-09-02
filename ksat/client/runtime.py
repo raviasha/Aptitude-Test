@@ -22,6 +22,7 @@ from ksat.client.identity import DeviceIdentity
 from ksat.client.store import AttemptSealedError, ClientStore, LocalAttemptRecord
 from ksat.crypto import decrypt_pack, sha256_hex, sign_json, verify_json
 from ksat.protocol import (
+    SignedAttemptDeadlineUpdate,
     PACK_FORMAT_VERSION,
     PROTOCOL_VERSION,
     AttemptStartResponse,
@@ -263,7 +264,9 @@ class AssessmentRuntime:
                 raise ValueError("The exact verified assessment content is not prepared.")
             if (
                 prepared.descriptor.content_hash != ticket.content_hash
-                or prepared.descriptor.manifest.duration_seconds != int(duration)
+                or prepared.descriptor.manifest.duration_seconds
+                + ticket.duration_extension_seconds
+                != int(duration)
                 or response.canonical_question_ids
                 != prepared.descriptor.manifest.canonical_question_ids
             ):
@@ -467,6 +470,14 @@ class AssessmentRuntime:
                 ticket,
                 record.ticket.signature_b64,
             )
+            if record.deadline_revision > 0:
+                if record.deadline_update is None:
+                    raise ValueError("Local attempt deadline authorization is invalid.")
+                verify_json(
+                    self.identity.coordinator_public_key_b64,
+                    record.deadline_update.update,
+                    record.deadline_update.signature_b64,
+                )
             if ticket.device_id != self.identity.device_id:
                 raise ValueError("Local attempt cannot be recovered on this device.")
             questions, manifest, assets = self._open_pack(
@@ -479,6 +490,7 @@ class AssessmentRuntime:
                 manifest.release_id != ticket.release_id
                 or manifest.canonical_question_ids != list(questions)
                 or manifest.duration_seconds
+                + ticket.duration_extension_seconds
                 != int((ticket.deadline - ticket.started_at).total_seconds())
                 or record.question_order
                 != tuple(
@@ -508,6 +520,48 @@ class AssessmentRuntime:
             if safe_remaining == 0:
                 return self._seal(record)
             return self._snapshot_record(record, remaining=safe_remaining)
+
+    def apply_deadline_update(
+        self, signed_update: SignedAttemptDeadlineUpdate
+    ) -> AttemptSnapshot:
+        """Apply one coordinator-signed monotonic timer extension locally."""
+
+        with self._lock:
+            record = self._current_record()
+            if record.state != "in_progress":
+                raise AttemptSealedError("Sealed attempts cannot be extended.")
+            update = signed_update.update
+            verify_json(
+                self.identity.coordinator_public_key_b64,
+                update,
+                signed_update.signature_b64,
+            )
+            ticket = record.ticket.ticket
+            if (
+                update.protocol_version != PROTOCOL_VERSION
+                or update.attempt_id != record.attempt_id
+                or update.release_id != record.release_id
+                or update.device_id != self.identity.device_id
+                or update.device_id != ticket.device_id
+            ):
+                raise ValueError("Deadline update does not match this attempt and device.")
+            if (
+                record.deadline_revision == update.revision
+                and record.deadline_update == signed_update
+            ):
+                return self.snapshot()
+            remaining = self._remaining()
+            if remaining == 0:
+                return self._seal(record)
+            trusted_now = self._trusted_now(record)
+            updated = self.store.apply_deadline_update(
+                record.attempt_id,
+                signed_update,
+                remaining_before=remaining,
+                last_wall_time=trusted_now,
+            )
+            self._activate(updated, self._questions, self._assets, trusted_wall=trusted_now)
+            return self._snapshot_record(updated, remaining=updated.remaining_seconds)
 
     def _open_pack(
         self,

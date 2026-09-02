@@ -6,6 +6,8 @@ Run with: uvicorn app:app --host 0.0.0.0 --port 8000
 from __future__ import annotations
 
 import csv
+import base64
+import binascii
 import hashlib
 import html
 import io
@@ -14,11 +16,13 @@ import math
 import os
 import random
 import re
+import secrets
 import shutil
 import socket
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import unicodedata
@@ -50,11 +54,15 @@ from ksat.coordinator.submissions import (
     freeze_release_answer_state,
     migrate_release_answer_states,
 )
-from ksat.crypto import load_or_create_coordinator_keyring
+from ksat.crypto import load_or_create_coordinator_keyring, sign_json
 from ksat.protocol import (
+    AttemptDeadlineUpdate,
     PublicQuestion,
     ReleaseSummary,
+    SignedAttemptDeadlineUpdate,
     canonicalize_math_floor_division_markup,
+    canonical_json,
+    deterministic_question_order,
 )
 from ksat.sqlite import connect_sqlite
 
@@ -242,6 +250,16 @@ class SubmitPayload(BaseModel):
 
 class DurationExtensionPayload(BaseModel):
     minutes: int = Field(ge=1, le=120)
+    reason: Optional[str] = None
+
+
+class AdminReasonPayload(BaseModel):
+    reason: str
+
+
+class VoidAttemptPayload(AdminReasonPayload):
+    authorize_retake: bool = False
+    confirm_submitted: bool = False
 
 
 class StudentPayload(BaseModel):
@@ -295,6 +313,20 @@ class RegistrationError(Exception):
 
 def now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+_ENROLLMENT_ROTATION_LOCK = threading.Lock()
+
+
+def bounded_admin_reason(value: str) -> str:
+    reason = value.strip() if isinstance(value, str) else ""
+    if not reason or len(reason) > 500:
+        raise HTTPException(400, "Provide a reason between 1 and 500 characters.")
+    return reason
+
+
+def audit_details(value: Dict[str, Any]) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 @contextmanager
@@ -2260,6 +2292,98 @@ def remove_student(student_id: str, request: Request) -> Dict[str, Any]:
         raise HTTPException(404, str(error)) from error
 
 
+@app.get("/api/admin/devices")
+def list_distributed_devices(request: Request) -> Dict[str, Any]:
+    require_user(request, "admin")
+    with db() as connection:
+        device_rows = connection.execute(
+            """SELECT device_id, label, public_key_b64, status, enrolled_at, last_seen_at
+               FROM devices ORDER BY enrolled_at, device_id"""
+        ).fetchall()
+    devices = []
+    for row in device_rows:
+        try:
+            raw_key = base64.b64decode(row["public_key_b64"].encode("ascii"), validate=True)
+            if len(raw_key) != 32:
+                raise ValueError
+            fingerprint = hashlib.sha256(raw_key).hexdigest()[:12]
+        except (AttributeError, UnicodeError, binascii.Error, ValueError):
+            fingerprint = "invalid"
+        devices.append({
+            "device_id": row["device_id"], "label": row["label"],
+            "status": row["status"], "active": row["status"] == "active",
+            "enrolled_at": row["enrolled_at"], "last_seen_at": row["last_seen_at"],
+            "public_key_fingerprint": fingerprint,
+        })
+    return {"devices": devices}
+
+
+def _set_device_status(device_id: str, target: str, payload: AdminReasonPayload, request: Request) -> Dict[str, Any]:
+    user = require_user(request, "admin")
+    reason = bounded_admin_reason(payload.reason)
+    event_type = "device_revoked" if target == "revoked" else "device_reactivated"
+    with db() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        device = connection.execute("SELECT status FROM devices WHERE device_id=?", (device_id,)).fetchone()
+        if device is None:
+            raise HTTPException(404, "Lab device not found.")
+        if device["status"] == target:
+            return {"device_id": device_id, "status": target, "changed": False}
+        if device["status"] not in {"active", "revoked"}:
+            raise HTTPException(409, "Lab device state requires faculty intervention.")
+        connection.execute("UPDATE devices SET status=? WHERE device_id=?", (target, device_id))
+        connection.execute(
+            "INSERT INTO audit_events (event_type,actor_id,details_json,occurred_at) VALUES (?,?,?,?)",
+            (event_type, user["id"], audit_details({"device_id":device_id,"reason":reason}), now()),
+        )
+    return {"device_id": device_id, "status": target, "changed": True}
+
+
+@app.post("/api/admin/devices/{device_id}/revoke")
+def revoke_device(device_id: str, payload: AdminReasonPayload, request: Request) -> Dict[str, Any]:
+    return _set_device_status(device_id, "revoked", payload, request)
+
+
+@app.post("/api/admin/devices/{device_id}/reactivate")
+def reactivate_device(device_id: str, payload: AdminReasonPayload, request: Request) -> Dict[str, Any]:
+    return _set_device_status(device_id, "active", payload, request)
+
+
+def _durable_replace_ascii(path: Path, value: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(value.encode("ascii")); stream.flush(); os.fsync(stream.fileno())
+        os.replace(temporary_path, path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+
+
+@app.post("/api/admin/devices/enrollment-code/rotate")
+def rotate_device_enrollment_code(payload: AdminReasonPayload, request: Request) -> Dict[str, Any]:
+    user = require_user(request, "admin")
+    reason = bounded_admin_reason(payload.reason)
+    new_code = secrets.token_urlsafe(18)
+    with _ENROLLMENT_ROTATION_LOCK:
+        code_path = DATA_DIR / "secrets" / "enrollment.code"
+        old_code = app.state.coordinator_config.device_enrollment_code
+        try:
+            _durable_replace_ascii(code_path, new_code)
+            app.state.coordinator_config.device_enrollment_code = new_code
+            with db() as connection:
+                connection.execute(
+                    "INSERT INTO audit_events (event_type,actor_id,details_json,occurred_at) VALUES ('device_enrollment_code_rotated',?,?,?)",
+                    (user["id"], audit_details({"reason": reason}), now()),
+                )
+        except BaseException:
+            app.state.coordinator_config.device_enrollment_code = old_code
+            _durable_replace_ascii(code_path, old_code)
+            raise
+    return {"rotated": True, "enrollment_code": new_code}
+
+
 @app.get("/api/admin/questions")
 def list_questions(request: Request) -> Dict[str, Any]:
     require_user(request, "admin")
@@ -2553,6 +2677,7 @@ def list_tests(request: Request) -> Dict[str, Any]:
                WHERE t.mode = 'faculty' ORDER BY t.created_at DESC"""
         ).fetchall())
         config = app.state.coordinator_config
+        eligible_count = connection.execute("SELECT COUNT(*) FROM students").fetchone()[0]
         for test in tests:
             has_submitted_attempt = bool(test.pop("has_submitted_attempt"))
             test["release_state"] = test.get("release_state") or (
@@ -2574,6 +2699,22 @@ def list_tests(request: Request) -> Dict[str, Any]:
                 test.pop("release_pack_filename", None)
             test["selection_rules"] = decode_selection_rules(test["composition"])
             test["difficulty_levels"] = decode_difficulties(test["difficulties"])
+            content_hash = test.get("content_hash")
+            test["content_hash_prefix"] = content_hash[:12] if isinstance(content_hash, str) else None
+            counts = connection.execute(
+                """SELECT
+                     SUM(CASE WHEN status='in_progress' THEN 1 ELSE 0 END) AS started,
+                     SUM(CASE WHEN status='submitted' THEN 1 ELSE 0 END) AS submitted,
+                     SUM(CASE WHEN status='voided' THEN 1 ELSE 0 END) AS voided
+                   FROM attempts WHERE test_id=?""",
+                (test["test_id"],),
+            ).fetchone()
+            test["distributed_status"] = {
+                "eligible": eligible_count,
+                "started": int(counts["started"] or 0),
+                "submitted": int(counts["submitted"] or 0),
+                "voided": int(counts["voided"] or 0),
+            }
             deadline = parse_timestamp(test.get("launch_closes_at") or test.get("launch_expires_at"))
             if test["launched"] and not deadline:
                 total_questions = sum(rule["quantity"] for rule in test["selection_rules"])
@@ -2585,7 +2726,10 @@ def list_tests(request: Request) -> Dict[str, Any]:
                FROM question_banks b LEFT JOIN questions q ON q.bank_id = b.bank_id AND q.active = 1
                GROUP BY b.bank_id ORDER BY b.imported_at DESC"""
         ).fetchall())
-        return {"tests": tests, "categories": CATEGORIES, "banks": banks}
+        writer = config.submission_writer
+        pending = writer.pending_count if writer is not None else 0
+        return {"tests": tests, "categories": CATEGORIES, "banks": banks,
+                "submission_queue_pending": pending}
 
 
 @app.post("/api/admin/tests")
@@ -2622,6 +2766,188 @@ def create_test(payload: TestPayload, request: Request) -> Dict[str, Any]:
         for artifact_path in created_artifact_paths:
             artifact_path.unlink(missing_ok=True)
         raise
+
+
+@app.post("/api/admin/tests/{test_id}/duplicate")
+def duplicate_distributed_test(test_id: int, request: Request) -> Dict[str, Any]:
+    require_user(request, "admin")
+    created_artifact_paths: list[Path] = []
+    try:
+        with db() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            source = connection.execute(
+                "SELECT * FROM tests WHERE test_id=? AND mode='faculty'", (test_id,)
+            ).fetchone()
+            if source is None:
+                raise HTTPException(404, "Faculty assessment not found.")
+            duplicate_id = connection.execute(
+                """INSERT INTO tests
+                   (test_name,composition,bank_id,created_at,active,launched,mode,owner_student_id,difficulties)
+                   VALUES (?,?,?,?,1,0,'faculty',NULL,?)""",
+                (f"{source['test_name']} Copy", source["composition"], source["bank_id"], now(), source["difficulties"]),
+            ).lastrowid
+            duplicate = connection.execute("SELECT * FROM tests WHERE test_id=?", (duplicate_id,)).fetchone()
+            release = prepare_faculty_release(
+                connection, duplicate, _created_artifact_paths=created_artifact_paths
+            )
+        return {"created": True, "test_id": duplicate_id, "release_id": release.release_id,
+                "release_state": release.state, "content_hash_prefix": release.content_hash[:12]}
+    except Exception:
+        for path in created_artifact_paths:
+            path.unlink(missing_ok=True)
+        raise
+
+
+@app.get("/api/admin/tests/{test_id}/distributed")
+def distributed_test_detail(test_id: int, request: Request) -> Dict[str, Any]:
+    require_user(request, "admin")
+    with db() as connection:
+        test = connection.execute(
+            "SELECT test_id,test_name,release_id FROM tests WHERE test_id=? AND mode='faculty'", (test_id,)
+        ).fetchone()
+        if test is None:
+            raise HTTPException(404, "Faculty assessment not found.")
+        attempts = rows(connection.execute(
+            """SELECT a.attempt_id,a.student_id,a.device_id,a.started_at,a.expires_at AS deadline,
+                      a.submitted_at,a.status,a.score,a.percentage,
+                      (SELECT COUNT(*) FROM exam_violations e WHERE e.attempt_id=a.attempt_id) AS violation_count
+               FROM attempts a WHERE a.test_id=? ORDER BY a.started_at,a.attempt_id""",
+            (test_id,),
+        ).fetchall())
+        writer = app.state.coordinator_config.submission_writer
+        return {"test": dict(test), "attempts": attempts,
+                "submission_queue_pending": writer.pending_count if writer is not None else 0}
+
+
+@app.get("/api/admin/attempts/{attempt_id}/order")
+def inspect_distributed_attempt_order(attempt_id: str, request: Request) -> Dict[str, Any]:
+    require_user(request, "admin")
+    with db() as connection:
+        attempt = connection.execute(
+            "SELECT attempt_id,release_id,order_seed FROM attempts WHERE attempt_id=?", (attempt_id,)
+        ).fetchone()
+        if attempt is None:
+            raise HTTPException(404, "Assessment attempt not found.")
+        canonical_ids = [row["question_id"] for row in connection.execute(
+            "SELECT question_id FROM release_questions WHERE release_id=? ORDER BY canonical_order",
+            (attempt["release_id"],),
+        ).fetchall()]
+        try:
+            if not canonical_ids or len(canonical_ids) != len(set(canonical_ids)):
+                raise ValueError
+            exact_order = deterministic_question_order(canonical_ids, attempt["order_seed"])
+        except (TypeError, ValueError, binascii.Error) as error:
+            raise HTTPException(409, {"code":"attempt_order_invalid",
+                "message":"The stored attempt order requires faculty intervention.","retryable":False}) from error
+    return {"attempt_id": attempt_id, "release_id": attempt["release_id"],
+            "question_order": exact_order}
+
+
+@app.post("/api/admin/attempts/{attempt_id}/void")
+def void_distributed_attempt(attempt_id: str, payload: VoidAttemptPayload, request: Request) -> Dict[str, Any]:
+    user = require_user(request, "admin")
+    reason = bounded_admin_reason(payload.reason)
+    with db() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        attempt = connection.execute("SELECT * FROM attempts WHERE attempt_id=?", (attempt_id,)).fetchone()
+        if attempt is None:
+            raise HTTPException(404, "Assessment attempt not found.")
+        existing = connection.execute(
+            "SELECT details_json FROM audit_events WHERE event_type='attempt_voided' AND attempt_id=? ORDER BY audit_id DESC LIMIT 1",
+            (attempt_id,),
+        ).fetchone()
+        if attempt["status"] == "voided":
+            details = json.loads(existing["details_json"]) if existing else {}
+            if details.get("reason") != reason or bool(details.get("authorize_retake")) != payload.authorize_retake:
+                raise HTTPException(409, "This attempt was already voided with different instructions.")
+            return {"voided": True, "retake_authorized": bool(attempt["retake_authorized"]), "changed": False}
+        if attempt["status"] == "submitted" and not payload.confirm_submitted:
+            raise HTTPException(409, "Confirm explicitly before voiding an accepted submission.")
+        if attempt["status"] not in {"in_progress", "submitted"}:
+            raise HTTPException(409, "This attempt cannot be voided in its current state.")
+        connection.execute(
+            "UPDATE attempts SET status='voided',retake_authorized=? WHERE attempt_id=?",
+            (1 if payload.authorize_retake else 0, attempt_id),
+        )
+        connection.execute(
+            """INSERT INTO audit_events
+               (event_type,actor_id,attempt_id,test_id,details_json,occurred_at)
+               VALUES ('attempt_voided',?,?,?,?,?)""",
+            (user["id"], attempt_id, attempt["test_id"],
+             audit_details({"reason":reason,"authorize_retake":payload.authorize_retake,
+                            "submitted_evidence_confirmed":payload.confirm_submitted}), now()),
+        )
+    return {"voided": True, "retake_authorized": payload.authorize_retake, "changed": True}
+
+
+def _extend_active_attempt(
+    connection: sqlite3.Connection, attempt: sqlite3.Row, delta_seconds: int,
+    *, actor_id: str, reason: str, event_type: str,
+) -> SignedAttemptDeadlineUpdate:
+    prior = parse_timestamp(attempt["expires_at"])
+    if prior is None or not attempt["release_id"] or not attempt["device_id"]:
+        raise HTTPException(409, "The active attempt deadline is invalid.")
+    if prior <= datetime.now(timezone.utc):
+        raise HTTPException(409, "An expired attempt cannot be extended.")
+    try:
+        deadline = prior + timedelta(seconds=delta_seconds)
+    except OverflowError as error:
+        raise HTTPException(400, "The extended deadline is outside the supported range.") from error
+    revision = int(attempt["deadline_revision"] or 0) + 1
+    cumulative = int(attempt["deadline_extension_seconds"] or 0) + delta_seconds
+    if cumulative > 86_400:
+        raise HTTPException(400, "The cumulative attempt extension is too large.")
+    update = AttemptDeadlineUpdate(
+        attempt_id=attempt["attempt_id"], release_id=attempt["release_id"],
+        device_id=attempt["device_id"], prior_deadline=prior, deadline=deadline,
+        cumulative_extension_seconds=cumulative, revision=revision,
+        issued_at=datetime.now(timezone.utc),
+    )
+    signed = SignedAttemptDeadlineUpdate(
+        update=update,
+        signature_b64=sign_json(app.state.coordinator_config.signing_private_key_b64, update),
+    )
+    update_json = canonical_json(signed).decode("utf-8")
+    changed = connection.execute(
+        """UPDATE attempts SET expires_at=?,deadline_revision=?,deadline_extension_seconds=?,deadline_update_json=?
+           WHERE attempt_id=? AND status='in_progress' AND deadline_revision=? AND expires_at=?""",
+        (deadline.isoformat(timespec="seconds"), revision, cumulative, update_json,
+         attempt["attempt_id"], revision - 1, attempt["expires_at"]),
+    )
+    if changed.rowcount != 1:
+        raise HTTPException(409, "The attempt changed while it was being extended; retry safely.")
+    connection.execute(
+        """INSERT INTO audit_events
+           (event_type,actor_id,attempt_id,test_id,details_json,occurred_at)
+           VALUES (?,?,?,?,?,?)""",
+        (event_type, actor_id, attempt["attempt_id"], attempt["test_id"],
+         audit_details({"reason":reason,"deadline_before":prior.isoformat(timespec="seconds"),
+                        "deadline_after":deadline.isoformat(timespec="seconds"),
+                        "minutes":delta_seconds // 60,"revision":revision}), now()),
+    )
+    return signed
+
+
+@app.post("/api/admin/attempts/{attempt_id}/extend")
+def extend_distributed_attempt(
+    attempt_id: str, payload: DurationExtensionPayload, request: Request
+) -> Dict[str, Any]:
+    user = require_user(request, "admin")
+    reason = bounded_admin_reason(payload.reason or "")
+    delta = payload.minutes * 60
+    with db() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        attempt = connection.execute("SELECT * FROM attempts WHERE attempt_id=?", (attempt_id,)).fetchone()
+        if attempt is None:
+            raise HTTPException(404, "Assessment attempt not found.")
+        if attempt["status"] != "in_progress" or not attempt["release_id"]:
+            raise HTTPException(409, "Only an active distributed attempt can be extended.")
+        signed = _extend_active_attempt(connection, attempt, delta, actor_id=user["id"], reason=reason,
+                                        event_type="attempt_extended")
+    return {"extended": True, "minutes": payload.minutes,
+            "deadline_before": signed.update.prior_deadline.isoformat(timespec="seconds"),
+            "deadline_after": signed.update.deadline.isoformat(timespec="seconds"),
+            "revision": signed.update.revision}
 
 
 @app.delete("/api/admin/tests/{test_id}")
@@ -2784,7 +3110,55 @@ def close_test(test_id: int, request: Request) -> Dict[str, bool]:
 
 @app.post("/api/admin/tests/{test_id}/extend")
 def extend_test_duration(test_id: int, payload: DurationExtensionPayload, request: Request) -> Dict[str, Any]:
-    require_user(request, "admin")
+    user = require_user(request, "admin")
+    if payload.reason is not None:
+        reason = bounded_admin_reason(payload.reason)
+        delta = payload.minutes * 60
+        with db() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            test = connection.execute(
+                "SELECT * FROM tests WHERE test_id=? AND mode='faculty'", (test_id,)
+            ).fetchone()
+            if test is None:
+                raise HTTPException(404, "Faculty assessment not found.")
+            if not test["release_id"]:
+                raise HTTPException(409, "Prepare the distributed assessment before extending it.")
+            release = connection.execute(
+                "SELECT duration_extension_seconds,state FROM assessment_releases WHERE release_id=?",
+                (test["release_id"],),
+            ).fetchone()
+            if release is None or release["state"] not in {"prepared", "launched"}:
+                raise HTTPException(409, "Assessment release is not ready to extend.")
+            before_policy = int(release["duration_extension_seconds"] or 0)
+            after_policy = before_policy + delta
+            if after_policy > 86_400:
+                raise HTTPException(400, "The cumulative duration extension is too large.")
+            connection.execute(
+                "UPDATE assessment_releases SET duration_extension_seconds=? WHERE release_id=?",
+                (after_policy, test["release_id"]),
+            )
+            active = connection.execute(
+                "SELECT * FROM attempts WHERE test_id=? AND status='in_progress' ORDER BY attempt_id",
+                (test_id,),
+            ).fetchall()
+            for attempt in active:
+                _extend_active_attempt(
+                    connection, attempt, delta, actor_id=user["id"], reason=reason,
+                    event_type="attempt_extended_by_test",
+                )
+            connection.execute(
+                """INSERT INTO audit_events
+                   (event_type,actor_id,test_id,details_json,occurred_at)
+                   VALUES ('test_duration_extended',?,?,?,?)""",
+                (user["id"], test_id, audit_details({"reason":reason,"minutes":payload.minutes,
+                    "duration_extension_before":before_policy,"duration_extension_after":after_policy,
+                    "attempts_extended":len(active)}), now()),
+            )
+        return {"extended": True, "minutes": payload.minutes, "attempts_extended": len(active),
+                "duration_extension_seconds": after_policy}
+
+    # Backward-compatible legacy operation: older coordinator browsers used this
+    # route to extend only the launch window. New faculty UI always supplies a reason.
     with db() as connection:
         test = connection.execute(
             """SELECT launched, mode, release_id, launch_expires_at, launch_closes_at

@@ -117,6 +117,7 @@ def list_launched_assessments(
     now_utc = _as_utc(now_utc)
     rows = connection.execute(
         """SELECT r.release_id, r.test_id, t.test_name, r.duration_seconds,
+                  r.duration_extension_seconds,
                   r.content_hash, r.launch_opens_at, r.launch_closes_at,
                   t.launched,
                   a.attempt_id, a.device_id AS attempt_device_id,
@@ -124,7 +125,7 @@ def list_launched_assessments(
            FROM assessment_releases r
            JOIN tests t ON t.test_id = r.test_id
            LEFT JOIN attempts a
-             ON a.release_id = r.release_id AND a.student_id = ?
+             ON a.release_id = r.release_id AND a.student_id = ? AND a.status != 'voided'
            WHERE r.state = 'launched'
              AND NOT EXISTS (
                  SELECT 1 FROM attempts submitted
@@ -154,7 +155,7 @@ def list_launched_assessments(
             "release_id": row["release_id"],
             "test_id": row["test_id"],
             "test_name": row["test_name"],
-            "duration_seconds": row["duration_seconds"],
+            "duration_seconds": row["duration_seconds"] + int(row["duration_extension_seconds"] or 0),
             "content_hash": row["content_hash"],
             "launch_closes_at": closes,
             "attempt_id": row["attempt_id"],
@@ -168,8 +169,8 @@ def _existing_attempt(
 ) -> sqlite3.Row | None:
     return connection.execute(
         """SELECT * FROM attempts
-           WHERE release_id = ? AND student_id = ?
-           ORDER BY started_at, attempt_id LIMIT 1""",
+           WHERE release_id = ? AND student_id = ? AND status != 'voided'
+           ORDER BY started_at DESC, attempt_id DESC LIMIT 1""",
         (release_id, student_id),
     ).fetchone()
 
@@ -294,7 +295,14 @@ def issue_attempt_ticket(
                 connection.commit()
             return response
 
-        if connection.execute(
+        retake = connection.execute(
+            """SELECT attempt_id FROM attempts
+               WHERE release_id = ? AND student_id = ? AND status = 'voided'
+                 AND retake_authorized = 1
+               ORDER BY started_at DESC, attempt_id DESC LIMIT 1""",
+            (release_id, student_id),
+        ).fetchone()
+        if retake is None and connection.execute(
             """SELECT 1 FROM submissions s JOIN attempts a ON a.attempt_id = s.attempt_id
                WHERE a.release_id = ? AND a.student_id = ? LIMIT 1""",
             (release_id, student_id),
@@ -327,7 +335,12 @@ def issue_attempt_ticket(
             raise _problem("content_not_ready", "Assessment content is not ready.") from error
         attempt_id = str(uuid.uuid4())
         order_seed_b64 = base64.b64encode(os.urandom(32)).decode("ascii")
-        deadline = now_utc + timedelta(seconds=release["duration_seconds"])
+        duration_extension_seconds = int(release["duration_extension_seconds"] or 0)
+        if duration_extension_seconds < 0 or duration_extension_seconds > 86_400:
+            raise _problem("content_not_ready", "Assessment content is not ready.")
+        deadline = now_utc + timedelta(
+            seconds=release["duration_seconds"] + duration_extension_seconds
+        )
         ticket = AttemptTicket(
             attempt_id=attempt_id,
             student_id=student_id,
@@ -338,6 +351,7 @@ def issue_attempt_ticket(
             deadline=deadline,
             order_seed_b64=order_seed_b64,
             content_key_b64=base64.b64encode(content_key).decode("ascii"),
+            duration_extension_seconds=duration_extension_seconds,
         )
         signed = SignedAttemptTicket(
             ticket=ticket,
@@ -362,6 +376,13 @@ def issue_attempt_ticket(
                 deadline.isoformat(timespec="seconds"),
             ),
         )
+        if retake is not None:
+            consumed = connection.execute(
+                "UPDATE attempts SET retake_authorized = 0 WHERE attempt_id = ? AND retake_authorized = 1",
+                (retake["attempt_id"],),
+            )
+            if consumed.rowcount != 1:
+                raise _problem("retake_conflict", "The replacement attempt authorization was already used.")
         response = AttemptStartResponse(
             ticket=signed,
             canonical_question_ids=question_ids,

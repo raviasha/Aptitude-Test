@@ -428,6 +428,9 @@ class AttemptTicket(ProtocolModel):
     deadline: datetime
     order_seed_b64: str
     content_key_b64: str
+    duration_extension_seconds: int = Field(
+        default=0, ge=0, le=86_400, exclude_if=lambda value: value == 0
+    )
     shuffle_algorithm: str = SHUFFLE_ALGORITHM
 
 
@@ -440,6 +443,25 @@ class AttemptStartResponse(ProtocolModel):
     ticket: SignedAttemptTicket
     canonical_question_ids: list[int]
     server_time: datetime
+
+
+class AttemptDeadlineUpdate(ProtocolModel):
+    """Answer-free, signed authorization to extend one active local timer."""
+
+    protocol_version: int = PROTOCOL_VERSION
+    attempt_id: str
+    release_id: str
+    device_id: str
+    prior_deadline: datetime
+    deadline: datetime
+    cumulative_extension_seconds: int = Field(ge=1, le=86_400)
+    revision: int = Field(ge=1)
+    issued_at: datetime
+
+
+class SignedAttemptDeadlineUpdate(ProtocolModel):
+    update: AttemptDeadlineUpdate
+    signature_b64: str
 
 
 class ResponseEntry(ProtocolModel):

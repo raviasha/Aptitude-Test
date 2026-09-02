@@ -21,6 +21,7 @@ from pydantic import BaseModel, ValidationError
 from ksat.protocol import (
     IntegrityEvent,
     SignedAttemptTicket,
+    SignedAttemptDeadlineUpdate,
     SignedResponseBundle,
     SubmissionReceipt,
     canonical_json,
@@ -52,6 +53,8 @@ class LocalAttemptRecord:
     receipt: SubmissionReceipt | None
     ticket: SignedAttemptTicket
     last_wall_time: datetime
+    deadline_revision: int = 0
+    deadline_update: SignedAttemptDeadlineUpdate | None = None
 
 
 @dataclass(frozen=True)
@@ -313,6 +316,8 @@ class ClientStore:
                   sealed_at TEXT,
                   sealed_bundle_json TEXT,
                   receipt_json TEXT
+                  ,deadline_revision INTEGER NOT NULL DEFAULT 0
+                  ,deadline_update_json TEXT
                 );
                 CREATE UNIQUE INDEX IF NOT EXISTS one_active_student_release
                   ON local_attempts(student_id, release_id)
@@ -359,6 +364,14 @@ class ClientStore:
             if "current_question_id" not in attempt_columns:
                 self.connection.execute(
                     "ALTER TABLE local_attempts ADD COLUMN current_question_id INTEGER"
+                )
+            if "deadline_revision" not in attempt_columns:
+                self.connection.execute(
+                    "ALTER TABLE local_attempts ADD COLUMN deadline_revision INTEGER NOT NULL DEFAULT 0"
+                )
+            if "deadline_update_json" not in attempt_columns:
+                self.connection.execute(
+                    "ALTER TABLE local_attempts ADD COLUMN deadline_update_json TEXT"
                 )
             self.connection.commit()
 
@@ -745,6 +758,15 @@ class ClientStore:
             if current_question_id is None:
                 current_question_id = order[0]
             deadline = _parse_time(row["deadline"], message)
+            deadline_revision = row["deadline_revision"]
+            deadline_update = None
+            if row["deadline_update_json"] is not None:
+                deadline_update = _stored_model(
+                    row["deadline_update_json"], SignedAttemptDeadlineUpdate, message
+                )
+                _aware(deadline_update.update.prior_deadline, "Deadline update")
+                _aware(deadline_update.update.deadline, "Deadline update")
+                _aware(deadline_update.update.issued_at, "Deadline update")
             last_wall = _parse_time(row["last_wall_time"], message)
             _parse_time(row["created_at"], message)
             sealed_at = None if row["sealed_at"] is None else _parse_time(row["sealed_at"], message)
@@ -762,7 +784,21 @@ class ClientStore:
                 row["attempt_id"] != ticket.ticket.attempt_id
                 or row["release_id"] != ticket.ticket.release_id
                 or row["student_id"] != ticket.ticket.student_id
-                or deadline != ticket.ticket.deadline.astimezone(timezone.utc)
+                or type(deadline_revision) is not int
+                or deadline_revision < 0
+                or (deadline_revision == 0 and deadline != ticket.ticket.deadline.astimezone(timezone.utc))
+                or (deadline_revision > 0 and (
+                    deadline_update is None
+                    or deadline_update.update.revision != deadline_revision
+                    or deadline_update.update.attempt_id != row["attempt_id"]
+                    or deadline_update.update.release_id != row["release_id"]
+                    or deadline_update.update.device_id != ticket.ticket.device_id
+                    or deadline_update.update.deadline.astimezone(timezone.utc) != deadline
+                    or deadline <= ticket.ticket.deadline.astimezone(timezone.utc)
+                    or int((deadline - ticket.ticket.deadline.astimezone(timezone.utc)).total_seconds())
+                       != deadline_update.update.cumulative_extension_seconds
+                    or deadline_update.update.prior_deadline.astimezone(timezone.utc) >= deadline
+                ))
                 or row["state"] not in (*_ACTIVE_STATES, "acknowledged")
                 or type(current_question_id) is not int
                 or current_question_id not in order
@@ -850,6 +886,8 @@ class ClientStore:
                 receipt=receipt,
                 ticket=ticket,
                 last_wall_time=last_wall,
+                deadline_revision=deadline_revision,
+                deadline_update=deadline_update,
             ),
             sealed_bundle=sealed_bundle,
             receipt_json=row["receipt_json"],
@@ -994,6 +1032,63 @@ class ClientStore:
                    WHERE attempt_id=?""",
                 (remaining_seconds, wall_iso, attempt_id),
             )
+
+    def apply_deadline_update(
+        self,
+        attempt_id: str,
+        signed_update: SignedAttemptDeadlineUpdate,
+        *,
+        remaining_before: int,
+        last_wall_time: datetime,
+    ) -> LocalAttemptRecord:
+        if type(remaining_before) is not int or remaining_before < 0:
+            raise ValueError("Remaining time is invalid.")
+        wall_iso = _iso(last_wall_time, "Wall checkpoint")
+        update = signed_update.update
+        update_json = canonical_json(signed_update).decode("utf-8")
+        with self._transaction() as connection:
+            row = connection.execute(
+                "SELECT * FROM local_attempts WHERE attempt_id=?", (attempt_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(attempt_id)
+            if row["state"] != "in_progress":
+                raise AttemptSealedError("Sealed attempts cannot be extended.")
+            ticket = _stored_model(
+                row["ticket_json"], SignedAttemptTicket, "Stored attempt data is invalid."
+            ).ticket
+            current_deadline = _parse_time(row["deadline"], "Stored attempt data is invalid.")
+            prior = _aware(update.prior_deadline).astimezone(timezone.utc)
+            deadline = _aware(update.deadline).astimezone(timezone.utc)
+            delta = int((deadline - prior).total_seconds())
+            baseline = ticket.deadline.astimezone(timezone.utc)
+            cumulative = int((deadline - baseline).total_seconds())
+            if (
+                update.attempt_id != attempt_id
+                or update.release_id != row["release_id"]
+                or update.device_id != ticket.device_id
+                or update.revision != row["deadline_revision"] + 1
+                or prior != current_deadline
+                or delta <= 0
+                or cumulative != update.cumulative_extension_seconds
+                or remaining_before > row["remaining_seconds"]
+            ):
+                raise ValueError("Deadline update is invalid or stale.")
+            connection.execute(
+                """UPDATE local_attempts
+                   SET deadline=?, remaining_seconds=?, last_wall_time=?,
+                       deadline_revision=?, deadline_update_json=?
+                   WHERE attempt_id=?""",
+                (
+                    deadline.isoformat(),
+                    remaining_before + delta,
+                    wall_iso,
+                    update.revision,
+                    update_json,
+                    attempt_id,
+                ),
+            )
+        return self.load_attempt(attempt_id)
 
     def seal_attempt(
         self,

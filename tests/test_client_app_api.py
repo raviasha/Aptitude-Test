@@ -1046,7 +1046,6 @@ class ClientPrefetchLifecycleTests(unittest.TestCase):
         self.assertEqual(1, store.closed)
         self.assertIsNotNone(context._prefetch_thread)
         self.assertFalse(context._prefetch_thread.is_alive())
-
     def test_prefetch_timeout_retains_owned_resources_until_worker_quiesces(self):
         from client_app import ClientServices, create_client_app
 
@@ -1414,6 +1413,49 @@ class ClientPrefetchLifecycleTests(unittest.TestCase):
         self.assertTrue(prefetch is None or not prefetch.is_alive())
         client_context.__exit__(None, None, None)
 
+class ClientControlLifecycleTests(unittest.TestCase):
+    def test_control_poll_is_jittered_only_in_progress_and_stops_on_seal(self):
+        from client_app import ClientServices, create_client_app
+
+        polled = threading.Event()
+        coordinator = FakeCoordinator()
+
+        def deadline_update(attempt_id):
+            self.assertEqual(ATTEMPT_ID, attempt_id)
+            coordinator.calls.append(("deadline-update", attempt_id))
+            polled.set()
+            return object()
+
+        coordinator.deadline_update = deadline_update
+        store = FakeStore(FakeSnapshot())
+        runtime = FakeRuntime(store)
+        applied = []
+
+        def apply_deadline_update(update):
+            applied.append(update)
+            return store.snapshot
+
+        runtime.apply_deadline_update = apply_deadline_update
+        services = ClientServices(
+            FakeIdentityStore(), store, runtime, coordinator, FakeOutbox()
+        )
+        context = create_client_app(services).state.client_context
+        with patch("client_app.random.uniform", return_value=0.01):
+            context.initialize()
+            self.assertTrue(polled.wait(1))
+            self.assertEqual(1, len(applied))
+            store.snapshot.state = "sealed_pending"
+            context.observe_snapshot(store.snapshot)
+            deadline = time.monotonic() + 1
+            while context._control_thread is not None and time.monotonic() < deadline:
+                time.sleep(0.01)
+            calls_after_seal = len(coordinator.calls)
+            time.sleep(0.05)
+            self.assertEqual(calls_after_seal, len(coordinator.calls))
+            self.assertIsNone(context._control_thread)
+            context.shutdown()
+
+
 class ClientCoordinatorReconfigurationTests(unittest.TestCase):
     def setUp(self):
         from client_app import ClientServices, create_client_app
@@ -1475,6 +1517,10 @@ class ClientCoordinatorReconfigurationTests(unittest.TestCase):
 
     def test_safe_update_validates_candidate_clears_session_and_replaces_services(self):
         old = self.coordinator
+        context = self.client_context.app.state.client_context
+        old_control_thread = context._control_thread
+        self.assertIsNotNone(old_control_thread)
+        self.assertTrue(old_control_thread.is_alive())
         old.calls.clear()
         response = self.client.post(
             "/api/device/coordinator",
@@ -1495,6 +1541,9 @@ class ClientCoordinatorReconfigurationTests(unittest.TestCase):
         self.assertEqual(1, self.outbox.stops)
         self.assertEqual(1, self.identity_store.loads)
         self.assertNotIn("ksat-new", response.text)
+        self.assertFalse(old_control_thread.is_alive())
+        self.assertIsNot(old_control_thread, context._control_thread)
+        self.assertTrue(context._control_thread.is_alive())
 
     def test_invalid_update_does_not_mutate_configuration_or_services(self):
         old = self.services.coordinator

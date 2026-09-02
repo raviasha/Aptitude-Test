@@ -34,6 +34,7 @@ from ksat.protocol import (
     ProtocolModel,
     PublicReleaseDescriptor,
     SignedResponseBundle,
+    SignedAttemptDeadlineUpdate,
     SubmissionReceipt,
     canonical_json,
     device_request_bytes,
@@ -590,6 +591,42 @@ class CoordinatorClient:
         ):
             raise CoordinatorProblem(
                 "invalid_coordinator_response", "The coordinator returned an invalid response.", False
+            )
+        return response
+
+    def deadline_update(self, attempt_id: str) -> SignedAttemptDeadlineUpdate | None:
+        try:
+            parsed_attempt_id = uuid.UUID(attempt_id)
+        except (AttributeError, ValueError) as error:
+            raise ValueError("Attempt identifier is invalid.") from error
+        if str(parsed_attempt_id) != attempt_id:
+            raise ValueError("Attempt identifier is invalid.")
+        try:
+            response = self._typed(
+                SignedAttemptDeadlineUpdate,
+                self._request_bytes(
+                    "GET", f"{_API_PREFIX}/attempts/{attempt_id}/deadline-update"
+                ),
+                exact_keys={"update", "signature_b64"},
+            )
+        except CoordinatorProblem as error:
+            if error.code == "deadline_update_unavailable" and error.status_code == 404:
+                return None
+            raise
+        identity = self._current_identity(enrolled=True)
+        try:
+            verify_json(
+                identity.coordinator_public_key_b64,
+                response.update,
+                response.signature_b64,
+            )
+        except ValueError as error:
+            raise CoordinatorProblem(
+                "invalid_deadline_update", "The coordinator timer update is invalid.", False
+            ) from error
+        if response.update.attempt_id != attempt_id or response.update.device_id != identity.device_id:
+            raise CoordinatorProblem(
+                "invalid_deadline_update", "The coordinator timer update is invalid.", False
             )
         return response
 

@@ -40,6 +40,7 @@ from ksat.protocol import (
     DeviceEnrollmentReceipt,
     DeviceEnrollmentRequest,
     SignedResponseBundle,
+    SignedAttemptDeadlineUpdate,
     SubmissionReceipt,
 )
 from ksat.sqlite import connect_sqlite
@@ -483,6 +484,60 @@ async def start_attempt(payload: AttemptStartRequest, request: Request) -> Attem
             pack_master_key=config.pack_master_key,
             now_utc=utc_now(),
         )
+    except AuthenticationProblem as error:
+        _raise_http(error)
+    except AttemptProblem as error:
+        _raise_attempt_http(error)
+    finally:
+        connection.close()
+
+
+@router.get(
+    "/attempts/{attempt_id}/deadline-update",
+    response_model=SignedAttemptDeadlineUpdate,
+)
+async def attempt_deadline_update(
+    attempt_id: str, request: Request
+) -> SignedAttemptDeadlineUpdate:
+    """Return the latest answer-free signed timer update to its bound device."""
+
+    config = _config(request)
+    connection = connect_sqlite(config.db_path)
+    try:
+        device_id = await _verified_device(request, connection)
+        row = connection.execute(
+            """SELECT device_id,status,deadline_revision,deadline_update_json
+               FROM attempts WHERE attempt_id=?""",
+            (attempt_id,),
+        ).fetchone()
+        if row is None or row["device_id"] != device_id:
+            raise AuthenticationProblem(
+                "invalid_device_key", "The device request proof is invalid.", status_code=403
+            )
+        if row["status"] != "in_progress" or not row["deadline_update_json"]:
+            raise AttemptProblem(
+                "deadline_update_unavailable", "No timer extension is currently available.",
+                status_code=404,
+            )
+        try:
+            signed = SignedAttemptDeadlineUpdate.model_validate_json(
+                row["deadline_update_json"], strict=True
+            )
+        except Exception as error:
+            raise AttemptProblem(
+                "deadline_update_invalid",
+                "The timer extension requires faculty intervention.",
+            ) from error
+        if (
+            signed.update.attempt_id != attempt_id
+            or signed.update.device_id != device_id
+            or signed.update.revision != row["deadline_revision"]
+        ):
+            raise AttemptProblem(
+                "deadline_update_invalid",
+                "The timer extension requires faculty intervention.",
+            )
+        return signed
     except AuthenticationProblem as error:
         _raise_http(error)
     except AttemptProblem as error:

@@ -22,6 +22,7 @@ from ksat.crypto import (
     verify_json,
 )
 from ksat.protocol import (
+    AttemptDeadlineUpdate,
     AttemptStartResponse,
     AttemptTicket,
     PublicQuestion,
@@ -31,6 +32,7 @@ from ksat.protocol import (
     ReleaseManifest,
     ReleaseSummary,
     SignedAttemptTicket,
+    SignedAttemptDeadlineUpdate,
     canonical_json,
     deterministic_question_order,
 )
@@ -830,6 +832,49 @@ class ClientRuntimeTests(unittest.TestCase):
         self.assertEqual(second.state, "sealed_pending")
         self.assertEqual(first.attempt_id, second.attempt_id)
         self.assertEqual(canonical_json(self.store.pending_submissions()[0].bundle), raw)
+
+    def test_signed_deadline_extension_preserves_elapsed_time_and_survives_restart(self):
+        self._prepare_and_start()
+        self.clock.advance(600)
+        before = self.runtime.snapshot()
+        update = AttemptDeadlineUpdate(
+            attempt_id=self.attempt_id,
+            release_id=self.release_id,
+            device_id=self.device_id,
+            prior_deadline=STARTED + timedelta(minutes=30),
+            deadline=STARTED + timedelta(minutes=35),
+            cumulative_extension_seconds=300,
+            revision=1,
+            issued_at=STARTED + timedelta(minutes=10),
+        )
+        signed = SignedAttemptDeadlineUpdate(
+            update=update,
+            signature_b64=sign_json(self.coordinator_private, update),
+        )
+        extended = self.runtime.apply_deadline_update(signed)
+        self.assertEqual(extended.remaining_seconds, before.remaining_seconds + 300)
+        reopened = self._reopen()
+        recovered = reopened.recover()
+        self.assertEqual(self.store.load_attempt(self.attempt_id).deadline, update.deadline)
+        self.assertEqual(recovered.remaining_seconds, extended.remaining_seconds)
+
+    def test_deadline_update_rejects_stale_wrong_device_and_sealed_attempt(self):
+        self._prepare_and_start()
+        valid = AttemptDeadlineUpdate(
+            attempt_id=self.attempt_id, release_id=self.release_id, device_id=self.device_id,
+            prior_deadline=STARTED + timedelta(minutes=30), deadline=STARTED + timedelta(minutes=35),
+            cumulative_extension_seconds=300, revision=1, issued_at=STARTED,
+        )
+        signed = SignedAttemptDeadlineUpdate(update=valid, signature_b64=sign_json(self.coordinator_private, valid))
+        self.runtime.apply_deadline_update(signed)
+        with self.assertRaises(ValueError):
+            self.runtime.apply_deadline_update(signed.model_copy(update={"update": valid.model_copy(update={"device_id":"other"})}))
+        replay = self.runtime.apply_deadline_update(signed)
+        self.assertEqual(replay.remaining_seconds, 2100)
+        self.runtime.submit()
+        newer = valid.model_copy(update={"prior_deadline":valid.deadline,"deadline":valid.deadline+timedelta(minutes=5),"revision":2,"cumulative_extension_seconds":600})
+        with self.assertRaises(AttemptSealedError):
+            self.runtime.apply_deadline_update(SignedAttemptDeadlineUpdate(update=newer, signature_b64=sign_json(self.coordinator_private,newer)))
 
     def test_concurrent_tick_and_submit_create_exactly_one_bundle(self):
         self._prepare_and_start()

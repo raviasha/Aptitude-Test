@@ -317,6 +317,18 @@ class CoordinatorClient:
         self._session = None
         self._client.close()
 
+    def probe_build(self) -> str:
+        """Perform a real unsigned TLS request before persisting an endpoint."""
+        body = self._request_bytes("GET", "/api/build", signed=False)
+        value = _decode_json(body, "invalid_coordinator_build")
+        if value != {"version": "2.0.0"}:
+            raise CoordinatorProblem(
+                "invalid_coordinator_build",
+                "The coordinator returned an incompatible build response.",
+                False,
+            )
+        return value["version"]
+
     def _current_identity(self, *, enrolled: bool) -> DeviceIdentity:
         identity = self._identity
         if enrolled and (identity.device_id is None or identity.coordinator_public_key_b64 is None):

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import base64
+import argparse
 import binascii
+import hashlib
 import ipaddress
 import json
 import math
@@ -20,13 +22,17 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping, Sequence
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding, rsa
+from cryptography.x509.oid import NameOID
 
 from ksat.client.coordinator import (
     ContentVerificationError,
@@ -37,6 +43,8 @@ from ksat.client.identity import DeviceIdentityStore
 from ksat.client.outbox import OutboxWorker
 from ksat.client.runtime import AssessmentRuntime, SystemClock
 from ksat.client.store import AttemptSealedError, ClientStore
+from ksat.coordinator.process_lock import CoordinatorProcessLock
+from ksat.coordinator.tls import COORDINATOR_SIGNING_KEY_OID
 
 
 _ROOT = Path(__file__).resolve().parent
@@ -243,6 +251,71 @@ class ClientConfig:
         }
 
 
+def _validate_production_trust(config: ClientConfig) -> None:
+    try:
+        ca_bytes = Path(config.trusted_ca_path).read_bytes()
+        public_key = base64.b64decode(
+            config.coordinator_signing_public_key_b64.encode("ascii"), validate=True
+        )
+        ca_certificate = x509.load_pem_x509_certificate(ca_bytes)
+        constraints_extension = ca_certificate.extensions.get_extension_for_class(x509.BasicConstraints)
+        usage_extension = ca_certificate.extensions.get_extension_for_class(x509.KeyUsage)
+        subject_key_extension = ca_certificate.extensions.get_extension_for_class(x509.SubjectKeyIdentifier)
+        linked_extension = ca_certificate.extensions.get_extension_for_oid(COORDINATOR_SIGNING_KEY_OID)
+    except (OSError, ValueError, x509.ExtensionNotFound) as error:
+        raise ValueError("Client configuration is invalid.") from error
+    public = ca_certificate.public_key()
+    now = datetime.now(timezone.utc)
+    expected_subject = x509.Name(
+        [x509.NameAttribute(NameOID.COMMON_NAME, "KSAT Coordinator Local CA")]
+    )
+    constraints = constraints_extension.value
+    usages = usage_extension.value
+    expected_oids = {
+        x509.ExtensionOID.BASIC_CONSTRAINTS,
+        x509.ExtensionOID.KEY_USAGE,
+        x509.ExtensionOID.SUBJECT_KEY_IDENTIFIER,
+        COORDINATOR_SIGNING_KEY_OID,
+    }
+    if (
+        ca_certificate.public_bytes(serialization.Encoding.PEM) != ca_bytes
+        or not isinstance(public, rsa.RSAPublicKey)
+        or public.key_size < 3072
+        or ca_certificate.subject != expected_subject
+        or ca_certificate.issuer != expected_subject
+        or ca_certificate.serial_number <= 0
+        or ca_certificate.signature_hash_algorithm.name != "sha256"
+        or not ca_certificate.not_valid_before_utc <= now <= ca_certificate.not_valid_after_utc
+        or {extension.oid for extension in ca_certificate.extensions} != expected_oids
+        or not constraints_extension.critical
+        or not usage_extension.critical
+        or subject_key_extension.critical
+        or linked_extension.critical
+        or not constraints.ca
+        or constraints.path_length != 0
+        or not usages.digital_signature
+        or usages.content_commitment
+        or usages.key_encipherment
+        or usages.data_encipherment
+        or usages.key_agreement
+        or not usages.key_cert_sign
+        or not usages.crl_sign
+        or subject_key_extension.value.digest
+        != x509.SubjectKeyIdentifier.from_public_key(public).digest
+        or linked_extension.value.value != public_key
+    ):
+        raise ValueError("Client configuration is invalid.")
+    try:
+        public.verify(
+            ca_certificate.signature,
+            ca_certificate.tbs_certificate_bytes,
+            padding.PKCS1v15(),
+            ca_certificate.signature_hash_algorithm,
+        )
+    except Exception as error:
+        raise ValueError("Client configuration is invalid.") from error
+
+
 class ClientConfigStore:
     """Strict machine-wide configuration with atomic, durable replacement."""
 
@@ -370,6 +443,265 @@ class ClientConfigStore:
             ))
 
 
+class ClientRuntimeConfigStore:
+    """Persist only a mutable URL while immutable CA/signing trust stays protected."""
+
+    requires_administrator = True
+
+    def __init__(self, immutable_store: ClientConfigStore, url_path: Path):
+        self.immutable_store = immutable_store
+        self.url_path = Path(url_path)
+        self._lock = threading.RLock()
+
+    def _load_url(self, fallback: str) -> str:
+        try:
+            raw = self.url_path.read_bytes()
+        except FileNotFoundError:
+            return fallback
+        except OSError as error:
+            raise ValueError("Client configuration is invalid.") from error
+        try:
+            value = json.loads(raw.decode("utf-8"))
+        except (UnicodeError, json.JSONDecodeError, TypeError, ValueError) as error:
+            raise ValueError("Client configuration is invalid.") from error
+        if (
+            not isinstance(value, dict)
+            or set(value) != {"coordinator_base_url"}
+            or not isinstance(value["coordinator_base_url"], str)
+        ):
+            raise ValueError("Client configuration is invalid.")
+        normalized = _normalize_coordinator_base_url(value["coordinator_base_url"])
+        expected = json.dumps(
+            {"coordinator_base_url": normalized},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        if raw != expected:
+            raise ValueError("Client configuration is invalid.")
+        return normalized
+
+    def load(self) -> ClientConfig:
+        with self._lock:
+            immutable = self.immutable_store.load()
+            return ClientConfig(
+                coordinator_base_url=self._load_url(immutable.coordinator_base_url),
+                trusted_ca_path=immutable.trusted_ca_path,
+                coordinator_signing_public_key_b64=immutable.coordinator_signing_public_key_b64,
+            )
+
+    def save(self, config: ClientConfig) -> ClientConfig:
+        if not isinstance(config, ClientConfig):
+            raise TypeError("Client configuration is invalid.")
+        with self._lock:
+            immutable = self.immutable_store.load()
+            if (
+                config.trusted_ca_path != immutable.trusted_ca_path
+                or config.coordinator_signing_public_key_b64
+                != immutable.coordinator_signing_public_key_b64
+            ):
+                raise ValueError("Immutable coordinator trust cannot be changed here.")
+            raw = json.dumps(
+                {"coordinator_base_url": config.coordinator_base_url},
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            try:
+                previous = self.url_path.read_bytes()
+            except FileNotFoundError:
+                previous = None
+            except OSError as error:
+                raise ValueError("Client configuration is invalid.") from error
+            self.url_path.parent.mkdir(parents=True, exist_ok=True)
+            published = False
+
+            def publish(contents: bytes, *, track: bool) -> None:
+                nonlocal published
+                descriptor, temporary_name = tempfile.mkstemp(
+                    prefix=".coordinator-url.",
+                    suffix=".tmp",
+                    dir=self.url_path.parent,
+                )
+                temporary = Path(temporary_name)
+                try:
+                    with os.fdopen(descriptor, "wb") as stream:
+                        stream.write(contents)
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                    os.replace(temporary, self.url_path)
+                    if track:
+                        published = True
+                    with self.url_path.open("rb+") as stream:
+                        os.fsync(stream.fileno())
+                finally:
+                    try:
+                        temporary.unlink()
+                    except FileNotFoundError:
+                        pass
+
+            try:
+                publish(raw, track=True)
+                loaded = self.load()
+                if loaded != config:
+                    raise ValueError("Client configuration is invalid.")
+                return loaded
+            except BaseException:
+                if published:
+                    try:
+                        if previous is None:
+                            try:
+                                self.url_path.unlink()
+                            except FileNotFoundError:
+                                pass
+                            if os.path.lexists(self.url_path):
+                                raise OSError
+                        else:
+                            publish(previous, track=False)
+                            if self.url_path.read_bytes() != previous:
+                                raise OSError
+                    except BaseException as rollback_error:
+                        raise OSError(
+                            "Unable to restore the previous coordinator URL."
+                        ) from rollback_error
+                raise
+
+    def update_base_url(self, base_url: str) -> ClientConfig:
+        current = self.load()
+        return self.save(ClientConfig(
+            coordinator_base_url=base_url,
+            trusted_ca_path=current.trusted_ca_path,
+            coordinator_signing_public_key_b64=current.coordinator_signing_public_key_b64,
+        ))
+
+
+def install_client_configuration(
+    program_data: Path,
+    *,
+    base_url: str,
+    ca_source: Path,
+    metadata_source: Path,
+) -> ClientConfig:
+    """Validate a coordinator public bundle and seed the machine-wide config."""
+    try:
+        ca_source = Path(ca_source).resolve(strict=True)
+        metadata_source = Path(metadata_source).resolve(strict=True)
+    except (OSError, RuntimeError) as error:
+        raise ValueError("Coordinator public trust bundle is invalid.") from error
+    if not ca_source.is_file() or not metadata_source.is_file():
+        raise ValueError("Coordinator public trust bundle is invalid.")
+    try:
+        ca_bytes = ca_source.read_bytes()
+        metadata_bytes = metadata_source.read_bytes()
+    except OSError as error:
+        raise ValueError("Coordinator public trust bundle is invalid.") from error
+    if not ca_bytes or len(ca_bytes) > 256 * 1024 or len(metadata_bytes) > 64 * 1024:
+        raise ValueError("Coordinator public trust bundle is invalid.")
+
+    def pairs(items):
+        result = {}
+        for key, value in items:
+            if key in result:
+                raise ValueError
+            result[key] = value
+        return result
+
+    try:
+        metadata = json.loads(
+            metadata_bytes.decode("utf-8"),
+            object_pairs_hook=pairs,
+            parse_constant=lambda _: (_ for _ in ()).throw(ValueError()),
+        )
+    except (UnicodeError, json.JSONDecodeError, TypeError, ValueError) as error:
+        raise ValueError("Coordinator public trust bundle is invalid.") from error
+    expected = {
+        "ca_sha256",
+        "coordinator_url",
+        "hostname",
+        "port",
+        "signing_public_key_b64",
+        "signing_public_key_sha256",
+        "version",
+    }
+    if not isinstance(metadata, dict) or set(metadata) != expected:
+        raise ValueError("Coordinator public trust bundle is invalid.")
+    normalized_url = _normalize_coordinator_base_url(base_url)
+    if (
+        metadata.get("version") != "2.0.0"
+        or metadata.get("coordinator_url") != normalized_url
+        or metadata.get("ca_sha256") != hashlib.sha256(ca_bytes).hexdigest()
+        or type(metadata.get("port")) is not int
+        or not isinstance(metadata.get("hostname"), str)
+        or not isinstance(metadata.get("signing_public_key_b64"), str)
+        or not isinstance(metadata.get("signing_public_key_sha256"), str)
+    ):
+        raise ValueError("Coordinator public trust bundle is invalid.")
+    try:
+        signing_raw = base64.b64decode(
+            metadata["signing_public_key_b64"].encode("ascii"), validate=True
+        )
+    except (UnicodeEncodeError, binascii.Error, ValueError) as error:
+        raise ValueError("Coordinator public trust bundle is invalid.") from error
+    if (
+        len(signing_raw) != 32
+        or metadata["signing_public_key_sha256"] != hashlib.sha256(signing_raw).hexdigest()
+    ):
+        raise ValueError("Coordinator public trust bundle is invalid.")
+
+    client_dir = Path(program_data).resolve() / "KSAT Client"
+    if os.path.lexists(client_dir) and (client_dir.is_symlink() or not client_dir.is_dir()):
+        raise ValueError("Client data directory is invalid.")
+    trust_dir = client_dir / "trust"
+    destination = trust_dir / "coordinator-ca.pem"
+    config_path = client_dir / "client-config.json"
+    if config_path.is_file():
+        existing = ClientConfigStore(config_path).load()
+        _validate_production_trust(existing)
+        return existing
+    trust_dir.mkdir(parents=True, exist_ok=True)
+    destination_created = False
+    if os.path.lexists(destination):
+        if destination.is_symlink() or not destination.is_file() or destination.read_bytes() != ca_bytes:
+            raise ValueError("Client trust configuration conflicts with existing data.")
+    else:
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=".coordinator-ca.", suffix=".tmp", dir=trust_dir
+        )
+        temporary = Path(temporary_name)
+        try:
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(ca_bytes)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, destination)
+            destination_created = True
+            with destination.open("rb+") as stream:
+                os.fsync(stream.fileno())
+        finally:
+            try:
+                temporary.unlink()
+            except FileNotFoundError:
+                pass
+    config = ClientConfig(
+        coordinator_base_url=normalized_url,
+        trusted_ca_path=str(destination),
+        coordinator_signing_public_key_b64=metadata["signing_public_key_b64"],
+    )
+    _validate_production_trust(config)
+    try:
+        return ClientConfigStore(config_path).save(config)
+    except BaseException:
+        if destination_created:
+            try:
+                destination.unlink()
+            except OSError:
+                pass
+        raise
+
+
+class ClientProcessLock(CoordinatorProcessLock):
+    lock_filename = ".client.lock"
+    lock_held_message = "The lab client data directory is already in use."
+
+
 @dataclass
 class ClientServices:
     identity_store: DeviceIdentityStore
@@ -384,6 +716,7 @@ class ClientServices:
     config_store: ClientConfigStore | None = None
     coordinator_factory: Any | None = None
     outbox_factory: Any | None = None
+    lifecycle_lock: ClientProcessLock | None = None
 
 
 def _diagnostic_reference() -> str:
@@ -542,7 +875,11 @@ class _ClientContext:
         try:
             self.services.coordinator.close()
         finally:
-            self.services.store.close()
+            try:
+                self.services.store.close()
+            finally:
+                if self.services.lifecycle_lock is not None:
+                    self.services.lifecycle_lock.release()
 
     def _validate_expected_key(self) -> None:
         expected = self.services.expected_coordinator_public_key_b64
@@ -1028,11 +1365,26 @@ def _load_production_services() -> ClientServices:
     if not program_data:
         raise ValueError("ProgramData is unavailable.")
     data_dir = Path(program_data) / "KSAT Client"
-    config_store = ClientConfigStore(data_dir / "client-config.json")
+    lifecycle_lock = ClientProcessLock(data_dir / "state").acquire()
+    try:
+        return _load_locked_production_services(data_dir, lifecycle_lock)
+    except BaseException:
+        lifecycle_lock.release()
+        raise
+
+
+def _load_locked_production_services(
+    data_dir: Path, lifecycle_lock: ClientProcessLock
+) -> ClientServices:
+    immutable_store = ClientConfigStore(data_dir / "client-config.json")
+    config_store = ClientRuntimeConfigStore(
+        immutable_store, data_dir / "coordinator-url.json"
+    )
     config = config_store.load()
-    identity_store = DeviceIdentityStore(data_dir)
+    _validate_production_trust(config)
+    identity_store = DeviceIdentityStore(data_dir / "identity")
     identity = identity_store.load_or_create()
-    store = ClientStore(data_dir / "client.sqlite3")
+    store = ClientStore(data_dir / "state" / "client.sqlite3")
     coordinator = None
     try:
         coordinator = CoordinatorClient(
@@ -1070,6 +1422,7 @@ def _load_production_services() -> ClientServices:
         config_store=config_store,
         coordinator_factory=coordinator_factory,
         outbox_factory=outbox_factory,
+        lifecycle_lock=lifecycle_lock,
     )
 
 
@@ -1450,6 +1803,12 @@ def create_client_app(services: ClientServices | None = None) -> FastAPI:
                 "Coordinator configuration is managed by IT on this computer.",
                 403,
             )
+        if getattr(current.config_store, "requires_administrator", False):
+            raise ClientApiProblem(
+                "administrator_required",
+                "Ask IT to change the saved coordinator address as Administrator.",
+                403,
+            )
         try:
             active = current.store.active_attempt()
         except (ValueError, KeyError, TypeError, OSError, sqlite3.Error) as error:
@@ -1507,6 +1866,7 @@ def create_client_app(services: ClientServices | None = None) -> FastAPI:
 
         try:
             candidate = current.coordinator_factory(normalized)
+            candidate.probe_build()
             if getattr(context.identity, "device_id", None) is not None:
                 # A signed catalog round trip validates TLS, the registered device,
                 # and the expected coordinator signing key before persistence.
@@ -1819,10 +2179,144 @@ def _assessment_payload(
 app = create_client_app()
 
 
-def main() -> None:
-    import uvicorn
+def production_bind(environ: dict[str, str] | os._Environ[str] | None = None) -> tuple[str, int]:
+    values = os.environ if environ is None else environ
+    if values.get("KSAT_CLIENT_HOST") not in (None, "127.0.0.1"):
+        raise ValueError("The lab client must bind to IPv4 loopback only.")
+    raw_port = values.get("KSAT_CLIENT_PORT")
+    if raw_port is None:
+        return "127.0.0.1", 8010
+    if values.get("KSAT_SMOKE_TEST") != "1":
+        raise ValueError("A client port override is allowed only for a smoke test.")
+    try:
+        port = int(raw_port)
+    except (TypeError, ValueError) as error:
+        raise ValueError("The lab client port is invalid.") from error
+    if str(port) != raw_port or not 1024 <= port <= 65535:
+        raise ValueError("The lab client port is invalid.")
+    return "127.0.0.1", port
 
-    uvicorn.run(create_client_app(), host="127.0.0.1", port=8010)
+
+def _is_windows_administrator() -> bool:
+    if os.name != "nt":
+        return False
+    try:
+        import ctypes
+
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except (AttributeError, OSError):
+        return False
+
+
+def update_client_coordinator_url(program_data: Path, *, base_url: str) -> ClientConfig:
+    """Administrator-only offline workflow for changing only the endpoint URL."""
+    data_dir = Path(program_data).resolve() / "KSAT Client"
+    with ClientProcessLock(data_dir / "state"):
+        immutable_store = ClientConfigStore(data_dir / "client-config.json")
+        immutable = immutable_store.load()
+        _validate_production_trust(immutable)
+        runtime_store = ClientRuntimeConfigStore(
+            immutable_store, data_dir / "coordinator-url.json"
+        )
+        local_store = ClientStore(data_dir / "state" / "client.sqlite3")
+        candidate = None
+        try:
+            if local_store.active_attempt() is not None or local_store.pending_submissions():
+                raise ValueError(
+                    "The coordinator address cannot change while saved assessment work is active."
+                )
+            identity_store = DeviceIdentityStore(data_dir / "identity")
+            identity = identity_store.load_or_create()
+            if (
+                identity.device_id is not None
+                and identity.coordinator_public_key_b64
+                != immutable.coordinator_signing_public_key_b64
+            ):
+                raise ValueError("Protected device enrollment does not match client configuration.")
+            candidate = CoordinatorClient(
+                base_url, immutable.trusted_ca_path, identity_store
+            )
+            candidate.probe_build()
+            if identity.device_id is not None:
+                candidate.prefetch_catalog()
+            return runtime_store.update_base_url(base_url)
+        finally:
+            if candidate is not None:
+                candidate.close()
+            local_store.close()
+
+
+def main(
+    argv: Sequence[str] | None = None,
+    *,
+    environ: Mapping[str, str] | None = None,
+    uvicorn_runner: Any | None = None,
+    administrator_check: Any = _is_windows_administrator,
+) -> int:
+    parser = argparse.ArgumentParser(prog="KSATClient")
+    parser.add_argument("--install-config", action="store_true")
+    parser.add_argument("--update-config", action="store_true")
+    parser.add_argument("--validate-config", action="store_true")
+    parser.add_argument("--base-url")
+    parser.add_argument("--ca", type=Path)
+    parser.add_argument("--metadata", type=Path)
+    arguments = parser.parse_args(argv)
+    values = os.environ if environ is None else environ
+    if sum(bool(value) for value in (
+        arguments.install_config, arguments.update_config, arguments.validate_config
+    )) > 1:
+        parser.error("configuration operations are separate")
+    if arguments.install_config:
+        if not arguments.base_url or arguments.ca is None or arguments.metadata is None:
+            parser.error("--install-config requires --base-url, --ca, and --metadata")
+        program_data = values.get("ProgramData") or values.get("PROGRAMDATA")
+        if not program_data:
+            raise ValueError("ProgramData is unavailable.")
+        install_client_configuration(
+            Path(program_data),
+            base_url=arguments.base_url,
+            ca_source=arguments.ca,
+            metadata_source=arguments.metadata,
+        )
+        return 0
+    if arguments.update_config:
+        if not arguments.base_url or arguments.ca is not None or arguments.metadata is not None:
+            parser.error("--update-config requires only --base-url")
+        if not administrator_check():
+            raise PermissionError("Administrator authorization is required.")
+        program_data = values.get("ProgramData") or values.get("PROGRAMDATA")
+        if not program_data:
+            raise ValueError("ProgramData is unavailable.")
+        update_client_coordinator_url(Path(program_data), base_url=arguments.base_url)
+        return 0
+    if arguments.validate_config:
+        if any(value is not None for value in (arguments.base_url, arguments.ca, arguments.metadata)):
+            parser.error("--validate-config accepts no configuration values")
+        program_data = values.get("ProgramData") or values.get("PROGRAMDATA")
+        if not program_data:
+            raise ValueError("ProgramData is unavailable.")
+        data_dir = Path(program_data).resolve() / "KSAT Client"
+        immutable_store = ClientConfigStore(data_dir / "client-config.json")
+        config = ClientRuntimeConfigStore(
+            immutable_store, data_dir / "coordinator-url.json"
+        ).load()
+        _validate_production_trust(config)
+        return 0
+    if any(value is not None for value in (arguments.base_url, arguments.ca, arguments.metadata)):
+        parser.error("configuration arguments require --install-config or --update-config")
+    if uvicorn_runner is None:
+        import uvicorn
+
+        uvicorn_runner = uvicorn.run
+    host, port = production_bind(dict(values))
+    uvicorn_runner(
+        create_client_app(),
+        host=host,
+        port=port,
+        log_level="warning",
+        use_colors=False,
+    )
+    return 0
 
 
 if __name__ == "__main__":

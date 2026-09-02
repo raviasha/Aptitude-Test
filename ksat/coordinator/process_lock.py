@@ -27,15 +27,17 @@ class CoordinatorLockHeld(RuntimeError):
 class CoordinatorProcessLock:
     """Hold the first byte of a persistent lock file until release or process death."""
 
+    lock_filename = ".coordinator.lock"
+    lock_held_message = "The coordinator data directory is already in use."
+
     def __init__(self, data_dir: Path):
         self.data_dir = Path(data_dir).resolve(strict=True)
-        self.path = self.data_dir / ".coordinator.lock"
+        self.path = self.data_dir / self.lock_filename
         self.token = secrets.token_hex(16)
         self.held = False
         self._handle: BinaryIO | None = None
 
-    @staticmethod
-    def _try_lock(handle: BinaryIO) -> None:
+    def _try_lock(self, handle: BinaryIO) -> None:
         deadline = time.monotonic() + _LOCK_RELEASE_GRACE_SECONDS
         while True:
             handle.seek(0)
@@ -49,7 +51,7 @@ class CoordinatorProcessLock:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise CoordinatorLockHeld(
-                        "The coordinator data directory is already in use."
+                        self.lock_held_message
                     ) from error
                 time.sleep(min(_LOCK_RETRY_INTERVAL_SECONDS, remaining))
 

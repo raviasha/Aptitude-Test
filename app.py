@@ -76,7 +76,7 @@ configured_data_dir = os.getenv("KSAT_DATA_DIR")
 if configured_data_dir:
     DATA_DIR = Path(configured_data_dir).resolve()
 elif getattr(sys, "frozen", False):
-    DATA_DIR = Path(os.getenv("PROGRAMDATA", r"C:\ProgramData")) / "Aptitude Lab"
+    DATA_DIR = Path(os.getenv("PROGRAMDATA", r"C:\ProgramData")) / "KSAT Coordinator"
 else:
     DATA_DIR = SOURCE_ROOT / "data"
 DB_PATH = DATA_DIR / "aptitude.db"
@@ -85,7 +85,7 @@ QUESTION_BANKS_DIR = DATA_DIR / "Question Banks"
 STATIC_DIR = BUNDLE_DIR / "static"
 TEMPLATE_DIR = BUNDLE_DIR / "templates"
 SERVER_URL = "http://127.0.0.1:8000"
-APP_VERSION = "1.3.3"
+APP_VERSION = "2.0.0"
 
 CATEGORIES = [
     "Quantitative Aptitude",
@@ -214,7 +214,12 @@ def configure_coordinator_state(application: FastAPI) -> None:
 app = FastAPI(title="KSAT")
 configure_coordinator_state(app)
 app.include_router(coordinator_router)
-app.add_middleware(SessionMiddleware, secret_key=os.getenv("SESSION_SECRET", "replace-this-before-production"), https_only=False, same_site="lax")
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=os.getenv("SESSION_SECRET", "replace-this-before-production"),
+    https_only=os.getenv("KSAT_HTTPS_ONLY") == "1",
+    same_site="lax",
+)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
@@ -1903,16 +1908,26 @@ def result_for_attempt(connection: sqlite3.Connection, attempt_id: str) -> Dict[
 
 @app.on_event("startup")
 def startup() -> None:
-    process_lock = CoordinatorProcessLock(DATA_DIR).acquire()
-    app.state.coordinator_process_lock = process_lock
+    process_lock = getattr(app.state, "coordinator_process_lock", None)
+    if process_lock is None:
+        process_lock = CoordinatorProcessLock(DATA_DIR).acquire()
+        app.state.coordinator_process_lock = process_lock
+        app.state.coordinator_process_lock_release_on_shutdown = True
+    elif (
+        not isinstance(process_lock, CoordinatorProcessLock)
+        or not process_lock.held
+        or process_lock.data_dir != DATA_DIR.resolve()
+    ):
+        raise RuntimeError("The pre-held coordinator lifecycle lock is invalid.")
     try:
         ensure_schema()
         app.state.coordinator_config.submission_writer.start()
         seed_data()
         copy_starter_question_files()
     except BaseException:
-        process_lock.release()
-        app.state.coordinator_process_lock = None
+        if getattr(app.state, "coordinator_process_lock_release_on_shutdown", False):
+            process_lock.release()
+            app.state.coordinator_process_lock = None
         raise
 
 
@@ -1922,7 +1937,9 @@ def shutdown_submission_writer() -> None:
         app.state.coordinator_config.submission_writer.stop()
     finally:
         process_lock = getattr(app.state, "coordinator_process_lock", None)
-        if process_lock is not None:
+        if process_lock is not None and getattr(
+            app.state, "coordinator_process_lock_release_on_shutdown", False
+        ):
             process_lock.release()
             app.state.coordinator_process_lock = None
 

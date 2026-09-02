@@ -234,6 +234,10 @@ class FakeCoordinator:
         self.calls.append(("catalog",))
         return self.catalog
 
+    def probe_build(self):
+        self.calls.append(("probe_build",))
+        return "2.0.0"
+
     def assessments(self):
         self.calls.append(("assessments",))
         return self.assessment_rows
@@ -963,6 +967,8 @@ class ClientOwnedLifecycleTests(unittest.TestCase):
             program_data = Path(directory)
             data_dir = program_data / "KSAT Client"
             data_dir.mkdir()
+            for name in ("identity", "state", "packs"):
+                (data_dir / name).mkdir()
             ca_path = data_dir / "coordinator-ca.pem"
             ca_path.write_text("test CA fixture", encoding="utf-8")
             public_key = "YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWE="
@@ -980,6 +986,8 @@ class ClientOwnedLifecycleTests(unittest.TestCase):
             coordinator = FakeCoordinator()
             with patch.dict(os.environ, {"ProgramData": str(program_data)}), patch(
                 "client_app.DeviceIdentityStore", return_value=identity_store
+            ), patch(
+                "client_app._validate_production_trust"
             ), patch("client_app.ClientStore", return_value=store), patch(
                 "client_app.CoordinatorClient", return_value=coordinator
             ), patch(
@@ -1643,7 +1651,7 @@ class ClientCoordinatorReconfigurationTests(unittest.TestCase):
         self.assertEqual(
             ["https://ksat-new.example.edu:9443"], self.config_updates
         )
-        self.assertEqual([("catalog",)], self.candidates[0].calls)
+        self.assertEqual([("probe_build",), ("catalog",)], self.candidates[0].calls)
         self.assertIs(self.services.coordinator, self.candidates[0])
         self.assertIs(self.services.outbox, self.new_outboxes[0])
         self.assertEqual(1, self.new_outboxes[0].starts)
@@ -1655,6 +1663,30 @@ class ClientCoordinatorReconfigurationTests(unittest.TestCase):
         self.assertFalse(old_control_thread.is_alive())
         self.assertIsNot(old_control_thread, context._control_thread)
         self.assertTrue(context._control_thread.is_alive())
+
+    def test_unenrolled_update_still_probes_tls_before_persistence(self):
+        context = self.client_context.app.state.client_context
+        context.identity.device_id = None
+        response = self.client.post(
+            "/api/device/coordinator",
+            json={"base_url": "https://ksat-new.example.edu:9443", "confirmed": True},
+            headers=self.mutation_headers,
+        )
+        self.assertEqual(200, response.status_code)
+        self.assertEqual([("probe_build",)], self.candidates[0].calls)
+        self.assertEqual(["https://ksat-new.example.edu:9443"], self.config_updates)
+
+    def test_production_managed_update_requires_admin_before_any_swap(self):
+        self.services.config_store.requires_administrator = True
+        response = self.client.post(
+            "/api/device/coordinator",
+            json={"base_url": "https://ksat-new.example.edu:9443", "confirmed": True},
+            headers=self.mutation_headers,
+        )
+        self.assertEqual(403, response.status_code)
+        self.assertEqual("administrator_required", response.json()["problem"]["code"])
+        self.assertEqual([], self.config_updates)
+        self.assertEqual([], self.candidates)
 
     def test_invalid_update_does_not_mutate_configuration_or_services(self):
         old = self.services.coordinator

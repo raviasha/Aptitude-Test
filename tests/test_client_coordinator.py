@@ -170,6 +170,18 @@ class CoordinatorClientTests(unittest.TestCase):
             client.enroll("Lab 01", "new-code")
         self.assertEqual([], requests)
 
+    def test_build_probe_is_real_unsigned_request_and_exact_version(self):
+        def handler(request):
+            self.assertEqual("/api/build", request.url.path)
+            self.assertNotIn("X-KSAT-Signature", request.headers)
+            return httpx.Response(200, json={"version": "2.0.0"})
+
+        self.assertEqual("2.0.0", self.make_client(handler).probe_build())
+        with self.assertRaisesRegex(Exception, "incompatible build"):
+            self.make_client(
+                lambda _request: httpx.Response(200, json={"version": "1.3.3"})
+            ).probe_build()
+
     def test_login_signs_exact_transmitted_bytes_and_failed_login_clears_old_token(self):
         seen = set()
         calls = 0

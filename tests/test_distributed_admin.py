@@ -24,7 +24,7 @@ from ksat.coordinator.releases import prepare_release
 from ksat.coordinator.attempts import issue_attempt_ticket
 
 
-NOW = datetime(2026, 9, 2, 9, 0, tzinfo=timezone.utc)
+NOW = datetime.now(timezone.utc).replace(microsecond=0) + timedelta(hours=1)
 
 
 class DistributedAdminTests(unittest.TestCase):

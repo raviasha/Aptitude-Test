@@ -45,6 +45,11 @@ permitted only when all of these conditions hold:
 When all four hold, the store atomically writes the existing validated tail to
 the anchor and verifies the resulting anchor. It does not add or alter a journal
 entry. Any other mismatch remains the existing opaque authenticated-state error.
+If anchor publication reports an error on a live store after SQLite has committed,
+that store records a recovery-required state. Before its next read or write
+transaction, it performs this complete recovery check and repairs only the exact
+validated one-entry lag; it neither rejects that recoverable state merely because
+the connection stayed open nor starts another mutation over a stale anchor.
 
 Initial creation has one separate crash case: the database can contain only the
 single `initialize` journal entry while no anchor exists. Recovery is allowed
@@ -57,7 +62,8 @@ journal HMAC, current state digest, version-2 stamp, and explicit confirmation
 are validated; ordinary service startup never performs that recovery.
 
 Tests inject an anchor-write failure after SQLite commit for a mutation and for
-initial creation. They prove exact forward recovery and prove rejection of a
+initial creation. They prove exact forward recovery after reopen and before the
+same live store's next read or write transaction, and prove rejection of a
 two-entry gap, a forged tail, a mismatched current digest, and a missing anchor
 over nonempty state.
 
@@ -81,8 +87,9 @@ stamp. Automatic service startup therefore cannot bless legacy data.
 
 An administrator invokes the dedicated client migration operation with an exact
 confirmation flag. The operation acquires the existing client process lock, uses
-the protected machine identity to derive the integrity key, and validates the
-legacy database before adoption:
+the protected machine identity to derive the integrity key, and acquires a SQLite
+`BEGIN IMMEDIATE` write reservation before it validates the legacy database for
+adoption:
 
 - `PRAGMA quick_check` and `foreign_key_check` must be clean.
 - Every cached-pack row has a canonical release UUID, SHA-256 hash, absolute
@@ -94,12 +101,16 @@ legacy database before adoption:
 - No unsupported schema version or existing partial journal/anchor is accepted
   as legacy.
 
-After validation, one immediate transaction appends a `legacy_v1_migration`
-entry over the exact state and stamps version 2. The anchor uses the same
-crash-recoverable creation semantics. The migration then reopens/verifies the
-store and returns a redaction-safe summary containing counts only. Cached packs,
-in-progress attempts, sealed-pending outbox entries, and acknowledged attempts
-remain byte-for-byte database records.
+The same immediate transaction performs semantic validation, applies every
+idempotent schema change through individual transactional statements, appends a
+`legacy_v1_migration` entry over the exact resulting state, and stamps version 2.
+There is no `executescript` or intermediate commit, so a concurrent writer cannot
+change validated state before it is authenticated and any database-stage failure
+rolls the whole adoption back. The external anchor is published only after that
+SQLite commit and uses the exact one-entry crash-recovery semantics. The migration
+then reopens/verifies the store and returns a redaction-safe summary containing
+counts only. Cached packs, in-progress attempts, sealed-pending outbox entries,
+and acknowledged attempts remain byte-for-byte database records.
 
 The Windows installer runs the migration preflight before service configuration.
 Fresh/version-2 stores pass without a confirmation. A nonempty version-1 store
@@ -144,8 +155,8 @@ Implementation follows three independent RED/GREEN cycles:
    creation failure, and all forbidden recovery shapes.
 2. Migration/store/entrypoint/installer tests covering version preflight,
    administrator confirmation, preservation of all four legacy record classes,
-   validation failure with zero mutation, and recoverable migration anchor
-   failure.
+   validation failure with zero mutation, a concurrent writer blocked from the
+   post-validation adoption window, and recoverable migration anchor failure.
 3. External load tests proving real down/up observation, rejection when the
    checkpoint does not change reachability, null/unavailable metrics, and a
    redacted report for setup, checkpoint, and cleanup exceptions.

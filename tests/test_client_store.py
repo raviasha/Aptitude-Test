@@ -919,8 +919,10 @@ class ClientStoreTests(unittest.TestCase):
         class MigrationFailureConnection(sqlite3.Connection):
             closed = False
 
-            def executescript(self, _script):
-                raise sqlite3.DatabaseError("injected migration failure")
+            def execute(self, sql, parameters=(), /):
+                if sql.lstrip().startswith("CREATE TABLE"):
+                    raise sqlite3.DatabaseError("injected migration failure")
+                return super().execute(sql, parameters)
 
             def close(self):
                 self.closed = True
@@ -1261,6 +1263,73 @@ class ClientStoreTests(unittest.TestCase):
                 self.assertEqual(expected_metadata, self._legacy_metadata_snapshot())
                 self.assertFalse(anchor_path.exists())
 
+    def test_confirmed_legacy_migration_holds_write_lock_through_adoption(self):
+        self._prepare_legacy_state("cached")
+        integrity_key = b"state-integrity-test-key-32byte!"[:32]
+        anchor_path = (
+            Path(self.temporary_directory.name) / "identity" / "state-anchor.json"
+        )
+        validation_finished = threading.Event()
+        writer_finished = threading.Event()
+        migration_errors: list[BaseException] = []
+        writer_result: dict[str, object] = {}
+        original_validation = ClientStore._validate_legacy_state
+
+        def pause_after_validation(store):
+            original_validation(store)
+            validation_finished.set()
+            if not writer_finished.wait(timeout=5):
+                raise RuntimeError("Concurrent writer did not finish.")
+
+        def migrate():
+            try:
+                migrated = ClientStore(
+                    self.database_path,
+                    integrity_key=integrity_key,
+                    integrity_anchor_path=anchor_path,
+                    allow_legacy_state_migration=True,
+                )
+                migrated.close()
+            except BaseException as error:
+                migration_errors.append(error)
+
+        with patch.object(
+            ClientStore, "_validate_legacy_state", pause_after_validation
+        ):
+            migration_thread = threading.Thread(target=migrate)
+            migration_thread.start()
+            self.assertTrue(validation_finished.wait(timeout=5))
+            writer = sqlite3.connect(self.database_path, timeout=0.1)
+            writer.execute("PRAGMA busy_timeout=100")
+            try:
+                writer.execute("BEGIN IMMEDIATE")
+                writer.execute(
+                    "UPDATE cached_content_packs SET cached_at='not-a-time'"
+                )
+                writer.commit()
+                writer_result["committed"] = True
+            except sqlite3.OperationalError as error:
+                writer.rollback()
+                writer_result["error"] = str(error)
+            finally:
+                writer.close()
+                writer_finished.set()
+            migration_thread.join(timeout=5)
+
+        self.assertFalse(migration_thread.is_alive())
+        self.assertEqual([], migration_errors)
+        self.assertNotIn("committed", writer_result)
+        self.assertIn("locked", str(writer_result.get("error", "")).lower())
+        self.store = ClientStore(
+            self.database_path,
+            integrity_key=integrity_key,
+            integrity_anchor_path=anchor_path,
+        )
+        self.assertEqual(
+            self.pack_path.resolve(),
+            self.store.verified_pack(self.release_id, self.content_hash),
+        )
+
     def test_confirmed_legacy_migration_recovers_anchor_failure_only_when_reconfirmed(self):
         expected_rows = self._prepare_legacy_state("sealed_pending")
         integrity_key = b"state-integrity-test-key-32byte!"[:32]
@@ -1413,6 +1482,64 @@ class ClientStoreTests(unittest.TestCase):
             ),
             anchor_path.read_bytes(),
         )
+
+    def test_authenticated_state_recovers_anchor_lag_before_next_read_transaction(self):
+        _integrity_key, anchor_path = self._authenticated_store()
+        with patch.object(
+            self.store,
+            "_write_anchor",
+            side_effect=OSError("injected post-commit anchor failure"),
+        ):
+            with self.assertRaisesRegex(OSError, "injected post-commit"):
+                self.store.cache_pack(
+                    self.release_id,
+                    self.content_hash,
+                    self.pack_path,
+                    verified=True,
+                    cached_at=self.now,
+                )
+
+        self.assertEqual(1, self.store.migration_summary()["cached_packs"])
+        latest = self.store.connection.execute(
+            "SELECT sequence, state_digest, entry_mac FROM authenticated_state_journal "
+            "ORDER BY sequence DESC LIMIT 1"
+        ).fetchone()
+        self.assertEqual(
+            ClientStore._anchor_bytes(
+                latest["sequence"], latest["state_digest"], latest["entry_mac"]
+            ),
+            anchor_path.read_bytes(),
+        )
+
+    def test_authenticated_state_recovers_anchor_lag_before_next_write_transaction(self):
+        _integrity_key, anchor_path = self._authenticated_store()
+        with patch.object(
+            self.store,
+            "_write_anchor",
+            side_effect=OSError("injected post-commit anchor failure"),
+        ):
+            with self.assertRaisesRegex(OSError, "injected post-commit"):
+                self.store.cache_pack(
+                    self.release_id,
+                    self.content_hash,
+                    self.pack_path,
+                    verified=True,
+                    cached_at=self.now,
+                )
+
+        second_release_id = str(uuid.uuid4())
+        self.store.cache_pack(
+            second_release_id,
+            "b" * 64,
+            self.pack_path,
+            verified=True,
+            cached_at=self.now,
+        )
+        self.assertEqual(
+            self.pack_path.resolve(),
+            self.store.verified_pack(second_release_id, "b" * 64),
+        )
+        self.assertTrue(anchor_path.is_file())
 
     def test_authenticated_state_recovers_initial_anchor_creation_failure(self):
         self.store.close()

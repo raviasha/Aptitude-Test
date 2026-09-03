@@ -91,6 +91,12 @@
 
   Build version-0/version-1 legacy fixtures with no anchor and lifecycle rows for a cached pack, one in-progress attempt, one sealed-pending attempt/outbox, and one acknowledged attempt. Assert ordinary protected construction raises `ClientStateMigrationRequired` without creating the journal/anchor or changing `user_version`. Assert confirmed migration preserves canonical row snapshots and counts, sets version 2, and verifies on reopen. Corrupt one cached timestamp and one outbox shape in separate fixtures and assert confirmed migration fails before creating the journal/anchor. Inject the migration anchor write failure and assert ordinary startup fails while a second confirmed migration recovers.
 
+  Add an adversarial writer synchronized immediately after semantic validation.
+  Assert it cannot acquire a write transaction until the migration has applied
+  schema changes, appended the journal, stamped version 2, and committed. Also
+  inject an ordinary post-commit anchor-publication failure and assert the same
+  live store recovers before its next read and next write transaction.
+
   ```python
   before = snapshot_authenticated_tables(database_path)
   with self.assertRaises(ClientStateMigrationRequired):
@@ -113,10 +119,12 @@
 
 - [ ] **Step 3: Implement read-only classification, strict validation, and version stamping**
 
-  Inspect `sqlite_master`, `PRAGMA user_version`, journal presence, and anchor presence before `_migrate()`. Treat version 0/1 nonempty state without authenticated entries as legacy; block unless the explicit constructor option is true. On confirmed migration, require supported tables/columns, `quick_check == ok`, an empty `foreign_key_check`, canonical cached-pack fields, a valid snapshot for every attempt, valid outbox retry/time/status/error fields, and exact bundle linkage. Only after validation may `_migrate()` append one `legacy_v1_migration` entry and stamp version 2 in the same immediate transaction. Plain newly created stores stamp version 1; verified authenticated version-0 stores stamp version 2.
+  Inspect `sqlite_master`, `PRAGMA user_version`, journal presence, and anchor presence before `_migrate()`. Treat version 0/1 nonempty state without authenticated entries as legacy; block unless the explicit constructor option is true. On confirmed migration, acquire `BEGIN IMMEDIATE` before semantic validation, then require supported tables/columns, `quick_check == ok`, an empty `foreign_key_check`, canonical cached-pack fields, a valid snapshot for every attempt, valid outbox retry/time/status/error fields, and exact bundle linkage. Apply schema DDL with individual `execute()` calls, append one `legacy_v1_migration` entry, and stamp version 2 before the one commit. Do not use `executescript` or commit inside validation/schema helpers. Plain newly created stores stamp version 1; verified authenticated version-0 stores stamp version 2.
 
   ```python
   self.connection.execute("BEGIN IMMEDIATE")
+  self._validate_legacy_state()
+  self._apply_schema_migrations()
   anchor = self._append_authenticated_entry(
       self.connection, "legacy_v1_migration"
   )

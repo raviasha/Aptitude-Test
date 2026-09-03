@@ -406,6 +406,7 @@ class ClientStore:
         self.connection = connection_factory(self.database_path)
         self._lock = threading.RLock()
         self._closed = False
+        self._anchor_recovery_required = False
         try:
             generation = self._inspect_database_generation()
             self._open_schema_generation(
@@ -481,9 +482,7 @@ class ClientStore:
                 raise ClientStateMigrationRequired(
                     "Client state requires explicit administrator migration."
                 )
-            self._validate_legacy_state()
-            self._migrate()
-            self._commit_legacy_state_migration()
+            self._migrate_legacy_state()
             return
 
         if generation.version == _AUTHENTICATED_SCHEMA_VERSION and not (
@@ -517,16 +516,25 @@ class ClientStore:
 
     def _migrate(self) -> None:
         with self._lock:
-            self.connection.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS cached_content_packs (
+            self.connection.execute("BEGIN IMMEDIATE")
+            try:
+                self._apply_schema_migrations()
+                self.connection.commit()
+            except BaseException:
+                if self.connection.in_transaction:
+                    self.connection.rollback()
+                raise
+
+    def _apply_schema_migrations(self) -> None:
+        for statement in (
+            """CREATE TABLE IF NOT EXISTS cached_content_packs (
                   release_id TEXT PRIMARY KEY,
                   content_hash TEXT NOT NULL,
                   pack_path TEXT NOT NULL,
                   verified INTEGER NOT NULL CHECK (verified IN (0, 1)),
                   cached_at TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS local_attempts (
+                )""",
+            """CREATE TABLE IF NOT EXISTS local_attempts (
                   attempt_id TEXT PRIMARY KEY,
                   student_id TEXT NOT NULL,
                   release_id TEXT NOT NULL,
@@ -543,24 +551,24 @@ class ClientStore:
                   receipt_json TEXT
                   ,deadline_revision INTEGER NOT NULL DEFAULT 0
                   ,deadline_update_json TEXT
-                );
-                CREATE UNIQUE INDEX IF NOT EXISTS one_active_student_release
+                )""",
+            """CREATE UNIQUE INDEX IF NOT EXISTS one_active_student_release
                   ON local_attempts(student_id, release_id)
-                  WHERE state IN ('in_progress', 'sealed_pending');
-                CREATE TABLE IF NOT EXISTS local_responses (
+                  WHERE state IN ('in_progress', 'sealed_pending')""",
+            """CREATE TABLE IF NOT EXISTS local_responses (
                   attempt_id TEXT NOT NULL REFERENCES local_attempts(attempt_id) ON DELETE CASCADE,
                   question_id INTEGER NOT NULL,
                   selected_answer TEXT,
                   saved_at TEXT NOT NULL,
                   PRIMARY KEY(attempt_id, question_id)
-                );
-                CREATE TABLE IF NOT EXISTS local_integrity_events (
+                )""",
+            """CREATE TABLE IF NOT EXISTS local_integrity_events (
                   event_id INTEGER PRIMARY KEY AUTOINCREMENT,
                   attempt_id TEXT NOT NULL REFERENCES local_attempts(attempt_id) ON DELETE CASCADE,
                   event_type TEXT NOT NULL,
                   occurred_at TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS submission_outbox (
+                )""",
+            """CREATE TABLE IF NOT EXISTS submission_outbox (
                   attempt_id TEXT PRIMARY KEY REFERENCES local_attempts(attempt_id) ON DELETE CASCADE,
                   bundle_json TEXT NOT NULL,
                   retry_count INTEGER NOT NULL CHECK (retry_count >= 0),
@@ -569,54 +577,63 @@ class ClientStore:
                   status TEXT NOT NULL DEFAULT 'pending'
                     CHECK (status IN ('pending', 'faculty_intervention_required')),
                   created_at TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS authenticated_state_journal (
+                )""",
+            """CREATE TABLE IF NOT EXISTS authenticated_state_journal (
                   sequence INTEGER PRIMARY KEY CHECK (sequence > 0),
                   operation TEXT NOT NULL,
                   previous_mac TEXT NOT NULL,
                   state_digest TEXT NOT NULL,
                   entry_mac TEXT NOT NULL
-                );
-                """
+                )""",
+        ):
+            self.connection.execute(statement)
+        columns = {
+            row["name"]
+            for row in self.connection.execute("PRAGMA table_info(submission_outbox)")
+        }
+        if "status" not in columns:
+            self.connection.execute(
+                """ALTER TABLE submission_outbox
+                   ADD COLUMN status TEXT NOT NULL DEFAULT 'pending'
+                   CHECK (status IN ('pending', 'faculty_intervention_required'))"""
             )
-            columns = {
-                row["name"]
-                for row in self.connection.execute("PRAGMA table_info(submission_outbox)")
-            }
-            if "status" not in columns:
-                self.connection.execute(
-                    """ALTER TABLE submission_outbox
-                       ADD COLUMN status TEXT NOT NULL DEFAULT 'pending'
-                       CHECK (status IN ('pending', 'faculty_intervention_required'))"""
-                )
-            attempt_columns = {
-                row["name"]
-                for row in self.connection.execute("PRAGMA table_info(local_attempts)")
-            }
-            if "current_question_id" not in attempt_columns:
-                self.connection.execute(
-                    "ALTER TABLE local_attempts ADD COLUMN current_question_id INTEGER"
-                )
-            if "deadline_revision" not in attempt_columns:
-                self.connection.execute(
-                    "ALTER TABLE local_attempts ADD COLUMN deadline_revision INTEGER NOT NULL DEFAULT 0"
-                )
-            if "deadline_update_json" not in attempt_columns:
-                self.connection.execute(
-                    "ALTER TABLE local_attempts ADD COLUMN deadline_update_json TEXT"
-                )
-            self.connection.commit()
+        attempt_columns = {
+            row["name"]
+            for row in self.connection.execute("PRAGMA table_info(local_attempts)")
+        }
+        if "current_question_id" not in attempt_columns:
+            self.connection.execute(
+                "ALTER TABLE local_attempts ADD COLUMN current_question_id INTEGER"
+            )
+        if "deadline_revision" not in attempt_columns:
+            self.connection.execute(
+                "ALTER TABLE local_attempts ADD COLUMN deadline_revision INTEGER NOT NULL DEFAULT 0"
+            )
+        if "deadline_update_json" not in attempt_columns:
+            self.connection.execute(
+                "ALTER TABLE local_attempts ADD COLUMN deadline_update_json TEXT"
+            )
 
     def _validate_legacy_state(self) -> None:
         try:
-            self.connection.execute("BEGIN")
+            version = self.connection.execute("PRAGMA user_version").fetchone()[0]
             tables = {
                 row[0]
                 for row in self.connection.execute(
                     "SELECT name FROM sqlite_master WHERE type='table'"
                 ).fetchall()
             }
-            if not set(_LEGACY_REQUIRED_COLUMNS).issubset(tables):
+            if (
+                version not in {0, _LEGACY_SCHEMA_VERSION}
+                or not set(_LEGACY_REQUIRED_COLUMNS).issubset(tables)
+                or (
+                    "authenticated_state_journal" in tables
+                    and self.connection.execute(
+                        "SELECT COUNT(*) FROM authenticated_state_journal"
+                    ).fetchone()[0]
+                    != 0
+                )
+            ):
                 raise ValueError(_LEGACY_STATE_ERROR)
             for table, required in _LEGACY_REQUIRED_COLUMNS.items():
                 columns = {
@@ -680,30 +697,30 @@ class ClientStore:
                 self._validated_outbox_row(
                     self.connection, row, _LEGACY_STATE_ERROR
                 )
-            self.connection.commit()
         except BaseException as error:
-            if self.connection.in_transaction:
-                self.connection.rollback()
             if isinstance(error, (KeyboardInterrupt, SystemExit)):
                 raise
             if isinstance(error, ValueError) and str(error) == _LEGACY_STATE_ERROR:
                 raise
             raise ValueError(_LEGACY_STATE_ERROR) from error
 
-    def _commit_legacy_state_migration(self) -> None:
-        self.connection.execute("BEGIN IMMEDIATE")
-        try:
-            anchor = self._append_authenticated_entry(
-                self.connection, "legacy_v1_migration"
-            )
-            self.connection.execute(
-                f"PRAGMA user_version = {_AUTHENTICATED_SCHEMA_VERSION}"
-            )
-            self.connection.commit()
-        except BaseException:
-            if self.connection.in_transaction:
-                self.connection.rollback()
-            raise
+    def _migrate_legacy_state(self) -> None:
+        with self._lock:
+            self.connection.execute("BEGIN IMMEDIATE")
+            try:
+                self._validate_legacy_state()
+                self._apply_schema_migrations()
+                anchor = self._append_authenticated_entry(
+                    self.connection, "legacy_v1_migration"
+                )
+                self.connection.execute(
+                    f"PRAGMA user_version = {_AUTHENTICATED_SCHEMA_VERSION}"
+                )
+                self.connection.commit()
+            except BaseException:
+                if self.connection.in_transaction:
+                    self.connection.rollback()
+                raise
         self._write_anchor(*anchor)
         self._verify_full_authenticated_state()
 
@@ -998,10 +1015,17 @@ class ClientStore:
         if self._closed:
             raise RuntimeError("Client store is closed.")
 
+    def _recover_pending_anchor(self) -> None:
+        if self._integrity_key is None or not self._anchor_recovery_required:
+            return
+        self._verify_full_authenticated_state()
+        self._anchor_recovery_required = False
+
     @contextmanager
     def _transaction(self) -> Iterator[sqlite3.Connection]:
         with self._lock:
             self._ensure_open()
+            self._recover_pending_anchor()
             self.connection.execute("BEGIN IMMEDIATE")
             try:
                 if self._integrity_key is not None:
@@ -1014,7 +1038,11 @@ class ClientStore:
                 )
                 self.connection.commit()
                 if anchor is not None:
-                    self._write_anchor(*anchor)
+                    try:
+                        self._write_anchor(*anchor)
+                    except BaseException:
+                        self._anchor_recovery_required = True
+                        raise
             except BaseException:
                 if self.connection.in_transaction:
                     self.connection.rollback()
@@ -1024,6 +1052,7 @@ class ClientStore:
     def _read_transaction(self) -> Iterator[sqlite3.Connection]:
         with self._lock:
             self._ensure_open()
+            self._recover_pending_anchor()
             self.connection.execute("BEGIN")
             try:
                 if self._integrity_key is not None:

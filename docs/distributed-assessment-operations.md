@@ -60,6 +60,43 @@ reason, and verify subsequent signed requests fail. Reactivate only after the
 machine identity and custody have been checked. A reimaged machine should
 normally receive a new enrollment identity.
 
+## Upgrade an existing 2.0 client state store
+
+Client state now has an explicit version boundary. Version 1 is the original
+2.0 lifecycle database without an authenticated journal/anchor; version 2 is
+the LocalSystem-owned authenticated store. Ordinary service startup never
+adopts a nonempty version-1 database. The installer stops the prior client and
+runs a migration preflight before installing the root CA or configuring and
+starting the service. A fresh or already verified version-2 store passes that
+preflight without a confirmation switch.
+
+For a computer with retained version-1 state:
+
+1. Keep the client service stopped and copy the complete `C:\ProgramData\KSAT
+   Client` tree, including SQLite WAL/SHM files, identity, cached packs, and
+   configuration, to approved protected storage.
+2. Record whether the client has a cached pack, an in-progress attempt, a
+   sealed-pending outbox entry, or an acknowledged attempt. Do not edit SQLite.
+3. Run the installer as Administrator with
+   `/CONFIRMLEGACYSTATEMIGRATION=1`. The equivalent service-stopped diagnostic
+   command is `KSATClient.exe --migrate-state --confirm-legacy-state` from an
+   elevated console.
+4. Retain the count-only JSON summary and confirm its cached-pack,
+   in-progress, sealed-pending, acknowledged, and outbox counts match the
+   inventory. The migration preserves the exact lifecycle records, appends one
+   authenticated migration entry, and stamps schema version 2.
+
+The confirmation is not a validation bypass. SQLite integrity/foreign-key
+checks, cached-pack fields, every attempt snapshot, sealed bundle, receipt, and
+outbox relationship must all validate first. Without confirmation, a nonempty
+version-1 database is left unchanged and installation stops. Invalid or
+partially authenticated state also stops installation; retain it for forensic
+review and restore the complete backup with the prior software rather than
+starting the new service. If power loss occurs after the migration transaction
+but before its anchor is published, ordinary startup still fails closed. Rerun
+the same confirmed migration command as Administrator; it can publish only the
+single HMAC-valid migration tail whose state digest and version-2 stamp match.
+
 ## Prepare and launch an assessment
 
 1. Import and validate the question bank. Correct answers and solutions remain

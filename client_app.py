@@ -42,7 +42,11 @@ from ksat.client.coordinator import (
 from ksat.client.identity import DeviceIdentityStore, derive_state_integrity_key
 from ksat.client.outbox import OutboxWorker
 from ksat.client.runtime import AssessmentRuntime, SystemClock
-from ksat.client.store import AttemptSealedError, ClientStore
+from ksat.client.store import (
+    AttemptSealedError,
+    ClientStateMigrationRequired,
+    ClientStore,
+)
 from ksat.coordinator.process_lock import CoordinatorProcessLock
 from ksat.coordinator.tls import COORDINATOR_SIGNING_KEY_OID
 
@@ -2259,6 +2263,37 @@ def update_client_coordinator_url(program_data: Path, *, base_url: str) -> Clien
             local_store.close()
 
 
+def migrate_client_state(
+    program_data: Path, *, confirmed: bool
+) -> dict[str, int]:
+    """Validate and authenticate an existing version-1 client store."""
+    if type(confirmed) is not bool:
+        raise ValueError("Client state migration confirmation is invalid.")
+    data_dir = Path(program_data).resolve() / "KSAT Client"
+    database_path = data_dir / "state" / "client.sqlite3"
+    anchor_path = data_dir / "identity" / "state-anchor.json"
+    with ClientProcessLock(data_dir / "state"):
+        if (
+            ClientStore.legacy_state_migration_required(database_path, anchor_path)
+            and not confirmed
+        ):
+            raise ClientStateMigrationRequired(
+                "Client state requires explicit administrator migration."
+            )
+        identity_store = DeviceIdentityStore(data_dir / "identity")
+        identity = identity_store.load_or_create()
+        store = ClientStore(
+            database_path,
+            integrity_key=derive_state_integrity_key(identity),
+            integrity_anchor_path=anchor_path,
+            allow_legacy_state_migration=confirmed,
+        )
+        try:
+            return store.migration_summary()
+        finally:
+            store.close()
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
@@ -2272,6 +2307,8 @@ def main(
     parser.add_argument("--install-config", action="store_true")
     parser.add_argument("--update-config", action="store_true")
     parser.add_argument("--validate-config", action="store_true")
+    parser.add_argument("--migrate-state", action="store_true")
+    parser.add_argument("--confirm-legacy-state", action="store_true")
     parser.add_argument("--windows-service", action="store_true")
     parser.add_argument("--service-console", action="store_true")
     parser.add_argument("--open-client", action="store_true")
@@ -2284,12 +2321,15 @@ def main(
         arguments.install_config,
         arguments.update_config,
         arguments.validate_config,
+        arguments.migrate_state,
         arguments.windows_service,
         arguments.service_console,
         arguments.open_client,
     )
     if sum(bool(value) for value in operations) > 1:
         parser.error("client operations are separate")
+    if arguments.confirm_legacy_state and not arguments.migrate_state:
+        parser.error("--confirm-legacy-state requires --migrate-state")
     if arguments.install_config:
         if not arguments.base_url or arguments.ca is None or arguments.metadata is None:
             parser.error("--install-config requires --base-url, --ca, and --metadata")
@@ -2325,6 +2365,19 @@ def main(
             immutable_store, data_dir / "coordinator-url.json"
         ).load()
         _validate_production_trust(config)
+        return 0
+    if arguments.migrate_state:
+        if any(value is not None for value in (arguments.base_url, arguments.ca, arguments.metadata)):
+            parser.error("--migrate-state accepts no configuration values")
+        if not administrator_check():
+            raise PermissionError("Administrator authorization is required.")
+        program_data = values.get("ProgramData") or values.get("PROGRAMDATA")
+        if not program_data:
+            raise ValueError("ProgramData is unavailable.")
+        summary = migrate_client_state(
+            Path(program_data), confirmed=arguments.confirm_legacy_state
+        )
+        print(json.dumps(summary, sort_keys=True, separators=(",", ":")))
         return 0
     if any(value is not None for value in (arguments.base_url, arguments.ca, arguments.metadata)):
         parser.error("configuration arguments require --install-config or --update-config")

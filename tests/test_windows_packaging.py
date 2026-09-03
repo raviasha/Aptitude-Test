@@ -250,6 +250,18 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertNotIn("LABACCOUNT", installer)
         self.assertNotIn("AccountName + ':(OI)(CI)M'", installer)
 
+    def test_client_installer_preflights_versioned_state_before_service_start(self):
+        root = Path(__file__).resolve().parents[1]
+        installer = (root / "installer" / "KSATClient.iss").read_text("utf-8")
+        self.assertIn("--migrate-state", installer)
+        self.assertIn("CONFIRMLEGACYSTATEMIGRATION", installer)
+        self.assertIn("--confirm-legacy-state", installer)
+        migration = installer.index("--migrate-state")
+        configure = installer.index("ConfigureClientService();", migration)
+        start = installer.index("StartClientService();", configure)
+        self.assertLess(migration, configure)
+        self.assertLess(configure, start)
+
     def test_frozen_client_smoke_uses_guarded_service_console_mode(self):
         root = Path(__file__).resolve().parents[1]
         release_source = (root / "scripts" / "windows_release.py").read_text("utf-8")

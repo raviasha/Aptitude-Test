@@ -149,6 +149,21 @@ begin
     RaiseException('The LocalSystem client service could not be started.');
 end;
 
+procedure MigrateClientState();
+var ResultCode: Integer; Parameters, Confirmation: String;
+begin
+  Confirmation := Trim(ExpandConstant('{param:CONFIRMLEGACYSTATEMIGRATION|0}'));
+  if (Confirmation <> '0') and (Confirmation <> '1') then
+    RaiseException('/CONFIRMLEGACYSTATEMIGRATION must be 0 or 1.');
+  Parameters := '--migrate-state';
+  if Confirmation = '1' then
+    Parameters := Parameters + ' --confirm-legacy-state';
+  if (not Exec(ExpandConstant('{app}\{#AppExeName}'), Parameters,
+    ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, ResultCode)) or
+    (ResultCode <> 0) then
+    RaiseException('Client state requires administrator-reviewed migration.');
+end;
+
 procedure DeleteClientService();
 var ResultCode: Integer;
 begin
@@ -239,6 +254,7 @@ begin
     if (not Exec(ExpandConstant('{app}\{#AppExeName}'), '--validate-config',
       ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, ResultCode)) or (ResultCode <> 0) then
       RaiseException('The installed coordinator trust configuration is invalid.');
+    MigrateClientState();
     EnsureRootCa();
     ConfigureClientService();
     ProtectAuthorityDirectory(ExpandConstant('{commonappdata}\KSAT Client\identity'));

@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
+import ksat.client.store as client_store_module
 from ksat.client.store import AttemptSealedError, ClientStore
 from ksat.crypto import generate_ed25519_keypair, sign_json
 from ksat.protocol import (
@@ -1067,6 +1068,248 @@ class ClientStoreTests(unittest.TestCase):
             integrity_anchor_path=anchor_path,
         )
         return integrity_key, anchor_path
+
+    def _prepare_legacy_state(self, state: str) -> dict[str, list[tuple]]:
+        self.store.close()
+        for path in (
+            self.database_path,
+            Path(f"{self.database_path}-wal"),
+            Path(f"{self.database_path}-shm"),
+        ):
+            path.unlink(missing_ok=True)
+        self.store = ClientStore(self.database_path)
+        self.store.cache_pack(
+            self.release_id,
+            self.content_hash,
+            self.pack_path,
+            verified=True,
+            cached_at=self.now,
+        )
+        if state != "cached":
+            self.store.create_attempt(
+                self.ticket,
+                [3, 1, 2],
+                created_at=self.now,
+                last_wall_time=self.now,
+            )
+            self.store.save_answer(self.attempt_id, 3, "B", saved_at=self.now)
+            self.store.record_integrity_event(
+                self.attempt_id, "focus_lost", occurred_at=self.now
+            )
+        if state in {"sealed_pending", "acknowledged"}:
+            self.store.seal_attempt(
+                self.attempt_id, self._bundle(), sealed_at=self.deadline
+            )
+        if state == "acknowledged":
+            self.store.acknowledge(self.attempt_id, self.receipt)
+        self.store.close()
+        return self._authenticated_table_snapshot()
+
+    def _authenticated_table_snapshot(self) -> dict[str, list[tuple]]:
+        connection = sqlite3.connect(self.database_path)
+        try:
+            tables = (
+                "cached_content_packs",
+                "local_attempts",
+                "local_responses",
+                "local_integrity_events",
+                "submission_outbox",
+            )
+            return {
+                table: connection.execute(
+                    f'SELECT * FROM "{table}" ORDER BY rowid'
+                ).fetchall()
+                for table in tables
+            }
+        finally:
+            connection.close()
+
+    def _legacy_metadata_snapshot(self) -> tuple[int, tuple[str, ...], int]:
+        connection = sqlite3.connect(self.database_path)
+        try:
+            version = connection.execute("PRAGMA user_version").fetchone()[0]
+            tables = tuple(
+                row[0]
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+                )
+            )
+            journal_count = connection.execute(
+                "SELECT COUNT(*) FROM authenticated_state_journal"
+            ).fetchone()[0]
+            return version, tables, journal_count
+        finally:
+            connection.close()
+
+    def test_protected_store_blocks_nonempty_legacy_state_without_mutation(self):
+        expected_rows = self._prepare_legacy_state("in_progress")
+        expected_metadata = self._legacy_metadata_snapshot()
+        anchor_path = Path(self.temporary_directory.name) / "identity" / "state-anchor.json"
+
+        with self.assertRaisesRegex(ValueError, "explicit administrator migration") as raised:
+            ClientStore(
+                self.database_path,
+                integrity_key=b"state-integrity-test-key-32byte!"[:32],
+                integrity_anchor_path=anchor_path,
+            )
+
+        self.assertIsInstance(
+            raised.exception, client_store_module.ClientStateMigrationRequired
+        )
+        self.assertEqual(expected_rows, self._authenticated_table_snapshot())
+        self.assertEqual(expected_metadata, self._legacy_metadata_snapshot())
+        self.assertFalse(anchor_path.exists())
+
+    def test_confirmed_legacy_migration_preserves_all_lifecycle_states(self):
+        expected_counts = {
+            "cached": {
+                "cached_packs": 1,
+                "in_progress_attempts": 0,
+                "sealed_pending_attempts": 0,
+                "acknowledged_attempts": 0,
+                "pending_outbox": 0,
+            },
+            "in_progress": {
+                "cached_packs": 1,
+                "in_progress_attempts": 1,
+                "sealed_pending_attempts": 0,
+                "acknowledged_attempts": 0,
+                "pending_outbox": 0,
+            },
+            "sealed_pending": {
+                "cached_packs": 1,
+                "in_progress_attempts": 0,
+                "sealed_pending_attempts": 1,
+                "acknowledged_attempts": 0,
+                "pending_outbox": 1,
+            },
+            "acknowledged": {
+                "cached_packs": 1,
+                "in_progress_attempts": 0,
+                "sealed_pending_attempts": 0,
+                "acknowledged_attempts": 1,
+                "pending_outbox": 0,
+            },
+        }
+        integrity_key = b"state-integrity-test-key-32byte!"[:32]
+        anchor_path = Path(self.temporary_directory.name) / "identity" / "state-anchor.json"
+        for state, counts in expected_counts.items():
+            with self.subTest(state=state):
+                anchor_path.unlink(missing_ok=True)
+                expected_rows = self._prepare_legacy_state(state)
+                self.store = ClientStore(
+                    self.database_path,
+                    integrity_key=integrity_key,
+                    integrity_anchor_path=anchor_path,
+                    allow_legacy_state_migration=True,
+                )
+                self.assertEqual(counts, self.store.migration_summary())
+                self.assertEqual(
+                    2,
+                    self.store.connection.execute("PRAGMA user_version").fetchone()[0],
+                )
+                self.store.close()
+                self.assertEqual(expected_rows, self._authenticated_table_snapshot())
+                self.store = ClientStore(
+                    self.database_path,
+                    integrity_key=integrity_key,
+                    integrity_anchor_path=anchor_path,
+                )
+                if state == "cached":
+                    self.assertEqual(
+                        self.pack_path.resolve(),
+                        self.store.verified_pack(self.release_id, self.content_hash),
+                    )
+                elif state == "sealed_pending":
+                    self.assertEqual(1, len(self.store.pending_submissions()))
+                else:
+                    self.assertEqual(state, self.store.load_attempt(self.attempt_id).state)
+
+    def test_confirmed_legacy_migration_rejects_invalid_state_without_mutation(self):
+        integrity_key = b"state-integrity-test-key-32byte!"[:32]
+        anchor_path = Path(self.temporary_directory.name) / "identity" / "state-anchor.json"
+        corruptions = {
+            "cached timestamp": (
+                "cached",
+                "UPDATE cached_content_packs SET cached_at='not-a-time'",
+            ),
+            "outbox bundle": (
+                "sealed_pending",
+                "UPDATE submission_outbox SET bundle_json='{}'",
+            ),
+        }
+        for label, (state, statement) in corruptions.items():
+            with self.subTest(case=label):
+                anchor_path.unlink(missing_ok=True)
+                self._prepare_legacy_state(state)
+                connection = sqlite3.connect(self.database_path)
+                connection.execute(statement)
+                connection.commit()
+                connection.close()
+                expected_rows = self._authenticated_table_snapshot()
+                expected_metadata = self._legacy_metadata_snapshot()
+
+                with self.assertRaisesRegex(ValueError, "Legacy client state is invalid"):
+                    ClientStore(
+                        self.database_path,
+                        integrity_key=integrity_key,
+                        integrity_anchor_path=anchor_path,
+                        allow_legacy_state_migration=True,
+                    )
+
+                self.assertEqual(expected_rows, self._authenticated_table_snapshot())
+                self.assertEqual(expected_metadata, self._legacy_metadata_snapshot())
+                self.assertFalse(anchor_path.exists())
+
+    def test_confirmed_legacy_migration_recovers_anchor_failure_only_when_reconfirmed(self):
+        expected_rows = self._prepare_legacy_state("sealed_pending")
+        integrity_key = b"state-integrity-test-key-32byte!"[:32]
+        anchor_path = Path(self.temporary_directory.name) / "identity" / "state-anchor.json"
+
+        with patch.object(
+            ClientStore,
+            "_write_anchor",
+            side_effect=OSError("injected migration anchor failure"),
+        ):
+            with self.assertRaisesRegex(OSError, "injected migration"):
+                ClientStore(
+                    self.database_path,
+                    integrity_key=integrity_key,
+                    integrity_anchor_path=anchor_path,
+                    allow_legacy_state_migration=True,
+                )
+        self.assertFalse(anchor_path.exists())
+        with self.assertRaisesRegex(ValueError, "Authenticated client state is invalid"):
+            ClientStore(
+                self.database_path,
+                integrity_key=integrity_key,
+                integrity_anchor_path=anchor_path,
+            )
+
+        self.store = ClientStore(
+            self.database_path,
+            integrity_key=integrity_key,
+            integrity_anchor_path=anchor_path,
+            allow_legacy_state_migration=True,
+        )
+        self.assertEqual(expected_rows, self._authenticated_table_snapshot())
+        self.assertEqual(1, len(self.store.pending_submissions()))
+        self.assertTrue(anchor_path.is_file())
+
+    def test_client_schema_versions_plain_and_authenticated_stores(self):
+        self.assertEqual(
+            1, self.store.connection.execute("PRAGMA user_version").fetchone()[0]
+        )
+        integrity_key, _anchor_path = self._authenticated_store()
+        self.assertEqual(2, self.store.connection.execute("PRAGMA user_version").fetchone()[0])
+        self.store.connection.execute("PRAGMA user_version = 0")
+        self.store.close()
+        self.store = ClientStore(
+            self.database_path,
+            integrity_key=integrity_key,
+            integrity_anchor_path=_anchor_path,
+        )
+        self.assertEqual(2, self.store.connection.execute("PRAGMA user_version").fetchone()[0])
 
     def test_authenticated_state_rejects_coherent_unseal_and_outbox_deletion(self):
         integrity_key, anchor_path = self._authenticated_store()

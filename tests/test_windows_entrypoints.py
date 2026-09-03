@@ -1,13 +1,17 @@
+import json
 import os
 import subprocess
 import sys
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import app as faculty_app
+import client_app as client_app_module
+import ksat.client.store as client_store_module
 
 from client_app import (
     ClientConfig,
@@ -539,6 +543,87 @@ class WindowsEntrypointTests(unittest.TestCase):
                     administrator_check=lambda: False,
                 )
             self.assertFalse((Path(directory) / "KSAT Client").exists())
+
+    def test_client_state_migration_cli_requires_administrator_before_work(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with patch(
+                "client_app.migrate_client_state", create=True
+            ) as migration:
+                with self.assertRaisesRegex(PermissionError, "Administrator"):
+                    client_main(
+                        ["--migrate-state"],
+                        environ={"ProgramData": directory},
+                        administrator_check=lambda: False,
+                    )
+            migration.assert_not_called()
+            self.assertFalse((Path(directory) / "KSAT Client").exists())
+
+    def test_client_state_migration_cli_forwards_explicit_confirmation_and_prints_counts(self):
+        summary = {
+            "cached_packs": 2,
+            "in_progress_attempts": 1,
+            "sealed_pending_attempts": 0,
+            "acknowledged_attempts": 3,
+            "pending_outbox": 0,
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            with patch(
+                "client_app.migrate_client_state",
+                create=True,
+                return_value=summary,
+            ) as migration, patch("builtins.print") as output:
+                result = client_main(
+                    ["--migrate-state", "--confirm-legacy-state"],
+                    environ={"ProgramData": directory},
+                    administrator_check=lambda: True,
+                )
+        self.assertEqual(0, result)
+        migration.assert_called_once_with(Path(directory), confirmed=True)
+        self.assertEqual(summary, json.loads(output.call_args.args[0]))
+
+    def test_client_state_migration_confirmation_requires_migration_operation(self):
+        with self.assertRaises(SystemExit):
+            client_main(
+                ["--confirm-legacy-state"],
+                environ={},
+                administrator_check=lambda: True,
+            )
+
+    def test_client_state_migration_uses_process_lock_and_requires_confirmation_for_legacy(self):
+        with tempfile.TemporaryDirectory() as directory:
+            program_data = Path(directory)
+            data_dir = program_data / "KSAT Client"
+            database_path = data_dir / "state" / "client.sqlite3"
+            legacy = client_store_module.ClientStore(database_path)
+            pack_path = data_dir / "packs" / "legacy.ksat"
+            pack_path.parent.mkdir(parents=True)
+            pack_path.write_bytes(b"legacy")
+            legacy.cache_pack(
+                str(uuid.uuid4()),
+                "a" * 64,
+                pack_path,
+                verified=True,
+            )
+            legacy.close()
+
+            with self.assertRaisesRegex(ValueError, "explicit administrator migration"):
+                client_app_module.migrate_client_state(program_data, confirmed=False)
+            self.assertFalse((data_dir / "identity").exists())
+            summary = client_app_module.migrate_client_state(
+                program_data, confirmed=True
+            )
+            self.assertEqual(1, summary["cached_packs"])
+
+            owner = ClientProcessLock(data_dir / "state").acquire()
+            try:
+                with self.assertRaisesRegex(
+                    CoordinatorLockHeld, "lab client data directory"
+                ):
+                    client_app_module.migrate_client_state(
+                        program_data, confirmed=True
+                    )
+            finally:
+                owner.release()
 
 
 if __name__ == "__main__":

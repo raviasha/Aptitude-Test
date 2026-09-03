@@ -38,6 +38,9 @@ _HASH = re.compile(r"[0-9a-f]{64}\Z")
 _OPTION = re.compile(r"[A-E]\Z")
 _ACTIVE_STATES = ("in_progress", "sealed_pending")
 _STATE_INTEGRITY_ERROR = "Authenticated client state is invalid."
+_LEGACY_STATE_ERROR = "Legacy client state is invalid."
+_LEGACY_SCHEMA_VERSION = 1
+_AUTHENTICATED_SCHEMA_VERSION = 2
 _ZERO_MAC = "0" * 64
 _AUTHENTICATED_TABLES = (
     "cached_content_packs",
@@ -46,9 +49,35 @@ _AUTHENTICATED_TABLES = (
     "local_integrity_events",
     "submission_outbox",
 )
+_LEGACY_REQUIRED_COLUMNS = {
+    "cached_content_packs": {
+        "release_id", "content_hash", "pack_path", "verified", "cached_at",
+    },
+    "local_attempts": {
+        "attempt_id", "student_id", "release_id", "ticket_json",
+        "question_order_json", "current_question_id", "state", "deadline",
+        "remaining_seconds", "last_wall_time", "created_at", "sealed_at",
+        "sealed_bundle_json", "receipt_json", "deadline_revision",
+        "deadline_update_json",
+    },
+    "local_responses": {
+        "attempt_id", "question_id", "selected_answer", "saved_at",
+    },
+    "local_integrity_events": {
+        "event_id", "attempt_id", "event_type", "occurred_at",
+    },
+    "submission_outbox": {
+        "attempt_id", "bundle_json", "retry_count", "next_attempt_at",
+        "last_error", "status", "created_at",
+    },
+}
 
 
 class AttemptSealedError(RuntimeError):
+    pass
+
+
+class ClientStateMigrationRequired(ValueError):
     pass
 
 
@@ -99,6 +128,15 @@ class _ValidatedJournalEntry:
     @property
     def anchor(self) -> tuple[int, str, str]:
         return self.sequence, self.state_digest, self.entry_mac
+
+
+@dataclass(frozen=True)
+class _DatabaseGeneration:
+    version: int
+    tables: frozenset[str]
+    has_authenticated_records: bool
+    journal_entries: int
+    anchor_exists: bool
 
 
 def _aware(value: datetime, label: str = "Timestamp") -> datetime:
@@ -298,6 +336,48 @@ def _validate_receipt_for_sealed_attempt(
 
 
 class ClientStore:
+    @classmethod
+    def legacy_state_migration_required(
+        cls, database_path: Path, integrity_anchor_path: Path
+    ) -> bool:
+        path = Path(database_path)
+        if not path.is_file():
+            return False
+        connection = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+        try:
+            version = connection.execute("PRAGMA user_version").fetchone()[0]
+            if type(version) is not int or not 0 <= version <= _AUTHENTICATED_SCHEMA_VERSION:
+                raise ValueError(_STATE_INTEGRITY_ERROR)
+            tables = {
+                row[0]
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
+            has_records = any(
+                table in tables
+                and connection.execute(
+                    f'SELECT 1 FROM "{table}" LIMIT 1'
+                ).fetchone()
+                is not None
+                for table in _AUTHENTICATED_TABLES
+            )
+            journal_entries = (
+                connection.execute(
+                    "SELECT COUNT(*) FROM authenticated_state_journal"
+                ).fetchone()[0]
+                if "authenticated_state_journal" in tables
+                else 0
+            )
+        finally:
+            connection.close()
+        return (
+            version in {0, _LEGACY_SCHEMA_VERSION}
+            and has_records
+            and journal_entries == 0
+            and not os.path.lexists(Path(integrity_anchor_path))
+        )
+
     def __init__(
         self,
         database_path: Path,
@@ -305,6 +385,7 @@ class ClientStore:
         connection_factory: Callable[[Path], sqlite3.Connection] = connect_sqlite,
         integrity_key: bytes | None = None,
         integrity_anchor_path: Path | None = None,
+        allow_legacy_state_migration: bool = False,
     ):
         if (integrity_key is None) != (integrity_anchor_path is None):
             raise ValueError("Client state integrity key and anchor must be configured together.")
@@ -312,6 +393,10 @@ class ClientStore:
             not isinstance(integrity_key, bytes) or len(integrity_key) < 32
         ):
             raise ValueError("Client state integrity key is invalid.")
+        if type(allow_legacy_state_migration) is not bool:
+            raise ValueError("Client state migration authorization is invalid.")
+        if allow_legacy_state_migration and integrity_key is None:
+            raise ValueError("Client state migration requires authenticated storage.")
         self.database_path = Path(database_path)
         self._integrity_key = integrity_key
         self._integrity_anchor_path = (
@@ -322,13 +407,113 @@ class ClientStore:
         self._lock = threading.RLock()
         self._closed = False
         try:
-            self._migrate()
-            if self._integrity_key is not None:
-                self._initialize_or_verify_authenticated_state()
+            generation = self._inspect_database_generation()
+            self._open_schema_generation(
+                generation,
+                allow_legacy_state_migration=allow_legacy_state_migration,
+            )
         except BaseException:
             self.connection.close()
             self._closed = True
             raise
+
+    def _inspect_database_generation(self) -> _DatabaseGeneration:
+        version = self.connection.execute("PRAGMA user_version").fetchone()[0]
+        if type(version) is not int or not 0 <= version <= _AUTHENTICATED_SCHEMA_VERSION:
+            raise ValueError(_STATE_INTEGRITY_ERROR)
+        tables = frozenset(
+            row[0]
+            for row in self.connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        )
+        has_authenticated_records = any(
+            table in tables
+            and self.connection.execute(
+                f'SELECT 1 FROM "{table}" LIMIT 1'
+            ).fetchone()
+            is not None
+            for table in _AUTHENTICATED_TABLES
+        )
+        journal_entries = (
+            self.connection.execute(
+                "SELECT COUNT(*) FROM authenticated_state_journal"
+            ).fetchone()[0]
+            if "authenticated_state_journal" in tables
+            else 0
+        )
+        anchor_exists = bool(
+            self._integrity_anchor_path is not None
+            and os.path.lexists(self._integrity_anchor_path)
+        )
+        return _DatabaseGeneration(
+            version=version,
+            tables=tables,
+            has_authenticated_records=has_authenticated_records,
+            journal_entries=journal_entries,
+            anchor_exists=anchor_exists,
+        )
+
+    def _open_schema_generation(
+        self,
+        generation: _DatabaseGeneration,
+        *,
+        allow_legacy_state_migration: bool,
+    ) -> None:
+        if self._integrity_key is None:
+            if (
+                generation.version == _AUTHENTICATED_SCHEMA_VERSION
+                or generation.journal_entries
+            ):
+                raise ValueError(_STATE_INTEGRITY_ERROR)
+            self._migrate()
+            self._set_schema_version(_LEGACY_SCHEMA_VERSION)
+            return
+
+        is_legacy = (
+            generation.version in {0, _LEGACY_SCHEMA_VERSION}
+            and generation.has_authenticated_records
+            and generation.journal_entries == 0
+            and not generation.anchor_exists
+        )
+        if is_legacy:
+            if not allow_legacy_state_migration:
+                raise ClientStateMigrationRequired(
+                    "Client state requires explicit administrator migration."
+                )
+            self._validate_legacy_state()
+            self._migrate()
+            self._commit_legacy_state_migration()
+            return
+
+        if generation.version == _AUTHENTICATED_SCHEMA_VERSION and not (
+            generation.journal_entries and generation.anchor_exists
+        ):
+            if not (
+                allow_legacy_state_migration
+                and generation.journal_entries == 1
+                and not generation.anchor_exists
+            ):
+                raise ValueError(_STATE_INTEGRITY_ERROR)
+
+        if generation.journal_entries or generation.anchor_exists:
+            self._initialize_or_verify_authenticated_state(
+                allow_legacy_migration_recovery=allow_legacy_state_migration
+            )
+            self._migrate()
+        else:
+            self._migrate()
+            self._initialize_or_verify_authenticated_state()
+        self._set_schema_version(_AUTHENTICATED_SCHEMA_VERSION)
+
+    def _set_schema_version(self, version: int) -> None:
+        if version not in {_LEGACY_SCHEMA_VERSION, _AUTHENTICATED_SCHEMA_VERSION}:
+            raise ValueError("Client schema version is invalid.")
+        current = self.connection.execute("PRAGMA user_version").fetchone()[0]
+        if current == version:
+            return
+        self.connection.execute(f"PRAGMA user_version = {version}")
+        self.connection.commit()
 
     def _migrate(self) -> None:
         with self._lock:
@@ -421,6 +606,122 @@ class ClientStore:
                     "ALTER TABLE local_attempts ADD COLUMN deadline_update_json TEXT"
                 )
             self.connection.commit()
+
+    def _validate_legacy_state(self) -> None:
+        try:
+            self.connection.execute("BEGIN")
+            tables = {
+                row[0]
+                for row in self.connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
+            if not set(_LEGACY_REQUIRED_COLUMNS).issubset(tables):
+                raise ValueError(_LEGACY_STATE_ERROR)
+            for table, required in _LEGACY_REQUIRED_COLUMNS.items():
+                columns = {
+                    row[1]
+                    for row in self.connection.execute(
+                        f'PRAGMA table_info("{table}")'
+                    ).fetchall()
+                }
+                if not required.issubset(columns):
+                    raise ValueError(_LEGACY_STATE_ERROR)
+            if [row[0] for row in self.connection.execute("PRAGMA quick_check")] != ["ok"]:
+                raise ValueError(_LEGACY_STATE_ERROR)
+            if self.connection.execute("PRAGMA foreign_key_check").fetchone() is not None:
+                raise ValueError(_LEGACY_STATE_ERROR)
+            for child in ("local_responses", "local_integrity_events", "submission_outbox"):
+                if self.connection.execute(
+                    f"""SELECT 1 FROM {child} AS child
+                        LEFT JOIN local_attempts AS attempt
+                          ON attempt.attempt_id=child.attempt_id
+                        WHERE attempt.attempt_id IS NULL LIMIT 1"""
+                ).fetchone() is not None:
+                    raise ValueError(_LEGACY_STATE_ERROR)
+            if self.connection.execute(
+                "SELECT COUNT(*) FROM local_attempts "
+                "WHERE state IN ('in_progress', 'sealed_pending')"
+            ).fetchone()[0] > 1:
+                raise ValueError(_LEGACY_STATE_ERROR)
+            for row in self.connection.execute(
+                """SELECT release_id, content_hash, pack_path, verified, cached_at
+                   FROM cached_content_packs"""
+            ).fetchall():
+                _uuid(row["release_id"], "Legacy release identifier")
+                if (
+                    not isinstance(row["content_hash"], str)
+                    or not _HASH.fullmatch(row["content_hash"])
+                    or not isinstance(row["pack_path"], str)
+                    or not row["pack_path"]
+                    or not Path(row["pack_path"]).is_absolute()
+                    or type(row["verified"]) is not int
+                    or row["verified"] not in {0, 1}
+                ):
+                    raise ValueError(_LEGACY_STATE_ERROR)
+                _parse_time(row["cached_at"], _LEGACY_STATE_ERROR)
+            attempt_ids = [
+                row["attempt_id"]
+                for row in self.connection.execute(
+                    "SELECT attempt_id FROM local_attempts ORDER BY attempt_id"
+                ).fetchall()
+            ]
+            for attempt_id in attempt_ids:
+                self._validated_attempt_snapshot(
+                    self.connection, attempt_id, _LEGACY_STATE_ERROR
+                )
+            outbox_rows = self.connection.execute(
+                """SELECT attempt_id, bundle_json, retry_count, next_attempt_at,
+                          last_error, status, created_at
+                   FROM submission_outbox
+                   ORDER BY next_attempt_at, created_at, attempt_id"""
+            ).fetchall()
+            for row in outbox_rows:
+                self._validated_outbox_row(
+                    self.connection, row, _LEGACY_STATE_ERROR
+                )
+            self.connection.commit()
+        except BaseException as error:
+            if self.connection.in_transaction:
+                self.connection.rollback()
+            if isinstance(error, (KeyboardInterrupt, SystemExit)):
+                raise
+            if isinstance(error, ValueError) and str(error) == _LEGACY_STATE_ERROR:
+                raise
+            raise ValueError(_LEGACY_STATE_ERROR) from error
+
+    def _commit_legacy_state_migration(self) -> None:
+        self.connection.execute("BEGIN IMMEDIATE")
+        try:
+            anchor = self._append_authenticated_entry(
+                self.connection, "legacy_v1_migration"
+            )
+            self.connection.execute(
+                f"PRAGMA user_version = {_AUTHENTICATED_SCHEMA_VERSION}"
+            )
+            self.connection.commit()
+        except BaseException:
+            if self.connection.in_transaction:
+                self.connection.rollback()
+            raise
+        self._write_anchor(*anchor)
+        self._verify_full_authenticated_state()
+
+    def migration_summary(self) -> dict[str, int]:
+        with self._read_transaction() as connection:
+            counts = {
+                "cached_packs": connection.execute(
+                    "SELECT COUNT(*) FROM cached_content_packs"
+                ).fetchone()[0],
+                "pending_outbox": connection.execute(
+                    "SELECT COUNT(*) FROM submission_outbox"
+                ).fetchone()[0],
+            }
+            for state in ("in_progress", "sealed_pending", "acknowledged"):
+                counts[f"{state}_attempts"] = connection.execute(
+                    "SELECT COUNT(*) FROM local_attempts WHERE state=?", (state,)
+                ).fetchone()[0]
+        return counts
 
     @staticmethod
     def _canonical_rows(connection: sqlite3.Connection, table: str) -> list[list[object]]:
@@ -634,7 +935,9 @@ class ClientStore:
         )
         return sequence, state_digest, entry_mac
 
-    def _initialize_or_verify_authenticated_state(self) -> None:
+    def _initialize_or_verify_authenticated_state(
+        self, *, allow_legacy_migration_recovery: bool = False
+    ) -> None:
         assert self._integrity_anchor_path is not None
         anchor_exists = os.path.lexists(self._integrity_anchor_path)
         journal_exists = self._latest_journal(self.connection) is not None
@@ -650,14 +953,26 @@ class ClientStore:
                 is not None
                 for table in _AUTHENTICATED_TABLES
             )
-            if (
+            initialize_recovery = (
                 len(entries) == 1
                 and entries[0].operation == "initialize"
                 and not has_existing_state
                 and hmac.compare_digest(
                     entries[0].state_digest, self._state_digest(self.connection)
                 )
-            ):
+            )
+            legacy_migration_recovery = (
+                allow_legacy_migration_recovery
+                and len(entries) == 1
+                and entries[0].operation == "legacy_v1_migration"
+                and has_existing_state
+                and self.connection.execute("PRAGMA user_version").fetchone()[0]
+                == _AUTHENTICATED_SCHEMA_VERSION
+                and hmac.compare_digest(
+                    entries[0].state_digest, self._state_digest(self.connection)
+                )
+            )
+            if initialize_recovery or legacy_migration_recovery:
                 self._write_anchor(*entries[0].anchor)
                 self._verify_current_authenticated_state(self.connection)
                 return
@@ -1529,6 +1844,54 @@ class ClientStore:
                 )
         return self.load_attempt(attempt_id)
 
+    def _validated_outbox_row(
+        self,
+        connection: sqlite3.Connection,
+        row: sqlite3.Row,
+        message: str,
+    ) -> PendingSubmission:
+        try:
+            snapshot = self._validated_attempt_snapshot(
+                connection, row["attempt_id"], message
+            )
+            bundle = snapshot.sealed_bundle
+            next_attempt = _parse_time(row["next_attempt_at"], message)
+            _parse_time(row["created_at"], message)
+            if (
+                snapshot.record.state != "sealed_pending"
+                or bundle is None
+                or snapshot.outbox_json != row["bundle_json"]
+                or type(row["retry_count"]) is not int
+                or row["retry_count"] < 0
+                or row["status"] not in {
+                    "pending", "faculty_intervention_required"
+                }
+                or (
+                    row["status"] == "faculty_intervention_required"
+                    and not row["last_error"]
+                )
+                or (
+                    row["last_error"] is not None
+                    and (
+                        not isinstance(row["last_error"], str)
+                        or len(row["last_error"]) > 2000
+                    )
+                )
+            ):
+                raise ValueError(message)
+        except (KeyError, TypeError, ValueError) as error:
+            if isinstance(error, ValueError) and str(error) == message:
+                raise
+            raise ValueError(message) from error
+        return PendingSubmission(
+            attempt_id=row["attempt_id"],
+            bundle=bundle,
+            retry_count=row["retry_count"],
+            next_attempt_at=next_attempt,
+            last_error=row["last_error"],
+            status=row["status"],
+        )
+
     def pending_submissions(
         self, *, due_at: datetime | None = None
     ) -> list[PendingSubmission]:
@@ -1546,52 +1909,12 @@ class ClientStore:
                     ORDER BY o.next_attempt_at, o.created_at, o.attempt_id""",
                 values,
             ).fetchall()
-            pending = []
-            for row in rows:
-                message = "Stored submission outbox data is invalid."
-                try:
-                    snapshot = self._validated_attempt_snapshot(
-                        connection, row["attempt_id"], message
-                    )
-                    bundle = snapshot.sealed_bundle
-                    next_attempt = _parse_time(row["next_attempt_at"], message)
-                    _parse_time(row["created_at"], message)
-                    if (
-                        snapshot.record.state != "sealed_pending"
-                        or bundle is None
-                        or snapshot.outbox_json != row["bundle_json"]
-                        or type(row["retry_count"]) is not int
-                        or row["retry_count"] < 0
-                        or row["status"] not in {
-                            "pending", "faculty_intervention_required"
-                        }
-                        or (
-                            row["status"] == "faculty_intervention_required"
-                            and not row["last_error"]
-                        )
-                        or (
-                            row["last_error"] is not None
-                            and (
-                                not isinstance(row["last_error"], str)
-                                or len(row["last_error"]) > 2000
-                            )
-                        )
-                    ):
-                        raise ValueError(message)
-                except (KeyError, TypeError, ValueError) as error:
-                    if isinstance(error, ValueError) and str(error) == message:
-                        raise
-                    raise ValueError(message) from error
-                pending.append(
-                    PendingSubmission(
-                        attempt_id=row["attempt_id"],
-                        bundle=bundle,
-                        retry_count=row["retry_count"],
-                        next_attempt_at=next_attempt,
-                        last_error=row["last_error"],
-                        status=row["status"],
-                    )
+            pending = [
+                self._validated_outbox_row(
+                    connection, row, "Stored submission outbox data is invalid."
                 )
+                for row in rows
+            ]
         return pending
 
     def record_retry(

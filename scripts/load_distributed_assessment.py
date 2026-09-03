@@ -27,7 +27,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 from unittest.mock import patch
 from urllib.parse import urlsplit
 
@@ -132,20 +132,9 @@ class _CallMetrics:
         self.errors: collections.Counter[str] = collections.Counter()
         self.request_latencies_ms: list[float] = []
         self.submission_latencies_ms: list[float] = []
-        self.available = True
 
     def call(self, key: str, operation):
         started = time.perf_counter()
-        if not self.available:
-            with self._lock:
-                self.request_counts[key] += 1
-                self.errors["transport_error"] += 1
-                self.status_counts["0"] += 1
-            method, path = key.split(" ", 1)
-            raise httpx.ConnectError(
-                "Authorized load-test transport outage.",
-                request=httpx.Request(method, f"https://load.invalid{path}"),
-            )
         try:
             result = operation()
         except Exception as error:
@@ -442,6 +431,7 @@ class _Fixture:
             "certificate_store_modified": False,
         }
         self.report_scope = "coordinator_subprocess_only"
+        self.metrics_availability = "available"
         self._owns_setup = False
         self._fixture_configured = False
 
@@ -981,6 +971,8 @@ class _ExternalFixture:
         admin_username: str,
         admin_password: str,
         enrollment_code: str,
+        stopped_checkpoint: Callable[[], None] | None = None,
+        started_checkpoint: Callable[[], None] | None = None,
     ) -> None:
         if os.environ.get("KSAT_LOAD_TEST") != "1":
             raise RuntimeError("External load mode requires KSAT_LOAD_TEST=1.")
@@ -1025,6 +1017,11 @@ class _ExternalFixture:
             "certificate_store_modified": False,
         }
         self.report_scope = "authorized_external_coordinator"
+        self.metrics_availability = "unavailable"
+        self._stopped_checkpoint = stopped_checkpoint
+        self._started_checkpoint = started_checkpoint
+        self._outage_down_observed = False
+        self._outage_up_observed = False
         self._cleaned: dict[str, int] | None = None
         self._admin = httpx.Client(
             base_url=self.base_url,
@@ -1195,16 +1192,37 @@ class _ExternalFixture:
         return response.ticket.ticket.started_at
 
     def stop_coordinator(self) -> None:
-        self.metrics.available = False
+        if self._stopped_checkpoint is None:
+            raise RuntimeError("External outage requires a STOPPED operator checkpoint.")
+        self._stopped_checkpoint()
+        try:
+            self._admin.get("/api/build", timeout=1.0)
+        except httpx.TransportError:
+            self._outage_down_observed = True
+            return
+        raise RuntimeError("External coordinator outage was not observed over pinned HTTPS.")
 
     def restart_coordinator(self) -> None:
-        self.metrics.available = True
+        if not self._outage_down_observed or self._started_checkpoint is None:
+            raise RuntimeError("External outage restart checkpoint is invalid.")
+        self._started_checkpoint()
+        deadline = time.monotonic() + 20.0
+        while time.monotonic() < deadline:
+            try:
+                response = self._admin.get("/api/build", timeout=1.0)
+                if response.status_code == 200:
+                    self._outage_up_observed = True
+                    return
+            except httpx.TransportError:
+                pass
+            time.sleep(0.05)
+        raise RuntimeError("External coordinator recovery was not observed over pinned HTTPS.")
 
-    def sample_server_resources(self) -> tuple[float, int]:
-        return 0.0, 0
+    def sample_server_resources(self) -> tuple[None, None]:
+        return None, None
 
-    def writer_queue_depth(self) -> int:
-        return 0
+    def writer_queue_depth(self) -> None:
+        return None
 
     def _status(self) -> dict[str, int]:
         response = self._admin.get(
@@ -1217,8 +1235,8 @@ class _ExternalFixture:
         value = self._status()
         return int(value["submission_rows"]), int(value["distinct_submission_rows"])
 
-    def database_size(self) -> int:
-        return 0
+    def database_size(self) -> None:
+        return None
 
     def cleanup(self) -> dict[str, int]:
         if self._cleaned is not None:
@@ -1264,10 +1282,10 @@ def run_isolated_gate(
         raise ValueError("Load spread values must not be negative.")
 
     wall_started = time.perf_counter()
-    memory_peak = 0
+    memory_peak: int | None = None
     machines: list[_ClientMachine] = []
     local_answer_ms: list[float] = []
-    max_writer_queue_depth = 0
+    max_writer_queue_depth: int | None = None
     monitor_stop = threading.Event()
     cleanup: dict[str, int] = {}
 
@@ -1280,16 +1298,25 @@ def run_isolated_gate(
         adapter = fixture.metrics
         transport = fixture.transport
         server_cpu_before, memory_peak = fixture.sample_server_resources()
+        max_writer_queue_depth = fixture.writer_queue_depth()
 
         def monitor() -> None:
             nonlocal max_writer_queue_depth, memory_peak
             while not monitor_stop.wait(0.01):
-                max_writer_queue_depth = max(
-                    max_writer_queue_depth,
-                    fixture.writer_queue_depth(),
-                )
+                writer_depth = fixture.writer_queue_depth()
+                if writer_depth is not None:
+                    max_writer_queue_depth = (
+                        writer_depth
+                        if max_writer_queue_depth is None
+                        else max(max_writer_queue_depth, writer_depth)
+                    )
                 _server_cpu, server_rss = fixture.sample_server_resources()
-                memory_peak = max(memory_peak, server_rss)
+                if server_rss is not None:
+                    memory_peak = (
+                        server_rss
+                        if memory_peak is None
+                        else max(memory_peak, server_rss)
+                    )
 
         monitor_thread = threading.Thread(target=monitor, daemon=True)
         monitor_thread.start()
@@ -1415,12 +1442,26 @@ def run_isolated_gate(
             cleanup = fixture.cleanup()
             elapsed = max(0.001, time.perf_counter() - wall_started)
             server_cpu_after, server_rss = fixture.sample_server_resources()
-            memory_peak = max(memory_peak, server_rss)
-            cpu_seconds = max(0.0, server_cpu_after - server_cpu_before)
+            if server_rss is not None:
+                memory_peak = (
+                    server_rss
+                    if memory_peak is None
+                    else max(memory_peak, server_rss)
+                )
+            cpu_percent = (
+                round(
+                    100.0 * max(0.0, server_cpu_after - server_cpu_before) / elapsed,
+                    3,
+                )
+                if server_cpu_before is not None and server_cpu_after is not None
+                else None
+            )
             report = {
                 "schema_version": 1,
                 "run_id": fixture.namespace,
                 "mode": fixture.report_mode,
+                "metrics_availability": fixture.metrics_availability,
+                "completed": True,
                 "network": fixture.report_network,
                 "clients": clients,
                 "questions": questions,
@@ -1447,7 +1488,7 @@ def run_isolated_gate(
                 },
                 "coordinator": {
                     "scope": fixture.report_scope,
-                    "cpu_percent_process_average": round(100.0 * cpu_seconds / elapsed, 3),
+                    "cpu_percent_process_average": cpu_percent,
                     "memory_rss_bytes_peak": memory_peak,
                     "sqlite_bytes": database_size,
                 },
@@ -1535,8 +1576,15 @@ def run_external_gate(
     start_spread_seconds: float = 30.0,
     submission_spread_seconds: float = 0.0,
     enforce_performance_thresholds: bool = True,
+    stopped_checkpoint: Callable[[], None] | None = None,
+    started_checkpoint: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     """Run the production client stack against an explicitly authorized HTTPS host."""
+
+    if outage and (stopped_checkpoint is None or started_checkpoint is None):
+        raise ValueError("External outage mode requires STOPPED and STARTED checkpoints.")
+    if not outage and (stopped_checkpoint is not None or started_checkpoint is not None):
+        raise ValueError("External outage checkpoints require outage mode.")
 
     def factory(root: Path, client_count: int, question_count: int) -> _ExternalFixture:
         return _ExternalFixture(
@@ -1548,6 +1596,8 @@ def run_external_gate(
             admin_username=admin_username,
             admin_password=admin_password,
             enrollment_code=enrollment_code,
+            stopped_checkpoint=stopped_checkpoint,
+            started_checkpoint=started_checkpoint,
         )
 
     return run_isolated_gate(
@@ -1575,6 +1625,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--submission-spread-seconds", type=float, default=0.0)
     parser.add_argument("--report", type=Path, default=Path("load-report.json"))
     parser.add_argument("--outage", action="store_true")
+    parser.add_argument(
+        "--outage-control",
+        choices=("operator-checkpoint",),
+        help="Require exact STOPPED/STARTED operator confirmations in external outage mode.",
+    )
     parser.add_argument("--serve-fixture", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--serve-port", type=int, help=argparse.SUPPRESS)
     parser.add_argument("--serve-certfile", type=Path, help=argparse.SUPPRESS)
@@ -1647,45 +1702,94 @@ def _serve_fixture(arguments: argparse.Namespace) -> int:
     return 0
 
 
+def _operator_checkpoint(expected: str) -> None:
+    if expected == "STOPPED":
+        prompt = (
+            "Stop the authorized coordinator using its separate server console, "
+            "then type exactly STOPPED: "
+        )
+    elif expected == "STARTED":
+        prompt = (
+            "Start the same coordinator using its separate server console, "
+            "then type exactly STARTED: "
+        )
+    else:
+        raise ValueError("Operator checkpoint is invalid.")
+    if input(prompt) != expected:
+        raise RuntimeError("Operator checkpoint confirmation did not match.")
+
+
+def _redacted_failure_report(arguments: argparse.Namespace) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "mode": (
+            "authorized_external_https"
+            if arguments.external
+            else "production_https_subprocess"
+        ),
+        "metrics_availability": "unavailable",
+        "clients": arguments.clients,
+        "questions": arguments.questions,
+        "start_spread_seconds": arguments.start_spread_seconds,
+        "submission_spread_seconds": arguments.submission_spread_seconds,
+        "completed": False,
+        "failure": {"code": "gate_execution_failed"},
+        "coordinator": {
+            "cpu_percent_process_average": None,
+            "memory_rss_bytes_peak": None,
+            "sqlite_bytes": None,
+        },
+        "maximum_writer_queue_depth": None,
+        "outage": {
+            "enabled": bool(arguments.outage),
+            "coordinator_service_restarted": False,
+        },
+        "failed_enforced_thresholds": ["gate_execution_completed"],
+        "thresholds": {"gate_execution_completed": False},
+    }
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = _parser().parse_args(argv)
     if arguments.serve_fixture:
         return _serve_fixture(arguments)
-    if arguments.isolated == arguments.external:
-        raise SystemExit("Choose exactly one of --isolated or --external.")
-    if arguments.isolated and (
-        arguments.base_url is not None
-        or arguments.ca_file is not None
-        or arguments.authorize_external
-        or arguments.admin_username is not None
-    ):
-        raise SystemExit(
-            "--base-url and --ca-file are not used by --isolated; the gate creates "
-            "and reports a disposable loopback HTTPS endpoint with a file-pinned CA."
-        )
-    external_credentials = None
-    if arguments.external:
-        if (
-            not arguments.authorize_external
-            or arguments.base_url is None
-            or arguments.ca_file is None
-            or not arguments.admin_username
-            or os.environ.get("KSAT_LOAD_TEST") != "1"
-        ):
-            raise SystemExit(
-                "External mode requires --authorize-external, HTTPS --base-url, --ca-file, "
-                "--admin-username, and KSAT_LOAD_TEST=1."
-            )
-        admin_password = os.environ.get(arguments.admin_password_env)
-        enrollment_code = os.environ.get(arguments.enrollment_code_env)
-        if not admin_password or not enrollment_code:
-            raise SystemExit(
-                "External credentials must be supplied through the configured environment variables."
-            )
-        external_credentials = (admin_password, enrollment_code)
     failed = False
-    with tempfile.TemporaryDirectory(prefix="ksat-load-gate-") as directory:
-        try:
+    try:
+        if arguments.isolated == arguments.external:
+            raise ValueError("Choose exactly one of --isolated or --external.")
+        if arguments.isolated and (
+            arguments.base_url is not None
+            or arguments.ca_file is not None
+            or arguments.authorize_external
+            or arguments.admin_username is not None
+            or arguments.outage_control is not None
+        ):
+            raise ValueError("Isolated mode does not accept external coordinator options.")
+        if arguments.outage_control is not None and not (
+            arguments.external and arguments.outage
+        ):
+            raise ValueError("Operator checkpoints require external outage mode.")
+        external_credentials = None
+        if arguments.external:
+            if (
+                not arguments.authorize_external
+                or arguments.base_url is None
+                or arguments.ca_file is None
+                or not arguments.admin_username
+                or os.environ.get("KSAT_LOAD_TEST") != "1"
+            ):
+                raise ValueError("External mode authorization is incomplete.")
+            if arguments.outage and arguments.outage_control != "operator-checkpoint":
+                raise ValueError(
+                    "External outage mode requires operator-checkpoint control."
+                )
+            admin_password = os.environ.get(arguments.admin_password_env)
+            enrollment_code = os.environ.get(arguments.enrollment_code_env)
+            if not admin_password or not enrollment_code:
+                raise ValueError("External credentials are incomplete.")
+            external_credentials = (admin_password, enrollment_code)
+
+        with tempfile.TemporaryDirectory(prefix="ksat-load-gate-") as directory:
             common = {
                 "clients": arguments.clients,
                 "questions": arguments.questions,
@@ -1704,11 +1808,24 @@ def main(argv: Sequence[str] | None = None) -> int:
                     admin_username=arguments.admin_username,
                     admin_password=external_credentials[0],
                     enrollment_code=external_credentials[1],
+                    stopped_checkpoint=(
+                        (lambda: _operator_checkpoint("STOPPED"))
+                        if arguments.outage
+                        else None
+                    ),
+                    started_checkpoint=(
+                        (lambda: _operator_checkpoint("STARTED"))
+                        if arguments.outage
+                        else None
+                    ),
                     **common,
                 )
-        except LoadGateFailure as error:
-            report = error.report
-            failed = True
+    except LoadGateFailure as error:
+        report = error.report
+        failed = True
+    except Exception:
+        report = _redacted_failure_report(arguments)
+        failed = True
     destination = arguments.report.resolve()
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text(

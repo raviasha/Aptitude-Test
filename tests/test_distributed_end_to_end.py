@@ -87,8 +87,184 @@ class DistributedEndToEndTests(unittest.TestCase):
             self.assertEqual("authorized_external_https", report["mode"])
             self.assertEqual(1, report["accepted_results"])
             self.assertEqual(0, report["cleanup"]["residual_rows"])
+            self.assertEqual("unavailable", report["metrics_availability"])
+            self.assertIsNone(report["coordinator"]["cpu_percent_process_average"])
+            self.assertIsNone(report["coordinator"]["memory_rss_bytes_peak"])
+            self.assertIsNone(report["coordinator"]["sqlite_bytes"])
+            self.assertIsNone(report["maximum_writer_queue_depth"])
             for secret in ("load-password", fixture.enrollment_code, "ownership_token"):
                 self.assertNotIn(secret, serialized)
+
+    def test_external_outage_requires_observed_pinned_https_stop_and_start(self):
+        import app
+        from scripts.load_distributed_assessment import _Fixture, run_external_gate
+
+        events = []
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            os.environ, {"KSAT_LOAD_TEST": "1"}, clear=False
+        ), _Fixture(Path(directory) / "coordinator", 1, 1, real_https=True) as fixture:
+            with app.db() as connection:
+                connection.execute(
+                    "INSERT INTO admins VALUES (?,?,?)",
+                    ("outage-admin", "Outage Admin", app.hash_password("outage-password")),
+                )
+
+            def stopped_checkpoint():
+                events.append("STOPPED")
+                fixture.stop_coordinator()
+
+            def started_checkpoint():
+                events.append("STARTED")
+                fixture.restart_coordinator()
+
+            report = run_external_gate(
+                Path(directory) / "external-outage-clients",
+                base_url=fixture.base_url,
+                ca_file=fixture.security.ca_certificate_path,
+                admin_username="outage-admin",
+                admin_password="outage-password",
+                enrollment_code=fixture.enrollment_code,
+                clients=1,
+                questions=1,
+                outage=True,
+                start_spread_seconds=0,
+                enforce_performance_thresholds=False,
+                stopped_checkpoint=stopped_checkpoint,
+                started_checkpoint=started_checkpoint,
+            )
+
+        self.assertEqual(["STOPPED", "STARTED"], events)
+        self.assertTrue(report["outage"]["coordinator_service_restarted"])
+        self.assertEqual(1, report["outage"]["sealed_pending_before_restart"])
+        self.assertEqual(1, report["outage"]["acknowledged_after_restart"])
+
+    def test_external_outage_rejects_stopped_checkpoint_while_https_is_reachable(self):
+        import app
+        from scripts.load_distributed_assessment import _Fixture, run_external_gate
+
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            os.environ, {"KSAT_LOAD_TEST": "1"}, clear=False
+        ), _Fixture(Path(directory) / "coordinator", 1, 1, real_https=True) as fixture:
+            with app.db() as connection:
+                connection.execute(
+                    "INSERT INTO admins VALUES (?,?,?)",
+                    ("probe-admin", "Probe Admin", app.hash_password("probe-password")),
+                )
+            with self.assertRaisesRegex(RuntimeError, "outage was not observed"):
+                run_external_gate(
+                    Path(directory) / "external-probe-clients",
+                    base_url=fixture.base_url,
+                    ca_file=fixture.security.ca_certificate_path,
+                    admin_username="probe-admin",
+                    admin_password="probe-password",
+                    enrollment_code=fixture.enrollment_code,
+                    clients=1,
+                    questions=1,
+                    outage=True,
+                    start_spread_seconds=0,
+                    enforce_performance_thresholds=False,
+                    stopped_checkpoint=lambda: None,
+                    started_checkpoint=lambda: None,
+                )
+
+    def test_unexpected_external_failures_write_constant_code_redacted_report(self):
+        from scripts import load_distributed_assessment as load
+
+        secrets = (
+            "SECRET-ADMIN-PASSWORD",
+            "SECRET-ENROLLMENT-CODE",
+            "secret-host.example.edu",
+            "SECRET-EXCEPTION-PATH",
+            "operator-name",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "external-failure.json"
+            argv = [
+                "--external",
+                "--authorize-external",
+                "--base-url",
+                "https://secret-host.example.edu:8443",
+                "--ca-file",
+                str(Path(directory) / "SECRET-EXCEPTION-PATH.pem"),
+                "--admin-username",
+                "operator-name",
+                "--clients",
+                "2",
+                "--questions",
+                "3",
+                "--report",
+                str(destination),
+            ]
+            for phase in ("setup", "checkpoint", "cleanup"):
+                with self.subTest(phase=phase), patch.dict(
+                    os.environ,
+                    {
+                        "KSAT_LOAD_TEST": "1",
+                        "KSAT_LOAD_ADMIN_PASSWORD": secrets[0],
+                        "KSAT_LOAD_ENROLLMENT_CODE": secrets[1],
+                    },
+                    clear=False,
+                ), patch.object(
+                    load,
+                    "run_external_gate",
+                    side_effect=RuntimeError(f"{phase}: {secrets[3]} {secrets[0]}"),
+                ):
+                    exit_code = load.main(argv)
+                self.assertEqual(1, exit_code)
+                report = json.loads(destination.read_text(encoding="utf-8"))
+                self.assertFalse(report["completed"])
+                self.assertEqual("gate_execution_failed", report["failure"]["code"])
+                serialized = json.dumps(report)
+                for secret in secrets:
+                    self.assertNotIn(secret, serialized)
+
+    def test_external_outage_cli_requires_exact_operator_checkpoints(self):
+        from scripts import load_distributed_assessment as load
+
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "checkpoint.json"
+            observed = []
+
+            def gate(_data_dir, **kwargs):
+                kwargs["stopped_checkpoint"]()
+                kwargs["started_checkpoint"]()
+                observed.extend(("stop-callback", "start-callback"))
+                return {"completed": True, "thresholds": {}}
+
+            with patch.dict(
+                os.environ,
+                {
+                    "KSAT_LOAD_TEST": "1",
+                    "KSAT_LOAD_ADMIN_PASSWORD": "admin-password",
+                    "KSAT_LOAD_ENROLLMENT_CODE": "enrollment-code",
+                },
+                clear=False,
+            ), patch.object(load, "run_external_gate", side_effect=gate), patch(
+                "builtins.input", side_effect=["STOPPED", "STARTED"]
+            ) as prompt:
+                exit_code = load.main(
+                    [
+                        "--external",
+                        "--authorize-external",
+                        "--outage",
+                        "--outage-control",
+                        "operator-checkpoint",
+                        "--base-url",
+                        "https://coordinator.example.edu:8443",
+                        "--ca-file",
+                        str(Path(directory) / "ca.pem"),
+                        "--admin-username",
+                        "admin",
+                        "--report",
+                        str(destination),
+                    ]
+                )
+            self.assertEqual(0, exit_code)
+            self.assertEqual(["stop-callback", "start-callback"], observed)
+            self.assertEqual(2, prompt.call_count)
+            with patch("builtins.input", return_value="stopped"):
+                with self.assertRaisesRegex(RuntimeError, "did not match"):
+                    load._operator_checkpoint("STOPPED")
 
     def test_percentile_uses_hyndman_fan_type_7_linear_interpolation(self):
         from scripts.load_distributed_assessment import _percentile
@@ -233,6 +409,7 @@ class DistributedEndToEndTests(unittest.TestCase):
         self.assertTrue(report["thresholds"]["requested_start_spread_observed"])
 
     def test_offline_expiry_seals_locally_without_contacting_coordinator(self):
+        from ksat.client.identity import derive_state_integrity_key
         from ksat.client.runtime import AssessmentRuntime
         from ksat.client.store import ClientStore
         from scripts.load_distributed_assessment import _Fixture
@@ -257,10 +434,15 @@ class DistributedEndToEndTests(unittest.TestCase):
                 machine.coordinator.close()
                 machine.store.close()
                 fixture.stop_coordinator()
-                machine.store = ClientStore(machine.root / "state" / "client.sqlite3")
+                identity = machine.identity_store.load_or_create()
+                machine.store = ClientStore(
+                    machine.root / "state" / "client.sqlite3",
+                    integrity_key=derive_state_integrity_key(identity),
+                    integrity_anchor_path=machine.root / "identity" / "state-anchor.json",
+                )
                 machine.runtime = AssessmentRuntime(
                     machine.store,
-                    machine.identity_store.load_or_create(),
+                    identity,
                     ExpiredClock(deadline + timedelta(seconds=1)),
                 )
 

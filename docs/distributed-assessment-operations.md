@@ -235,6 +235,32 @@ outlier remains visible. Command-line gates always enforce both latency limits;
 only explicitly marked small in-process smoke tests may disable latency
 enforcement, while still reporting the measured threshold result and maximum.
 
+External mode is an explicitly authorized server-and-client procedure; the
+harness never runs a service-control command locally or remotely. Open a
+separate Administrator console on the authorized coordinator before starting.
+Supply the coordinator HTTPS origin, exported CA file, administrator username,
+and credential environment-variable names, and include `--external
+--authorize-external --outage --outage-control operator-checkpoint`. At the
+outage boundary:
+
+1. In the separate server console, stop the coordinator service and wait for it
+   to finish. Return to the load harness and type exactly `STOPPED`.
+2. The harness probes `/api/build` with the supplied file-pinned CA. It proceeds
+   with offline submission only after observing a transport-level outage; a
+   still-reachable HTTPS service fails the gate.
+3. In the separate server console, start the same coordinator using the same
+   database and keys. Return to the harness and type exactly `STARTED`.
+4. The harness polls the same pinned-HTTPS build endpoint to a bounded deadline.
+   It marks the service restarted only after successful recovery, then retries
+   the locally sealed outboxes and performs owned-fixture cleanup.
+
+Because external mode has neither a coordinator process handle nor a trusted
+telemetry channel, its coordinator CPU, RSS, SQLite-byte, and writer-queue
+fields are JSON `null` and `metrics_availability` is `unavailable`. Zero would
+incorrectly claim a real measurement. Any setup, checkpoint, execution, or
+cleanup failure produces a constant-code redacted report; exception messages,
+URLs, credentials, usernames, paths, and ownership tokens are not serialized.
+
 An authorized physical acceptance test remains separate: install both packages
 on disposable Windows machines, verify the machine-root CA and firewall effects,
 enroll one client, and repeat one coordinator outage/restart. Never describe the

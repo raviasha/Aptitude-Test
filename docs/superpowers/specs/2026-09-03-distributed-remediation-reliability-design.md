@@ -50,7 +50,11 @@ Initial creation has one separate crash case: the database can contain only the
 single `initialize` journal entry while no anchor exists. Recovery is allowed
 only if that entry has sequence 1, the zero previous MAC, a valid MAC, and a
 digest matching the current empty authenticated state. A missing anchor with any
-user state or any later journal entry fails closed.
+user state or any later journal entry fails closed during ordinary service
+startup. A confirmed administrator migration retry may recover the analogous
+single `legacy_v1_migration` entry over nonempty state, but only after the full
+journal HMAC, current state digest, version-2 stamp, and explicit confirmation
+are validated; ordinary service startup never performs that recovery.
 
 Tests inject an anchor-write failure after SQLite commit for a mutation and for
 initial creation. They prove exact forward recovery and prove rejection of a

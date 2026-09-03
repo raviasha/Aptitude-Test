@@ -9,11 +9,11 @@ score.
 ## Change control and prerequisites
 
 Schedule the rollout outside an assessment window. Record the four release-file
-SHA-256 hashes, coordinator DNS name, HTTPS port, backup location, lab Windows
-account, and change ticket. Use a stable DNS name; do not configure clients with
-an IP address that may change. Physical installer execution, Windows Firewall
-changes, and machine-root CA installation require explicit institutional
-authorization.
+SHA-256 hashes, verified Authenticode publisher/timestamp, coordinator DNS name,
+HTTPS port, backup location, and change ticket. Use a stable DNS name; do not
+configure clients with an IP address that may change. Physical installer
+execution, Windows Firewall changes, and machine-root CA installation require
+explicit institutional authorization.
 
 Build and inspect the release as documented in
 [`WINDOWS_EXE_BUILD.md`](../WINDOWS_EXE_BUILD.md). Do not continue unless the
@@ -43,9 +43,11 @@ restore” below.
 1. Verify `KSATClientSetup-2.0.0.exe`, `coordinator-ca.pem`, and
    `coordinator-public.json` hashes through the approved channel.
 2. Run the client installer as Administrator and supply the coordinator HTTPS
-   URL, both public files, and the exact student lab Windows account.
+   URL and both public files. The installer creates the automatic LocalSystem
+   `KSATLabClientAuthority` service and service-owned state directories.
 3. Confirm the client opens only `http://127.0.0.1:8010`; it must create no
-   inbound firewall rule.
+   inbound firewall rule. Confirm ordinary lab accounts cannot directly modify
+   `identity`, `state`, or `packs`; their shortcut opens only the loopback UI.
 4. In Faculty **Devices**, rotate the one-time enrollment code. Treat the
    successful response as a secret and do not capture it in screenshots or
    logs.

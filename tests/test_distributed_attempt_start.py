@@ -6,6 +6,7 @@ import json
 import os
 import tempfile
 import threading
+import time
 import unittest
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -132,6 +133,7 @@ class DistributedAttemptStartTests(unittest.TestCase):
 
     def tearDown(self):
         self.client.close()
+        coordinator_routes.close_pack_registry(self.config)
         if self.original_enrollment_code is None:
             os.environ.pop("KSAT_DEVICE_ENROLLMENT_CODE", None)
         else:
@@ -219,6 +221,7 @@ class DistributedAttemptStartTests(unittest.TestCase):
             return request()
 
     async def pack_response(self, *, label="device-a", count_closes=False, force_roll=False):
+        del force_roll
         path = f"/api/client/v1/releases/{self.release_id}/pack"
         headers = self.headers("GET", path, label)
         scope = {
@@ -248,21 +251,17 @@ class DistributedAttemptStartTests(unittest.TestCase):
             return {"type": "http.request", "body": b"", "more_body": False}
 
         snapshots = []
-        real_new_snapshot = coordinator_routes._new_pack_snapshot
+        real_open_snapshot = coordinator_routes.PackArtifactRegistry._open
 
-        def capture_snapshot():
-            snapshot = (
-                tempfile.SpooledTemporaryFile(max_size=1, mode="w+b")
-                if force_roll
-                else real_new_snapshot()
-            )
+        def capture_snapshot(entry):
+            snapshot, byte_size = real_open_snapshot(entry)
             if count_closes:
                 snapshot = CountingSnapshot(snapshot)
             snapshots.append(snapshot)
-            return snapshot
+            return snapshot, byte_size
 
         with patch(
-            "ksat.coordinator.routes._new_pack_snapshot",
+            "ksat.coordinator.routes.PackArtifactRegistry._open",
             side_effect=capture_snapshot,
         ):
             response = await coordinator_routes.release_pack(
@@ -398,7 +397,6 @@ class DistributedAttemptStartTests(unittest.TestCase):
             with patch("ksat.coordinator.routes._PACK_COPY_CHUNK_BYTES", 32):
                 await response(scope, receive, send)
             self.assertIs(retained_iterator, response.body_iterator)
-            self.assertTrue(snapshot._rolled)
             self.assertTrue(snapshot.closed)
 
         asyncio.run(exercise_disconnect())
@@ -442,7 +440,6 @@ class DistributedAttemptStartTests(unittest.TestCase):
             self.assertEqual(self.content_hash, hashlib.sha256(body).hexdigest())
             self.assertEqual(f'"{self.content_hash}"', headers["etag"])
             self.assertEqual(str(len(expected)), headers["content-length"])
-            self.assertTrue(snapshot._rolled)
             self.assertTrue(snapshot.closed)
 
         asyncio.run(exercise_completion())
@@ -464,7 +461,6 @@ class DistributedAttemptStartTests(unittest.TestCase):
                     receive,
                     send,
                 )
-            self.assertTrue(snapshot._rolled)
             self.assertTrue(snapshot.closed)
 
         asyncio.run(exercise_send_failure())
@@ -494,7 +490,6 @@ class DistributedAttemptStartTests(unittest.TestCase):
             task.cancel()
             with self.assertRaises(asyncio.CancelledError):
                 await task
-            self.assertTrue(snapshot._rolled)
             self.assertTrue(snapshot.closed)
 
         asyncio.run(exercise_cancellation())
@@ -523,12 +518,12 @@ class DistributedAttemptStartTests(unittest.TestCase):
 
         asyncio.run(exercise_double_close())
 
-    def test_repeated_aborted_pack_downloads_close_all_rolled_snapshots(self):
+    def test_repeated_aborted_pack_downloads_close_all_cached_handles(self):
         async def exercise_repeated_aborts():
             retained = []
             for _ in range(6):
                 response, snapshot = await self.pack_response(force_roll=True)
-                snapshot_path = Path(snapshot._file.name)
+                snapshot_path = Path(snapshot.name)
                 self.assertTrue(snapshot_path.exists())
                 retained.append((response, response.body_iterator, snapshot, snapshot_path))
                 first_body_chunk = asyncio.Event()
@@ -547,10 +542,10 @@ class DistributedAttemptStartTests(unittest.TestCase):
                         receive,
                         send,
                     )
-                self.assertTrue(snapshot._rolled)
                 self.assertTrue(snapshot.closed)
-                self.assertFalse(snapshot_path.exists())
+                self.assertTrue(snapshot_path.exists())
             self.assertTrue(all(item[2].closed for item in retained))
+            coordinator_routes.close_pack_registry(self.config)
             self.assertTrue(all(not item[3].exists() for item in retained))
 
         asyncio.run(exercise_repeated_aborts())
@@ -782,6 +777,7 @@ class DistributedAttemptStartTests(unittest.TestCase):
         self.assertEqual(1, attempt_count)
 
     def test_start_uses_encrypted_hash_readiness_without_redecrypting_the_pack(self):
+        coordinator_routes.warm_pack_registry(self.config)
         with patch(
             "ksat.coordinator.routes.load_release_manifest",
             side_effect=AssertionError("start hot path must not decrypt and inspect the immutable pack"),
@@ -983,44 +979,51 @@ class DistributedAttemptStartTests(unittest.TestCase):
         self.assertEqual(self.content_hash, hashlib.sha256(response.content).hexdigest())
         self.assertNotEqual(unchecked_replacement, response.content)
 
-    def test_concurrent_pack_requests_stream_their_verified_snapshots(self):
+    def test_100_concurrent_catalog_and_pack_requests_validate_once_and_remain_responsive(self):
         path = f"/api/client/v1/releases/{self.release_id}/pack"
-        pack_path = app.assessment_packs_dir() / f"{self.release_id}.ksatpack"
-        expected = pack_path.read_bytes()
-        barrier = threading.Barrier(2)
+        expected = (app.assessment_packs_dir() / f"{self.release_id}.ksatpack").read_bytes()
         real_loader = coordinator_routes.load_release_manifest
+        validation_started = threading.Event()
+        allow_validation = threading.Event()
+        validation_calls = 0
+        validation_lock = threading.Lock()
 
-        def validate_then_replace(*args, **kwargs):
-            summary = real_loader(*args, **kwargs)
-            position = barrier.wait(timeout=10)
-            if position == 0:
-                pack_path.write_bytes(b"unchecked concurrent replacement")
-            barrier.wait(timeout=10)
-            return summary
+        def slow_validation(*args, **kwargs):
+            nonlocal validation_calls
+            with validation_lock:
+                validation_calls += 1
+            validation_started.set()
+            self.assertTrue(allow_validation.wait(10))
+            return real_loader(*args, **kwargs)
 
-        def fetch(label):
-            return self.client.get(path, headers=self.headers("GET", path, label))
+        def fetch(index):
+            target = "/api/client/v1/releases" if index % 2 == 0 else path
+            return self.client.get(
+                target,
+                headers=self.headers("GET", target, "device-a"),
+            )
 
         with (
             patch(
                 "ksat.coordinator.routes.load_release_manifest",
-                side_effect=validate_then_replace,
+                side_effect=slow_validation,
             ),
-            ThreadPoolExecutor(max_workers=2) as executor,
+            ThreadPoolExecutor(max_workers=100) as executor,
         ):
-            responses = [
-                future.result(timeout=20)
-                for future in (
-                    executor.submit(fetch, "device-a"),
-                    executor.submit(fetch, "device-b"),
-                )
-            ]
-        self.assertEqual([200, 200], [response.status_code for response in responses])
-        self.assertEqual([expected, expected], [response.content for response in responses])
-        self.assertEqual(
-            [self.content_hash, self.content_hash],
-            [hashlib.sha256(response.content).hexdigest() for response in responses],
-        )
+            futures = [executor.submit(fetch, index) for index in range(100)]
+            self.assertTrue(validation_started.wait(10))
+            started = time.perf_counter()
+            responsive = self.client.get("/api/build")
+            responsiveness_ms = (time.perf_counter() - started) * 1000
+            allow_validation.set()
+            responses = [future.result(timeout=30) for future in futures]
+        self.assertEqual(200, responsive.status_code)
+        self.assertLess(responsiveness_ms, 500)
+        self.assertEqual([200] * 100, [response.status_code for response in responses])
+        self.assertEqual(1, validation_calls)
+        for index, response in enumerate(responses):
+            if index % 2:
+                self.assertEqual(expected, response.content)
 
     def test_pack_rejects_a_truncated_snapshot_copy(self):
         def copy_only_prefix(source, snapshot):
@@ -1087,6 +1090,7 @@ class DistributedAttemptStartTests(unittest.TestCase):
         self.assertTrue(all(snapshot.closed for snapshot in created_snapshots))
 
         created_snapshots.clear()
+        coordinator_routes.close_pack_registry(self.config)
         with (
             patch(
                 "ksat.coordinator.routes._new_pack_snapshot",
@@ -1148,18 +1152,21 @@ class DistributedAttemptStartTests(unittest.TestCase):
             return snapshot
 
         path = f"/api/client/v1/releases/{self.release_id}/pack"
-        with (
-            TestClient(app.app, raise_server_exceptions=False) as safe_client,
-            patch(
-                "ksat.coordinator.routes._new_pack_snapshot",
-                side_effect=new_snapshot,
-            ),
-            patch(
-                "ksat.coordinator.routes._copy_pack_to_snapshot",
-                side_effect=RuntimeError("unexpected local I/O failure with secret marker"),
-            ),
-        ):
-            response = safe_client.get(path, headers=self.headers("GET", path, "device-a"))
+        safe_client = TestClient(app.app, raise_server_exceptions=False)
+        try:
+            with (
+                patch(
+                    "ksat.coordinator.routes._new_pack_snapshot",
+                    side_effect=new_snapshot,
+                ),
+                patch(
+                    "ksat.coordinator.routes._copy_pack_to_snapshot",
+                    side_effect=RuntimeError("unexpected local I/O failure with secret marker"),
+                ),
+            ):
+                response = safe_client.get(path, headers=self.headers("GET", path, "device-a"))
+        finally:
+            safe_client.close()
         self.assertEqual(500, response.status_code)
         self.assertNotIn("secret marker", response.text)
         self.assertTrue(snapshots)
@@ -1197,7 +1204,9 @@ class DistributedAttemptStartTests(unittest.TestCase):
     def test_launch_window_does_not_mutate_attempt_deadlines_and_second_launch_is_typed(self):
         started = self.start("S100", "device-a", at="2026-08-31T09:02:00+00:00")
         deadline = started.json()["ticket"]["ticket"]["deadline"]
-        with patch("app.require_user", return_value={"role": "admin"}):
+        with patch("app.require_admin_mutation", return_value={"id": "faculty", "role": "admin"}), patch(
+            "app.require_user", return_value={"role": "admin"}
+        ):
             closed = self.client.post(f"/api/admin/tests/{self.test_id}/close")
             relaunched = self.client.post(f"/api/admin/tests/{self.test_id}/launch")
         self.assertEqual(200, closed.status_code, closed.text)
@@ -1268,7 +1277,9 @@ class DistributedAttemptStartTests(unittest.TestCase):
             after_extension.json()["ticket"]["ticket"]["deadline"],
         )
 
-        with patch("app.require_user", return_value={"role": "admin"}):
+        with patch("app.require_admin_mutation", return_value={"id": "faculty", "role": "admin"}), patch(
+            "app.require_user", return_value={"role": "admin"}
+        ):
             closed = self.client.post(f"/api/admin/tests/{self.test_id}/close")
         self.assertEqual(200, closed.status_code, closed.text)
         rejected = self.start("S103", "device-d", at="2026-08-31T09:13:00+00:00")
@@ -1305,6 +1316,7 @@ class DistributedAttemptStartTests(unittest.TestCase):
     def test_faculty_launch_sets_exact_ten_minute_window_without_creating_attempt_deadlines(self):
         self.set_launch_state(False)
         with (
+            patch("app.require_admin_mutation", return_value={"id": "faculty", "role": "admin"}),
             patch("app.require_user", return_value={"role": "admin"}),
             patch("app.datetime", FrozenDateTime),
         ):

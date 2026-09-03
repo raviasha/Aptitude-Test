@@ -2,6 +2,23 @@
 setlocal EnableExtensions
 cd /d "%~dp0" || exit /b 1
 
+if not defined KSAT_SIGNING_PFX (
+  echo KSAT_SIGNING_PFX is required for a production release.
+  exit /b 1
+)
+if not defined KSAT_SIGNING_PFX_PASSWORD (
+  echo KSAT_SIGNING_PFX_PASSWORD is required for a production release.
+  exit /b 1
+)
+if not defined KSAT_SIGNING_PUBLISHER (
+  echo KSAT_SIGNING_PUBLISHER is required for a production release.
+  exit /b 1
+)
+if not defined KSAT_SIGNING_TIMESTAMP_URL (
+  echo KSAT_SIGNING_TIMESTAMP_URL is required for a production release.
+  exit /b 1
+)
+
 if defined KSAT_BUILD_PYTHON (
   set "PYTHON_EXE=%KSAT_BUILD_PYTHON%"
 ) else (
@@ -19,9 +36,9 @@ if not exist "%PYTHON_EXE%" (
 "%PYTHON_EXE%" -m pip install --disable-pip-version-check --no-input -r requirements.txt pyinstaller || exit /b 1
 
 if defined ISCC_EXE (
-  "%PYTHON_EXE%" scripts\windows_release.py all --root "%CD%" --python "%PYTHON_EXE%" --iscc "%ISCC_EXE%" || exit /b 1
+  "%PYTHON_EXE%" scripts\windows_release.py all --root "%CD%" --python "%PYTHON_EXE%" --iscc "%ISCC_EXE%" --signing-pfx "%KSAT_SIGNING_PFX%" --signing-publisher "%KSAT_SIGNING_PUBLISHER%" --timestamp-url "%KSAT_SIGNING_TIMESTAMP_URL%" || exit /b 1
 ) else (
-  "%PYTHON_EXE%" scripts\windows_release.py all --root "%CD%" --python "%PYTHON_EXE%" || exit /b 1
+  "%PYTHON_EXE%" scripts\windows_release.py all --root "%CD%" --python "%PYTHON_EXE%" --signing-pfx "%KSAT_SIGNING_PFX%" --signing-publisher "%KSAT_SIGNING_PUBLISHER%" --timestamp-url "%KSAT_SIGNING_TIMESTAMP_URL%" || exit /b 1
 )
 
 echo.

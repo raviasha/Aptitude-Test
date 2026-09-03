@@ -5,6 +5,8 @@ from __future__ import annotations
 import base64
 import binascii
 import ctypes
+import hashlib
+import hmac
 import json
 import os
 import tempfile
@@ -145,6 +147,18 @@ class DeviceIdentity:
     public_key_b64: str
     device_id: str | None = None
     coordinator_public_key_b64: str | None = None
+
+
+def derive_state_integrity_key(identity: DeviceIdentity) -> bytes:
+    """Derive a non-exported-purpose key from the protected device secret."""
+    if not isinstance(identity, DeviceIdentity):
+        raise ValueError(_PROTECTED_IDENTITY_ERROR)
+    private_key = _raw_key(identity.private_key_b64)
+    return hmac.new(
+        private_key,
+        b"KSAT client authenticated state journal v1",
+        hashlib.sha256,
+    ).digest()
 
 
 def _default_protector() -> SecretProtector:

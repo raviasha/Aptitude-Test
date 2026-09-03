@@ -102,6 +102,15 @@ def migrate_distributed_schema(connection: sqlite3.Connection) -> None:
           setting_value TEXT NOT NULL,
           updated_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS load_test_runs (
+          namespace TEXT PRIMARY KEY,
+          ownership_sha256 TEXT NOT NULL,
+          test_id INTEGER NOT NULL UNIQUE,
+          release_id TEXT NOT NULL UNIQUE,
+          created_at TEXT NOT NULL,
+          FOREIGN KEY(test_id) REFERENCES tests(test_id),
+          FOREIGN KEY(release_id) REFERENCES assessment_releases(release_id)
+        );
         """
     )
     _ensure_column(connection, "tests", "release_id TEXT")

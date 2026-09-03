@@ -1,4 +1,5 @@
 import base64
+import time
 import unittest
 from datetime import datetime, timezone
 
@@ -7,15 +8,41 @@ from pydantic import ValidationError
 from ksat.protocol import (
     AttemptDeadlineUpdate,
     AttemptTicket,
+    MATH_FLOOR_DIVISION_ERROR,
     ReleaseManifest,
     SignedAttemptDeadlineUpdate,
     canonical_json,
+    canonicalize_math_floor_division_markup,
     deterministic_question_order,
     device_request_bytes,
 )
 
 
 class ProtocolTests(unittest.TestCase):
+    def test_unterminated_code_tokens_do_not_tail_scan_each_candidate(self):
+        malformed = "<code" * 16_000
+        started = time.perf_counter()
+        with self.assertRaisesRegex(ValueError, MATH_FLOOR_DIVISION_ERROR):
+            canonicalize_math_floor_division_markup(malformed)
+        self.assertLess(time.perf_counter() - started, 0.5)
+
+    def test_unterminated_code_token_is_bounded_at_import_size_limit(self):
+        malformed = "x" * (25 * 1024 * 1024 - len("<code")) + "<code"
+        started = time.perf_counter()
+        with self.assertRaisesRegex(ValueError, MATH_FLOOR_DIVISION_ERROR):
+            canonicalize_math_floor_division_markup(malformed)
+        self.assertLess(time.perf_counter() - started, 1.0)
+
+    def test_unterminated_code_scan_has_linear_growth(self):
+        durations = []
+        for size in (2 * 1024 * 1024, 8 * 1024 * 1024):
+            malformed = "x" * (size - len("<code")) + "<code"
+            started = time.perf_counter()
+            with self.assertRaises(ValueError):
+                canonicalize_math_floor_division_markup(malformed)
+            durations.append(time.perf_counter() - started)
+        self.assertLess(durations[1], durations[0] * 5 + 0.05)
+
     def test_canonical_json_is_stable(self):
         left = canonical_json({"b": 2, "a": "é"})
         right = canonical_json({"a": "é", "b": 2})

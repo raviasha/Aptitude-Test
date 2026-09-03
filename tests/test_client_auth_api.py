@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 from itsdangerous import URLSafeTimedSerializer
 
 import app
+import ksat.coordinator.auth as coordinator_auth
 from ksat.crypto import generate_ed25519_keypair
 from ksat.protocol import device_request_bytes
 
@@ -442,6 +443,131 @@ class ClientAuthApiTests(unittest.TestCase):
         self.assertEqual(first.status_code, 200, first.text)
         self.assertEqual(replay.status_code, 403)
         self.assertEqual(replay.json()["detail"]["code"], "invalid_device_key")
+
+    def test_device_request_nonce_requires_exact_canonical_uuid(self):
+        enrolled = self.enroll("Lab-01")
+        payload = {
+            "student_id": "S100",
+            "password": "student123",
+            "device_id": enrolled["device_id"],
+        }
+        for nonce in (
+            "x" * 35,
+            "x" * 36,
+            "x" * 37,
+            str(uuid.uuid4()).upper(),
+        ):
+            with self.subTest(nonce=nonce):
+                response = self.device_post(
+                    "/api/client/v1/session",
+                    enrolled["device_id"],
+                    nonce=nonce,
+                    payload=payload,
+                )
+                self.assertEqual(403, response.status_code, response.text)
+                self.assertEqual("invalid_device_key", response.json()["detail"]["code"])
+
+    def test_authenticated_nonce_flood_is_bounded_per_device_and_globally(self):
+        first = self.enroll("Lab-01")
+        second = self.enroll("Lab-02")
+        cache = coordinator_auth.NonceReplayCache(
+            ttl_seconds=300,
+            global_limit=5,
+            per_device_limit=3,
+            rate_limit=20,
+            rate_window_seconds=60,
+        )
+
+        def signed_login(device_id):
+            return self.device_post(
+                "/api/client/v1/session",
+                device_id,
+                nonce=str(uuid.uuid4()),
+                payload={
+                    "student_id": "S100",
+                    "password": "student123",
+                    "device_id": device_id,
+                },
+            )
+
+        with patch.object(coordinator_auth, "_NONCE_CACHE", cache):
+            accepted_first = [signed_login(first["device_id"]) for _ in range(3)]
+            per_device_rejected = signed_login(first["device_id"])
+            accepted_second = [signed_login(second["device_id"]) for _ in range(2)]
+            global_rejected = signed_login(second["device_id"])
+
+        self.assertEqual([200] * 3, [item.status_code for item in accepted_first])
+        self.assertEqual([200] * 2, [item.status_code for item in accepted_second])
+        self.assertEqual(429, per_device_rejected.status_code)
+        self.assertEqual("device_request_capacity", per_device_rejected.json()["detail"]["code"])
+        self.assertEqual(429, global_rejected.status_code)
+        self.assertEqual("device_request_capacity", global_rejected.json()["detail"]["code"])
+        self.assertEqual(
+            {
+                "total": 5,
+                "devices": 2,
+                "maximum_device_entries": 3,
+                "expiry_records": 5,
+                "rate_events": 5,
+                "rate_devices": 2,
+            },
+            cache.stats(),
+        )
+
+    def test_authenticated_nonce_rate_limit_and_concurrency_stay_bounded(self):
+        enrolled = self.enroll("Lab-01")
+        device_id = enrolled["device_id"]
+        cache = coordinator_auth.NonceReplayCache(
+            ttl_seconds=300,
+            global_limit=64,
+            per_device_limit=64,
+            rate_limit=64,
+            rate_window_seconds=60,
+        )
+        barrier = threading.Barrier(64)
+
+        def signed_login():
+            barrier.wait(timeout=10)
+            return self.device_post(
+                "/api/client/v1/session",
+                device_id,
+                nonce=str(uuid.uuid4()),
+                payload={
+                    "student_id": "S100",
+                    "password": "student123",
+                    "device_id": device_id,
+                },
+            )
+
+        with patch.object(coordinator_auth, "_NONCE_CACHE", cache):
+            with ThreadPoolExecutor(max_workers=64) as executor:
+                futures = [executor.submit(signed_login) for _ in range(64)]
+                responses = [future.result(timeout=30) for future in futures]
+            rejected = self.device_post(
+                "/api/client/v1/session",
+                device_id,
+                nonce=str(uuid.uuid4()),
+                payload={
+                    "student_id": "S100",
+                    "password": "student123",
+                    "device_id": device_id,
+                },
+            )
+
+        self.assertEqual([200] * 64, sorted(item.status_code for item in responses))
+        self.assertEqual(429, rejected.status_code)
+        self.assertEqual("device_request_rate_limited", rejected.json()["detail"]["code"])
+        self.assertEqual(
+            {
+                "total": 64,
+                "devices": 1,
+                "maximum_device_entries": 64,
+                "expiry_records": 64,
+                "rate_events": 64,
+                "rate_devices": 1,
+            },
+            cache.stats(),
+        )
 
     def test_concurrent_device_requests_accept_same_nonce_exactly_once(self):
         enrolled = self.enroll("Lab-01")

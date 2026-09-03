@@ -2,6 +2,7 @@
 
 import base64
 import binascii
+import heapq
 import hashlib
 import os
 import secrets
@@ -9,7 +10,8 @@ import sqlite3
 import tempfile
 import threading
 import uuid
-from datetime import datetime, timedelta, timezone
+from collections import deque
+from datetime import datetime, timezone
 from pathlib import Path
 
 from cryptography.exceptions import InvalidSignature
@@ -22,6 +24,11 @@ from ksat.protocol import DeviceEnrollmentReceipt, DeviceEnrollmentRequest, devi
 TOKEN_SALT = "ksat-client-session-v1"
 CLIENT_SESSION_SECONDS = 43_200
 DEVICE_TIMESTAMP_TOLERANCE_SECONDS = 300
+DEVICE_NONCE_GLOBAL_LIMIT = 50_000
+DEVICE_NONCE_PER_DEVICE_LIMIT = 2_048
+DEVICE_REQUEST_RATE_LIMIT = 512
+DEVICE_GLOBAL_REQUEST_RATE_LIMIT = 20_000
+DEVICE_REQUEST_RATE_WINDOW_SECONDS = 60
 
 
 class AuthenticationProblem(ValueError):
@@ -36,8 +43,135 @@ class AuthenticationProblem(ValueError):
         return {"code": self.code, "message": self.message, "retryable": self.retryable}
 
 
-_NONCE_LOCK = threading.Lock()
-_SEEN_NONCES: dict[tuple[str, str], datetime] = {}
+class NonceReplayCache:
+    """Bounded replay and authenticated-request rate tracking.
+
+    Expiration uses a min-heap so each accepted nonce is inserted and removed once;
+    request processing never scans the live cache.
+    """
+
+    def __init__(
+        self,
+        *,
+        ttl_seconds: int,
+        global_limit: int,
+        per_device_limit: int,
+        rate_limit: int,
+        rate_window_seconds: int,
+        global_rate_limit: int = DEVICE_GLOBAL_REQUEST_RATE_LIMIT,
+    ) -> None:
+        limits = (
+            ttl_seconds,
+            global_limit,
+            per_device_limit,
+            rate_limit,
+            rate_window_seconds,
+            global_rate_limit,
+        )
+        if any(type(value) is not int or value <= 0 for value in limits):
+            raise ValueError("Nonce replay-cache limits must be positive integers.")
+        if per_device_limit > global_limit:
+            raise ValueError("The per-device nonce limit cannot exceed the global limit.")
+        self.ttl_seconds = ttl_seconds
+        self.global_limit = global_limit
+        self.per_device_limit = per_device_limit
+        self.rate_limit = rate_limit
+        self.rate_window_seconds = rate_window_seconds
+        self.global_rate_limit = global_rate_limit
+        self._lock = threading.Lock()
+        self._entries: dict[tuple[str, str], float] = {}
+        self._expiry_heap: list[tuple[float, int, tuple[str, str]]] = []
+        self._device_counts: dict[str, int] = {}
+        self._device_rates: dict[str, deque[float]] = {}
+        self._global_rate: deque[tuple[float, str]] = deque()
+        self._sequence = 0
+
+    def _prune_expired(self, now: float) -> None:
+        while self._expiry_heap and self._expiry_heap[0][0] < now:
+            expires_at, _sequence, key = heapq.heappop(self._expiry_heap)
+            if self._entries.get(key) != expires_at:
+                continue
+            del self._entries[key]
+            device_id = key[0]
+            remaining = self._device_counts[device_id] - 1
+            if remaining:
+                self._device_counts[device_id] = remaining
+            else:
+                del self._device_counts[device_id]
+
+    def _prune_rate_window(self, cutoff: float) -> None:
+        while self._global_rate and self._global_rate[0][0] < cutoff:
+            accepted_at, device_id = self._global_rate.popleft()
+            device_rate = self._device_rates.get(device_id)
+            if device_rate and device_rate[0] == accepted_at:
+                device_rate.popleft()
+            if device_rate is not None and not device_rate:
+                del self._device_rates[device_id]
+
+    def record(self, device_id: str, nonce: str, *, now_utc: datetime) -> None:
+        now = now_utc.timestamp()
+        key = (device_id, nonce)
+        with self._lock:
+            self._prune_expired(now)
+            cutoff = now - self.rate_window_seconds
+            self._prune_rate_window(cutoff)
+            device_rate = self._device_rates.setdefault(device_id, deque())
+            if key in self._entries:
+                if not device_rate:
+                    self._device_rates.pop(device_id, None)
+                raise _problem(
+                    "invalid_device_key",
+                    "The device request proof is invalid.",
+                    status_code=403,
+                )
+            if len(device_rate) >= self.rate_limit or len(self._global_rate) >= self.global_rate_limit:
+                if not device_rate:
+                    self._device_rates.pop(device_id, None)
+                raise AuthenticationProblem(
+                    "device_request_rate_limited",
+                    "The device request rate limit was reached.",
+                    status_code=429,
+                    retryable=True,
+                )
+            if (
+                self._device_counts.get(device_id, 0) >= self.per_device_limit
+                or len(self._entries) >= self.global_limit
+            ):
+                if not device_rate:
+                    self._device_rates.pop(device_id, None)
+                raise AuthenticationProblem(
+                    "device_request_capacity",
+                    "The device request replay capacity was reached.",
+                    status_code=429,
+                    retryable=True,
+                )
+            expires_at = now + self.ttl_seconds
+            self._sequence += 1
+            self._entries[key] = expires_at
+            self._device_counts[device_id] = self._device_counts.get(device_id, 0) + 1
+            heapq.heappush(self._expiry_heap, (expires_at, self._sequence, key))
+            device_rate.append(now)
+            self._global_rate.append((now, device_id))
+
+    def stats(self) -> dict[str, int]:
+        with self._lock:
+            return {
+                "total": len(self._entries),
+                "devices": len(self._device_counts),
+                "maximum_device_entries": max(self._device_counts.values(), default=0),
+                "expiry_records": len(self._expiry_heap),
+                "rate_events": len(self._global_rate),
+                "rate_devices": len(self._device_rates),
+            }
+
+
+_NONCE_CACHE = NonceReplayCache(
+    ttl_seconds=DEVICE_TIMESTAMP_TOLERANCE_SECONDS,
+    global_limit=DEVICE_NONCE_GLOBAL_LIMIT,
+    per_device_limit=DEVICE_NONCE_PER_DEVICE_LIMIT,
+    rate_limit=DEVICE_REQUEST_RATE_LIMIT,
+    rate_window_seconds=DEVICE_REQUEST_RATE_WINDOW_SECONDS,
+)
 
 
 def _problem(code: str, message: str, *, status_code: int) -> AuthenticationProblem:
@@ -185,7 +319,11 @@ def verify_device_request(
     current_time = current_time.astimezone(timezone.utc)
     if abs((current_time - request_time).total_seconds()) > DEVICE_TIMESTAMP_TOLERANCE_SECONDS:
         raise _problem("invalid_device_key", "The device request proof is invalid.", status_code=403)
-    if not isinstance(nonce, str) or not nonce.strip():
+    try:
+        parsed_nonce = uuid.UUID(nonce) if type(nonce) is str and len(nonce) == 36 else None
+    except (AttributeError, TypeError, ValueError):
+        parsed_nonce = None
+    if parsed_nonce is None or parsed_nonce.version != 4 or str(parsed_nonce) != nonce:
         raise _problem("invalid_device_key", "The device request proof is invalid.", status_code=403)
     try:
         signature = base64.b64decode(signature_b64.encode("ascii"), validate=True)
@@ -196,15 +334,5 @@ def verify_device_request(
         if isinstance(error, AuthenticationProblem):
             raise _problem("invalid_device_key", "The device request proof is invalid.", status_code=403) from error
         raise _problem("invalid_device_key", "The device request proof is invalid.", status_code=403) from error
-    replay_key = (device_id, nonce)
-    with _NONCE_LOCK:
-        cutoff = current_time - timedelta(seconds=DEVICE_TIMESTAMP_TOLERANCE_SECONDS)
-        expired_keys = [
-            key for key, accepted_at in _SEEN_NONCES.items() if accepted_at < cutoff
-        ]
-        for key in expired_keys:
-            del _SEEN_NONCES[key]
-        if replay_key in _SEEN_NONCES:
-            raise _problem("invalid_device_key", "The device request proof is invalid.", status_code=403)
-        _SEEN_NONCES[replay_key] = current_time
+    _NONCE_CACHE.record(device_id, nonce, now_utc=current_time)
     return device_id

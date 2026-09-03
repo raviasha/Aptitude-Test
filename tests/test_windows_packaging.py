@@ -1,4 +1,5 @@
 import hashlib
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -6,14 +7,79 @@ from pathlib import Path
 from scripts.windows_release import (
     APP_VERSION,
     ReleaseLayout,
+    SigningConfigurationError,
     build_commands,
+    build_executables,
     coordinator_payload_manifest,
+    create_ephemeral_test_signing_config,
     inspect_release_inputs,
+    publish_signed_executables,
+    sign_and_verify_artifact,
+    verify_authenticode_signature,
     write_sha256s,
 )
 
 
 class WindowsPackagingTests(unittest.TestCase):
+    def test_artifact_build_fails_closed_before_work_without_signing_identity(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(SigningConfigurationError, "signing"):
+                build_executables(Path(directory), Path("C:/Python/python.exe"))
+
+    def test_batch_build_forwards_pinned_production_signing_configuration(self):
+        root = Path(__file__).resolve().parents[1]
+        batch = (root / "build-windows.bat").read_text("utf-8")
+        self.assertIn("KSAT_SIGNING_PFX", batch)
+        self.assertIn("KSAT_SIGNING_PUBLISHER", batch)
+        self.assertIn("KSAT_SIGNING_TIMESTAMP_URL", batch)
+        self.assertIn("--signing-pfx", batch)
+        self.assertIn("--signing-publisher", batch)
+        self.assertIn("--timestamp-url", batch)
+        self.assertNotIn("--test-signing", batch)
+
+    def test_inner_executables_are_verified_before_their_signed_bytes_are_published(self):
+        with tempfile.TemporaryDirectory() as directory:
+            layout = ReleaseLayout(Path(directory))
+            layout.dist_dir.mkdir(parents=True)
+            layout.coordinator_executable.write_bytes(b"MZcoordinator")
+            layout.client_executable.write_bytes(b"MZclient")
+            events = []
+
+            def fake_sign(path, _config):
+                events.append(path.name)
+                path.write_bytes(path.read_bytes() + b"-signed")
+
+            config = create_ephemeral_test_signing_config(
+                layout.root / "test-identity",
+                environ={"KSAT_RELEASE_TEST_SIGNING": "1"},
+            )
+            publish_signed_executables(layout, config, signer=fake_sign)
+            self.assertEqual(["KSATCoordinator.exe", "KSATClient.exe"], events)
+            self.assertEqual(
+                layout.coordinator_executable.read_bytes(),
+                layout.coordinator_release_executable.read_bytes(),
+            )
+            self.assertTrue(layout.client_release_executable.read_bytes().endswith(b"-signed"))
+
+    def test_ephemeral_test_signing_requires_explicit_nonproduction_gate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(SigningConfigurationError, "KSAT_RELEASE_TEST_SIGNING"):
+                create_ephemeral_test_signing_config(Path(directory), environ={})
+
+    @unittest.skipUnless(os.name == "nt", "Authenticode is a Windows release gate")
+    def test_ephemeral_identity_signs_and_tamper_fails_verification(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = create_ephemeral_test_signing_config(
+                root, environ={"KSAT_RELEASE_TEST_SIGNING": "1"}
+            )
+            artifact = root / "probe.ps1"
+            artifact.write_text("Write-Output 'signed probe'\n", encoding="utf-8")
+            sign_and_verify_artifact(artifact, config)
+            artifact.write_text("Write-Output 'tampered probe'\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "signature"):
+                verify_authenticode_signature(artifact, config)
+
     def test_release_layout_has_two_distinct_versioned_products(self):
         with tempfile.TemporaryDirectory() as directory:
             layout = ReleaseLayout(Path(directory))
@@ -170,6 +236,24 @@ class WindowsPackagingTests(unittest.TestCase):
             'Name: "{commonappdata}\\KSAT Client"; Permissions: admins-full system-full users-readexec',
             installer,
         )
+
+    def test_client_installer_uses_protected_localsystem_service_authority(self):
+        root = Path(__file__).resolve().parents[1]
+        installer = (root / "installer" / "KSATClient.iss").read_text("utf-8")
+        self.assertIn("KSATLabClientAuthority", installer)
+        self.assertIn("LocalSystem", installer)
+        self.assertIn("sidtype", installer)
+        self.assertIn("NT SERVICE\\KSATLabClientAuthority", installer)
+        self.assertIn("--windows-service", installer)
+        self.assertIn("--open-client", installer)
+        self.assertNotIn("AccountPage", installer)
+        self.assertNotIn("LABACCOUNT", installer)
+        self.assertNotIn("AccountName + ':(OI)(CI)M'", installer)
+
+    def test_frozen_client_smoke_uses_guarded_service_console_mode(self):
+        root = Path(__file__).resolve().parents[1]
+        release_source = (root / "scripts" / "windows_release.py").read_text("utf-8")
+        self.assertIn('"--service-console"', release_source)
 
     def test_all_active_release_metadata_uses_version_2(self):
         root = Path(__file__).resolve().parents[1]

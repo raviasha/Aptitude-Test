@@ -9,6 +9,87 @@ from unittest.mock import patch
 
 
 class DistributedEndToEndTests(unittest.TestCase):
+    def test_external_fixture_is_namespaced_owned_and_cleanup_rejects_wrong_owner(self):
+        import app
+        from scripts.load_distributed_assessment import _Fixture
+
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            os.environ, {"KSAT_LOAD_TEST": "1"}, clear=False
+        ), _Fixture(Path(directory), 1, 2) as fixture:
+            with app.db() as connection:
+                connection.execute(
+                    "INSERT INTO admins VALUES (?,?,?)",
+                    ("load-admin", "Load Admin", app.hash_password("load-password")),
+                )
+            login = fixture.test_client.post(
+                "/api/login",
+                json={"identifier": "load-admin", "password": "load-password", "role": "admin"},
+            )
+            csrf = login.json()["csrf_token"]
+            namespace = f"LOAD-{os.urandom(16).hex().upper()}"
+            created = fixture.test_client.post(
+                "/api/admin/load-tests",
+                headers={"X-KSAT-CSRF": csrf},
+                json={
+                    "namespace": namespace,
+                    "ownership_token": "o" * 43,
+                    "clients": 2,
+                    "questions": 3,
+                },
+            )
+            self.assertEqual(201, created.status_code, created.text)
+            denied = fixture.test_client.delete(
+                f"/api/admin/load-tests/{namespace}",
+                headers={"X-KSAT-CSRF": csrf, "X-KSAT-Load-Ownership": "wrong"},
+            )
+            self.assertEqual(403, denied.status_code)
+            with app.db() as connection:
+                self.assertEqual(
+                    2,
+                    connection.execute(
+                        "SELECT COUNT(*) AS count FROM students WHERE student_id LIKE ?",
+                        (f"{namespace}-STUDENT-%",),
+                    ).fetchone()["count"],
+                )
+            cleaned = fixture.test_client.delete(
+                f"/api/admin/load-tests/{namespace}",
+                headers={"X-KSAT-CSRF": csrf, "X-KSAT-Load-Ownership": "o" * 43},
+            )
+            self.assertEqual(200, cleaned.status_code, cleaned.text)
+            self.assertEqual(0, cleaned.json()["residual_rows"])
+
+    def test_external_gate_uses_supplied_https_ca_and_safe_report(self):
+        import app
+        from scripts.load_distributed_assessment import _Fixture, run_external_gate
+
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            os.environ, {"KSAT_LOAD_TEST": "1"}, clear=False
+        ), _Fixture(Path(directory) / "coordinator", 1, 2, real_https=True) as fixture:
+            with app.db() as connection:
+                connection.execute(
+                    "INSERT INTO admins VALUES (?,?,?)",
+                    ("load-admin", "Load Admin", app.hash_password("load-password")),
+                )
+            report = run_external_gate(
+                Path(directory) / "external-clients",
+                base_url=fixture.base_url,
+                ca_file=fixture.security.ca_certificate_path,
+                admin_username="load-admin",
+                admin_password="load-password",
+                enrollment_code=fixture.enrollment_code,
+                clients=1,
+                questions=2,
+                outage=False,
+                start_spread_seconds=0,
+                enforce_performance_thresholds=False,
+            )
+            serialized = json.dumps(report)
+            self.assertEqual("authorized_external_https", report["mode"])
+            self.assertEqual(1, report["accepted_results"])
+            self.assertEqual(0, report["cleanup"]["residual_rows"])
+            for secret in ("load-password", fixture.enrollment_code, "ownership_token"):
+                self.assertNotIn(secret, serialized)
+
     def test_percentile_uses_hyndman_fan_type_7_linear_interpolation(self):
         from scripts.load_distributed_assessment import _percentile
 

@@ -1054,6 +1054,108 @@ class ClientStoreTests(unittest.TestCase):
         self.store.close()
         self.store = ClientStore(self.database_path, connection_factory=connection_factory)
 
+    def _authenticated_store(self) -> tuple[bytes, Path]:
+        self.store.close()
+        self.database_path.unlink(missing_ok=True)
+        integrity_key = b"state-integrity-test-key-32byte!"[:32]
+        anchor_path = Path(self.temporary_directory.name) / "identity" / "state-anchor.json"
+        anchor_path.parent.mkdir()
+        self.store = ClientStore(
+            self.database_path,
+            integrity_key=integrity_key,
+            integrity_anchor_path=anchor_path,
+        )
+        return integrity_key, anchor_path
+
+    def test_authenticated_state_rejects_coherent_unseal_and_outbox_deletion(self):
+        integrity_key, anchor_path = self._authenticated_store()
+        self._seal_pending()
+        self.store.close()
+
+        connection = sqlite3.connect(self.database_path)
+        connection.execute("DELETE FROM submission_outbox WHERE attempt_id=?", (self.attempt_id,))
+        connection.execute(
+            """UPDATE local_attempts
+               SET state='in_progress', sealed_at=NULL, sealed_bundle_json=NULL
+               WHERE attempt_id=?""",
+            (self.attempt_id,),
+        )
+        connection.commit()
+        connection.close()
+
+        with self.assertRaisesRegex(ValueError, "Authenticated client state is invalid"):
+            ClientStore(
+                self.database_path,
+                integrity_key=integrity_key,
+                integrity_anchor_path=anchor_path,
+            )
+
+    def test_authenticated_state_rejects_deleted_integrity_event(self):
+        integrity_key, anchor_path = self._authenticated_store()
+        self._cache_and_create()
+        self.store.record_integrity_event(
+            self.attempt_id, "focus_lost", occurred_at=self.now
+        )
+        self.store.close()
+
+        connection = sqlite3.connect(self.database_path)
+        connection.execute(
+            "DELETE FROM local_integrity_events WHERE attempt_id=?", (self.attempt_id,)
+        )
+        connection.commit()
+        connection.close()
+
+        with self.assertRaisesRegex(ValueError, "Authenticated client state is invalid"):
+            ClientStore(
+                self.database_path,
+                integrity_key=integrity_key,
+                integrity_anchor_path=anchor_path,
+            )
+
+    def test_authenticated_state_anchor_detects_journal_tail_rollback(self):
+        integrity_key, anchor_path = self._authenticated_store()
+        self._cache_and_create()
+        self.store.save_answer(self.attempt_id, 3, "B", saved_at=self.now)
+        self.store.close()
+
+        connection = sqlite3.connect(self.database_path)
+        connection.execute(
+            "DELETE FROM authenticated_state_journal WHERE sequence=(SELECT MAX(sequence) FROM authenticated_state_journal)"
+        )
+        connection.commit()
+        connection.close()
+
+        with self.assertRaisesRegex(ValueError, "Authenticated client state is invalid"):
+            ClientStore(
+                self.database_path,
+                integrity_key=integrity_key,
+                integrity_anchor_path=anchor_path,
+            )
+
+    def test_answer_and_timer_checkpoint_share_one_authenticated_transition(self):
+        self._authenticated_store()
+        self._cache_and_create()
+        before = self.store.connection.execute(
+            "SELECT MAX(sequence) FROM authenticated_state_journal"
+        ).fetchone()[0]
+
+        self.store.save_answer_checkpoint(
+            self.attempt_id,
+            3,
+            "B",
+            saved_at=self.now + timedelta(seconds=1),
+            remaining_seconds=1799,
+            last_wall_time=self.now + timedelta(seconds=1),
+        )
+
+        after = self.store.connection.execute(
+            "SELECT MAX(sequence) FROM authenticated_state_journal"
+        ).fetchone()[0]
+        record = self.store.load_attempt(self.attempt_id)
+        self.assertEqual(before + 1, after)
+        self.assertEqual("B", record.responses[3])
+        self.assertEqual(1799, record.remaining_seconds)
+        self.assertEqual(self.now + timedelta(seconds=1), record.last_wall_time)
 
 if __name__ == "__main__":
     unittest.main()

@@ -9,16 +9,37 @@ KSAT 2.0 has two products. Install **KSAT Faculty Coordinator** on the faculty/s
 - Node.js for the JavaScript syntax checks in the canonical test suite
 - Inno Setup 6.7.3 (`ISCC.exe`); the release inspection gate requires an extractable Inno 6.x payload
 - `innoextract.exe` with Inno 6.7 support (set `INNOEXTRACT_EXE` when it is not on `PATH`)
+- An institution-controlled Authenticode PFX with code-signing usage, its password, the exact certificate subject to pin as publisher, and an approved HTTPS timestamp service
 
-From an ordinary Command Prompt in the repository root, set `ISCC_EXE` only when Inno Setup is not discoverable, then run the fail-fast build:
+From an ordinary Command Prompt in the repository root, configure the signing
+identity and build tools, then run the fail-closed build. Keep the PFX and
+password out of the repository and build logs. The publisher value must exactly
+match the PFX certificate subject:
 
 ```bat
 set "ISCC_EXE=C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
 set "INNOEXTRACT_EXE=C:\BuildTools\innoextract.exe"
+set "KSAT_SIGNING_PFX=D:\Protected\institution-code-signing.pfx"
+set "KSAT_SIGNING_PFX_PASSWORD=<supply through the protected build environment>"
+set "KSAT_SIGNING_PUBLISHER=CN=Example Institution, O=Example Institution, C=IN"
+set "KSAT_SIGNING_TIMESTAMP_URL=https://timestamp.example.edu"
 build-windows.bat
 ```
 
-`KSAT_BUILD_PYTHON` may point to an existing build-environment Python. The script installs only `requirements.txt` plus PyInstaller, cleans only the explicit `build\windows`/`dist` outputs, builds isolated one-file images, runs disposable TLS/loopback smoke tests, compiles both installers, recursively decompresses and scans PyInstaller and Inno payloads, compares the `dist` and `release` executable bytes, and writes hashes. The elevated coordinator image cannot be launched by a non-elevated automated process; the build therefore also launches a non-UAC image and requires its complete decompressed application-payload manifest to match the shipped UAC image exactly.
+`build-windows.bat` refuses to begin without all four signing inputs.
+`KSAT_BUILD_PYTHON` may point to an existing build-environment Python. The
+script installs only `requirements.txt` plus PyInstaller, cleans only the
+explicit `build\windows`/`dist` outputs, builds isolated one-file images, signs
+and verifies both inner executables before publishing or embedding them, runs
+disposable TLS/loopback smoke tests, compiles and signs both installers,
+recursively decompresses and scans PyInstaller and Inno payloads, verifies the
+pinned publisher, certificate thumbprint, trusted signature and timestamp,
+compares embedded executable bytes, and only then writes hashes. Missing,
+untrusted, wrongly published, untimestamped, or invalid signatures stop the
+release. The elevated coordinator image cannot be launched by a non-elevated
+automated process; the build therefore also launches a non-UAC image and
+requires its complete decompressed application-payload manifest to match the
+shipped UAC image exactly.
 
 The release directory contains:
 
@@ -35,9 +56,17 @@ Verify a delivered file before use:
 ```powershell
 Get-FileHash .\release\KSATCoordinatorSetup-2.0.0.exe -Algorithm SHA256
 Get-Content .\release\SHA256SUMS.txt
+Get-AuthenticodeSignature .\release\KSATCoordinatorSetup-2.0.0.exe |
+  Format-List Status,StatusMessage,SignerCertificate,TimeStamperCertificate
 ```
 
-The project does not apply Authenticode signing automatically. If institutional code signing is configured, sign the four release executables before regenerating `SHA256SUMS.txt`, then verify with `Get-AuthenticodeSignature`.
+For source/test verification only, set `KSAT_RELEASE_TEST_SIGNING=1` and invoke
+`python scripts\windows_release.py all --test-signing` with the normal build-tool
+arguments. This creates an ephemeral self-signed test identity, exercises the
+same sign/verify/order gates, and deletes the identity when the command exits.
+Its publisher is visibly marked `NOT FOR PRODUCTION`, it has no timestamp, and
+its artifacts must never be distributed. A production release remains blocked
+until the institution supplies the four protected signing inputs above.
 
 ## Initial coordinator setup
 
@@ -70,8 +99,7 @@ During an approved Task 13 rollout, run `KSATClientSetup-2.0.0.exe` as Administr
 
 - the exact coordinator URL recorded in `coordinator-public.json`;
 - `coordinator-ca.pem`;
-- `coordinator-public.json`; and
-- the Windows account used by students on that computer.
+- `coordinator-public.json`.
 
 The installer validates the CA hash, CA-to-signing-key binding, signing-key fingerprint, and HTTPS URL before atomically creating:
 
@@ -79,22 +107,39 @@ The installer validates the CA hash, CA-to-signing-key binding, signing-key fing
 C:\ProgramData\KSAT Client\client-config.json
 ```
 
-The immutable CA/signing-key trust and separate `coordinator-url.json` remain in the administrator-write/user-read root. Identity, attempts/outbox, and cached packs are kept in `identity`, `state`, and `packs` subdirectories. Only the selected lab account, Administrators, and SYSTEM can modify those runtime directories; the lab account cannot write either configuration file. The installer opens no inbound firewall port. On every install or repair it independently verifies the saved configuration and machine-root CA. It records the exact thumbprint only when it actually adds a certificate, so uninstall removes neither a pre-existing CA nor a later replacement that it did not add.
+The immutable CA/signing-key trust and separate `coordinator-url.json` remain in
+the administrator-write/user-read root. The installer creates the
+`KSATLabClientAuthority` automatic LocalSystem service. Identity,
+attempts/outbox, authenticated state anchors, and cached packs are kept in
+`identity`, `state`, and `packs` directories writable only by Administrators,
+SYSTEM, and that service SID; ordinary lab accounts receive no direct write
+access. Desktop/start-menu shortcuts only open the constrained loopback UI,
+whose service owns signing, runtime, persistence, and outbox operations. The
+installer opens no inbound firewall port. On every install or repair it
+independently verifies the saved configuration and machine-root CA. It records
+the exact thumbprint only when it actually adds a certificate, so uninstall
+removes neither a pre-existing CA nor a later replacement that it did not add.
 
 Silent first install example (quote all paths and account names):
 
 ```bat
-KSATClientSetup-2.0.0.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /COORDINATORURL=https://ksat-server.example.edu:8443 /CAFILE="D:\KSAT\coordinator-ca.pem" /METADATAFILE="D:\KSAT\coordinator-public.json" /LABACCOUNT="LAB\Student"
+KSATClientSetup-2.0.0.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /COORDINATORURL=https://ksat-server.example.edu:8443 /CAFILE="D:\KSAT\coordinator-ca.pem" /METADATAFILE="D:\KSAT\coordinator-public.json"
 ```
 
-An upgrade with an existing valid configuration reuses it. `/LABACCOUNT` is still required so the installer can reapply the intended data-directory ACLs.
+An upgrade with an existing valid configuration reuses it and reapplies the
+service-owned data-directory ACLs.
 
 ## Change the saved coordinator URL
 
-The student-facing client cannot change its machine configuration and returns `administrator_required` before it stops or swaps any service. Close the client, open an **Administrator** Command Prompt, and run:
+The student-facing client cannot change its machine configuration and returns
+`administrator_required` before it stops or swaps any service. From an
+**Administrator** Command Prompt, stop the authority service, update the URL,
+then start it again:
 
 ```bat
+sc.exe stop KSATLabClientAuthority
 "C:\Program Files\KSAT Client\KSATClient.exe" --update-config --base-url https://ksat-new.example.edu:8443
+sc.exe start KSATLabClientAuthority
 ```
 
 The administrator workflow acquires the same OS lifecycle lock held by the running client, so it first proves the client is stopped. It then refuses to run while an attempt or submission is pending, preserves the CA/signing-key trust and device identity, performs a real TLS `/api/build` probe even before enrollment, and performs a signed catalog probe after enrollment before atomically saving only the URL. Any post-publication failure restores and verifies the exact prior URL. The new URL is reused after restart; rebuilding the executable is not required. The hostname must already be covered by the coordinator certificate and resolve on the lab network.

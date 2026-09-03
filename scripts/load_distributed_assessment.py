@@ -9,10 +9,13 @@ response parsing), the production FastAPI routes, SQLite/WAL, ``ClientStore``,
 from __future__ import annotations
 
 import argparse
+import base64
 import collections
+import hashlib
 import json
 import math
 import os
+import secrets
 import socket
 import subprocess
 import sys
@@ -26,12 +29,14 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Sequence
 from unittest.mock import patch
+from urllib.parse import urlsplit
 
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import httpx
 import psutil
+from cryptography import x509
 from fastapi.testclient import TestClient
 
 import app as faculty_app
@@ -48,6 +53,7 @@ from ksat.client.store import ClientStore
 from ksat.coordinator.releases import prepare_release
 from ksat.coordinator.submissions import freeze_release_answer_state
 from ksat.coordinator.tls import load_or_create_coordinator_security
+from ksat.coordinator.tls import COORDINATOR_SIGNING_KEY_OID
 from ksat.protocol import PublicQuestion
 
 
@@ -126,9 +132,20 @@ class _CallMetrics:
         self.errors: collections.Counter[str] = collections.Counter()
         self.request_latencies_ms: list[float] = []
         self.submission_latencies_ms: list[float] = []
+        self.available = True
 
     def call(self, key: str, operation):
         started = time.perf_counter()
+        if not self.available:
+            with self._lock:
+                self.request_counts[key] += 1
+                self.errors["transport_error"] += 1
+                self.status_counts["0"] += 1
+            method, path = key.split(" ", 1)
+            raise httpx.ConnectError(
+                "Authorized load-test transport outage.",
+                request=httpx.Request(method, f"https://load.invalid{path}"),
+            )
         try:
             result = operation()
         except Exception as error:
@@ -418,6 +435,13 @@ class _Fixture:
         self.stopped_server_cpu_seconds = 0.0
         self.server_peak_rss = 0
         self.writer_metrics_path = self.root / "coordinator-writer-metrics.json"
+        self.report_mode = "production_https_subprocess"
+        self.report_network = {
+            "endpoint": "disposable_loopback_https",
+            "trust": "generated_file_pinned_ca",
+            "certificate_store_modified": False,
+        }
+        self.report_scope = "coordinator_subprocess_only"
         self._owns_setup = False
         self._fixture_configured = False
 
@@ -606,6 +630,37 @@ class _Fixture:
             return int(value["maximum_writer_queue_depth"])
         except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
             return 0
+
+    def submission_counts(self) -> tuple[int, int]:
+        with faculty_app.db() as connection:
+            total = int(
+                connection.execute(
+                    """SELECT COUNT(*) AS count FROM submissions s
+                       JOIN attempts a ON a.attempt_id=s.attempt_id
+                       WHERE a.test_id=?""",
+                    (self.test_id,),
+                ).fetchone()["count"]
+            )
+            distinct = int(
+                connection.execute(
+                    """SELECT COUNT(DISTINCT s.attempt_id) AS count FROM submissions s
+                       JOIN attempts a ON a.attempt_id=s.attempt_id
+                       WHERE a.test_id=?""",
+                    (self.test_id,),
+                ).fetchone()["count"]
+            )
+        return total, distinct
+
+    def database_size(self) -> int:
+        return sum(
+            path.stat().st_size
+            for path in (
+                faculty_app.DB_PATH,
+                Path(f"{faculty_app.DB_PATH}-wal"),
+                Path(f"{faculty_app.DB_PATH}-shm"),
+            )
+            if path.is_file()
+        )
 
     def _seed(self) -> None:
         created = datetime.now(_UTC).isoformat(timespec="seconds")
@@ -912,6 +967,276 @@ class _Fixture:
         }
 
 
+class _ExternalFixture:
+    """Explicitly authorized, uniquely owned fixture on a supplied HTTPS coordinator."""
+
+    def __init__(
+        self,
+        root: Path,
+        clients: int,
+        questions: int,
+        *,
+        base_url: str,
+        ca_file: Path,
+        admin_username: str,
+        admin_password: str,
+        enrollment_code: str,
+    ) -> None:
+        if os.environ.get("KSAT_LOAD_TEST") != "1":
+            raise RuntimeError("External load mode requires KSAT_LOAD_TEST=1.")
+        parsed = urlsplit(base_url)
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+            or parsed.path not in {"", "/"}
+        ):
+            raise ValueError("External coordinator URL must be an HTTPS origin.")
+        self.base_url = base_url.rstrip("/")
+        self.ca_file = Path(ca_file).resolve(strict=True)
+        if not self.ca_file.is_file():
+            raise ValueError("External coordinator CA must be a file.")
+        if not all(
+            isinstance(value, str) and value
+            for value in (admin_username, admin_password, enrollment_code)
+        ):
+            raise ValueError("External load credentials are incomplete.")
+        self.root = Path(root).resolve()
+        self.clients = clients
+        self.questions = questions
+        self.admin_username = admin_username
+        self._admin_password = admin_password
+        self.enrollment_code = enrollment_code
+        self.namespace = f"LOAD-{uuid.uuid4().hex.upper()}"
+        self._ownership_token = secrets.token_urlsafe(48)
+        self.student_ids: list[str] = []
+        self.password = ""
+        self.test_id = 0
+        self.release_id = ""
+        self.metrics = _CallMetrics()
+        self.transport = None
+        self.report_mode = "authorized_external_https"
+        self.report_network = {
+            "endpoint": "operator_supplied_https",
+            "trust": "operator_supplied_file_pinned_ca",
+            "certificate_store_modified": False,
+        }
+        self.report_scope = "authorized_external_coordinator"
+        self._cleaned: dict[str, int] | None = None
+        self._admin = httpx.Client(
+            base_url=self.base_url,
+            verify=str(self.ca_file),
+            timeout=60.0,
+            follow_redirects=False,
+        )
+        self._csrf = ""
+        self._metadata_path = self.root / "coordinator-public.json"
+
+    def _headers(self) -> dict[str, str]:
+        return {
+            "X-KSAT-CSRF": self._csrf,
+            "X-KSAT-Load-Ownership": self._ownership_token,
+        }
+
+    def _raise_for_status(self, response: httpx.Response) -> None:
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as error:
+            raise RuntimeError(
+                f"Authorized external fixture request failed with HTTP {response.status_code}."
+            ) from error
+
+    def _write_metadata_from_ca(self) -> None:
+        ca_bytes = self.ca_file.read_bytes()
+        try:
+            certificate = x509.load_pem_x509_certificate(ca_bytes)
+            signing_raw = certificate.extensions.get_extension_for_oid(
+                COORDINATOR_SIGNING_KEY_OID
+            ).value.value
+        except (ValueError, x509.ExtensionNotFound) as error:
+            raise ValueError("External coordinator CA does not carry the KSAT signing pin.") from error
+        parsed = urlsplit(self.base_url)
+        metadata = {
+            "version": "2.0.0",
+            "hostname": parsed.hostname,
+            "port": parsed.port or 443,
+            "coordinator_url": self.base_url,
+            "ca_sha256": hashlib.sha256(ca_bytes).hexdigest(),
+            "signing_public_key_b64": base64.b64encode(signing_raw).decode("ascii"),
+            "signing_public_key_sha256": hashlib.sha256(signing_raw).hexdigest(),
+        }
+        self._metadata_path.write_text(
+            json.dumps(metadata, sort_keys=True, separators=(",", ":")),
+            encoding="utf-8",
+        )
+
+    def __enter__(self) -> "_ExternalFixture":
+        self.root.mkdir(parents=True, exist_ok=True)
+        self._write_metadata_from_ca()
+        login = self._admin.post(
+            "/api/login",
+            json={
+                "identifier": self.admin_username,
+                "password": self._admin_password,
+                "role": "admin",
+            },
+        )
+        self._raise_for_status(login)
+        self._csrf = login.json().get("csrf_token", "")
+        if not self._csrf:
+            raise RuntimeError("External coordinator did not issue an admin CSRF token.")
+        created = self._admin.post(
+            "/api/admin/load-tests",
+            headers=self._headers(),
+            json={
+                "namespace": self.namespace,
+                "ownership_token": self._ownership_token,
+                "clients": self.clients,
+                "questions": self.questions,
+            },
+        )
+        self._raise_for_status(created)
+        value = created.json()
+        self.student_ids = list(value["student_ids"])
+        self.password = value["student_password"]
+        self.test_id = int(value["test_id"])
+        self.release_id = value["release_id"]
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        try:
+            if self.release_id and self._cleaned is None:
+                self.cleanup()
+        finally:
+            self._admin.close()
+
+    def make_machine(self, index: int, *, start: bool = True) -> _ClientMachine:
+        root = self.root / "clients" / f"machine-{index:03d}"
+        program_data = root / "program-data"
+        install_client_configuration(
+            program_data,
+            base_url=self.base_url,
+            ca_source=self.ca_file,
+            metadata_source=self._metadata_path,
+        )
+        client_dir = program_data / "KSAT Client"
+        for name in ("identity", "state", "packs"):
+            (client_dir / name).mkdir(parents=True, exist_ok=True)
+        with patch.dict(os.environ, {"ProgramData": str(program_data)}):
+            services = _load_production_services()
+        services.coordinator = _MeasuredCoordinator(services.coordinator, self.metrics)
+        services.background_prefetch = False
+        machine: _ClientMachine | None = None
+        try:
+            services.coordinator.enroll(
+                f"{self.namespace}-DEVICE-{index:03d}", self.enrollment_code
+            )
+            identity = services.identity_store.load_or_create()
+            services.runtime = AssessmentRuntime(services.store, identity, SystemClock())
+            services.coordinator.login(self.student_ids[index], self.password)
+            catalog = services.coordinator.prefetch_catalog()
+            entry = next(item for item in catalog if item.release_id == self.release_id)
+            destination = client_dir / "packs" / entry.filename
+            services.coordinator.download_pack(entry, destination)
+            services.runtime.prepare(entry.descriptor, destination)
+            clock = _MutableClock()
+            services.outbox = OutboxWorker(
+                services.store, services.coordinator, clock, random_source=lambda: 0.5
+            )
+            client_application = create_client_app(services)
+            machine = _ClientMachine(
+                root=client_dir,
+                identity_store=services.identity_store,
+                store=services.store,
+                coordinator=services.coordinator,
+                runtime=services.runtime,
+                outbox=services.outbox,
+                clock=clock,
+                student_id=self.student_ids[index],
+                content_hash=entry.content_hash,
+                program_data=program_data,
+                metrics=self.metrics,
+                production_services=services,
+                client_application=client_application,
+                local_client=TestClient(
+                    client_application, base_url="http://127.0.0.1:8010"
+                ),
+            )
+            machine.local_client.__enter__()
+            machine.local_client_entered = True
+            context = client_application.state.client_context
+            context._stop_control_thread()
+            context._stop_outbox()
+            if start:
+                self.start_machine(machine)
+            return machine
+        except Exception:
+            if machine is not None:
+                machine.close()
+            else:
+                services.coordinator.close()
+                services.store.close()
+                if services.lifecycle_lock is not None and services.lifecycle_lock.held:
+                    services.lifecycle_lock.release()
+            raise
+
+    def start_machine(self, machine: _ClientMachine) -> datetime:
+        catalog = machine.coordinator.assessments()
+        if not any(item.release_id == self.release_id for item in catalog):
+            raise RuntimeError("Prepared external release disappeared before start.")
+        response = machine.coordinator.start_attempt(
+            self.release_id, machine.content_hash
+        )
+        snapshot = machine.runtime.start(response, student_id=machine.student_id)
+        machine.attempt_id = snapshot.attempt_id
+        return response.ticket.ticket.started_at
+
+    def stop_coordinator(self) -> None:
+        self.metrics.available = False
+
+    def restart_coordinator(self) -> None:
+        self.metrics.available = True
+
+    def sample_server_resources(self) -> tuple[float, int]:
+        return 0.0, 0
+
+    def writer_queue_depth(self) -> int:
+        return 0
+
+    def _status(self) -> dict[str, int]:
+        response = self._admin.get(
+            f"/api/admin/load-tests/{self.namespace}", headers=self._headers()
+        )
+        self._raise_for_status(response)
+        return response.json()
+
+    def submission_counts(self) -> tuple[int, int]:
+        value = self._status()
+        return int(value["submission_rows"]), int(value["distinct_submission_rows"])
+
+    def database_size(self) -> int:
+        return 0
+
+    def cleanup(self) -> dict[str, int]:
+        if self._cleaned is not None:
+            return self._cleaned
+        response = self._admin.delete(
+            f"/api/admin/load-tests/{self.namespace}", headers=self._headers()
+        )
+        self._raise_for_status(response)
+        value = response.json()
+        self._cleaned = {
+            "created_rows": int(value["created_rows"]),
+            "deleted_rows": int(value["deleted_rows"]),
+            "residual_rows": int(value["residual_rows"]),
+            "attempt_ids": self.clients,
+        }
+        return self._cleaned
+
+
 def _validate_dimensions(clients: int, questions: int) -> None:
     if type(clients) is not int or not 1 <= clients <= 100:
         raise ValueError("Client count must be from 1 through 100.")
@@ -928,6 +1253,7 @@ def run_isolated_gate(
     start_spread_seconds: float = 30.0,
     submission_spread_seconds: float = 0.0,
     enforce_performance_thresholds: bool = True,
+    _fixture_factory=None,
 ) -> dict[str, Any]:
     """Run a namespaced release gate without mutating an installed system."""
 
@@ -945,14 +1271,19 @@ def run_isolated_gate(
     monitor_stop = threading.Event()
     cleanup: dict[str, int] = {}
 
-    with _Fixture(Path(data_dir), clients, questions, real_https=True) as fixture:
+    fixture_context = (
+        _Fixture(Path(data_dir), clients, questions, real_https=True)
+        if _fixture_factory is None
+        else _fixture_factory(Path(data_dir), clients, questions)
+    )
+    with fixture_context as fixture:
         adapter = fixture.metrics
         transport = fixture.transport
         server_cpu_before, memory_peak = fixture.sample_server_resources()
 
         def monitor() -> None:
             nonlocal max_writer_queue_depth, memory_peak
-            while not monitor_stop.wait(0.001):
+            while not monitor_stop.wait(0.01):
                 max_writer_queue_depth = max(
                     max_writer_queue_depth,
                     fixture.writer_queue_depth(),
@@ -1033,15 +1364,9 @@ def run_isolated_gate(
             for machine in machines:
                 machine.clock.advance(10.0)
 
-            with faculty_app.db() as connection:
-                submissions_before_barrier = int(
-                    connection.execute(
-                        """SELECT COUNT(*) AS count FROM submissions s
-                           JOIN attempts a ON a.attempt_id=s.attempt_id
-                           WHERE a.test_id=?""",
-                        (fixture.test_id,),
-                    ).fetchone()["count"]
-                )
+            submissions_before_barrier, _distinct_before_barrier = (
+                fixture.submission_counts()
+            )
 
             sealed_before_restart = 0
             coordinator_service_restarted = False
@@ -1083,34 +1408,10 @@ def run_isolated_gate(
             records = [machine.store.load_attempt(machine.attempt_id) for machine in machines]
             acknowledged = [record for record in records if record.state == "acknowledged"]
             editable_sealed = sum(record.state == "in_progress" for record in records)
-            with faculty_app.db() as connection:
-                submission_rows = int(
-                    connection.execute(
-                        """SELECT COUNT(*) AS count FROM submissions s
-                           JOIN attempts a ON a.attempt_id=s.attempt_id
-                           WHERE a.test_id=?""",
-                        (fixture.test_id,),
-                    ).fetchone()["count"]
-                )
-                distinct_rows = int(
-                    connection.execute(
-                        """SELECT COUNT(DISTINCT s.attempt_id) AS count FROM submissions s
-                           JOIN attempts a ON a.attempt_id=s.attempt_id
-                           WHERE a.test_id=?""",
-                        (fixture.test_id,),
-                    ).fetchone()["count"]
-                )
+            submission_rows, distinct_rows = fixture.submission_counts()
             duplicate_count = max(0, submission_rows - distinct_rows)
             missing_attempt_count = clients - len(acknowledged)
-            database_size = sum(
-                path.stat().st_size
-                for path in (
-                    faculty_app.DB_PATH,
-                    Path(f"{faculty_app.DB_PATH}-wal"),
-                    Path(f"{faculty_app.DB_PATH}-shm"),
-                )
-                if path.is_file()
-            )
+            database_size = fixture.database_size()
             cleanup = fixture.cleanup()
             elapsed = max(0.001, time.perf_counter() - wall_started)
             server_cpu_after, server_rss = fixture.sample_server_resources()
@@ -1119,12 +1420,8 @@ def run_isolated_gate(
             report = {
                 "schema_version": 1,
                 "run_id": fixture.namespace,
-                "mode": "production_https_subprocess",
-                "network": {
-                    "endpoint": "disposable_loopback_https",
-                    "trust": "generated_file_pinned_ca",
-                    "certificate_store_modified": False,
-                },
+                "mode": fixture.report_mode,
+                "network": fixture.report_network,
                 "clients": clients,
                 "questions": questions,
                 "start_spread_seconds": start_spread_seconds,
@@ -1149,7 +1446,7 @@ def run_isolated_gate(
                     "local_answer": _latencies(local_answer_ms),
                 },
                 "coordinator": {
-                    "scope": "coordinator_subprocess_only",
+                    "scope": fixture.report_scope,
                     "cpu_percent_process_average": round(100.0 * cpu_seconds / elapsed, 3),
                     "memory_rss_bytes_peak": memory_peak,
                     "sqlite_bytes": database_size,
@@ -1224,10 +1521,54 @@ def run_isolated_gate(
                     from close_errors[0]
 
 
+def run_external_gate(
+    data_dir: Path,
+    *,
+    base_url: str,
+    ca_file: Path,
+    admin_username: str,
+    admin_password: str,
+    enrollment_code: str,
+    clients: int = 100,
+    questions: int = 100,
+    outage: bool = False,
+    start_spread_seconds: float = 30.0,
+    submission_spread_seconds: float = 0.0,
+    enforce_performance_thresholds: bool = True,
+) -> dict[str, Any]:
+    """Run the production client stack against an explicitly authorized HTTPS host."""
+
+    def factory(root: Path, client_count: int, question_count: int) -> _ExternalFixture:
+        return _ExternalFixture(
+            root,
+            client_count,
+            question_count,
+            base_url=base_url,
+            ca_file=ca_file,
+            admin_username=admin_username,
+            admin_password=admin_password,
+            enrollment_code=enrollment_code,
+        )
+
+    return run_isolated_gate(
+        data_dir,
+        clients=clients,
+        questions=questions,
+        outage=outage,
+        start_spread_seconds=start_spread_seconds,
+        submission_spread_seconds=submission_spread_seconds,
+        enforce_performance_thresholds=enforce_performance_thresholds,
+        _fixture_factory=factory,
+    )
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base-url")
     parser.add_argument("--ca-file", type=Path)
+    parser.add_argument("--admin-username")
+    parser.add_argument("--admin-password-env", default="KSAT_LOAD_ADMIN_PASSWORD")
+    parser.add_argument("--enrollment-code-env", default="KSAT_LOAD_ENROLLMENT_CODE")
     parser.add_argument("--clients", type=int, default=100)
     parser.add_argument("--questions", type=int, default=100)
     parser.add_argument("--start-spread-seconds", type=float, default=30.0)
@@ -1246,6 +1587,16 @@ def _parser() -> argparse.ArgumentParser:
             "Use a disposable database, separate loopback HTTPS coordinator, "
             "and generated file-pinned CA."
         ),
+    )
+    parser.add_argument(
+        "--external",
+        action="store_true",
+        help="Use an operator-supplied HTTPS coordinator and pinned CA.",
+    )
+    parser.add_argument(
+        "--authorize-external",
+        action="store_true",
+        help="Explicitly authorize creation and exact cleanup of a namespaced fixture.",
     )
     return parser
 
@@ -1267,14 +1618,13 @@ def _serve_fixture(arguments: argparse.Namespace) -> int:
     def monitor_writer() -> None:
         nonlocal maximum
         while not stop.wait(0.001):
-            maximum = max(
-                maximum,
-                faculty_app.app.state.coordinator_config.submission_writer.pending_count,
-            )
-            arguments.serve_metrics_file.write_text(
-                json.dumps({"maximum_writer_queue_depth": maximum}),
-                encoding="utf-8",
-            )
+            observed = faculty_app.app.state.coordinator_config.submission_writer.pending_count
+            if observed > maximum:
+                maximum = observed
+                arguments.serve_metrics_file.write_text(
+                    json.dumps({"maximum_writer_queue_depth": maximum}),
+                    encoding="utf-8",
+                )
 
     monitor = threading.Thread(target=monitor_writer, daemon=True)
     monitor.start()
@@ -1301,27 +1651,61 @@ def main(argv: Sequence[str] | None = None) -> int:
     arguments = _parser().parse_args(argv)
     if arguments.serve_fixture:
         return _serve_fixture(arguments)
-    if not arguments.isolated:
-        raise SystemExit(
-            "External fixture provisioning is intentionally disabled; use --isolated, or "
-            "follow the operations runbook for an authorized disposable coordinator."
-        )
-    if arguments.base_url is not None or arguments.ca_file is not None:
+    if arguments.isolated == arguments.external:
+        raise SystemExit("Choose exactly one of --isolated or --external.")
+    if arguments.isolated and (
+        arguments.base_url is not None
+        or arguments.ca_file is not None
+        or arguments.authorize_external
+        or arguments.admin_username is not None
+    ):
         raise SystemExit(
             "--base-url and --ca-file are not used by --isolated; the gate creates "
             "and reports a disposable loopback HTTPS endpoint with a file-pinned CA."
         )
+    external_credentials = None
+    if arguments.external:
+        if (
+            not arguments.authorize_external
+            or arguments.base_url is None
+            or arguments.ca_file is None
+            or not arguments.admin_username
+            or os.environ.get("KSAT_LOAD_TEST") != "1"
+        ):
+            raise SystemExit(
+                "External mode requires --authorize-external, HTTPS --base-url, --ca-file, "
+                "--admin-username, and KSAT_LOAD_TEST=1."
+            )
+        admin_password = os.environ.get(arguments.admin_password_env)
+        enrollment_code = os.environ.get(arguments.enrollment_code_env)
+        if not admin_password or not enrollment_code:
+            raise SystemExit(
+                "External credentials must be supplied through the configured environment variables."
+            )
+        external_credentials = (admin_password, enrollment_code)
     failed = False
     with tempfile.TemporaryDirectory(prefix="ksat-load-gate-") as directory:
         try:
-            report = run_isolated_gate(
-                Path(directory),
-                clients=arguments.clients,
-                questions=arguments.questions,
-                outage=arguments.outage,
-                start_spread_seconds=arguments.start_spread_seconds,
-                submission_spread_seconds=arguments.submission_spread_seconds,
-            )
+            common = {
+                "clients": arguments.clients,
+                "questions": arguments.questions,
+                "outage": arguments.outage,
+                "start_spread_seconds": arguments.start_spread_seconds,
+                "submission_spread_seconds": arguments.submission_spread_seconds,
+            }
+            if arguments.isolated:
+                report = run_isolated_gate(Path(directory), **common)
+            else:
+                assert external_credentials is not None
+                report = run_external_gate(
+                    Path(directory),
+                    base_url=arguments.base_url,
+                    ca_file=arguments.ca_file,
+                    admin_username=arguments.admin_username,
+                    admin_password=external_credentials[0],
+                    enrollment_code=external_credentials[1],
+                    **common,
+                )
         except LoadGateFailure as error:
             report = error.report
             failed = True

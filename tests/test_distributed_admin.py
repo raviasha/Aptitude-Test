@@ -5,6 +5,7 @@ import threading
 import unittest
 import uuid
 import os
+import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -58,6 +59,7 @@ class DistributedAdminTests(unittest.TestCase):
                 "INSERT INTO question_banks (bank_name,source_html_filename,answer_key_filename,imported_at,format_version) VALUES ('Bank','bank.html','answers.json',?,2)",
                 (app.now(),),
             ).lastrowid
+            self.bank_id = bank_id
             question_ids = []
             for index in range(3):
                 question_ids.append(connection.execute(
@@ -362,6 +364,219 @@ class DistributedAdminTests(unittest.TestCase):
         with app.db() as connection:
             self.assertEqual(before, connection.execute("SELECT COUNT(*) FROM tests").fetchone()[0])
         other.close()
+
+    def test_every_unsafe_admin_route_rejects_all_csrf_failures_before_side_effects(self):
+        expected_routes = {
+            ("POST", "/api/admin/shutdown"),
+            ("POST", "/api/admin/load-tests"),
+            ("DELETE", "/api/admin/load-tests/{namespace}"),
+            ("DELETE", "/api/admin/students/{student_id}/session"),
+            ("POST", "/api/admin/students"),
+            ("DELETE", "/api/admin/students/{student_id}"),
+            ("POST", "/api/admin/devices/{device_id}/revoke"),
+            ("POST", "/api/admin/devices/{device_id}/reactivate"),
+            ("POST", "/api/admin/devices/enrollment-code/rotate"),
+            ("DELETE", "/api/admin/question-banks/{bank_id}"),
+            ("POST", "/api/admin/question-banks/import"),
+            ("POST", "/api/admin/question-banks/import-package"),
+            ("POST", "/api/admin/question-banks/import-from-folder"),
+            ("PATCH", "/api/admin/questions/{question_id}/active"),
+            ("POST", "/api/admin/tests"),
+            ("POST", "/api/admin/tests/{test_id}/duplicate"),
+            ("POST", "/api/admin/attempts/{attempt_id}/void"),
+            ("POST", "/api/admin/attempts/{attempt_id}/extend"),
+            ("DELETE", "/api/admin/tests/{test_id}"),
+            ("POST", "/api/admin/tests/{test_id}/launch"),
+            ("POST", "/api/admin/tests/{test_id}/close"),
+            ("POST", "/api/admin/tests/{test_id}/extend"),
+        }
+        actual_routes = {
+            (method, route.path)
+            for route in app.app.routes
+            if getattr(route, "path", "").startswith("/api/admin/")
+            for method in getattr(route, "methods", set()) & {"POST", "PUT", "PATCH", "DELETE"}
+        }
+        self.assertEqual(expected_routes, actual_routes)
+
+        def state_snapshot():
+            with app.db() as connection:
+                database = tuple(connection.iterdump())
+            files = tuple(
+                (str(path.relative_to(app.DATA_DIR)), path.read_bytes())
+                for path in sorted(app.DATA_DIR.rglob("*"))
+                if path.is_file()
+                and path not in {app.DB_PATH, Path(f"{app.DB_PATH}-wal"), Path(f"{app.DB_PATH}-shm")}
+            )
+            return database, files, app.app.state.coordinator_config.device_enrollment_code
+
+        substitutions = {
+            "namespace": "LOAD-" + "A" * 32,
+            "student_id": "NO-SUCH-STUDENT",
+            "device_id": str(uuid.uuid4()),
+            "bank_id": "999999",
+            "question_id": "999999",
+            "test_id": "999999",
+            "attempt_id": str(uuid.uuid4()),
+        }
+        other = TestClient(app.app)
+        try:
+            other_login = other.post(
+                "/api/login",
+                json={"identifier": "faculty", "password": "faculty123", "role": "admin"},
+            )
+            self.assertEqual(200, other_login.status_code, other_login.text)
+            self.assertNotEqual(self.csrf_token, other_login.json()["csrf_token"])
+            before = state_snapshot()
+            cases = (
+                ("missing", self.client, {}),
+                ("wrong", self.client, {"X-KSAT-CSRF": "wrong-token"}),
+                ("cross-session", other, {"X-KSAT-CSRF": self.csrf_token}),
+                (
+                    "hostile-origin",
+                    self.client,
+                    {"X-KSAT-CSRF": self.csrf_token, "Origin": "https://evil.example"},
+                ),
+            )
+            with patch("app.threading.Timer") as shutdown_timer:
+                for label, client, headers in cases:
+                    for method, route_path in sorted(expected_routes):
+                        path = route_path
+                        for name, value in substitutions.items():
+                            path = path.replace("{" + name + "}", value)
+                        with self.subTest(case=label, method=method, path=route_path):
+                            response = client.request(method, path, json={}, headers=headers)
+                            self.assertEqual(403, response.status_code, response.text)
+                shutdown_timer.assert_not_called()
+            self.assertEqual(before, state_snapshot())
+        finally:
+            other.close()
+
+    def test_release_delete_staging_failure_preserves_database_and_pack(self):
+        pack = app.assessment_packs_dir() / f"{self.release_id}.ksatpack"
+        original = pack.read_bytes()
+        with patch(
+            "ksat.coordinator.artifacts.ArtifactQuarantine._replace_artifact",
+            side_effect=OSError("injected staging failure"),
+        ):
+            with self.assertRaises(OSError):
+                self.client.delete(
+                    f"/api/admin/tests/{self.test_id}",
+                    headers={"X-KSAT-CSRF": self.csrf_token},
+                )
+        with app.db() as connection:
+            self.assertIsNotNone(
+                connection.execute(
+                    "SELECT 1 FROM tests WHERE test_id=?", (self.test_id,)
+                ).fetchone()
+            )
+            self.assertIsNotNone(
+                connection.execute(
+                    "SELECT 1 FROM assessment_releases WHERE release_id=?",
+                    (self.release_id,),
+                ).fetchone()
+            )
+        self.assertEqual(original, pack.read_bytes())
+        quarantine = app.DATA_DIR / ".artifact-quarantine"
+        self.assertFalse(quarantine.exists() and any(quarantine.iterdir()))
+
+    def test_question_bank_delete_leaves_durable_gc_record_when_purge_fails(self):
+        from ksat.coordinator.artifacts import recover_artifact_quarantine
+
+        asset_directory = app.question_assets_dir() / str(self.bank_id)
+        asset_directory.mkdir(parents=True)
+        (asset_directory / "diagram.svg").write_text("<svg/>", encoding="utf-8")
+        pack = app.assessment_packs_dir() / f"{self.release_id}.ksatpack"
+        with patch(
+            "ksat.coordinator.artifacts.ArtifactQuarantine._purge_directory",
+            side_effect=OSError("injected purge failure"),
+        ):
+            response = self.client.delete(
+                f"/api/admin/question-banks/{self.bank_id}",
+                headers={"X-KSAT-CSRF": self.csrf_token},
+            )
+        self.assertEqual(200, response.status_code, response.text)
+        with app.db() as connection:
+            self.assertIsNone(
+                connection.execute(
+                    "SELECT 1 FROM question_banks WHERE bank_id=?", (self.bank_id,)
+                ).fetchone()
+            )
+        self.assertFalse(asset_directory.exists())
+        self.assertFalse(pack.exists())
+        quarantine = app.DATA_DIR / ".artifact-quarantine"
+        operations = [path for path in quarantine.iterdir() if path.is_dir()]
+        self.assertEqual(1, len(operations))
+        self.assertTrue((operations[0] / "manifest.json").is_file())
+
+        recover_artifact_quarantine(app.DATA_DIR, app.DB_PATH)
+        self.assertFalse(any(quarantine.iterdir()))
+
+    def test_database_commit_failure_rolls_back_rows_and_restores_staged_pack(self):
+        pack = app.assessment_packs_dir() / f"{self.release_id}.ksatpack"
+        original = pack.read_bytes()
+        with patch(
+            "app._commit_artifact_deletion",
+            side_effect=sqlite3.OperationalError("injected commit failure"),
+        ):
+            with self.assertRaises(sqlite3.OperationalError):
+                self.client.delete(
+                    f"/api/admin/tests/{self.test_id}",
+                    headers={"X-KSAT-CSRF": self.csrf_token},
+                )
+        with app.db() as connection:
+            self.assertIsNotNone(
+                connection.execute(
+                    "SELECT 1 FROM tests WHERE test_id=?", (self.test_id,)
+                ).fetchone()
+            )
+            self.assertIsNotNone(
+                connection.execute(
+                    "SELECT 1 FROM assessment_releases WHERE release_id=?",
+                    (self.release_id,),
+                ).fetchone()
+            )
+        self.assertEqual(original, pack.read_bytes())
+        self.assertFalse(any((app.DATA_DIR / ".artifact-quarantine").iterdir()))
+
+    def test_startup_recovery_restores_staged_artifact_when_owner_row_remains(self):
+        from ksat.coordinator.artifacts import ArtifactQuarantine, recover_artifact_quarantine
+
+        pack = app.assessment_packs_dir() / f"{self.release_id}.ksatpack"
+        original = pack.read_bytes()
+        quarantine = ArtifactQuarantine(
+            app.DATA_DIR,
+            owner_kind="test",
+            owner_id=self.test_id,
+            artifacts=[pack],
+        )
+        quarantine.stage()
+        self.assertFalse(pack.exists())
+
+        recover_artifact_quarantine(app.DATA_DIR, app.DB_PATH)
+
+        self.assertEqual(original, pack.read_bytes())
+        self.assertFalse(any((app.DATA_DIR / ".artifact-quarantine").iterdir()))
+
+    def test_startup_recovery_purges_staged_artifact_after_owner_commit(self):
+        from ksat.coordinator.artifacts import ArtifactQuarantine, recover_artifact_quarantine
+
+        orphan = app.assessment_packs_dir() / "committed-delete.ksatpack"
+        orphan.parent.mkdir(parents=True, exist_ok=True)
+        orphan.write_bytes(b"owned artifact")
+        quarantine = ArtifactQuarantine(
+            app.DATA_DIR,
+            owner_kind="test",
+            owner_id=999_999,
+            artifacts=[orphan],
+        )
+        quarantine.stage()
+        operation_directory = quarantine.operation_directory
+        self.assertFalse(orphan.exists())
+
+        recover_artifact_quarantine(app.DATA_DIR, app.DB_PATH)
+
+        self.assertFalse(orphan.exists())
+        self.assertFalse(operation_directory.exists())
 
 
 if __name__ == "__main__":

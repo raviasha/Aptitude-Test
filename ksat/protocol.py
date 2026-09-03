@@ -7,8 +7,9 @@ import json
 import math
 import re
 import unicodedata
+from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Literal, Sequence
+from typing import Any, Iterator, Literal, Sequence
 from urllib.parse import unquote
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -30,7 +31,6 @@ _RAW_MATH_FLOOR_DIVISION = re.compile(rf"({_MATH_OPERAND}) // ({_MATH_OPERAND})\
 _CANONICAL_MATH_FLOOR_DIVISION = re.compile(
     rf"⌊({_MATH_OPERAND}) ÷ ({_MATH_OPERAND})⌋\Z"
 )
-_CODE_TAG = re.compile(r"<\s*(?P<closing>/?)\s*code\b[^>]*>", re.IGNORECASE)
 _MATH_FLOOR_DIVISION_CLASS_TOKEN = re.compile(
     re.escape(MATH_FLOOR_DIVISION_CLASS), re.IGNORECASE
 )
@@ -38,9 +38,53 @@ _ORDINARY_CODE_CLOSE = re.compile(r"</\s*code\s*>\Z", re.IGNORECASE)
 _MAX_MARKUP_DECODE_ROUNDS = 8
 
 
+@dataclass(frozen=True, slots=True)
+class _CodeTag:
+    raw: str
+    start: int
+    end: int
+    closing: bool
+
+
+def _iter_code_tags(value: str) -> Iterator[_CodeTag]:
+    """Tokenize code tags in one forward pass and reject an open-ended tag."""
+
+    length = len(value)
+    position = 0
+    while position < length:
+        start = value.find("<", position)
+        if start < 0:
+            return
+        cursor = start + 1
+        while cursor < length and value[cursor].isspace():
+            cursor += 1
+        closing = cursor < length and value[cursor] == "/"
+        if closing:
+            cursor += 1
+            while cursor < length and value[cursor].isspace():
+                cursor += 1
+        name_end = cursor + 4
+        if (
+            name_end > length
+            or value[cursor:name_end].casefold() != "code"
+            or (
+                name_end < length
+                and (value[name_end] == "_" or value[name_end].isalnum())
+            )
+        ):
+            position = start + 1
+            continue
+        tag_end = value.find(">", name_end)
+        if tag_end < 0:
+            raise ValueError(MATH_FLOOR_DIVISION_ERROR)
+        tag_end += 1
+        yield _CodeTag(value[start:tag_end], start, tag_end, closing)
+        position = tag_end
+
+
 def _markup_structure_signature(value: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
     return (
-        tuple(match.group(0) for match in _CODE_TAG.finditer(value)),
+        tuple(token.raw for token in _iter_code_tags(value)),
         tuple(match.group(0) for match in _MATH_FLOOR_DIVISION_CLASS_TOKEN.finditer(value)),
     )
 
@@ -114,9 +158,9 @@ def canonicalize_math_floor_division_markup(fragment: str) -> str:
     stack: list[tuple[str, int, int]] = []
     replacements: list[tuple[int, int, str]] = []
     math_element_count = 0
-    for token in _CODE_TAG.finditer(fragment):
-        raw = token.group(0)
-        if token.group("closing"):
+    for token in _iter_code_tags(fragment):
+        raw = token.raw
+        if token.closing:
             if not stack:
                 raise ValueError(MATH_FLOOR_DIVISION_ERROR)
             kind, start, body_start = stack.pop()
@@ -124,15 +168,15 @@ def canonicalize_math_floor_division_markup(fragment: str) -> str:
                 if raw != MATH_FLOOR_DIVISION_CLOSE:
                     raise ValueError(MATH_FLOOR_DIVISION_ERROR)
                 canonical = canonicalize_math_floor_division_expression(
-                    fragment[body_start:token.start()]
+                    fragment[body_start:token.start]
                 )
                 replacements.append((
                     start,
-                    token.end(),
+                    token.end,
                     f"{MATH_FLOOR_DIVISION_OPEN}{canonical}{MATH_FLOOR_DIVISION_CLOSE}",
                 ))
             elif _ORDINARY_CODE_CLOSE.fullmatch(raw) is None or _contains_normalized_double_slash(
-                fragment[body_start:token.start()]
+                fragment[body_start:token.start]
             ):
                 raise ValueError(MATH_FLOOR_DIVISION_ERROR)
             continue
@@ -141,11 +185,11 @@ def canonicalize_math_floor_division_markup(fragment: str) -> str:
             raise ValueError(MATH_FLOOR_DIVISION_ERROR)
         if raw == MATH_FLOOR_DIVISION_OPEN:
             math_element_count += 1
-            stack.append(("math", token.start(), token.end()))
+            stack.append(("math", token.start, token.end))
             continue
         if _MATH_FLOOR_DIVISION_CLASS_TOKEN.search(raw) or raw.rstrip().endswith("/>"):
             raise ValueError(MATH_FLOOR_DIVISION_ERROR)
-        stack.append(("code", token.start(), token.end()))
+        stack.append(("code", token.start, token.end))
 
     class_occurrences = tuple(_MATH_FLOOR_DIVISION_CLASS_TOKEN.finditer(fragment))
     if (
@@ -154,9 +198,15 @@ def canonicalize_math_floor_division_markup(fragment: str) -> str:
         or any(match.group(0) != MATH_FLOOR_DIVISION_CLASS for match in class_occurrences)
     ):
         raise ValueError(MATH_FLOOR_DIVISION_ERROR)
-    for start, end, replacement in reversed(replacements):
-        fragment = fragment[:start] + replacement + fragment[end:]
-    return fragment
+    if not replacements:
+        return fragment
+    canonical_parts: list[str] = []
+    previous_end = 0
+    for start, end, replacement in replacements:
+        canonical_parts.extend((fragment[previous_end:start], replacement))
+        previous_end = end
+    canonical_parts.append(fragment[previous_end:])
+    return "".join(canonical_parts)
 
 
 class ProtocolModel(BaseModel):

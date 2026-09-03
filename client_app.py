@@ -39,7 +39,7 @@ from ksat.client.coordinator import (
     CoordinatorClient,
     CoordinatorProblem,
 )
-from ksat.client.identity import DeviceIdentityStore
+from ksat.client.identity import DeviceIdentityStore, derive_state_integrity_key
 from ksat.client.outbox import OutboxWorker
 from ksat.client.runtime import AssessmentRuntime, SystemClock
 from ksat.client.store import AttemptSealedError, ClientStore
@@ -962,7 +962,12 @@ class _ClientContext:
                             if record.state != "in_progress":
                                 return
                             attempt_id = record.attempt_id
-                            self._control_condition.wait(timeout=random.uniform(10.0, 20.0))
+                            poll_at = time.monotonic() + random.uniform(10.0, 20.0)
+                            while not self._control_stop:
+                                remaining = poll_at - time.monotonic()
+                                if remaining <= 0:
+                                    break
+                                self._control_condition.wait(timeout=remaining)
                             if self._control_stop:
                                 return
                         services = self.services
@@ -1384,7 +1389,11 @@ def _load_locked_production_services(
     _validate_production_trust(config)
     identity_store = DeviceIdentityStore(data_dir / "identity")
     identity = identity_store.load_or_create()
-    store = ClientStore(data_dir / "state" / "client.sqlite3")
+    store = ClientStore(
+        data_dir / "state" / "client.sqlite3",
+        integrity_key=derive_state_integrity_key(identity),
+        integrity_anchor_path=data_dir / "identity" / "state-anchor.json",
+    )
     coordinator = None
     try:
         coordinator = CoordinatorClient(
@@ -2218,15 +2227,19 @@ def update_client_coordinator_url(program_data: Path, *, base_url: str) -> Clien
         runtime_store = ClientRuntimeConfigStore(
             immutable_store, data_dir / "coordinator-url.json"
         )
-        local_store = ClientStore(data_dir / "state" / "client.sqlite3")
+        identity_store = DeviceIdentityStore(data_dir / "identity")
+        identity = identity_store.load_or_create()
+        local_store = ClientStore(
+            data_dir / "state" / "client.sqlite3",
+            integrity_key=derive_state_integrity_key(identity),
+            integrity_anchor_path=data_dir / "identity" / "state-anchor.json",
+        )
         candidate = None
         try:
             if local_store.active_attempt() is not None or local_store.pending_submissions():
                 raise ValueError(
                     "The coordinator address cannot change while saved assessment work is active."
                 )
-            identity_store = DeviceIdentityStore(data_dir / "identity")
-            identity = identity_store.load_or_create()
             if (
                 identity.device_id is not None
                 and identity.coordinator_public_key_b64
@@ -2252,20 +2265,31 @@ def main(
     environ: Mapping[str, str] | None = None,
     uvicorn_runner: Any | None = None,
     administrator_check: Any = _is_windows_administrator,
+    windows_service_runner: Any | None = None,
+    browser_opener: Any | None = None,
 ) -> int:
     parser = argparse.ArgumentParser(prog="KSATClient")
     parser.add_argument("--install-config", action="store_true")
     parser.add_argument("--update-config", action="store_true")
     parser.add_argument("--validate-config", action="store_true")
+    parser.add_argument("--windows-service", action="store_true")
+    parser.add_argument("--service-console", action="store_true")
+    parser.add_argument("--open-client", action="store_true")
     parser.add_argument("--base-url")
     parser.add_argument("--ca", type=Path)
     parser.add_argument("--metadata", type=Path)
     arguments = parser.parse_args(argv)
     values = os.environ if environ is None else environ
-    if sum(bool(value) for value in (
-        arguments.install_config, arguments.update_config, arguments.validate_config
-    )) > 1:
-        parser.error("configuration operations are separate")
+    operations = (
+        arguments.install_config,
+        arguments.update_config,
+        arguments.validate_config,
+        arguments.windows_service,
+        arguments.service_console,
+        arguments.open_client,
+    )
+    if sum(bool(value) for value in operations) > 1:
+        parser.error("client operations are separate")
     if arguments.install_config:
         if not arguments.base_url or arguments.ca is None or arguments.metadata is None:
             parser.error("--install-config requires --base-url, --ca, and --metadata")
@@ -2304,11 +2328,48 @@ def main(
         return 0
     if any(value is not None for value in (arguments.base_url, arguments.ca, arguments.metadata)):
         parser.error("configuration arguments require --install-config or --update-config")
+    host, port = production_bind(dict(values))
+    if arguments.windows_service:
+        if windows_service_runner is None:
+            from ksat.client.windows_service import run_windows_service
+
+            windows_service_runner = run_windows_service
+
+        def service_target(stop_event) -> None:
+            import uvicorn
+
+            server = uvicorn.Server(
+                uvicorn.Config(
+                    create_client_app(),
+                    host=host,
+                    port=port,
+                    log_level="warning",
+                    use_colors=False,
+                )
+            )
+
+            def request_stop() -> None:
+                stop_event.wait()
+                server.should_exit = True
+
+            threading.Thread(target=request_stop, daemon=True).start()
+            server.run()
+
+        windows_service_runner("KSATLabClientAuthority", service_target)
+        return 0
+    if arguments.open_client or not any(operations):
+        if browser_opener is None:
+            import webbrowser
+
+            browser_opener = webbrowser.open
+        browser_opener(f"http://{host}:{port}/")
+        return 0
+    if values.get("KSAT_SMOKE_TEST") != "1":
+        raise PermissionError("The client console server is restricted to an explicit smoke test.")
     if uvicorn_runner is None:
         import uvicorn
 
         uvicorn_runner = uvicorn.run
-    host, port = production_bind(dict(values))
     uvicorn_runner(
         create_client_app(),
         host=host,

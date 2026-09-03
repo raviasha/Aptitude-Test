@@ -92,7 +92,10 @@ release\KSATClientSetup-2.0.0.exe
 
 Detailed build, smoke, recursive payload-scan, and hash verification steps are in
 [`WINDOWS_EXE_BUILD.md`](WINDOWS_EXE_BUILD.md). Physical installation and trust
-store/firewall changes require separate institutional authorization.
+store/firewall changes require separate institutional authorization. Production
+builds fail closed unless an institution-controlled Authenticode identity,
+publisher pin, and HTTPS timestamp service are supplied; the ephemeral test
+identity is verification-only and never a distributable credential.
 
 ## Demo accounts
 
@@ -108,6 +111,11 @@ KSAT Client. Answer selection, navigation, autosave, and the per-student timer r
 on the lab computer; the coordinator receives only the sealed final response and
 scores it centrally. Personal practice continues to use the coordinator browser
 workflow unchanged.
+
+On Windows, a protected LocalSystem service owns the device identity, signed
+requests, assessment state, cached packs, and submission outbox. Student
+shortcuts open its constrained loopback UI; ordinary lab accounts do not receive
+direct write access to the authoritative files.
 
 The Faculty **Tests** page shows release readiness, a short content-hash prefix,
 the ten-minute start window, eligible/started/submitted/voided counts, submission

@@ -1585,6 +1585,8 @@ class FacultyReleaseFlowTests(unittest.TestCase):
             json={"identifier": "faculty", "password": "faculty123", "role": "admin"},
         )
         self.assertEqual(200, login.status_code, login.text)
+        self.csrf_token = login.json()["csrf_token"]
+        self.client.headers["X-KSAT-CSRF"] = self.csrf_token
 
     def tearDown(self):
         self.client.close()

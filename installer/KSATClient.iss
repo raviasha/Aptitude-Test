@@ -35,17 +35,16 @@ Name: "{commonappdata}\KSAT Client\state"; Permissions: admins-full system-full
 Name: "{commonappdata}\KSAT Client\packs"; Permissions: admins-full system-full
 
 [Icons]
-Name: "{group}\KSAT Lab Client"; Filename: "{app}\{#AppExeName}"; WorkingDir: "{app}"
-Name: "{autodesktop}\KSAT Lab Client"; Filename: "{app}\{#AppExeName}"; WorkingDir: "{app}"
+Name: "{group}\KSAT Lab Client"; Filename: "{app}\{#AppExeName}"; Parameters: "--open-client"; WorkingDir: "{app}"
+Name: "{autodesktop}\KSAT Lab Client"; Filename: "{app}\{#AppExeName}"; Parameters: "--open-client"; WorkingDir: "{app}"
 
 [Run]
-Filename: "{app}\{#AppExeName}"; Description: "Launch KSAT Lab Client"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#AppExeName}"; Parameters: "--open-client"; Description: "Open KSAT Lab Client"; Flags: nowait postinstall skipifsilent
 
 [Code]
 var
   UrlPage: TInputQueryWizardPage;
   TrustPage: TInputFileWizardPage;
-  AccountPage: TInputQueryWizardPage;
 
 function ConfigPath(): String;
 begin Result := ExpandConstant('{commonappdata}\KSAT Client\client-config.json'); end;
@@ -55,6 +54,8 @@ function InstalledCaPath(): String;
 begin Result := ExpandConstant('{commonappdata}\KSAT Client\trust\coordinator-ca.pem'); end;
 function ExistingConfiguration(): Boolean;
 begin Result := FileExists(ConfigPath()); end;
+
+procedure StopClientService(); forward;
 
 procedure InitializeWizard();
 begin
@@ -69,11 +70,6 @@ begin
   TrustPage.Add('Coordinator metadata file:', 'JSON files|*.json|All files|*.*', '.json');
   TrustPage.Values[0] := ExpandConstant('{param:CAFILE|}');
   TrustPage.Values[1] := ExpandConstant('{param:METADATAFILE|}');
-  AccountPage := CreateInputQueryPage(TrustPage.ID, 'Lab Windows account',
-    'Enter the account that runs assessments on this computer.',
-    'Only this exact account, Administrators, and SYSTEM can modify local state.');
-  AccountPage.Add('DOMAIN\user or computer\user:', False);
-  AccountPage.Values[0] := ExpandConstant('{param:LABACCOUNT|}');
 end;
 
 function ShouldSkipPage(PageID: Integer): Boolean;
@@ -89,29 +85,78 @@ begin
   if (CurPageID = TrustPage.ID) and
      ((not FileExists(TrustPage.Values[0])) or (not FileExists(TrustPage.Values[1]))) then
   begin MsgBox('Select the coordinator-ca.pem and coordinator-public.json files.', mbError, MB_OK); Result := False; end;
-  if (CurPageID = AccountPage.ID) and (Trim(AccountPage.Values[0]) = '') then
-  begin MsgBox('Enter the Windows account used by students in this lab.', mbError, MB_OK); Result := False; end;
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
   Result := '';
-  if Trim(AccountPage.Values[0]) = '' then
-    Result := 'Specify /LABACCOUNT=<domain\user> for a silent install.'
-  else if WizardSilent() and (not ExistingConfiguration()) and
+  if WizardSilent() and (not ExistingConfiguration()) and
     ((Trim(UrlPage.Values[0]) = '') or (not FileExists(TrustPage.Values[0])) or
      (not FileExists(TrustPage.Values[1]))) then
     Result := 'A first silent install requires /COORDINATORURL=, /CAFILE=, and /METADATAFILE=.';
+  if Result = '' then StopClientService();
 end;
 
-procedure ApplyDataAcl(PathName, AccountName: String);
+procedure ProtectAuthorityDirectory(PathName: String);
 var ResultCode: Integer; Parameters: String;
 begin
   Parameters := '"' + PathName + '" /inheritance:r /grant:r ' +
-    '"*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" "' + AccountName + ':(OI)(CI)M"';
+    '"*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" ' +
+    '"NT SERVICE\KSATLabClientAuthority:(OI)(CI)M"';
   if (not Exec(ExpandConstant('{sys}\icacls.exe'), Parameters, '', SW_HIDE,
     ewWaitUntilTerminated, ResultCode)) or (ResultCode <> 0) then
-    RaiseException('The lab-client data permissions could not be applied.');
+    RaiseException('The LocalSystem client-service data permissions could not be applied.');
+end;
+
+function ServiceExists(): Boolean;
+var ResultCode: Integer;
+begin
+  Result := Exec(ExpandConstant('{sys}\sc.exe'), 'query "KSATLabClientAuthority"',
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
+end;
+
+procedure StopClientService();
+var ResultCode: Integer;
+begin
+  if ServiceExists() then
+    Exec(ExpandConstant('{sys}\sc.exe'), 'stop "KSATLabClientAuthority"',
+      '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+end;
+
+procedure ConfigureClientService();
+var ResultCode: Integer; Parameters, ImagePath: String;
+begin
+  ImagePath := ExpandConstant('{app}\{#AppExeName}');
+  if ServiceExists() then
+    Parameters := 'config "KSATLabClientAuthority" binPath= "\"' + ImagePath +
+      '\" --windows-service" start= auto obj= LocalSystem DisplayName= "KSAT Lab Client Authority"'
+  else
+    Parameters := 'create "KSATLabClientAuthority" binPath= "\"' + ImagePath +
+      '\" --windows-service" start= auto obj= LocalSystem DisplayName= "KSAT Lab Client Authority"';
+  if (not Exec(ExpandConstant('{sys}\sc.exe'), Parameters, '', SW_HIDE,
+    ewWaitUntilTerminated, ResultCode)) or (ResultCode <> 0) then
+    RaiseException('The LocalSystem client service could not be configured.');
+  if (not Exec(ExpandConstant('{sys}\sc.exe'), 'sidtype "KSATLabClientAuthority" unrestricted',
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode)) or (ResultCode <> 0) then
+    RaiseException('The client service SID could not be enabled.');
+end;
+
+procedure StartClientService();
+var ResultCode: Integer;
+begin
+  if (not Exec(ExpandConstant('{sys}\sc.exe'), 'start "KSATLabClientAuthority"',
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode)) or (ResultCode <> 0) then
+    RaiseException('The LocalSystem client service could not be started.');
+end;
+
+procedure DeleteClientService();
+var ResultCode: Integer;
+begin
+  StopClientService();
+  if ServiceExists() and
+    ((not Exec(ExpandConstant('{sys}\sc.exe'), 'delete "KSATLabClientAuthority"',
+      '', SW_HIDE, ewWaitUntilTerminated, ResultCode)) or (ResultCode <> 0)) then
+    RaiseException('The LocalSystem client service could not be removed.');
 end;
 
 procedure EnsureRootCa();
@@ -183,9 +228,7 @@ procedure CurStepChanged(CurStep: TSetupStep);
 var ResultCode: Integer; Parameters: String;
 begin
   if CurStep = ssPostInstall then begin
-    ApplyDataAcl(ExpandConstant('{commonappdata}\KSAT Client\identity'), AccountPage.Values[0]);
-    ApplyDataAcl(ExpandConstant('{commonappdata}\KSAT Client\state'), AccountPage.Values[0]);
-    ApplyDataAcl(ExpandConstant('{commonappdata}\KSAT Client\packs'), AccountPage.Values[0]);
+    StopClientService();
     if not ExistingConfiguration() then begin
       Parameters := '--install-config --base-url "' + UrlPage.Values[0] +
         '" --ca "' + TrustPage.Values[0] + '" --metadata "' + TrustPage.Values[1] + '"';
@@ -197,8 +240,18 @@ begin
       ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, ResultCode)) or (ResultCode <> 0) then
       RaiseException('The installed coordinator trust configuration is invalid.');
     EnsureRootCa();
+    ConfigureClientService();
+    ProtectAuthorityDirectory(ExpandConstant('{commonappdata}\KSAT Client\identity'));
+    ProtectAuthorityDirectory(ExpandConstant('{commonappdata}\KSAT Client\state'));
+    ProtectAuthorityDirectory(ExpandConstant('{commonappdata}\KSAT Client\packs'));
+    StartClientService();
   end;
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
-begin if CurUninstallStep = usUninstall then RemoveOwnedRootCas(); end;
+begin
+  if CurUninstallStep = usUninstall then begin
+    DeleteClientService();
+    RemoveOwnedRootCas();
+  end;
+end;

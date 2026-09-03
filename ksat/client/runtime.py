@@ -359,13 +359,15 @@ class AssessmentRuntime:
                 self._seal(record)
                 raise AttemptSealedError("The assessment time has expired.")
             now = self._trusted_now(record)
-            self.store.update_timer_checkpoint(
-                record.attempt_id, remaining, last_wall_time=now
+            self.store.save_answer_checkpoint(
+                record.attempt_id,
+                question_id,
+                selected_answer,
+                saved_at=now,
+                remaining_seconds=remaining,
+                last_wall_time=now,
             )
             self._last_checkpoint_monotonic = self._monotonic()
-            self.store.save_answer(
-                record.attempt_id, question_id, selected_answer, saved_at=now
-            )
             return self._snapshot_record(self.store.load_attempt(record.attempt_id))
 
     def position(self, question_id: int) -> AttemptSnapshot:

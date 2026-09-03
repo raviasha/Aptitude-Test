@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
+import hmac
 import json
 import math
+import os
 import re
 import sqlite3
+import tempfile
 import threading
 import uuid
 from contextlib import contextmanager
@@ -33,6 +37,15 @@ _T = TypeVar("_T", bound=BaseModel)
 _HASH = re.compile(r"[0-9a-f]{64}\Z")
 _OPTION = re.compile(r"[A-E]\Z")
 _ACTIVE_STATES = ("in_progress", "sealed_pending")
+_STATE_INTEGRITY_ERROR = "Authenticated client state is invalid."
+_ZERO_MAC = "0" * 64
+_AUTHENTICATED_TABLES = (
+    "cached_content_packs",
+    "local_attempts",
+    "local_responses",
+    "local_integrity_events",
+    "submission_outbox",
+)
 
 
 class AttemptSealedError(RuntimeError):
@@ -277,14 +290,28 @@ class ClientStore:
         database_path: Path,
         *,
         connection_factory: Callable[[Path], sqlite3.Connection] = connect_sqlite,
+        integrity_key: bytes | None = None,
+        integrity_anchor_path: Path | None = None,
     ):
+        if (integrity_key is None) != (integrity_anchor_path is None):
+            raise ValueError("Client state integrity key and anchor must be configured together.")
+        if integrity_key is not None and (
+            not isinstance(integrity_key, bytes) or len(integrity_key) < 32
+        ):
+            raise ValueError("Client state integrity key is invalid.")
         self.database_path = Path(database_path)
+        self._integrity_key = integrity_key
+        self._integrity_anchor_path = (
+            Path(integrity_anchor_path) if integrity_anchor_path is not None else None
+        )
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         self.connection = connection_factory(self.database_path)
         self._lock = threading.RLock()
         self._closed = False
         try:
             self._migrate()
+            if self._integrity_key is not None:
+                self._initialize_or_verify_authenticated_state()
         except BaseException:
             self.connection.close()
             self._closed = True
@@ -345,6 +372,13 @@ class ClientStore:
                     CHECK (status IN ('pending', 'faculty_intervention_required')),
                   created_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS authenticated_state_journal (
+                  sequence INTEGER PRIMARY KEY CHECK (sequence > 0),
+                  operation TEXT NOT NULL,
+                  previous_mac TEXT NOT NULL,
+                  state_digest TEXT NOT NULL,
+                  entry_mac TEXT NOT NULL
+                );
                 """
             )
             columns = {
@@ -375,6 +409,210 @@ class ClientStore:
                 )
             self.connection.commit()
 
+    @staticmethod
+    def _canonical_rows(connection: sqlite3.Connection, table: str) -> list[list[object]]:
+        cursor = connection.execute(f'SELECT * FROM "{table}"')
+        rows = [list(row) for row in cursor.fetchall()]
+        rows.sort(key=lambda row: canonical_json(row))
+        return rows
+
+    def _state_digest(self, connection: sqlite3.Connection) -> str:
+        state = {
+            table: self._canonical_rows(connection, table)
+            for table in _AUTHENTICATED_TABLES
+        }
+        return hashlib.sha256(canonical_json(state)).hexdigest()
+
+    def _journal_mac(
+        self, sequence: int, operation: str, previous_mac: str, state_digest: str
+    ) -> str:
+        assert self._integrity_key is not None
+        payload = canonical_json(
+            {
+                "operation": operation,
+                "previous_mac": previous_mac,
+                "sequence": sequence,
+                "state_digest": state_digest,
+            }
+        )
+        return hmac.new(self._integrity_key, payload, hashlib.sha256).hexdigest()
+
+    @staticmethod
+    def _anchor_bytes(sequence: int, state_digest: str, entry_mac: str) -> bytes:
+        return canonical_json(
+            {
+                "entry_mac": entry_mac,
+                "format_version": 1,
+                "sequence": sequence,
+                "state_digest": state_digest,
+            }
+        )
+
+    def _read_anchor(self) -> tuple[int, str, str]:
+        assert self._integrity_anchor_path is not None
+        try:
+            raw = self._integrity_anchor_path.read_bytes()
+            value = json.loads(
+                raw,
+                object_pairs_hook=_duplicates_rejected,
+                parse_constant=lambda _: (_ for _ in ()).throw(ValueError()),
+            )
+        except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as error:
+            raise ValueError(_STATE_INTEGRITY_ERROR) from error
+        if (
+            not isinstance(value, dict)
+            or set(value) != {"entry_mac", "format_version", "sequence", "state_digest"}
+            or value.get("format_version") != 1
+            or not isinstance(value.get("sequence"), int)
+            or isinstance(value.get("sequence"), bool)
+            or value["sequence"] <= 0
+            or not isinstance(value.get("entry_mac"), str)
+            or not _HASH.fullmatch(value["entry_mac"])
+            or not isinstance(value.get("state_digest"), str)
+            or not _HASH.fullmatch(value["state_digest"])
+            or canonical_json(value) != raw
+        ):
+            raise ValueError(_STATE_INTEGRITY_ERROR)
+        return value["sequence"], value["state_digest"], value["entry_mac"]
+
+    def _write_anchor(self, sequence: int, state_digest: str, entry_mac: str) -> None:
+        assert self._integrity_anchor_path is not None
+        path = self._integrity_anchor_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if os.path.lexists(path) and (path.is_symlink() or not path.is_file()):
+            raise ValueError(_STATE_INTEGRITY_ERROR)
+        descriptor, temporary_name = tempfile.mkstemp(
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+        )
+        temporary_path = Path(temporary_name)
+        try:
+            with os.fdopen(descriptor, "wb") as stream:
+                descriptor = -1
+                stream.write(self._anchor_bytes(sequence, state_digest, entry_mac))
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary_path, path)
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+            temporary_path.unlink(missing_ok=True)
+
+    def _latest_journal(self, connection: sqlite3.Connection) -> sqlite3.Row | None:
+        return connection.execute(
+            """SELECT sequence, operation, previous_mac, state_digest, entry_mac
+               FROM authenticated_state_journal ORDER BY sequence DESC LIMIT 1"""
+        ).fetchone()
+
+    def _validated_journal_row(
+        self, row: sqlite3.Row, *, expected_sequence: int | None = None,
+        expected_previous_mac: str | None = None,
+    ) -> tuple[int, str, str]:
+        try:
+            sequence = row["sequence"]
+            operation = row["operation"]
+            previous_mac = row["previous_mac"]
+            state_digest = row["state_digest"]
+            entry_mac = row["entry_mac"]
+        except (IndexError, KeyError, TypeError) as error:
+            raise ValueError(_STATE_INTEGRITY_ERROR) from error
+        if (
+            not isinstance(sequence, int)
+            or isinstance(sequence, bool)
+            or sequence <= 0
+            or expected_sequence is not None and sequence != expected_sequence
+            or not isinstance(operation, str)
+            or not operation
+            or len(operation) > 80
+            or not isinstance(previous_mac, str)
+            or not _HASH.fullmatch(previous_mac)
+            or expected_previous_mac is not None
+            and not hmac.compare_digest(previous_mac, expected_previous_mac)
+            or not isinstance(state_digest, str)
+            or not _HASH.fullmatch(state_digest)
+            or not isinstance(entry_mac, str)
+            or not _HASH.fullmatch(entry_mac)
+        ):
+            raise ValueError(_STATE_INTEGRITY_ERROR)
+        expected_mac = self._journal_mac(sequence, operation, previous_mac, state_digest)
+        if not hmac.compare_digest(entry_mac, expected_mac):
+            raise ValueError(_STATE_INTEGRITY_ERROR)
+        return sequence, state_digest, entry_mac
+
+    def _verify_current_authenticated_state(self, connection: sqlite3.Connection) -> None:
+        latest = self._latest_journal(connection)
+        if latest is None:
+            raise ValueError(_STATE_INTEGRITY_ERROR)
+        sequence, state_digest, entry_mac = self._validated_journal_row(latest)
+        if not hmac.compare_digest(state_digest, self._state_digest(connection)):
+            raise ValueError(_STATE_INTEGRITY_ERROR)
+        anchor_sequence, anchor_digest, anchor_mac = self._read_anchor()
+        if (
+            anchor_sequence != sequence
+            or not hmac.compare_digest(anchor_digest, state_digest)
+            or not hmac.compare_digest(anchor_mac, entry_mac)
+        ):
+            raise ValueError(_STATE_INTEGRITY_ERROR)
+
+    def _verify_full_authenticated_state(self) -> None:
+        rows = self.connection.execute(
+            """SELECT sequence, operation, previous_mac, state_digest, entry_mac
+               FROM authenticated_state_journal ORDER BY sequence"""
+        ).fetchall()
+        previous_mac = _ZERO_MAC
+        for expected_sequence, row in enumerate(rows, start=1):
+            _sequence, _digest, previous_mac = self._validated_journal_row(
+                row,
+                expected_sequence=expected_sequence,
+                expected_previous_mac=previous_mac,
+            )
+        self._verify_current_authenticated_state(self.connection)
+
+    def _append_authenticated_entry(
+        self, connection: sqlite3.Connection, operation: str
+    ) -> tuple[int, str, str]:
+        latest = self._latest_journal(connection)
+        if latest is None:
+            sequence = 1
+            previous_mac = _ZERO_MAC
+        else:
+            previous_sequence, _digest, previous_mac = self._validated_journal_row(latest)
+            sequence = previous_sequence + 1
+        state_digest = self._state_digest(connection)
+        entry_mac = self._journal_mac(sequence, operation, previous_mac, state_digest)
+        connection.execute(
+            "INSERT INTO authenticated_state_journal VALUES (?, ?, ?, ?, ?)",
+            (sequence, operation, previous_mac, state_digest, entry_mac),
+        )
+        return sequence, state_digest, entry_mac
+
+    def _initialize_or_verify_authenticated_state(self) -> None:
+        assert self._integrity_anchor_path is not None
+        anchor_exists = os.path.lexists(self._integrity_anchor_path)
+        journal_exists = self._latest_journal(self.connection) is not None
+        if anchor_exists or journal_exists:
+            if not anchor_exists or not journal_exists:
+                raise ValueError(_STATE_INTEGRITY_ERROR)
+            self._verify_full_authenticated_state()
+            return
+        has_existing_state = any(
+            self.connection.execute(f'SELECT 1 FROM "{table}" LIMIT 1').fetchone()
+            is not None
+            for table in _AUTHENTICATED_TABLES
+        )
+        if has_existing_state:
+            raise ValueError(_STATE_INTEGRITY_ERROR)
+        self.connection.execute("BEGIN IMMEDIATE")
+        try:
+            anchor = self._append_authenticated_entry(self.connection, "initialize")
+            self.connection.commit()
+        except BaseException:
+            if self.connection.in_transaction:
+                self.connection.rollback()
+            raise
+        self._write_anchor(*anchor)
+
     def _ensure_open(self) -> None:
         if self._closed:
             raise RuntimeError("Client store is closed.")
@@ -385,8 +623,17 @@ class ClientStore:
             self._ensure_open()
             self.connection.execute("BEGIN IMMEDIATE")
             try:
+                if self._integrity_key is not None:
+                    self._verify_current_authenticated_state(self.connection)
                 yield self.connection
+                anchor = (
+                    self._append_authenticated_entry(self.connection, "mutation")
+                    if self._integrity_key is not None
+                    else None
+                )
                 self.connection.commit()
+                if anchor is not None:
+                    self._write_anchor(*anchor)
             except BaseException:
                 if self.connection.in_transaction:
                     self.connection.rollback()
@@ -398,6 +645,8 @@ class ClientStore:
             self._ensure_open()
             self.connection.execute("BEGIN")
             try:
+                if self._integrity_key is not None:
+                    self._verify_current_authenticated_state(self.connection)
                 yield self.connection
                 self.connection.commit()
             except BaseException:
@@ -952,6 +1201,53 @@ class ClientStore:
                 row["question_order_json"], "Stored attempt data is invalid."
             ):
                 raise ValueError("Question is not part of the local attempt.")
+            connection.execute(
+                """INSERT INTO local_responses
+                   (attempt_id, question_id, selected_answer, saved_at) VALUES (?, ?, ?, ?)
+                   ON CONFLICT(attempt_id, question_id) DO UPDATE SET
+                     selected_answer=excluded.selected_answer, saved_at=excluded.saved_at""",
+                (attempt_id, question_id, selected_answer, saved_iso),
+            )
+
+    def save_answer_checkpoint(
+        self,
+        attempt_id: str,
+        question_id: int,
+        selected_answer: str | None,
+        *,
+        saved_at: datetime,
+        remaining_seconds: int,
+        last_wall_time: datetime,
+    ) -> None:
+        """Persist one answer and its monotonic clock checkpoint atomically."""
+
+        if type(question_id) is not int or question_id <= 0:
+            raise ValueError("Question identifier is invalid.")
+        if selected_answer is not None and (
+            not isinstance(selected_answer, str) or not _OPTION.fullmatch(selected_answer)
+        ):
+            raise ValueError("Selected answer is invalid.")
+        if type(remaining_seconds) is not int or remaining_seconds < 0:
+            raise ValueError("Remaining time is invalid.")
+        saved_iso = _iso(saved_at, "Answer save time")
+        wall_iso = _iso(last_wall_time, "Wall checkpoint")
+        with self._transaction() as connection:
+            row = self._editable(connection, attempt_id)
+            if question_id not in self._question_order(
+                row["question_order_json"], "Stored attempt data is invalid."
+            ):
+                raise ValueError("Question is not part of the local attempt.")
+            current = connection.execute(
+                "SELECT remaining_seconds FROM local_attempts WHERE attempt_id=?",
+                (attempt_id,),
+            ).fetchone()["remaining_seconds"]
+            if remaining_seconds > current:
+                raise ValueError("Remaining time cannot increase.")
+            connection.execute(
+                """UPDATE local_attempts SET remaining_seconds=?, last_wall_time=?
+                   WHERE attempt_id=?""",
+                (remaining_seconds, wall_iso, attempt_id),
+            )
             connection.execute(
                 """INSERT INTO local_responses
                    (attempt_id, question_id, selected_answer, saved_at) VALUES (?, ?, ?, ?)

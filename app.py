@@ -44,9 +44,15 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.middleware.sessions import SessionMiddleware
 import question_media
+from ksat.coordinator.artifacts import ArtifactQuarantine, recover_artifact_quarantine
 from ksat.coordinator.auth import load_or_create_client_session_secret
 from ksat.coordinator.releases import load_release_manifest, prepare_release
-from ksat.coordinator.routes import CoordinatorConfig, router as coordinator_router
+from ksat.coordinator.routes import (
+    CoordinatorConfig,
+    close_pack_registry,
+    router as coordinator_router,
+    warm_pack_registry,
+)
 from ksat.coordinator.process_lock import CoordinatorProcessLock
 from ksat.coordinator.schema import migrate_distributed_schema
 from ksat.coordinator.submissions import (
@@ -214,6 +220,29 @@ def configure_coordinator_state(application: FastAPI) -> None:
 app = FastAPI(title="KSAT")
 configure_coordinator_state(app)
 app.include_router(coordinator_router)
+
+_UNSAFE_ADMIN_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+
+@app.middleware("http")
+async def enforce_admin_csrf(request: Request, call_next):
+    """Apply session-bound CSRF validation before parsing any admin mutation body."""
+
+    if (
+        request.method.upper() in _UNSAFE_ADMIN_METHODS
+        and request.url.path.startswith("/api/admin/")
+    ):
+        try:
+            require_admin_mutation(request)
+        except HTTPException as error:
+            return JSONResponse(
+                status_code=error.status_code,
+                content={"detail": error.detail},
+                headers=error.headers,
+            )
+    return await call_next(request)
+
+
 app.add_middleware(
     SessionMiddleware,
     secret_key=os.getenv("SESSION_SECRET", "replace-this-before-production"),
@@ -330,6 +359,13 @@ class FolderImportPayload(BaseModel):
     answer_key_filename: str
 
 
+class LoadTestPayload(BaseModel):
+    namespace: str = Field(pattern=r"^LOAD-[0-9A-F]{32}$")
+    ownership_token: str = Field(min_length=32, max_length=256)
+    clients: int = Field(ge=1, le=100)
+    questions: int = Field(ge=1, le=100)
+
+
 class RegistrationError(Exception):
     pass
 
@@ -360,6 +396,12 @@ def db():
         connection.commit()
     finally:
         connection.close()
+
+
+def _commit_artifact_deletion(connection: sqlite3.Connection) -> None:
+    """Commit seam kept explicit so rollback/restoration behavior is testable."""
+
+    connection.commit()
 
 
 def hash_password(password: str) -> str:
@@ -1921,9 +1963,11 @@ def startup() -> None:
         raise RuntimeError("The pre-held coordinator lifecycle lock is invalid.")
     try:
         ensure_schema()
+        recover_artifact_quarantine(DATA_DIR, DB_PATH)
         app.state.coordinator_config.submission_writer.start()
         seed_data()
         copy_starter_question_files()
+        warm_pack_registry(app.state.coordinator_config)
     except BaseException:
         if getattr(app.state, "coordinator_process_lock_release_on_shutdown", False):
             process_lock.release()
@@ -1935,6 +1979,7 @@ def startup() -> None:
 def shutdown_submission_writer() -> None:
     try:
         app.state.coordinator_config.submission_writer.stop()
+        close_pack_registry(app.state.coordinator_config)
     finally:
         process_lock = getattr(app.state, "coordinator_process_lock", None)
         if process_lock is not None and getattr(
@@ -2035,6 +2080,231 @@ def shutdown_server(request: Request) -> Dict[str, bool]:
     require_user(request, "admin")
     threading.Timer(0.5, os._exit, args=(0,)).start()
     return {"stopping": True}
+
+
+def _require_load_test_mode(request: Request) -> Dict[str, str]:
+    user = require_admin_mutation(request)
+    if os.environ.get("KSAT_LOAD_TEST") != "1":
+        raise HTTPException(404, "Not found.")
+    return user
+
+
+def _load_test_selectors(namespace: str, test_id: int, release_id: str):
+    return [
+        ("responses", "attempt_id IN (SELECT attempt_id FROM attempts WHERE test_id=?)", (test_id,)),
+        ("exam_violations", "attempt_id IN (SELECT attempt_id FROM attempts WHERE test_id=?)", (test_id,)),
+        ("submissions", "attempt_id IN (SELECT attempt_id FROM attempts WHERE test_id=?)", (test_id,)),
+        ("audit_events", "test_id=? OR attempt_id IN (SELECT attempt_id FROM attempts WHERE test_id=?)", (test_id, test_id)),
+        ("attempts", "test_id=?", (test_id,)),
+        ("release_questions", "release_id=?", (release_id,)),
+        ("load_test_runs", "namespace=?", (namespace,)),
+        ("assessment_releases", "release_id=?", (release_id,)),
+        ("tests", "test_id=? AND test_name=?", (test_id, f"{namespace}-TEST")),
+        ("devices", "label LIKE ?", (f"{namespace}-DEVICE-%",)),
+        ("students", "student_id LIKE ?", (f"{namespace}-STUDENT-%",)),
+        ("questions", "source_key LIKE ?", (f"{namespace}-Q-%",)),
+    ]
+
+
+def _load_test_run(request: Request, namespace: str) -> sqlite3.Row:
+    _require_load_test_mode(request)
+    if re.fullmatch(r"LOAD-[0-9A-F]{32}", namespace) is None:
+        raise HTTPException(404, "Load-test run not found.")
+    supplied = request.headers.get("x-ksat-load-ownership")
+    with db() as connection:
+        run = connection.execute(
+            "SELECT * FROM load_test_runs WHERE namespace=?", (namespace,)
+        ).fetchone()
+    expected = run["ownership_sha256"] if run is not None else "0" * 64
+    actual = hashlib.sha256((supplied or "").encode("utf-8")).hexdigest()
+    if run is None or not secrets.compare_digest(expected, actual):
+        raise HTTPException(403, "Load-test ownership verification failed.")
+    return run
+
+
+@app.post("/api/admin/load-tests", status_code=201)
+def create_load_test(payload: LoadTestPayload, request: Request) -> Dict[str, Any]:
+    _require_load_test_mode(request)
+    namespace = payload.namespace
+    password = secrets.token_urlsafe(32)
+    created = now()
+    created_artifacts: list[Path] = []
+    release_id = ""
+    try:
+        with db() as connection:
+            if connection.execute(
+                "SELECT 1 FROM load_test_runs WHERE namespace=?", (namespace,)
+            ).fetchone():
+                raise HTTPException(409, "Load-test namespace already exists.")
+            student_ids = [
+                f"{namespace}-STUDENT-{index:03d}" for index in range(payload.clients)
+            ]
+            password_hash = hash_password(password)
+            connection.executemany(
+                """INSERT INTO students
+                   (student_id,name,password_hash,class,section,created_at)
+                   VALUES (?,?,?,?,?,?)""",
+                [
+                    (student_id, f"{namespace} Student {index}", password_hash, "LOAD", "LOAD", created)
+                    for index, student_id in enumerate(student_ids)
+                ],
+            )
+            test_id = int(
+                connection.execute(
+                    """INSERT INTO tests
+                       (test_name,composition,created_at,active,launched,mode)
+                       VALUES (?,?,?,1,0,'faculty')""",
+                    (f"{namespace}-TEST", "{}", created),
+                ).lastrowid
+            )
+            selected: list[PublicQuestion] = []
+            for index in range(payload.questions):
+                correct = "ABCD"[index % 4]
+                options = {"A": "one", "B": "two", "C": "three", "D": "four"}
+                source_key = f"{namespace}-Q-{index + 1:03d}"
+                question_id = int(
+                    connection.execute(
+                        """INSERT INTO questions
+                           (question_text,source_key,category,chapter,difficulty,
+                            option_a,option_b,option_c,option_d,options_json,
+                            correct_answer,created_at)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (
+                            f"{namespace} Question {index + 1}?", source_key,
+                            "Load", "Load", "Easy", options["A"], options["B"],
+                            options["C"], options["D"],
+                            json.dumps(options, sort_keys=True, separators=(",", ":")),
+                            correct, created,
+                        ),
+                    ).lastrowid
+                )
+                selected.append(
+                    PublicQuestion(
+                        question_id=question_id,
+                        source_key=source_key,
+                        category="Load",
+                        chapter="Load",
+                        difficulty="Easy",
+                        question_text=f"{namespace} Question {index + 1}?",
+                        question_html=f"<p>{namespace} Question {index + 1}?</p>",
+                        options=options,
+                    )
+                )
+            release = prepare_release(
+                connection,
+                test_id=test_id,
+                selected_questions=selected,
+                assets={},
+                pack_dir=assessment_packs_dir(),
+                signing_private_key_b64=app.state.coordinator_config.signing_private_key_b64,
+                pack_master_key=app.state.coordinator_config.pack_master_key,
+                now_iso=created,
+                _created_artifact_paths=created_artifacts,
+            )
+            release_id = release.release_id
+            freeze_release_answer_state(connection, release_id)
+            current = datetime.now(timezone.utc)
+            closes = (current + timedelta(minutes=9)).isoformat(timespec="seconds")
+            connection.execute(
+                """UPDATE assessment_releases
+                   SET state='launched', launch_opens_at=?, launch_closes_at=?
+                   WHERE release_id=?""",
+                ((current - timedelta(minutes=1)).isoformat(timespec="seconds"), closes, release_id),
+            )
+            connection.execute(
+                "UPDATE tests SET launched=1, launch_expires_at=? WHERE test_id=?",
+                (closes, test_id),
+            )
+            connection.execute(
+                "INSERT INTO load_test_runs VALUES (?,?,?,?,?)",
+                (
+                    namespace,
+                    hashlib.sha256(payload.ownership_token.encode("utf-8")).hexdigest(),
+                    test_id,
+                    release_id,
+                    created,
+                ),
+            )
+    except BaseException:
+        for path in created_artifacts:
+            path.unlink(missing_ok=True)
+        raise
+    return {
+        "namespace": namespace,
+        "student_ids": student_ids,
+        "student_password": password,
+        "test_id": test_id,
+        "release_id": release_id,
+    }
+
+
+@app.get("/api/admin/load-tests/{namespace}")
+def load_test_status(namespace: str, request: Request) -> Dict[str, int]:
+    run = _load_test_run(request, namespace)
+    with db() as connection:
+        total = int(
+            connection.execute(
+                """SELECT COUNT(*) AS count FROM submissions s
+                   JOIN attempts a ON a.attempt_id=s.attempt_id WHERE a.test_id=?""",
+                (run["test_id"],),
+            ).fetchone()["count"]
+        )
+        distinct = int(
+            connection.execute(
+                """SELECT COUNT(DISTINCT s.attempt_id) AS count FROM submissions s
+                   JOIN attempts a ON a.attempt_id=s.attempt_id WHERE a.test_id=?""",
+                (run["test_id"],),
+            ).fetchone()["count"]
+        )
+    return {"submission_rows": total, "distinct_submission_rows": distinct}
+
+
+@app.delete("/api/admin/load-tests/{namespace}")
+def delete_load_test(namespace: str, request: Request) -> Dict[str, int]:
+    run = _load_test_run(request, namespace)
+    selectors = _load_test_selectors(namespace, run["test_id"], run["release_id"])
+    operation: ArtifactQuarantine | None = None
+    connection = connect_sqlite(DB_PATH)
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+
+        def count(table: str, clause: str, values: tuple[Any, ...]) -> int:
+            return int(
+                connection.execute(
+                    f"SELECT COUNT(*) AS count FROM {table} WHERE {clause}", values
+                ).fetchone()["count"]
+            )
+
+        created_rows = sum(count(*selector) for selector in selectors)
+        operation = ArtifactQuarantine(
+            DATA_DIR,
+            owner_kind="load_test",
+            owner_id=namespace,
+            artifacts=[assessment_packs_dir() / f"{run['release_id']}.ksatpack"],
+        )
+        operation.stage()
+        deleted_rows = 0
+        for table, clause, values in selectors:
+            deleted_rows += connection.execute(
+                f"DELETE FROM {table} WHERE {clause}", values
+            ).rowcount
+        residual_rows = sum(count(*selector) for selector in selectors)
+        _commit_artifact_deletion(connection)
+    except BaseException:
+        try:
+            connection.rollback()
+        finally:
+            if operation is not None:
+                operation.restore()
+        raise
+    finally:
+        connection.close()
+    operation.purge()
+    return {
+        "created_rows": created_rows,
+        "deleted_rows": deleted_rows,
+        "residual_rows": residual_rows,
+    }
 
 
 @app.get("/api/student/dashboard")
@@ -2490,8 +2760,10 @@ def list_question_banks(request: Request) -> Dict[str, Any]:
 @app.delete("/api/admin/question-banks/{bank_id}")
 def delete_question_bank(bank_id: int, request: Request) -> Dict[str, Any]:
     require_user(request, "admin")
-    release_pack_filenames: list[str] = []
-    with db() as connection:
+    operation: ArtifactQuarantine | None = None
+    connection = connect_sqlite(DB_PATH)
+    try:
+        connection.execute("BEGIN IMMEDIATE")
         bank = connection.execute("SELECT bank_name FROM question_banks WHERE bank_id = ?", (bank_id,)).fetchone()
         if not bank:
             raise HTTPException(404, "Question bank not found.")
@@ -2522,7 +2794,26 @@ def delete_question_bank(bank_id: int, request: Request) -> Dict[str, Any]:
                 "SELECT COUNT(*) AS count FROM stimuli WHERE bank_id = ?", (bank_id,)
             ).fetchone()["count"],
         }
-
+        release_pack_filenames = [
+            row["content_pack_filename"]
+            for row in connection.execute(
+                "SELECT content_pack_filename FROM assessment_releases WHERE test_id IN (SELECT test_id FROM tests WHERE bank_id = ?)",
+                (bank_id,),
+            ).fetchall()
+        ]
+        operation = ArtifactQuarantine(
+            DATA_DIR,
+            owner_kind="question_bank",
+            owner_id=bank_id,
+            artifacts=[
+                question_assets_dir() / str(bank_id),
+                *(
+                    assessment_packs_dir() / Path(filename).name
+                    for filename in release_pack_filenames
+                ),
+            ],
+        )
+        operation.stage()
         connection.execute(
             """DELETE FROM exam_violations
                WHERE attempt_id IN (
@@ -2546,13 +2837,6 @@ def delete_question_bank(bank_id: int, request: Request) -> Dict[str, Any]:
             "DELETE FROM attempts WHERE test_id IN (SELECT test_id FROM tests WHERE bank_id = ?)",
             (bank_id,),
         )
-        release_pack_filenames = [
-            row["content_pack_filename"]
-            for row in connection.execute(
-                "SELECT content_pack_filename FROM assessment_releases WHERE test_id IN (SELECT test_id FROM tests WHERE bank_id = ?)",
-                (bank_id,),
-            ).fetchall()
-        ]
         connection.execute(
             "DELETE FROM release_questions WHERE release_id IN (SELECT release_id FROM assessment_releases WHERE test_id IN (SELECT test_id FROM tests WHERE bank_id = ?))",
             (bank_id,),
@@ -2565,11 +2849,17 @@ def delete_question_bank(bank_id: int, request: Request) -> Dict[str, Any]:
         connection.execute("DELETE FROM stimuli WHERE bank_id = ?", (bank_id,))
         connection.execute("DELETE FROM questions WHERE bank_id = ?", (bank_id,))
         connection.execute("DELETE FROM question_banks WHERE bank_id = ?", (bank_id,))
-    asset_directory = question_assets_dir() / str(bank_id)
-    if asset_directory.exists():
-        shutil.rmtree(asset_directory)
-    for filename in release_pack_filenames:
-        (assessment_packs_dir() / Path(filename).name).unlink(missing_ok=True)
+        _commit_artifact_deletion(connection)
+    except BaseException:
+        try:
+            connection.rollback()
+        finally:
+            if operation is not None:
+                operation.restore()
+        raise
+    finally:
+        connection.close()
+    operation.purge()
     return {"deleted": True, "bank_name": bank["bank_name"], "deleted_counts": deleted_counts}
 
 
@@ -3055,8 +3345,10 @@ def extend_distributed_attempt(
 @app.delete("/api/admin/tests/{test_id}")
 def delete_test(test_id: int, request: Request) -> Dict[str, Any]:
     require_user(request, "admin")
-    release_pack_filename: str | None = None
-    with db() as connection:
+    operation: ArtifactQuarantine | None = None
+    connection = connect_sqlite(DB_PATH)
+    try:
+        connection.execute("BEGIN IMMEDIATE")
         test = connection.execute(
             """SELECT t.test_name, r.content_pack_filename
                FROM tests t LEFT JOIN assessment_releases r ON r.release_id = t.release_id
@@ -3075,14 +3367,34 @@ def delete_test(test_id: int, request: Request) -> Dict[str, Any]:
             connection.execute(f"DELETE FROM responses WHERE attempt_id IN ({placeholders})", attempt_ids)
             connection.execute(f"DELETE FROM attempts WHERE attempt_id IN ({placeholders})", attempt_ids)
         release_pack_filename = test["content_pack_filename"]
+        operation = ArtifactQuarantine(
+            DATA_DIR,
+            owner_kind="test",
+            owner_id=test_id,
+            artifacts=(
+                [assessment_packs_dir() / Path(release_pack_filename).name]
+                if release_pack_filename
+                else []
+            ),
+        )
+        operation.stage()
         connection.execute(
             "DELETE FROM release_questions WHERE release_id IN (SELECT release_id FROM assessment_releases WHERE test_id = ?)",
             (test_id,),
         )
         connection.execute("DELETE FROM assessment_releases WHERE test_id = ?", (test_id,))
         connection.execute("DELETE FROM tests WHERE test_id = ?", (test_id,))
-    if release_pack_filename:
-        (assessment_packs_dir() / Path(release_pack_filename).name).unlink(missing_ok=True)
+        _commit_artifact_deletion(connection)
+    except BaseException:
+        try:
+            connection.rollback()
+        finally:
+            if operation is not None:
+                operation.restore()
+        raise
+    finally:
+        connection.close()
+    operation.purge()
     return {"deleted": True, "test_name": test["test_name"], "attempts_deleted": len(attempt_ids)}
 
 

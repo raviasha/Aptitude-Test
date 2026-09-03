@@ -13,7 +13,11 @@ from unittest.mock import patch
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
-from ksat.client.identity import DeviceIdentityStore, WindowsDpapiProtector
+from ksat.client.identity import (
+    DeviceIdentityStore,
+    WindowsDpapiProtector,
+    derive_state_integrity_key,
+)
 
 
 class PrefixProtector:
@@ -49,6 +53,15 @@ class DeviceIdentityTests(unittest.TestCase):
         self.assertEqual(first, second)
         raw_file = (self.directory / "device-key.bin").read_bytes()
         self.assertNotIn(base64.b64decode(first.private_key_b64), raw_file)
+
+    def test_state_integrity_key_is_stable_domain_separated_and_device_specific(self):
+        first = DeviceIdentityStore(self.directory / "first", PrefixProtector()).load_or_create()
+        second = DeviceIdentityStore(self.directory / "second", PrefixProtector()).load_or_create()
+        first_key = derive_state_integrity_key(first)
+        self.assertEqual(32, len(first_key))
+        self.assertEqual(first_key, derive_state_integrity_key(first))
+        self.assertNotEqual(first_key, base64.b64decode(first.private_key_b64))
+        self.assertNotEqual(first_key, derive_state_integrity_key(second))
 
     def test_simultaneous_creation_publishes_one_identity(self):
         def create_identity(_):

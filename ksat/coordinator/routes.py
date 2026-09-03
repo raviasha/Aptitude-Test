@@ -3,9 +3,11 @@
 import hashlib
 import os
 import re
+import shutil
 import stat
 import tempfile
-from dataclasses import dataclass
+import threading
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, AsyncIterator, BinaryIO
@@ -58,6 +60,7 @@ class CoordinatorConfig:
     signing_public_key_b64: str
     pack_master_key: bytes
     submission_writer: Any | None = None
+    pack_registry: Any | None = field(default=None, repr=False)
 
 
 router = APIRouter(prefix="/api/client/v1")
@@ -195,7 +198,7 @@ def _copy_pack_to_snapshot(source: BinaryIO, snapshot: BinaryIO) -> tuple[str, i
     return digest.hexdigest(), byte_size
 
 
-def _verified_pack_snapshot(
+def _build_verified_pack_snapshot(
     connection,
     config: CoordinatorConfig,
     *,
@@ -234,6 +237,196 @@ def _verified_pack_snapshot(
         if snapshot is not None:
             snapshot.close()
         raise
+
+
+@dataclass
+class _CachedPack:
+    source_identity: tuple[int, int, int, int, int]
+    snapshot_path: Path
+    byte_size: int
+
+
+class PackArtifactRegistry:
+    """Validate each immutable release once and serve independent stable snapshots."""
+
+    def __init__(self, config: CoordinatorConfig) -> None:
+        self.config = config
+        self._lock = threading.RLock()
+        self._entries: dict[tuple[str, str, str], _CachedPack] = {}
+        self._inflight: dict[tuple[str, str, str], threading.Event] = {}
+        self._cache_dir = Path(tempfile.mkdtemp(prefix="ksat-pack-registry-"))
+        self._closed = False
+
+    @staticmethod
+    def _identity(path: Path) -> tuple[int, int, int, int, int]:
+        try:
+            value = os.stat(path, follow_symlinks=False)
+        except OSError as error:
+            raise AttemptProblem(
+                "content_not_ready", "Assessment content is not ready."
+            ) from error
+        if stat.S_ISLNK(value.st_mode) or _is_reparse_point(value) or not stat.S_ISREG(value.st_mode):
+            raise AttemptProblem("content_not_ready", "Assessment content is not ready.")
+        return (
+            value.st_dev,
+            value.st_ino,
+            value.st_size,
+            value.st_mtime_ns,
+            value.st_ctime_ns,
+        )
+
+    @staticmethod
+    def _open(entry: _CachedPack) -> tuple[BinaryIO, int]:
+        try:
+            return entry.snapshot_path.open("rb"), entry.byte_size
+        except OSError as error:
+            raise AttemptProblem("content_not_ready", "Assessment content is not ready.") from error
+
+    def snapshot(
+        self, *, release_id: str, filename: str, expected_hash: str
+    ) -> tuple[BinaryIO, int]:
+        key = (release_id, filename, expected_hash)
+        source_path = _pack_path(self.config, filename)
+        source_identity = self._identity(source_path)
+        with self._lock:
+            if self._closed:
+                raise AttemptProblem("content_not_ready", "Assessment content is not ready.")
+            entry = self._entries.get(key)
+            if entry is not None:
+                if entry.source_identity != source_identity:
+                    raise AttemptProblem("content_not_ready", "Assessment content is not ready.")
+                return self._open(entry)
+            wait_for = self._inflight.get(key)
+            if wait_for is None:
+                wait_for = threading.Event()
+                self._inflight[key] = wait_for
+                validator = True
+            else:
+                validator = False
+        if not validator:
+            wait_for.wait()
+            with self._lock:
+                entry = self._entries.get(key)
+                if entry is None:
+                    raise AttemptProblem("content_not_ready", "Assessment content is not ready.")
+                # This request joined before validation finished, so it receives the
+                # exact stable bytes that were validated even if the source was replaced.
+                return self._open(entry)
+
+        validated: BinaryIO | None = None
+        cache_path: Path | None = None
+        try:
+            connection = connect_sqlite(self.config.db_path)
+            try:
+                validated, byte_size = _build_verified_pack_snapshot(
+                    connection,
+                    self.config,
+                    release_id=release_id,
+                    filename=filename,
+                    expected_hash=expected_hash,
+                )
+            finally:
+                connection.close()
+            with tempfile.NamedTemporaryFile(
+                mode="w+b", prefix="pack-", suffix=".snapshot", dir=self._cache_dir,
+                delete=False,
+            ) as cached:
+                cache_path = Path(cached.name)
+                validated.seek(0)
+                shutil.copyfileobj(validated, cached, _PACK_COPY_CHUNK_BYTES)
+                cached.flush()
+                os.fsync(cached.fileno())
+            entry = _CachedPack(source_identity, cache_path, byte_size)
+            with self._lock:
+                if self._closed:
+                    raise AttemptProblem("content_not_ready", "Assessment content is not ready.")
+                self._entries[key] = entry
+                cache_path = None
+                return self._open(entry)
+        finally:
+            if validated is not None:
+                validated.close()
+            if cache_path is not None:
+                cache_path.unlink(missing_ok=True)
+            with self._lock:
+                event = self._inflight.pop(key, None)
+                if event is not None:
+                    event.set()
+
+    def close(self) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            paths = [entry.snapshot_path for entry in self._entries.values()]
+            self._entries.clear()
+        for path in paths:
+            path.unlink(missing_ok=True)
+        try:
+            self._cache_dir.rmdir()
+        except OSError:
+            pass
+
+    def warm(self) -> int:
+        connection = connect_sqlite(self.config.db_path)
+        try:
+            rows = connection.execute(
+                """SELECT release_id, content_pack_filename, content_hash
+                   FROM assessment_releases WHERE state IN ('prepared', 'launched')
+                   ORDER BY release_id"""
+            ).fetchall()
+        finally:
+            connection.close()
+        for row in rows:
+            snapshot, _size = self.snapshot(
+                release_id=row["release_id"],
+                filename=row["content_pack_filename"],
+                expected_hash=row["content_hash"],
+            )
+            snapshot.close()
+        return len(rows)
+
+
+_PACK_REGISTRY_CREATION_LOCK = threading.Lock()
+
+
+def _pack_registry(config: CoordinatorConfig) -> PackArtifactRegistry:
+    registry = getattr(config, "pack_registry", None)
+    if isinstance(registry, PackArtifactRegistry):
+        return registry
+    with _PACK_REGISTRY_CREATION_LOCK:
+        registry = getattr(config, "pack_registry", None)
+        if not isinstance(registry, PackArtifactRegistry):
+            registry = PackArtifactRegistry(config)
+            config.pack_registry = registry
+        return registry
+
+
+def warm_pack_registry(config: CoordinatorConfig) -> int:
+    return _pack_registry(config).warm()
+
+
+def close_pack_registry(config: CoordinatorConfig) -> None:
+    registry = getattr(config, "pack_registry", None)
+    if isinstance(registry, PackArtifactRegistry):
+        registry.close()
+        config.pack_registry = None
+
+
+def _verified_pack_snapshot(
+    connection,
+    config: CoordinatorConfig,
+    *,
+    release_id: str,
+    filename: str,
+    expected_hash: str,
+) -> tuple[BinaryIO, int]:
+    del connection
+    return _pack_registry(config).snapshot(
+        release_id=release_id,
+        filename=filename,
+        expected_hash=expected_hash,
+    )
 
 
 async def _stream_pack_snapshot(snapshot: BinaryIO) -> AsyncIterator[bytes]:
@@ -281,14 +474,14 @@ def _assert_encrypted_pack_ready(connection, config: CoordinatorConfig, release_
     ).fetchone()
     if row is None or row["state"] not in {"prepared", "launched"}:
         raise AttemptProblem("content_not_ready", "Assessment content is not ready.")
-    path = _pack_path(config, row["content_pack_filename"])
-    try:
-        with path.open("rb") as pack_file:
-            actual_hash = hashlib.file_digest(pack_file, "sha256").hexdigest()
-    except OSError as error:
-        raise AttemptProblem("content_not_ready", "Assessment content is not ready.") from error
-    if actual_hash != row["content_hash"]:
-        raise AttemptProblem("content_not_ready", "Assessment content is not ready.")
+    snapshot, _byte_size = _verified_pack_snapshot(
+        connection,
+        config,
+        release_id=release_id,
+        filename=row["content_pack_filename"],
+        expected_hash=row["content_hash"],
+    )
+    snapshot.close()
 
 
 @router.post("/devices/enroll", response_model=DeviceEnrollmentReceipt)
@@ -371,7 +564,8 @@ async def releases_catalog(request: Request) -> dict[str, Any]:
         await _verified_device(request, connection)
         items = list_prefetchable_releases(connection)
         for item in items:
-            snapshot, byte_size = _verified_pack_snapshot(
+            snapshot, byte_size = await run_in_threadpool(
+                _verified_pack_snapshot,
                 connection,
                 config,
                 release_id=item["release_id"],
@@ -413,7 +607,8 @@ async def release_pack(release_id: str, request: Request) -> Response:
         }
         if _etag_matches(request.headers.get("If-None-Match", ""), row["content_hash"]):
             return Response(status_code=304, headers=headers)
-        snapshot, byte_size = _verified_pack_snapshot(
+        snapshot, byte_size = await run_in_threadpool(
+            _verified_pack_snapshot,
             connection,
             config,
             release_id=release_id,
@@ -475,7 +670,9 @@ async def start_attempt(payload: AttemptStartRequest, request: Request) -> Attem
             (payload.release_id, student_id),
         ).fetchone()
         if existing_attempt is None:
-            _assert_encrypted_pack_ready(connection, config, payload.release_id)
+            await run_in_threadpool(
+                _assert_encrypted_pack_ready, connection, config, payload.release_id
+            )
         return issue_attempt_ticket(
             connection,
             release_id=payload.release_id,

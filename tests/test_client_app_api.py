@@ -962,6 +962,8 @@ class ClientOwnedLifecycleTests(unittest.TestCase):
 
     def test_production_factory_closes_transport_when_runtime_construction_fails(self):
         from client_app import _load_production_services
+        from ksat.client.identity import DeviceIdentity
+        from ksat.crypto import generate_ed25519_keypair
 
         with tempfile.TemporaryDirectory() as directory:
             program_data = Path(directory)
@@ -977,7 +979,10 @@ class ClientOwnedLifecycleTests(unittest.TestCase):
                 "trusted_ca_path": str(ca_path),
                 "coordinator_signing_public_key_b64": public_key,
             }), encoding="utf-8")
-            identity = SimpleNamespace(
+            device_private_key, device_public_key = generate_ed25519_keypair()
+            identity = DeviceIdentity(
+                private_key_b64=device_private_key,
+                public_key_b64=device_public_key,
                 device_id="44444444-4444-4444-8444-444444444444",
                 coordinator_public_key_b64=public_key,
             )
@@ -1487,6 +1492,32 @@ class ClientControlLifecycleTests(unittest.TestCase):
             time.sleep(0.05)
             self.assertEqual(calls_after_seal, len(coordinator.calls))
             self.assertIsNone(context._control_thread)
+            context.shutdown()
+
+    def test_answer_observations_do_not_accelerate_control_poll_schedule(self):
+        from client_app import ClientServices, create_client_app
+
+        polled = threading.Event()
+        coordinator = FakeCoordinator()
+
+        def deadline_update(_attempt_id):
+            coordinator.calls.append(("deadline-update", ATTEMPT_ID))
+            polled.set()
+            return None
+
+        coordinator.deadline_update = deadline_update
+        store = FakeStore(FakeSnapshot())
+        services = ClientServices(
+            FakeIdentityStore(), store, FakeRuntime(store), coordinator, FakeOutbox()
+        )
+        context = create_client_app(services).state.client_context
+        with patch("client_app.random.uniform", return_value=0.2):
+            context.initialize()
+            for _ in range(20):
+                context.observe_snapshot(store.snapshot)
+                time.sleep(0.002)
+            self.assertFalse(polled.wait(0.05))
+            self.assertTrue(polled.wait(0.3))
             context.shutdown()
 
     def test_blocked_control_request_never_closes_resources_until_it_quiesces(self):

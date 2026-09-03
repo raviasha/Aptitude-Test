@@ -17,9 +17,17 @@ import time
 import urllib.error
 import urllib.request
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable, Sequence
+from urllib.parse import urlsplit
+
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives.serialization import pkcs12
+from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
 
 APP_VERSION = "2.0.0"
@@ -41,6 +49,257 @@ _FORBIDDEN_PRIVATE_MARKERS = (
     b"-----BEGIN RSA PRIVATE KEY-----",
 )
 _CLIENT_STATIC_DEPLOYMENT_MARKERS = ("http://", "https://", "coordinator_base_url")
+_TEST_SIGNING_SUBJECT = "CN=KSAT TEST SIGNING IDENTITY - NOT FOR PRODUCTION"
+
+
+class SigningConfigurationError(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True)
+class ReleaseSigningConfig:
+    pfx_path: Path
+    password: str = field(repr=False)
+    expected_publisher: str
+    expected_thumbprint: str
+    timestamp_url: str | None
+    test_identity: bool = False
+
+    def __post_init__(self) -> None:
+        path = Path(self.pfx_path).resolve()
+        object.__setattr__(self, "pfx_path", path)
+        if not path.is_file() or not self.password:
+            raise SigningConfigurationError("A readable signing identity and secret are required.")
+        if not self.expected_publisher or not self.expected_thumbprint:
+            raise SigningConfigurationError("The signing publisher identity must be pinned.")
+        if self.test_identity:
+            if self.timestamp_url is not None or self.expected_publisher != _TEST_SIGNING_SUBJECT:
+                raise SigningConfigurationError("The nonproduction signing identity is invalid.")
+        else:
+            try:
+                parsed = urlsplit(self.timestamp_url or "")
+            except ValueError as error:
+                raise SigningConfigurationError("An HTTPS timestamp service is required.") from error
+            if (
+                parsed.scheme != "https"
+                or not parsed.hostname
+                or parsed.username is not None
+                or parsed.password is not None
+            ):
+                raise SigningConfigurationError("An HTTPS timestamp service is required.")
+
+
+def _certificate_identity(pfx_path: Path, password: str) -> tuple[str, str]:
+    try:
+        _key, certificate, _chain = pkcs12.load_key_and_certificates(
+            Path(pfx_path).read_bytes(), password.encode("utf-8")
+        )
+    except (OSError, ValueError) as error:
+        raise SigningConfigurationError("The signing identity could not be loaded.") from error
+    if certificate is None:
+        raise SigningConfigurationError("The signing identity contains no certificate.")
+    return (
+        certificate.subject.rfc4514_string(),
+        certificate.fingerprint(hashes.SHA1()).hex().upper(),
+    )
+
+
+def production_signing_config(
+    *,
+    pfx_path: Path | None,
+    password_environment_name: str,
+    expected_publisher: str | None,
+    timestamp_url: str | None,
+    environ: dict[str, str] | os._Environ[str] | None = None,
+) -> ReleaseSigningConfig:
+    values = os.environ if environ is None else environ
+    password = values.get(password_environment_name) if password_environment_name else None
+    if pfx_path is None or not password or not expected_publisher or not timestamp_url:
+        raise SigningConfigurationError(
+            "Production signing requires PFX, password environment variable, publisher, and timestamp URL."
+        )
+    subject, thumbprint = _certificate_identity(pfx_path, password)
+    if subject != expected_publisher:
+        raise SigningConfigurationError("The signing certificate publisher does not match the pin.")
+    return ReleaseSigningConfig(
+        pfx_path=Path(pfx_path),
+        password=password,
+        expected_publisher=expected_publisher,
+        expected_thumbprint=thumbprint,
+        timestamp_url=timestamp_url,
+    )
+
+
+def create_ephemeral_test_signing_config(
+    directory: Path,
+    *,
+    environ: dict[str, str] | os._Environ[str] | None = None,
+) -> ReleaseSigningConfig:
+    values = os.environ if environ is None else environ
+    if values.get("KSAT_RELEASE_TEST_SIGNING") != "1":
+        raise SigningConfigurationError(
+            "Ephemeral signing requires KSAT_RELEASE_TEST_SIGNING=1 and is never production-ready."
+        )
+    directory = Path(directory).resolve()
+    directory.mkdir(parents=True, exist_ok=True)
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    subject = x509.Name(
+        [x509.NameAttribute(NameOID.COMMON_NAME, "KSAT TEST SIGNING IDENTITY - NOT FOR PRODUCTION")]
+    )
+    now = datetime.now(timezone.utc)
+    certificate = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(subject)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(minutes=5))
+        .not_valid_after(now + timedelta(days=2))
+        .add_extension(
+            x509.KeyUsage(
+                digital_signature=True,
+                content_commitment=False,
+                key_encipherment=False,
+                data_encipherment=False,
+                key_agreement=False,
+                key_cert_sign=False,
+                crl_sign=False,
+                encipher_only=None,
+                decipher_only=None,
+            ),
+            critical=True,
+        )
+        .add_extension(
+            x509.ExtendedKeyUsage([ExtendedKeyUsageOID.CODE_SIGNING]), critical=False
+        )
+        .sign(key, hashes.SHA256())
+    )
+    password = hashlib.sha256(os.urandom(64)).hexdigest()
+    pfx_path = directory / "ksat-ephemeral-test-signing.pfx"
+    pfx_path.write_bytes(
+        pkcs12.serialize_key_and_certificates(
+            b"KSAT ephemeral test signing",
+            key,
+            certificate,
+            None,
+            serialization.BestAvailableEncryption(password.encode("ascii")),
+        )
+    )
+    return ReleaseSigningConfig(
+        pfx_path=pfx_path,
+        password=password,
+        expected_publisher=_TEST_SIGNING_SUBJECT,
+        expected_thumbprint=certificate.fingerprint(hashes.SHA1()).hex().upper(),
+        timestamp_url=None,
+        test_identity=True,
+    )
+
+
+def _require_signing(config: ReleaseSigningConfig | None) -> ReleaseSigningConfig:
+    if not isinstance(config, ReleaseSigningConfig):
+        raise SigningConfigurationError("Release artifact signing is required and cannot be skipped.")
+    return config
+
+
+def _run_signing_powershell(script: str, environment: dict[str, str]) -> dict[str, object]:
+    powershell = shutil.which("powershell.exe") or str(
+        Path(os.environ.get("SystemRoot", r"C:\Windows"))
+        / "System32"
+        / "WindowsPowerShell"
+        / "v1.0"
+        / "powershell.exe"
+    )
+    try:
+        completed = subprocess.run(
+            [powershell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=environment,
+        )
+    except subprocess.CalledProcessError as error:
+        detail = (error.stderr or error.stdout or "unknown PowerShell failure").strip()
+        raise ValueError(f"Authenticode signing command failed: {detail[-1200:]}") from error
+    try:
+        value = json.loads(completed.stdout)
+    except (TypeError, ValueError, json.JSONDecodeError) as error:
+        raise ValueError("Authenticode signing returned invalid verification evidence.") from error
+    if not isinstance(value, dict):
+        raise ValueError("Authenticode signing returned invalid verification evidence.")
+    return value
+
+
+_SIGN_SCRIPT = r"""
+$ErrorActionPreference='Stop'
+$secret=New-Object System.Security.SecureString
+$env:KSAT_RELEASE_SIGNING_SECRET.ToCharArray()|ForEach-Object{$secret.AppendChar($_)}
+$secret.MakeReadOnly()
+$flags=[System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::EphemeralKeySet
+$cert=New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($env:KSAT_RELEASE_SIGNING_PFX,$secret,$flags)
+$parameters=@{FilePath=$env:KSAT_RELEASE_SIGNING_FILE;Certificate=$cert;HashAlgorithm='SHA256'}
+if($env:KSAT_RELEASE_TIMESTAMP_URL){$parameters.TimestampServer=$env:KSAT_RELEASE_TIMESTAMP_URL}
+$signature=Set-AuthenticodeSignature @parameters
+@{status=$signature.Status.ToString();status_message=$signature.StatusMessage}|ConvertTo-Json -Compress
+"""
+
+_VERIFY_SCRIPT = r"""
+$ErrorActionPreference='Stop'
+$signature=Get-AuthenticodeSignature -FilePath $env:KSAT_RELEASE_SIGNING_FILE
+@{
+ status=$signature.Status.ToString();
+ signer_subject=if($signature.SignerCertificate){$signature.SignerCertificate.Subject}else{$null};
+ signer_thumbprint=if($signature.SignerCertificate){$signature.SignerCertificate.Thumbprint}else{$null};
+ timestamp_thumbprint=if($signature.TimeStamperCertificate){$signature.TimeStamperCertificate.Thumbprint}else{$null}
+}|ConvertTo-Json -Compress
+"""
+
+
+def _signing_environment(path: Path, config: ReleaseSigningConfig) -> dict[str, str]:
+    environment = os.environ.copy()
+    system_root = Path(environment.get("SystemRoot", r"C:\Windows"))
+    environment.update(
+        {
+            "KSAT_RELEASE_SIGNING_FILE": str(Path(path).resolve()),
+            "KSAT_RELEASE_SIGNING_PFX": str(config.pfx_path),
+            "KSAT_RELEASE_SIGNING_SECRET": config.password,
+            "KSAT_RELEASE_TIMESTAMP_URL": config.timestamp_url or "",
+            # Do not allow a user/bundled module to shadow the Windows security module.
+            "PSModulePath": str(
+                system_root / "System32" / "WindowsPowerShell" / "v1.0" / "Modules"
+            ),
+        }
+    )
+    return environment
+
+
+def verify_authenticode_signature(path: Path, config: ReleaseSigningConfig) -> dict[str, object]:
+    config = _require_signing(config)
+    path = Path(path).resolve()
+    if not path.is_file():
+        raise FileNotFoundError(path)
+    evidence = _run_signing_powershell(_VERIFY_SCRIPT, _signing_environment(path, config))
+    accepted_statuses = {"Valid", "UnknownError", "NotTrusted"} if config.test_identity else {"Valid"}
+    if (
+        evidence.get("status") not in accepted_statuses
+        or evidence.get("signer_subject") != config.expected_publisher
+        or str(evidence.get("signer_thumbprint") or "").upper()
+        != config.expected_thumbprint
+        or not config.test_identity
+        and not evidence.get("timestamp_thumbprint")
+    ):
+        raise ValueError(f"Authenticode signature verification failed: {path.name}")
+    return evidence
+
+
+def sign_and_verify_artifact(path: Path, config: ReleaseSigningConfig) -> dict[str, object]:
+    config = _require_signing(config)
+    path = Path(path).resolve()
+    if not path.is_file() or path.stat().st_size <= 0:
+        raise FileNotFoundError(path)
+    result = _run_signing_powershell(_SIGN_SCRIPT, _signing_environment(path, config))
+    if result.get("status") in {"NotSigned", "HashMismatch"}:
+        raise ValueError(f"Authenticode signing failed: {path.name}")
+    return verify_authenticode_signature(path, config)
 
 
 @dataclass(frozen=True)
@@ -259,7 +518,28 @@ def _safe_remove_tree(path: Path, root: Path) -> None:
         shutil.rmtree(resolved)
 
 
-def build_executables(root: Path, python: Path) -> ReleaseLayout:
+def publish_signed_executables(
+    layout: ReleaseLayout,
+    signing: ReleaseSigningConfig,
+    *,
+    signer=sign_and_verify_artifact,
+) -> None:
+    signing = _require_signing(signing)
+    for executable in (layout.coordinator_executable, layout.client_executable):
+        if not executable.is_file() or executable.stat().st_size <= 0:
+            raise RuntimeError(f"Expected executable was not built: {executable}")
+        signer(executable, signing)
+    layout.release_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(layout.coordinator_executable, layout.coordinator_release_executable)
+    shutil.copy2(layout.client_executable, layout.client_release_executable)
+
+
+def build_executables(
+    root: Path,
+    python: Path,
+    signing: ReleaseSigningConfig | None = None,
+) -> ReleaseLayout:
+    signing = _require_signing(signing)
     layout = ReleaseLayout(root)
     inspect_release_inputs(layout.root)
     layout.dist_dir.mkdir(parents=True, exist_ok=True)
@@ -274,12 +554,7 @@ def build_executables(root: Path, python: Path) -> ReleaseLayout:
     write_version_resources(layout)
     for command in build_commands(layout.root, python):
         subprocess.run(command, cwd=layout.root, check=True)
-    for executable in (layout.coordinator_executable, layout.client_executable):
-        if not executable.is_file() or executable.stat().st_size <= 0:
-            raise RuntimeError(f"Expected executable was not built: {executable}")
-    layout.release_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(layout.coordinator_executable, layout.coordinator_release_executable)
-    shutil.copy2(layout.client_executable, layout.client_release_executable)
+    publish_signed_executables(layout, signing)
     return layout
 
 
@@ -313,7 +588,12 @@ def discover_innoextract() -> Path | None:
     return None
 
 
-def compile_installers(root: Path, iscc: Path) -> ReleaseLayout:
+def compile_installers(
+    root: Path,
+    iscc: Path,
+    signing: ReleaseSigningConfig | None = None,
+) -> ReleaseLayout:
+    signing = _require_signing(signing)
     layout = ReleaseLayout(root)
     layout.release_dir.mkdir(parents=True, exist_ok=True)
     for path in (layout.coordinator_installer, layout.client_installer):
@@ -329,6 +609,7 @@ def compile_installers(root: Path, iscc: Path) -> ReleaseLayout:
     for path in (layout.coordinator_installer, layout.client_installer):
         if not path.is_file() or path.stat().st_size <= 0:
             raise RuntimeError(f"Expected installer was not built: {path}")
+        sign_and_verify_artifact(path, signing)
     return layout
 
 
@@ -390,11 +671,17 @@ def _assert_loopback_listener(process: subprocess.Popen, port: int) -> None:
         raise RuntimeError("The lab client did not bind exclusively to IPv4 loopback.")
 
 
-def smoke_executables(root: Path, python: Path) -> dict[str, object]:
+def smoke_executables(
+    root: Path,
+    python: Path,
+    signing: ReleaseSigningConfig | None = None,
+) -> dict[str, object]:
+    signing = _require_signing(signing)
     layout = ReleaseLayout(root)
     for path in (layout.coordinator_executable, layout.client_executable):
         if not path.is_file():
             raise FileNotFoundError(path)
+        verify_authenticode_signature(path, signing)
     write_version_resources(layout)
     with tempfile.TemporaryDirectory(prefix="ksat-release-smoke-") as directory:
         temporary = Path(directory)
@@ -476,7 +763,7 @@ def smoke_executables(root: Path, python: Path) -> dict[str, object]:
                 }
             )
             client = subprocess.Popen(
-                [str(layout.client_executable)],
+                [str(layout.client_executable), "--service-console"],
                 cwd=layout.root,
                 env=client_environment,
                 stdout=subprocess.PIPE,
@@ -639,8 +926,12 @@ def _inspect_installer(
 
 
 def inspect_artifacts(
-    root: Path, python: Path, innoextract: Path | None = None
+    root: Path,
+    python: Path,
+    innoextract: Path | None = None,
+    signing: ReleaseSigningConfig | None = None,
 ) -> dict[str, int]:
+    signing = _require_signing(signing)
     layout = ReleaseLayout(root)
     artifacts = [
         layout.coordinator_executable,
@@ -652,6 +943,7 @@ def inspect_artifacts(
     ]
     sizes: dict[str, int] = {}
     for path in artifacts:
+        verify_authenticode_signature(path, signing)
         raw = path.read_bytes()
         if not raw.startswith(b"MZ"):
             raise ValueError(f"Artifact is not a Windows executable: {path.name}")
@@ -685,7 +977,17 @@ def write_sha256s(paths: Iterable[Path], destination: Path) -> Path:
     return destination
 
 
-def create_hash_manifest(layout: ReleaseLayout) -> Path:
+def create_hash_manifest(
+    layout: ReleaseLayout, signing: ReleaseSigningConfig | None = None
+) -> Path:
+    signing = _require_signing(signing)
+    for artifact in (
+        layout.coordinator_release_executable,
+        layout.client_release_executable,
+        layout.coordinator_installer,
+        layout.client_installer,
+    ):
+        verify_authenticode_signature(artifact, signing)
     return write_sha256s(
         [
             layout.coordinator_release_executable,
@@ -707,28 +1009,60 @@ def _parse(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument("--python", type=Path, default=Path(sys.executable))
     parser.add_argument("--iscc", type=Path)
     parser.add_argument("--innoextract", type=Path)
+    parser.add_argument("--signing-pfx", type=Path)
+    parser.add_argument("--signing-password-env", default="KSAT_SIGNING_PFX_PASSWORD")
+    parser.add_argument("--signing-publisher")
+    parser.add_argument("--timestamp-url")
+    parser.add_argument("--test-signing", action="store_true")
     return parser.parse_args(argv)
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    arguments = _parse(argv)
+def _run_release_command(arguments: argparse.Namespace, signing: ReleaseSigningConfig) -> int:
     layout = ReleaseLayout(arguments.root)
     if arguments.command in {"build-executables", "all"}:
-        layout = build_executables(layout.root, arguments.python)
+        layout = build_executables(layout.root, arguments.python, signing)
     if arguments.command in {"smoke", "all"}:
-        evidence = smoke_executables(layout.root, arguments.python)
+        evidence = smoke_executables(layout.root, arguments.python, signing)
         print(json.dumps(evidence, sort_keys=True))
     if arguments.command in {"compile-installers", "all"}:
         iscc = arguments.iscc or discover_iscc()
         if iscc is None:
             raise RuntimeError("Inno Setup compiler ISCC.exe was not found.")
-        compile_installers(layout.root, iscc)
+        compile_installers(layout.root, iscc, signing)
     if arguments.command in {"inspect", "all"}:
-        sizes = inspect_artifacts(layout.root, arguments.python, arguments.innoextract)
+        sizes = inspect_artifacts(
+            layout.root, arguments.python, arguments.innoextract, signing
+        )
         print(json.dumps(sizes, sort_keys=True))
     if arguments.command in {"hashes", "all"}:
-        print(create_hash_manifest(layout))
+        print(create_hash_manifest(layout, signing))
     return 0
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    arguments = _parse(argv)
+    if arguments.test_signing:
+        if any(
+            value is not None
+            for value in (
+                arguments.signing_pfx,
+                arguments.signing_publisher,
+                arguments.timestamp_url,
+            )
+        ):
+            raise SigningConfigurationError(
+                "Test signing cannot be combined with a production signing identity."
+            )
+        with tempfile.TemporaryDirectory(prefix="ksat-test-signing-") as directory:
+            signing = create_ephemeral_test_signing_config(Path(directory))
+            return _run_release_command(arguments, signing)
+    signing = production_signing_config(
+        pfx_path=arguments.signing_pfx,
+        password_environment_name=arguments.signing_password_env,
+        expected_publisher=arguments.signing_publisher,
+        timestamp_url=arguments.timestamp_url,
+    )
+    return _run_release_command(arguments, signing)
 
 
 if __name__ == "__main__":

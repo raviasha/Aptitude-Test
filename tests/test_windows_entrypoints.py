@@ -362,8 +362,14 @@ class WindowsEntrypointTests(unittest.TestCase):
             try:
                 with patch.object(faculty_app, "DATA_DIR", data_dir), patch.object(
                     faculty_app, "ensure_schema"
+                ), patch.object(
+                    faculty_app, "recover_artifact_quarantine"
                 ), patch.object(faculty_app, "seed_data"), patch.object(
                     faculty_app, "copy_starter_question_files"
+                ), patch.object(
+                    faculty_app, "warm_pack_registry"
+                ), patch.object(
+                    faculty_app, "close_pack_registry"
                 ):
                     faculty_app.startup()
                     faculty_app.shutdown_submission_writer()
@@ -384,6 +390,46 @@ class WindowsEntrypointTests(unittest.TestCase):
             production_bind({"KSAT_CLIENT_PORT": "49123"})
         with self.assertRaises(ValueError):
             production_bind({"KSAT_SMOKE_TEST": "1", "KSAT_CLIENT_HOST": "0.0.0.0"}),
+
+    def test_client_service_mode_dispatches_stateful_server_to_windows_scm(self):
+        dispatches = []
+        uvicorn_runs = []
+        result = client_main(
+            ["--windows-service"],
+            environ={},
+            uvicorn_runner=lambda *_args, **_kwargs: uvicorn_runs.append(True),
+            windows_service_runner=lambda name, target: dispatches.append((name, target)),
+        )
+        self.assertEqual(0, result)
+        self.assertEqual("KSATLabClientAuthority", dispatches[0][0])
+        self.assertTrue(callable(dispatches[0][1]))
+        self.assertEqual([], uvicorn_runs)
+
+    def test_client_launcher_only_opens_fixed_loopback_service_url(self):
+        opened = []
+        uvicorn_runs = []
+        result = client_main(
+            ["--open-client"],
+            environ={},
+            browser_opener=lambda url: opened.append(url),
+            uvicorn_runner=lambda *_args, **_kwargs: uvicorn_runs.append(True),
+        )
+        self.assertEqual(0, result)
+        self.assertEqual(["http://127.0.0.1:8010/"], opened)
+        self.assertEqual([], uvicorn_runs)
+
+    def test_client_console_server_is_restricted_to_explicit_smoke_mode(self):
+        with self.assertRaisesRegex(PermissionError, "smoke"):
+            client_main(["--service-console"], environ={}, uvicorn_runner=lambda *_a, **_k: None)
+        runs = []
+        result = client_main(
+            ["--service-console"],
+            environ={"KSAT_SMOKE_TEST": "1", "KSAT_CLIENT_PORT": "49123"},
+            uvicorn_runner=lambda application, **kwargs: runs.append((application, kwargs)),
+        )
+        self.assertEqual(0, result)
+        self.assertEqual("127.0.0.1", runs[0][1]["host"])
+        self.assertEqual(49123, runs[0][1]["port"])
 
     def test_client_install_configuration_validates_and_persists_public_bundle(self):
         with tempfile.TemporaryDirectory() as directory:

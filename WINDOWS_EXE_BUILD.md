@@ -127,3 +127,7 @@ For rollback, stop the app, preserve the failed data tree for diagnosis, restore
 - **Upgrade concern:** restore/test a complete backup on a spare machine. Do not delete ProgramData or manually recreate keys.
 
 Build and smoke tests compile/inspect only. They do not execute `certutil`, create firewall rules, run installers, or alter the development host trust store.
+
+The exact installation, enrollment, monitoring, outage, backup/restore, upgrade,
+30/100-client load-gate, and diagnostic procedures are in the
+[distributed-assessment operations runbook](docs/distributed-assessment-operations.md).

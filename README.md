@@ -1,6 +1,11 @@
-# Aptitude Lab — Server Installation
+# Aptitude Lab / KSAT 2.0
 
-The Windows installer installs a single server executable, creates a Desktop shortcut, and opens the application at `http://localhost:8000`. Student computers use `http://<SERVER-LAN-IP>:8000`.
+KSAT 2.0 ships separate Windows installers for the HTTPS faculty coordinator and
+the loopback-only lab client. See the
+[distributed-assessment operations runbook](docs/distributed-assessment-operations.md)
+for installation, enrollment, launch, outage recovery, backup, load validation,
+and diagnostics. The legacy central-browser workflow remains available for
+personal practice and historical data.
 
 ## Question-bank formats
 
@@ -78,14 +83,16 @@ lock), after which the student can register that USN again.
 ## Build the Windows installer
 
 Run [`build-windows.bat`](build-windows.bat) on a Windows computer with Python
-3.10+ and Inno Setup 6 installed. The build explicitly packages only the sample
-pair from `templates`; files in `question-banks` remain separate. It produces:
+3.10+, Node.js, Inno Setup 6.7.3, and `innoextract`. The fail-fast build produces:
 
 ```text
-release\Aptitude-Lab-Setup.exe
+release\KSATCoordinatorSetup-2.0.0.exe
+release\KSATClientSetup-2.0.0.exe
 ```
 
-Install that file on the designated lab server. The installer adds a private-network Windows Firewall rule for port 8000 and places the Desktop shortcut.
+Detailed build, smoke, recursive payload-scan, and hash verification steps are in
+[`WINDOWS_EXE_BUILD.md`](WINDOWS_EXE_BUILD.md). Physical installation and trust
+store/firewall changes require separate institutional authorization.
 
 ## Demo accounts
 
@@ -132,3 +139,7 @@ release change. Re-running the command is safe: it preserves existing students,
 questions, practice/history, attempts, responses, scores, and violations, and
 prepares only eligible unlaunched faculty tests that have no historical
 submission or release.
+
+Run the 30-client, 100-client, and outage release gates and follow the complete
+[operator runbook](docs/distributed-assessment-operations.md) before deploying
+to lab computers.

@@ -428,7 +428,10 @@ def validate_and_score(
         attempt_id=ticket.attempt_id,
         student_id=ticket.student_id,
         release_id=ticket.release_id,
-        sealed_at=sealed_at.isoformat(timespec="seconds"),
+        # Preserve the signed client instant exactly.  A recovered client can
+        # conservatively round its remaining time down, making this trusted seal
+        # instant slightly ahead of the coordinator's wall clock.
+        sealed_at=sealed_at.isoformat(),
         bundle_hash=sha256_hex(bundle_json.encode("utf-8")),
         bundle_json=bundle_json,
         responses=tuple(scored_rows),
@@ -711,7 +714,10 @@ class SubmissionWriter:
                 for event in scored.violations
             ],
         )
-        accepted_at = datetime.now(timezone.utc)
+        accepted_at = max(
+            datetime.now(timezone.utc),
+            datetime.fromisoformat(scored.sealed_at.replace("Z", "+00:00")),
+        )
         receipt = SubmissionReceipt(
             attempt_id=scored.attempt_id,
             accepted_at=accepted_at,

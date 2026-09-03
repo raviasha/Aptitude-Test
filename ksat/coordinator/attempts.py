@@ -247,7 +247,10 @@ def issue_attempt_ticket(
 ) -> AttemptStartResponse:
     """Atomically issue one immutable attempt ticket, or return its exact stored value."""
 
-    now_utc = _as_utc(now_utc)
+    # Ticket JSON and the legacy attempts columns must describe one exact instant.
+    # SQLite stores the latter at whole-second precision, so canonicalize before
+    # signing instead of losing microseconds only on the database side.
+    now_utc = _as_utc(now_utc).replace(microsecond=0)
     owns_transaction = not connection.in_transaction
     if owns_transaction:
         connection.execute("BEGIN IMMEDIATE")

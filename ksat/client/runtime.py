@@ -609,9 +609,18 @@ class AssessmentRuntime:
                     for item in questions_value
                 ]
                 canonical_questions = canonical_json(
+                    [
+                        item.model_dump(mode="json", exclude_none=True)
+                        for item in question_list
+                    ]
+                )
+                legacy_canonical_questions = canonical_json(
                     [item.model_dump(mode="json") for item in question_list]
                 )
-                if canonical_questions != questions_raw:
+                if questions_raw not in {
+                    canonical_questions,
+                    legacy_canonical_questions,
+                }:
                     raise ValueError("Assessment pack questions are not canonical.")
                 if names != ["manifest.json", "questions.json", *manifest.asset_names]:
                     raise ValueError("Assessment pack entries do not match its manifest.")

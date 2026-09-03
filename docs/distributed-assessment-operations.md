@@ -1,0 +1,213 @@
+# Distributed assessment operations runbook
+
+This runbook is for institution-managed Windows lab computers. The supported
+release is one **KSAT Faculty Coordinator** and at most 100 installed **KSAT Lab
+Clients** on the private institutional network. Students answer locally; the
+coordinator receives one sealed response bundle and returns the authoritative
+score.
+
+## Change control and prerequisites
+
+Schedule the rollout outside an assessment window. Record the four release-file
+SHA-256 hashes, coordinator DNS name, HTTPS port, backup location, lab Windows
+account, and change ticket. Use a stable DNS name; do not configure clients with
+an IP address that may change. Physical installer execution, Windows Firewall
+changes, and machine-root CA installation require explicit institutional
+authorization.
+
+Build and inspect the release as documented in
+[`WINDOWS_EXE_BUILD.md`](../WINDOWS_EXE_BUILD.md). Do not continue unless the
+full test suite, executable smoke, recursive PyInstaller/Inno extraction scan,
+30-client gate, 100-client gate, and outage gate all pass.
+
+## Install and initialize the coordinator
+
+1. On the authorized faculty/server computer, verify the installer hash against
+   `release\SHA256SUMS.txt`.
+2. Run `KSATCoordinatorSetup-2.0.0.exe` as Administrator. Enter the stable DNS
+   hostname and approved private-network TCP port (normally 8443).
+3. Start the coordinator and browse locally to `https://127.0.0.1:8443`.
+4. Confirm `C:\ProgramData\KSAT Coordinator\public` contains
+   `coordinator-ca.pem` and `coordinator-public.json`.
+5. Copy only those two public files to approved removable media or a protected
+   software-distribution share. Never distribute `secrets`, `aptitude.db`,
+   enrollment codes, session tokens, or assessment packs.
+6. Verify the installer-owned inbound firewall rule is private-profile only,
+   names the installed coordinator executable, and matches the chosen port.
+
+The coordinator must be backed up before clients are enrolled. See “Backup and
+restore” below.
+
+## Install and enroll each lab client
+
+1. Verify `KSATClientSetup-2.0.0.exe`, `coordinator-ca.pem`, and
+   `coordinator-public.json` hashes through the approved channel.
+2. Run the client installer as Administrator and supply the coordinator HTTPS
+   URL, both public files, and the exact student lab Windows account.
+3. Confirm the client opens only `http://127.0.0.1:8010`; it must create no
+   inbound firewall rule.
+4. In Faculty **Devices**, rotate the one-time enrollment code. Treat the
+   successful response as a secret and do not capture it in screenshots or
+   logs.
+5. At each client, enroll the named machine once. Confirm it appears as active
+   in Faculty **Devices**, then rotate the enrollment code again after the
+   batch is complete.
+
+To revoke a lost or reimaged machine, use Faculty **Devices → Revoke**, record a
+reason, and verify subsequent signed requests fail. Reactivate only after the
+machine identity and custody have been checked. A reimaged machine should
+normally receive a new enrollment identity.
+
+## Prepare and launch an assessment
+
+1. Import and validate the question bank. Correct answers and solutions remain
+   coordinator-side.
+2. Create the faculty assessment. Review question count, duration (one minute
+   per question), and immutable release status.
+3. Allow clients to prefetch the single shared encrypted pack before students
+   begin. A prepared pack is reusable by all enrolled clients but contains no
+   answer metadata.
+4. Select **Launch** once. The launch creates a 10-minute start window. Each
+   student receives the same question identifiers in a deterministic per-ticket
+   question order; options are not shuffled. Each student’s timer begins when
+   that student’s ticket is issued.
+5. Monitor eligible, started, submitted, voided, queued, and intervention
+   counts. Do not duplicate/relaunch a release after any ticket has been issued;
+   use **Duplicate** to create a new immutable release.
+
+Answer selection, navigation, autosave, integrity events, and timer updates are
+local and must remain responsive during a coordinator outage. A student can
+resume only on the same computer and keeps the original deadline.
+
+## Submission queues and outage recovery
+
+After submit or expiry, the client must show `sealed_pending` and “answers are
+safe.” The sealed attempt is no longer editable. The outbox retries with the
+same idempotency identity until the coordinator acknowledges it; a lost HTTP
+acknowledgment is safe because replay returns the same receipt.
+
+If the coordinator fails:
+
+1. Do not delete client state, cached packs, or ProgramData.
+2. Confirm affected clients show `sealed_pending` rather than an editable
+   attempt.
+3. Restore the coordinator service using the same database, secrets, releases,
+   and hostname certificate.
+4. Leave clients running or restart them normally. Outboxes drain
+   automatically.
+5. Confirm the faculty queue returns to zero and each client displays the score
+   only after acknowledgment.
+6. If a client shows Faculty intervention, collect the diagnostic reference and
+   logs; do not edit SQLite by hand.
+
+## Machine failure, void, and one replacement attempt
+
+If the original lab computer is unusable, Faculty opens the exact attempt,
+selects **Void**, supplies a bounded reason, and explicitly authorizes one
+retake. Accepted submissions require a second explicit confirmation because
+evidence already exists. The audit event records the faculty actor, reason,
+attempt, and authorization. The next start consumes the one replacement
+authorization atomically. Do not move an in-progress local database to another
+computer.
+
+## Backup and restore
+
+Stop the coordinator and copy the entire
+`C:\ProgramData\KSAT Coordinator` tree to protected offline storage. Include the
+database, WAL state after a clean stop, releases, question assets, runtime
+configuration, public export, protocol signing key, pack key, local CA/server
+certificate, browser/session secrets, and enrollment authority. Restrict the
+backup to the same administrators who can operate the coordinator. Never back
+up only `aptitude.db` or restore it with keys from another date.
+
+For restore, keep the failed tree for diagnosis, restore one complete matching
+backup while stopped, validate `PRAGMA integrity_check`, validate the saved
+runtime configuration, start on the same hostname/port, and verify the public
+CA/signing fingerprint before reopening the lab. Test restore regularly on an
+authorized disposable machine.
+
+## Certificate, key, and enrollment-code operations
+
+Back up before renewal. Stop the coordinator and run the documented
+`--renew-certificate --confirm-renewal` command as Administrator. Renewal keeps
+the local CA and protocol signing key and replaces only the hostname server
+key/certificate. A deliberate CA replacement is a trust migration: reinstall
+and validate the new public bundle on every client before service resumes.
+
+Rotate the enrollment code after every enrollment batch, any suspected
+disclosure, and personnel handoff. Rotation invalidates the prior authority but
+does not change enrolled device identities. Never rotate protocol signing or
+pack keys independently of a complete controlled backup/restore plan.
+
+## Upgrade dry-run and historical preservation
+
+Close active assessments and stop the coordinator. Record row counts for
+`students`, `questions`, `tests`, `attempts`, `responses`, `exam_violations`,
+`devices`, `assessment_releases`, and `submissions`; record `PRAGMA
+integrity_check`. Run:
+
+```powershell
+python scripts/upgrade_distributed_assessments.py `
+  "C:\ProgramData\Aptitude Lab\aptitude.db" `
+  "C:\ProgramData\Aptitude Lab" --dry-run
+```
+
+This compatibility command targets the protected pre-2.0 data tree. Run it
+against a complete disposable copy first; after approval, move the upgraded
+data into the KSAT 2.0 coordinator root only through the documented controlled
+upgrade. The dry-run may create only the coordinator OS lock file; database, keys,
+packs, configuration, and backups must remain byte-identical. Review the report,
+take a complete backup, then remove `--dry-run`. Repeat the integrity check and
+all historical row counts. Stop and restore if any pre-existing row disappears
+or changes unexpectedly.
+
+## Reproducible load and outage gates
+
+Fixture creation is disabled unless `KSAT_LOAD_TEST=1`. The automated isolated
+gate starts a separate disposable loopback HTTPS coordinator, pins its generated
+CA from a file, and loads every simulated machine through the production client
+configuration/service factory. It uses production request signing/parsing,
+coordinator routes, SQLite/WAL, client loopback API/runtime/store/outbox, and the
+single submission writer; it never modifies a certificate store or firewall.
+
+```powershell
+$env:KSAT_LOAD_TEST = "1"
+python scripts/load_distributed_assessment.py --isolated --clients 30 `
+  --questions 100 --start-spread-seconds 30 --submission-spread-seconds 0 `
+  --report load-report-30.json
+python scripts/load_distributed_assessment.py --isolated --clients 100 `
+  --questions 100 --start-spread-seconds 30 --submission-spread-seconds 0 `
+  --report load-report-100.json
+python scripts/load_distributed_assessment.py --isolated --outage --clients 100 `
+  --questions 100 --start-spread-seconds 30 --submission-spread-seconds 0 `
+  --report load-report-outage-100.json
+Remove-Item Env:KSAT_LOAD_TEST
+```
+
+Every run uses a unique `LOAD-<uuid>` namespace and deletes only records proven
+reachable from that namespace in one final transaction. Accept only reports
+with 100 acknowledged authoritative results (or 30 for reproduction), zero
+missing attempts, duplicates, corruption/signature errors, and `database is
+locked` errors; local answer p99 must be below 100 ms and submission ack p95
+below 10 seconds; cleanup residual rows must be zero. Latency percentiles use
+the documented Hyndman-Fan type 7 linear-interpolation estimator (the default
+in R and NumPy), and every report retains its sample count and maximum so an
+outlier remains visible. Command-line gates always enforce both latency limits;
+only explicitly marked small in-process smoke tests may disable latency
+enforcement, while still reporting the measured threshold result and maximum.
+
+An authorized physical acceptance test remains separate: install both packages
+on disposable Windows machines, verify the machine-root CA and firewall effects,
+enroll one client, and repeat one coordinator outage/restart. Never describe the
+isolated gate as proof that those operating-system changes were performed.
+
+## Diagnostic collection
+
+Record the UTC time, coordinator version, client version, diagnostic reference,
+device label (not private key), assessment/release ID, attempt ID, and visible
+state. Collect Windows Event Viewer application entries, coordinator/client
+application logs, the load report, SQLite integrity result, disk-free space,
+DNS resolution, and TCP reachability. Redact passwords, enrollment codes,
+cookies, bearer/session tokens, private keys, response bundles, database rows,
+and question content before sharing. Preserve original files through the
+institution’s protected incident channel.

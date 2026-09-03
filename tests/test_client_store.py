@@ -9,6 +9,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 from ksat.client.store import AttemptSealedError, ClientStore
 from ksat.crypto import generate_ed25519_keypair, sign_json
@@ -1124,6 +1125,170 @@ class ClientStoreTests(unittest.TestCase):
         )
         connection.commit()
         connection.close()
+
+        with self.assertRaisesRegex(ValueError, "Authenticated client state is invalid"):
+            ClientStore(
+                self.database_path,
+                integrity_key=integrity_key,
+                integrity_anchor_path=anchor_path,
+            )
+
+    def test_authenticated_state_recovers_exactly_one_committed_entry_after_anchor_failure(self):
+        integrity_key, anchor_path = self._authenticated_store()
+
+        with patch.object(
+            self.store,
+            "_write_anchor",
+            side_effect=OSError("injected post-commit anchor failure"),
+        ):
+            with self.assertRaisesRegex(OSError, "injected post-commit"):
+                self.store.cache_pack(
+                    self.release_id,
+                    self.content_hash,
+                    self.pack_path,
+                    verified=True,
+                    cached_at=self.now,
+                )
+        self.store.close()
+
+        self.store = ClientStore(
+            self.database_path,
+            integrity_key=integrity_key,
+            integrity_anchor_path=anchor_path,
+        )
+        self.assertEqual(
+            self.pack_path.resolve(),
+            self.store.verified_pack(self.release_id, self.content_hash),
+        )
+        latest = self.store.connection.execute(
+            "SELECT sequence, state_digest, entry_mac FROM authenticated_state_journal "
+            "ORDER BY sequence DESC LIMIT 1"
+        ).fetchone()
+        self.assertEqual(
+            ClientStore._anchor_bytes(
+                latest["sequence"], latest["state_digest"], latest["entry_mac"]
+            ),
+            anchor_path.read_bytes(),
+        )
+
+    def test_authenticated_state_recovers_initial_anchor_creation_failure(self):
+        self.store.close()
+        self.database_path.unlink(missing_ok=True)
+        integrity_key = b"state-integrity-test-key-32byte!"[:32]
+        anchor_path = Path(self.temporary_directory.name) / "identity" / "initial-anchor.json"
+
+        with patch.object(
+            ClientStore,
+            "_write_anchor",
+            side_effect=OSError("injected initial anchor failure"),
+        ):
+            with self.assertRaisesRegex(OSError, "injected initial"):
+                ClientStore(
+                    self.database_path,
+                    integrity_key=integrity_key,
+                    integrity_anchor_path=anchor_path,
+                )
+
+        self.store = ClientStore(
+            self.database_path,
+            integrity_key=integrity_key,
+            integrity_anchor_path=anchor_path,
+        )
+        row = self.store.connection.execute(
+            "SELECT sequence, operation, previous_mac FROM authenticated_state_journal"
+        ).fetchone()
+        self.assertEqual((1, "initialize", "0" * 64), tuple(row))
+        self.assertTrue(anchor_path.is_file())
+
+    def test_authenticated_state_recovery_rejects_two_entry_gap(self):
+        integrity_key, anchor_path = self._authenticated_store()
+        with patch.object(
+            self.store,
+            "_write_anchor",
+            side_effect=OSError("injected post-commit anchor failure"),
+        ):
+            with self.assertRaises(OSError):
+                self.store.cache_pack(
+                    self.release_id,
+                    self.content_hash,
+                    self.pack_path,
+                    verified=True,
+                    cached_at=self.now,
+                )
+        self.store.connection.execute("BEGIN IMMEDIATE")
+        self.store._append_authenticated_entry(self.store.connection, "test-second-gap")
+        self.store.connection.commit()
+        self.store.close()
+
+        with self.assertRaisesRegex(ValueError, "Authenticated client state is invalid"):
+            ClientStore(
+                self.database_path,
+                integrity_key=integrity_key,
+                integrity_anchor_path=anchor_path,
+            )
+
+    def test_authenticated_state_recovery_rejects_forged_tail(self):
+        integrity_key, anchor_path = self._authenticated_store()
+        with patch.object(self.store, "_write_anchor", side_effect=OSError("injected")):
+            with self.assertRaises(OSError):
+                self.store.cache_pack(
+                    self.release_id,
+                    self.content_hash,
+                    self.pack_path,
+                    verified=True,
+                    cached_at=self.now,
+                )
+        self.store.connection.execute(
+            "UPDATE authenticated_state_journal SET entry_mac=? "
+            "WHERE sequence=(SELECT MAX(sequence) FROM authenticated_state_journal)",
+            ("f" * 64,),
+        )
+        self.store.connection.commit()
+        self.store.close()
+
+        with self.assertRaisesRegex(ValueError, "Authenticated client state is invalid"):
+            ClientStore(
+                self.database_path,
+                integrity_key=integrity_key,
+                integrity_anchor_path=anchor_path,
+            )
+
+    def test_authenticated_state_recovery_rejects_mismatched_current_digest(self):
+        integrity_key, anchor_path = self._authenticated_store()
+        with patch.object(self.store, "_write_anchor", side_effect=OSError("injected")):
+            with self.assertRaises(OSError):
+                self.store.cache_pack(
+                    self.release_id,
+                    self.content_hash,
+                    self.pack_path,
+                    verified=True,
+                    cached_at=self.now,
+                )
+        self.store.connection.execute(
+            "UPDATE cached_content_packs SET content_hash=? WHERE release_id=?",
+            ("b" * 64, self.release_id),
+        )
+        self.store.connection.commit()
+        self.store.close()
+
+        with self.assertRaisesRegex(ValueError, "Authenticated client state is invalid"):
+            ClientStore(
+                self.database_path,
+                integrity_key=integrity_key,
+                integrity_anchor_path=anchor_path,
+            )
+
+    def test_authenticated_state_recovery_rejects_missing_anchor_over_nonempty_state(self):
+        integrity_key, anchor_path = self._authenticated_store()
+        self.store.cache_pack(
+            self.release_id,
+            self.content_hash,
+            self.pack_path,
+            verified=True,
+            cached_at=self.now,
+        )
+        self.store.close()
+        anchor_path.unlink()
 
         with self.assertRaisesRegex(ValueError, "Authenticated client state is invalid"):
             ClientStore(

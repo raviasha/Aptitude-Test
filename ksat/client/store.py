@@ -88,6 +88,19 @@ class _ValidatedAttemptSnapshot:
     outbox_json: str | None
 
 
+@dataclass(frozen=True)
+class _ValidatedJournalEntry:
+    sequence: int
+    operation: str
+    previous_mac: str
+    state_digest: str
+    entry_mac: str
+
+    @property
+    def anchor(self) -> tuple[int, str, str]:
+        return self.sequence, self.state_digest, self.entry_mac
+
+
 def _aware(value: datetime, label: str = "Timestamp") -> datetime:
     if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None:
         raise ValueError(f"{label} must be timezone-aware.")
@@ -508,7 +521,7 @@ class ClientStore:
     def _validated_journal_row(
         self, row: sqlite3.Row, *, expected_sequence: int | None = None,
         expected_previous_mac: str | None = None,
-    ) -> tuple[int, str, str]:
+    ) -> _ValidatedJournalEntry:
         try:
             sequence = row["sequence"]
             operation = row["operation"]
@@ -538,36 +551,69 @@ class ClientStore:
         expected_mac = self._journal_mac(sequence, operation, previous_mac, state_digest)
         if not hmac.compare_digest(entry_mac, expected_mac):
             raise ValueError(_STATE_INTEGRITY_ERROR)
-        return sequence, state_digest, entry_mac
+        return _ValidatedJournalEntry(
+            sequence=sequence,
+            operation=operation,
+            previous_mac=previous_mac,
+            state_digest=state_digest,
+            entry_mac=entry_mac,
+        )
+
+    def _validated_journal_chain(
+        self, connection: sqlite3.Connection
+    ) -> tuple[_ValidatedJournalEntry, ...]:
+        rows = connection.execute(
+            """SELECT sequence, operation, previous_mac, state_digest, entry_mac
+               FROM authenticated_state_journal ORDER BY sequence"""
+        ).fetchall()
+        previous_mac = _ZERO_MAC
+        entries = []
+        for expected_sequence, row in enumerate(rows, start=1):
+            entry = self._validated_journal_row(
+                row,
+                expected_sequence=expected_sequence,
+                expected_previous_mac=previous_mac,
+            )
+            entries.append(entry)
+            previous_mac = entry.entry_mac
+        return tuple(entries)
 
     def _verify_current_authenticated_state(self, connection: sqlite3.Connection) -> None:
         latest = self._latest_journal(connection)
         if latest is None:
             raise ValueError(_STATE_INTEGRITY_ERROR)
-        sequence, state_digest, entry_mac = self._validated_journal_row(latest)
-        if not hmac.compare_digest(state_digest, self._state_digest(connection)):
+        entry = self._validated_journal_row(latest)
+        if not hmac.compare_digest(entry.state_digest, self._state_digest(connection)):
             raise ValueError(_STATE_INTEGRITY_ERROR)
         anchor_sequence, anchor_digest, anchor_mac = self._read_anchor()
         if (
-            anchor_sequence != sequence
-            or not hmac.compare_digest(anchor_digest, state_digest)
-            or not hmac.compare_digest(anchor_mac, entry_mac)
+            anchor_sequence != entry.sequence
+            or not hmac.compare_digest(anchor_digest, entry.state_digest)
+            or not hmac.compare_digest(anchor_mac, entry.entry_mac)
         ):
             raise ValueError(_STATE_INTEGRITY_ERROR)
 
     def _verify_full_authenticated_state(self) -> None:
-        rows = self.connection.execute(
-            """SELECT sequence, operation, previous_mac, state_digest, entry_mac
-               FROM authenticated_state_journal ORDER BY sequence"""
-        ).fetchall()
-        previous_mac = _ZERO_MAC
-        for expected_sequence, row in enumerate(rows, start=1):
-            _sequence, _digest, previous_mac = self._validated_journal_row(
-                row,
-                expected_sequence=expected_sequence,
-                expected_previous_mac=previous_mac,
-            )
-        self._verify_current_authenticated_state(self.connection)
+        entries = self._validated_journal_chain(self.connection)
+        if not entries:
+            raise ValueError(_STATE_INTEGRITY_ERROR)
+        tail = entries[-1]
+        if not hmac.compare_digest(
+            tail.state_digest, self._state_digest(self.connection)
+        ):
+            raise ValueError(_STATE_INTEGRITY_ERROR)
+        anchor = self._read_anchor()
+        if anchor == tail.anchor:
+            return
+        if (
+            len(entries) >= 2
+            and anchor == entries[-2].anchor
+            and tail.sequence == entries[-2].sequence + 1
+        ):
+            self._write_anchor(*tail.anchor)
+            self._verify_current_authenticated_state(self.connection)
+            return
+        raise ValueError(_STATE_INTEGRITY_ERROR)
 
     def _append_authenticated_entry(
         self, connection: sqlite3.Connection, operation: str
@@ -577,8 +623,9 @@ class ClientStore:
             sequence = 1
             previous_mac = _ZERO_MAC
         else:
-            previous_sequence, _digest, previous_mac = self._validated_journal_row(latest)
-            sequence = previous_sequence + 1
+            previous = self._validated_journal_row(latest)
+            sequence = previous.sequence + 1
+            previous_mac = previous.entry_mac
         state_digest = self._state_digest(connection)
         entry_mac = self._journal_mac(sequence, operation, previous_mac, state_digest)
         connection.execute(
@@ -591,11 +638,30 @@ class ClientStore:
         assert self._integrity_anchor_path is not None
         anchor_exists = os.path.lexists(self._integrity_anchor_path)
         journal_exists = self._latest_journal(self.connection) is not None
-        if anchor_exists or journal_exists:
-            if not anchor_exists or not journal_exists:
-                raise ValueError(_STATE_INTEGRITY_ERROR)
+        if anchor_exists and journal_exists:
             self._verify_full_authenticated_state()
             return
+        if anchor_exists:
+            raise ValueError(_STATE_INTEGRITY_ERROR)
+        if journal_exists:
+            entries = self._validated_journal_chain(self.connection)
+            has_existing_state = any(
+                self.connection.execute(f'SELECT 1 FROM "{table}" LIMIT 1').fetchone()
+                is not None
+                for table in _AUTHENTICATED_TABLES
+            )
+            if (
+                len(entries) == 1
+                and entries[0].operation == "initialize"
+                and not has_existing_state
+                and hmac.compare_digest(
+                    entries[0].state_digest, self._state_digest(self.connection)
+                )
+            ):
+                self._write_anchor(*entries[0].anchor)
+                self._verify_current_authenticated_state(self.connection)
+                return
+            raise ValueError(_STATE_INTEGRITY_ERROR)
         has_existing_state = any(
             self.connection.execute(f'SELECT 1 FROM "{table}" LIMIT 1').fetchone()
             is not None

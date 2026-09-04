@@ -1,0 +1,4 @@
+b0173df51b6b9c333ff7752ea9ccdd0c3db71aee60ccea825ee851394d1d8726  KSATClient-2.0.0.exe
+10db90c1d97acec96bd10984de418d6b951452c94bd6738159d2fda27e542e0f  KSATClientSetup-2.0.0.exe
+27bf59fbddc1cf5059be6d23938af8ee80462ccbb7ecc11c69eb49d4af54cd6c  KSATCoordinator-2.0.0.exe
+bef6e5bca14db331826d9e405f4b254d8b46dc132096eb166c86296091db0e7e  KSATCoordinatorSetup-2.0.0.exe

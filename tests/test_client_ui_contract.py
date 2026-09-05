@@ -33,6 +33,27 @@ process.stdout.write(JSON.stringify({
         self.assertNotIn("innerHTML", source)
 
     def test_acknowledged_score_survives_transient_review_poll_failures(self):
+        result = self._run_node(
+            """
+const ui = require(process.argv[1]);
+process.stdout.write(JSON.stringify({
+  invalidSession: ui.reviewFailureAction({code: 'invalid_client_session', retryable: false}),
+  missingSession: ui.reviewFailureAction({code: 'client_session_required', retryable: false}),
+  inactiveDevice: ui.reviewFailureAction({code: 'device_inactive', retryable: false}),
+  unenrolledDevice: ui.reviewFailureAction({code: 'device_not_enrolled', retryable: false}),
+  outage: ui.reviewFailureAction({code: 'coordinator_unavailable', retryable: true}),
+  transport: ui.reviewFailureAction(),
+  corrupt: ui.reviewFailureAction({code: 'content_hash_mismatch', retryable: false})
+}));
+"""
+        )
+        self.assertEqual("signin", result["invalidSession"])
+        self.assertEqual("signin", result["missingSession"])
+        self.assertEqual("device", result["inactiveDevice"])
+        self.assertEqual("device", result["unenrolledDevice"])
+        self.assertEqual("retry", result["outage"])
+        self.assertEqual("retry", result["transport"])
+        self.assertEqual("stop", result["corrupt"])
         source = SCRIPT.read_text(encoding="utf-8")
         acknowledged = source[
             source.index("function renderAcknowledged"):

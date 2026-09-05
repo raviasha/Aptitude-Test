@@ -22,6 +22,16 @@ function reviewChoiceState(selected, correct) {
   };
 }
 
+function reviewFailureAction(problem = {}) {
+  if (problem.code === 'invalid_client_session' || problem.code === 'client_session_required') {
+    return 'signin';
+  }
+  if (problem.code === 'device_inactive' || problem.code === 'device_not_enrolled') {
+    return 'device';
+  }
+  return problem.retryable === false ? 'stop' : 'retry';
+}
+
 function problemMessage(code, diagnosticReference) {
   if (Object.prototype.hasOwnProperty.call(problemMessages, code)) {
     return problemMessages[code];
@@ -94,6 +104,7 @@ const exported = {
   problemMessage,
   problemMessages,
   reviewChoiceState,
+  reviewFailureAction,
   reviewAssetUrl,
   reviewPollDelay,
   restoreSelection,
@@ -605,12 +616,16 @@ if (typeof document !== 'undefined') {
       const completed = await request('/api/reviews');
       const summary = completed.reviews.find((item) => item.attempt_id === result.attempt_id);
       renderAcknowledged(result, summary ? summary.review_state : 'waiting');
-    } catch (_error) {
-      renderAcknowledged(result, 'retry');
+    } catch (error) {
+      renderAcknowledged(
+        result,
+        reviewFailureAction(error.problem),
+        error.problem,
+      );
     }
   }
 
-  function renderAcknowledged(result, reviewState = 'waiting') {
+  function renderAcknowledged(result, reviewState = 'waiting', problem = {}) {
     showStatus('Result received', 'The coordinator accepted and scored your submission.');
     const score = document.createElement('p');
     score.className = 'result-score';
@@ -634,6 +649,21 @@ if (typeof document !== 'undefined') {
       const unavailable = button('Detailed review unavailable', () => {});
       unavailable.disabled = true;
       elements.actionArea.append(reviewStatus, unavailable);
+    } else if (reviewState === 'signin') {
+      setSafeText(reviewStatus, 'Your sign-in has expired. Sign in again to check review availability.');
+      elements.actionArea.append(reviewStatus, button('Sign in again', renderLogin));
+    } else if (reviewState === 'device') {
+      setSafeText(reviewStatus, problemMessages.device_inactive);
+      elements.actionArea.append(
+        reviewStatus,
+        button('Check registration', () => checkAcknowledgedReview(result)),
+      );
+    } else if (reviewState === 'stop') {
+      setSafeText(reviewStatus, problemMessage(problem.code, problem.diagnostic_reference));
+      elements.actionArea.append(
+        reviewStatus,
+        button('Check again', () => checkAcknowledgedReview(result)),
+      );
     } else {
       setSafeText(
         reviewStatus,

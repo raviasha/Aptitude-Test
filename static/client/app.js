@@ -32,6 +32,45 @@ function reviewFailureAction(problem = {}) {
   return problem.retryable === false ? 'stop' : 'retry';
 }
 
+function acknowledgedReviewStatus(reviewState, problem = {}) {
+  if (reviewState === 'available') {
+    return {
+      message: 'Faculty has closed the assessment. Your review is ready.',
+      action: 'review', label: 'Review answers', autoRetry: false,
+    };
+  }
+  if (reviewState === 'unavailable') {
+    return {
+      message: 'Detailed review is unavailable for this older assessment.',
+      action: 'unavailable', label: 'Detailed review unavailable', autoRetry: false,
+    };
+  }
+  if (reviewState === 'signin') {
+    return {
+      message: 'Your sign-in has expired. Sign in again to check review availability.',
+      action: 'signin', label: 'Sign in again', autoRetry: false,
+    };
+  }
+  if (reviewState === 'device') {
+    return {
+      message: problemMessages.device_inactive,
+      action: 'check', label: 'Check registration', autoRetry: false,
+    };
+  }
+  if (reviewState === 'stop') {
+    return {
+      message: problemMessage(problem.code, problem.diagnostic_reference),
+      action: 'check', label: 'Check again', autoRetry: false,
+    };
+  }
+  return {
+    message: reviewState === 'retry'
+      ? 'Could not check yet. Your result remains available; review will be checked again.'
+      : 'Answers and solutions will be available after Faculty closes the assessment.',
+    action: 'check', label: 'Check review availability', autoRetry: true,
+  };
+}
+
 function problemMessage(code, diagnosticReference) {
   if (Object.prototype.hasOwnProperty.call(problemMessages, code)) {
     return problemMessages[code];
@@ -97,6 +136,7 @@ function reviewAssetUrl(attemptId, reference) {
 }
 
 const exported = {
+  acknowledgedReviewStatus,
   assetUrl,
   canEdit,
   optimisticSelection,
@@ -354,8 +394,7 @@ if (typeof document !== 'undefined') {
             try {
               renderReview(await request(`/api/reviews/${encodeURIComponent(assessment.attempt_id)}`));
             } catch (error) {
-              showProblem(error.problem);
-              action.disabled = false;
+              renderAcknowledgedFailure(assessment, error.problem);
             }
           });
         } else if (assessment.review_state === 'waiting') {
@@ -625,6 +664,10 @@ if (typeof document !== 'undefined') {
     }
   }
 
+  function renderAcknowledgedFailure(result, problem = {}) {
+    renderAcknowledged(result, reviewFailureAction(problem), problem);
+  }
+
   function renderAcknowledged(result, reviewState = 'waiting', problem = {}) {
     showStatus('Result received', 'The coordinator accepted and scored your submission.');
     const score = document.createElement('p');
@@ -632,52 +675,32 @@ if (typeof document !== 'undefined') {
     setSafeText(score, `${result.score} / ${result.total_questions} (${result.percentage}%)`);
     elements.actionArea.append(score);
     const reviewStatus = document.createElement('p');
-    if (reviewState === 'available') {
-      setSafeText(reviewStatus, 'Faculty has closed the assessment. Your review is ready.');
-      const reviewButton = button('Review answers', async () => {
+    const status = acknowledgedReviewStatus(reviewState, problem);
+    setSafeText(reviewStatus, status.message);
+    if (status.action === 'review') {
+      const reviewButton = button(status.label, async () => {
         reviewButton.disabled = true;
         try {
           renderReview(await request(`/api/reviews/${encodeURIComponent(result.attempt_id)}`));
         } catch (error) {
-          showProblem(error.problem);
-          reviewButton.disabled = false;
+          renderAcknowledgedFailure(result, error.problem);
         }
       });
       elements.actionArea.append(reviewStatus, reviewButton);
-    } else if (reviewState === 'unavailable') {
-      setSafeText(reviewStatus, 'Detailed review is unavailable for this older assessment.');
-      const unavailable = button('Detailed review unavailable', () => {});
+    } else if (status.action === 'unavailable') {
+      const unavailable = button(status.label, () => {});
       unavailable.disabled = true;
       elements.actionArea.append(reviewStatus, unavailable);
-    } else if (reviewState === 'signin') {
-      setSafeText(reviewStatus, 'Your sign-in has expired. Sign in again to check review availability.');
-      elements.actionArea.append(reviewStatus, button('Sign in again', renderLogin));
-    } else if (reviewState === 'device') {
-      setSafeText(reviewStatus, problemMessages.device_inactive);
-      elements.actionArea.append(
-        reviewStatus,
-        button('Check registration', () => checkAcknowledgedReview(result)),
-      );
-    } else if (reviewState === 'stop') {
-      setSafeText(reviewStatus, problemMessage(problem.code, problem.diagnostic_reference));
-      elements.actionArea.append(
-        reviewStatus,
-        button('Check again', () => checkAcknowledgedReview(result)),
-      );
+    } else if (status.action === 'signin') {
+      elements.actionArea.append(reviewStatus, button(status.label, renderLogin));
     } else {
-      setSafeText(
-        reviewStatus,
-        reviewState === 'retry'
-          ? 'Could not check yet. Your result remains available; review will be checked again.'
-          : 'Answers and solutions will be available after Faculty closes the assessment.',
-      );
       elements.actionArea.append(
         reviewStatus,
-        button('Check review availability', () => checkAcknowledgedReview(result)),
+        button(status.label, () => checkAcknowledgedReview(result)),
       );
     }
     stopPolling();
-    if (reviewState === 'waiting' || reviewState === 'retry') {
+    if (status.autoRetry) {
       scheduleAcknowledgedReview(result);
     } else {
       if (ui.reviewPollHandle !== null) window.clearTimeout(ui.reviewPollHandle);

@@ -36,6 +36,7 @@ process.stdout.write(JSON.stringify({
         result = self._run_node(
             """
 const ui = require(process.argv[1]);
+const expired = {code: 'invalid_client_session', retryable: false};
 process.stdout.write(JSON.stringify({
   invalidSession: ui.reviewFailureAction({code: 'invalid_client_session', retryable: false}),
   missingSession: ui.reviewFailureAction({code: 'client_session_required', retryable: false}),
@@ -43,7 +44,8 @@ process.stdout.write(JSON.stringify({
   unenrolledDevice: ui.reviewFailureAction({code: 'device_not_enrolled', retryable: false}),
   outage: ui.reviewFailureAction({code: 'coordinator_unavailable', retryable: true}),
   transport: ui.reviewFailureAction(),
-  corrupt: ui.reviewFailureAction({code: 'content_hash_mismatch', retryable: false})
+  corrupt: ui.reviewFailureAction({code: 'content_hash_mismatch', retryable: false}),
+  availableExpired: ui.acknowledgedReviewStatus(ui.reviewFailureAction(expired), expired)
 }));
 """
         )
@@ -54,6 +56,15 @@ process.stdout.write(JSON.stringify({
         self.assertEqual("retry", result["outage"])
         self.assertEqual("retry", result["transport"])
         self.assertEqual("stop", result["corrupt"])
+        self.assertEqual(
+            {
+                "message": "Your sign-in has expired. Sign in again to check review availability.",
+                "action": "signin",
+                "label": "Sign in again",
+                "autoRetry": False,
+            },
+            result["availableExpired"],
+        )
         source = SCRIPT.read_text(encoding="utf-8")
         acknowledged = source[
             source.index("function renderAcknowledged"):
@@ -63,6 +74,7 @@ process.stdout.write(JSON.stringify({
         self.assertNotIn("loadAssessments", acknowledged)
         self.assertIn("async function checkAcknowledgedReview", source)
         self.assertIn("Could not check yet. Your result remains available", source)
+        self.assertGreaterEqual(source.count("renderAcknowledgedFailure("), 3)
 
     def test_static_contract_has_safe_local_state_machine_and_no_coordinator_secrets(self):
         source = SCRIPT.read_text(encoding="utf-8")

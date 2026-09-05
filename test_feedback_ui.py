@@ -36,7 +36,7 @@ class FeedbackUiTests(unittest.TestCase):
     def test_packaged_assets_use_the_current_cache_version(self):
         index = INDEX_HTML.read_text(encoding="utf-8")
 
-        self.assertEqual(index.count("?v=1.3.3"), 4)
+        self.assertEqual(index.count("?v=2.0.0"), 4)
         self.assertNotIn("?v=1.3.1", index)
 
     def test_institution_logos_and_assessment_use_separate_grid_columns(self):

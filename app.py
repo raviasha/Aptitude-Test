@@ -6,6 +6,8 @@ Run with: uvicorn app:app --host 0.0.0.0 --port 8000
 from __future__ import annotations
 
 import csv
+import base64
+import binascii
 import hashlib
 import html
 import io
@@ -14,11 +16,13 @@ import math
 import os
 import random
 import re
+import secrets
 import shutil
 import socket
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import unicodedata
@@ -34,11 +38,44 @@ from typing import Any, Dict, List, Optional
 
 import bcrypt
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.middleware.sessions import SessionMiddleware
 import question_media
+from ksat.coordinator.artifacts import ArtifactQuarantine, recover_artifact_quarantine
+from ksat.coordinator.auth import load_or_create_client_session_secret
+from ksat.coordinator.releases import load_release_manifest, prepare_release
+from ksat.coordinator.routes import (
+    CoordinatorConfig,
+    close_pack_registry,
+    router as coordinator_router,
+    warm_pack_registry,
+)
+from ksat.coordinator.process_lock import CoordinatorProcessLock
+from ksat.coordinator.schema import migrate_distributed_schema
+from ksat.coordinator.submissions import (
+    INVALID_ANSWER_STATE,
+    ReleaseAnswerStateProblem,
+    SubmissionWriter,
+    freeze_release_answer_state,
+    migrate_release_answer_states,
+    validate_release_answer_state,
+)
+from ksat.crypto import load_or_create_coordinator_keyring, sign_json, verify_json
+from ksat.protocol import (
+    AttemptDeadlineUpdate,
+    FrozenReviewQuestion,
+    PublicQuestion,
+    ReleaseSummary,
+    SignedAttemptDeadlineUpdate,
+    SignedAttemptTicket,
+    canonicalize_math_floor_division_markup,
+    canonical_json,
+    deterministic_question_order,
+)
+from ksat.sqlite import connect_sqlite
 
 SOURCE_ROOT = Path(__file__).resolve().parent
 BUNDLE_DIR = Path(getattr(sys, "_MEIPASS", SOURCE_ROOT))
@@ -46,7 +83,7 @@ configured_data_dir = os.getenv("KSAT_DATA_DIR")
 if configured_data_dir:
     DATA_DIR = Path(configured_data_dir).resolve()
 elif getattr(sys, "frozen", False):
-    DATA_DIR = Path(os.getenv("PROGRAMDATA", r"C:\ProgramData")) / "Aptitude Lab"
+    DATA_DIR = Path(os.getenv("PROGRAMDATA", r"C:\ProgramData")) / "KSAT Coordinator"
 else:
     DATA_DIR = SOURCE_ROOT / "data"
 DB_PATH = DATA_DIR / "aptitude.db"
@@ -55,7 +92,7 @@ QUESTION_BANKS_DIR = DATA_DIR / "Question Banks"
 STATIC_DIR = BUNDLE_DIR / "static"
 TEMPLATE_DIR = BUNDLE_DIR / "templates"
 SERVER_URL = "http://127.0.0.1:8000"
-APP_VERSION = "1.3.4"
+APP_VERSION = "2.0.0"
 
 CATEGORIES = [
     "Quantitative Aptitude",
@@ -147,9 +184,91 @@ LEGACY_QUESTION_REPAIRS = {
     },
 }
 
+def configure_coordinator_state(application: FastAPI) -> None:
+    secrets_dir = DATA_DIR / "secrets"
+    keyring = load_or_create_coordinator_keyring(secrets_dir)
+    client_session_secret = os.getenv("KSAT_SESSION_SECRET")
+    if client_session_secret is None:
+        client_session_secret = load_or_create_client_session_secret(secrets_dir)
+    elif not client_session_secret.strip():
+        raise ValueError("KSAT_SESSION_SECRET must not be blank.")
+    enrollment_code = os.getenv("KSAT_DEVICE_ENROLLMENT_CODE")
+    if enrollment_code is None and DB_PATH.is_file():
+        settings_connection = sqlite3.connect(DB_PATH)
+        try:
+            if settings_connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='coordinator_settings'"
+            ).fetchone():
+                row = settings_connection.execute(
+                    "SELECT setting_value FROM coordinator_settings WHERE setting_key='device_enrollment_code'"
+                ).fetchone()
+                if row is not None:
+                    enrollment_code = row[0]
+        finally:
+            settings_connection.close()
+    application.state.coordinator_config = CoordinatorConfig(
+        db_path=DB_PATH,
+        data_dir=DATA_DIR,
+        session_secret=client_session_secret,
+        device_enrollment_code=enrollment_code or keyring.enrollment_code,
+        signing_private_key_b64=keyring.signing_private_key_b64,
+        signing_public_key_b64=keyring.signing_public_key_b64,
+        pack_master_key=keyring.pack_master_key,
+        submission_writer=SubmissionWriter(DB_PATH),
+    )
+
+
 app = FastAPI(title="KSAT")
-app.add_middleware(SessionMiddleware, secret_key=os.getenv("SESSION_SECRET", "replace-this-before-production"), https_only=False, same_site="lax")
+configure_coordinator_state(app)
+app.include_router(coordinator_router)
+
+_UNSAFE_ADMIN_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+
+@app.middleware("http")
+async def enforce_admin_csrf(request: Request, call_next):
+    """Apply session-bound CSRF validation before parsing any admin mutation body."""
+
+    if (
+        request.method.upper() in _UNSAFE_ADMIN_METHODS
+        and request.url.path.startswith("/api/admin/")
+    ):
+        try:
+            require_admin_mutation(request)
+        except HTTPException as error:
+            return JSONResponse(
+                status_code=error.status_code,
+                content={"detail": error.detail},
+                headers=error.headers,
+            )
+    return await call_next(request)
+
+
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=os.getenv("SESSION_SECRET", "replace-this-before-production"),
+    https_only=os.getenv("KSAT_HTTPS_ONLY") == "1",
+    same_site="lax",
+)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+
+def _json_safe_validation_value(value: Any) -> Any:
+    if isinstance(value, float) and not math.isfinite(value):
+        return str(value)
+    if isinstance(value, dict):
+        return {key: _json_safe_validation_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe_validation_value(item) for item in value]
+    return value
+
+
+@app.exception_handler(RequestValidationError)
+async def safe_request_validation_error(
+    request: Request, error: RequestValidationError
+) -> JSONResponse:
+    del request
+    return JSONResponse(status_code=422, content={"detail": _json_safe_validation_value(error.errors())})
 
 
 @app.middleware("http")
@@ -184,6 +303,16 @@ class SubmitPayload(BaseModel):
 
 class DurationExtensionPayload(BaseModel):
     minutes: int = Field(ge=1, le=120)
+    reason: Optional[str] = None
+
+
+class AdminReasonPayload(BaseModel):
+    reason: str
+
+
+class VoidAttemptPayload(AdminReasonPayload):
+    authorize_retake: bool = False
+    confirm_submitted: bool = False
 
 
 class StudentPayload(BaseModel):
@@ -231,6 +360,13 @@ class FolderImportPayload(BaseModel):
     answer_key_filename: str
 
 
+class LoadTestPayload(BaseModel):
+    namespace: str = Field(pattern=r"^LOAD-[0-9A-F]{32}$")
+    ownership_token: str = Field(min_length=32, max_length=256)
+    clients: int = Field(ge=1, le=100)
+    questions: int = Field(ge=1, le=100)
+
+
 class RegistrationError(Exception):
     pass
 
@@ -239,16 +375,34 @@ def now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+_ENROLLMENT_ROTATION_LOCK = threading.Lock()
+
+
+def bounded_admin_reason(value: str) -> str:
+    reason = value.strip() if isinstance(value, str) else ""
+    if not reason or len(reason) > 500:
+        raise HTTPException(400, "Provide a reason between 1 and 500 characters.")
+    return reason
+
+
+def audit_details(value: Dict[str, Any]) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
 @contextmanager
 def db():
-    connection = sqlite3.connect(DB_PATH)
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA foreign_keys = ON")
+    connection = connect_sqlite(DB_PATH)
     try:
         yield connection
         connection.commit()
     finally:
         connection.close()
+
+
+def _commit_artifact_deletion(connection: sqlite3.Connection) -> None:
+    """Commit seam kept explicit so rollback/restoration behavior is testable."""
+
+    connection.commit()
 
 
 def hash_password(password: str) -> str:
@@ -359,6 +513,10 @@ def decode_difficulties(raw: Optional[str]) -> List[str]:
 
 def question_assets_dir() -> Path:
     return DATA_DIR / "Question Assets"
+
+
+def assessment_packs_dir() -> Path:
+    return DATA_DIR / "Assessment Releases"
 
 
 def normalize_selection_rules(
@@ -490,7 +648,9 @@ def sample_questions(
     selected_ids: set[int] = set()
     for rule in rules:
         pool = connection.execute(
-            f"""SELECT question_id, category, COALESCE(NULLIF(chapter, ''), ?) AS chapter, stimulus_id
+            f"""SELECT question_id, source_key, question_text, correct_answer,
+                      solution_steps, explanation, category,
+                      COALESCE(NULLIF(chapter, ''), ?) AS chapter, stimulus_id
                FROM questions
                WHERE bank_id = ? AND active = 1 AND category = ? AND difficulty IN ({placeholders})
                   AND COALESCE(NULLIF(chapter, ''), ?) = ?""",
@@ -712,7 +872,7 @@ class SafeVisualHTML(HTMLParser):
         "p", "div", "span", "strong", "em", "b", "i", "small", "sub", "sup", "br", "hr", "ul", "ol", "li",
         "h1", "h2", "h3", "h4", "h5", "h6", "table", "thead", "tbody", "tfoot", "tr", "th", "td", "figure",
         "figcaption", "svg", "g", "path", "rect", "circle", "line", "polyline", "polygon", "text", "ellipse", "defs",
-        "lineargradient", "stop", "title", "desc",
+        "lineargradient", "stop", "title", "desc", "code",
     }
     BLOCKED_TAGS = {"script", "style", "iframe", "object", "embed", "link", "meta", "base", "form", "input", "button", "foreignobject"}
     VOID_TAGS = {"br", "hr"}
@@ -793,6 +953,7 @@ class PlainText(HTMLParser):
 
 
 def sanitize_visual_html(fragment: str) -> str:
+    fragment = canonicalize_math_floor_division_markup(fragment)
     sanitizer = SafeVisualHTML()
     sanitizer.feed(fragment)
     sanitizer.close()
@@ -800,6 +961,7 @@ def sanitize_visual_html(fragment: str) -> str:
 
 
 def question_summary(fragment: str) -> str:
+    fragment = canonicalize_math_floor_division_markup(fragment)
     parser = PlainText()
     parser.feed(fragment)
     parser.close()
@@ -807,6 +969,10 @@ def question_summary(fragment: str) -> str:
 
 
 def parse_question_bank(html_source: str, answer_key_source: str) -> tuple[str, List[Dict[str, Any]]]:
+    try:
+        html_source = canonicalize_math_floor_division_markup(html_source)
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
     parser = QuestionSectionParser()
     parser.feed(html_source)
     parser.close()
@@ -940,7 +1106,6 @@ def ensure_schema() -> None:
               question_id INTEGER NOT NULL, selected_answer TEXT, correct INTEGER,
               category TEXT NOT NULL, chapter TEXT NOT NULL DEFAULT 'Uncategorized', question_order INTEGER NOT NULL,
               FOREIGN KEY(attempt_id) REFERENCES attempts(attempt_id),
-              FOREIGN KEY(question_id) REFERENCES questions(question_id),
               UNIQUE(attempt_id, question_id)
             );
             CREATE TABLE IF NOT EXISTS exam_violations (
@@ -977,6 +1142,8 @@ def ensure_schema() -> None:
         connection.execute("CREATE INDEX IF NOT EXISTS idx_questions_taxonomy ON questions(bank_id, category, chapter, active)")
         connection.execute("CREATE INDEX IF NOT EXISTS idx_tests_mode ON tests(mode, active, launched)")
         connection.execute("CREATE INDEX IF NOT EXISTS idx_exam_violations_attempt ON exam_violations(attempt_id)")
+        migrate_distributed_schema(connection)
+        migrate_release_answer_states(connection)
 
 
 def seed_data() -> None:
@@ -1380,6 +1547,24 @@ def require_user(request: Request, role: Optional[str] = None) -> Dict[str, str]
     return user
 
 
+def require_admin_mutation(request: Request) -> Dict[str, str]:
+    """Authenticate a faculty mutation and bind it to this exact browser session."""
+
+    user = require_user(request, "admin")
+    expected = request.session.get("admin_csrf")
+    supplied = request.headers.get("x-ksat-csrf")
+    origin = request.headers.get("origin")
+    expected_origin = f"{request.url.scheme}://{request.headers.get('host', '')}"
+    if (
+        not isinstance(expected, str)
+        or not isinstance(supplied, str)
+        or not secrets.compare_digest(expected, supplied)
+        or (origin is not None and origin != expected_origin)
+    ):
+        raise HTTPException(403, "Faculty request verification failed.")
+    return user
+
+
 def get_attempt(connection: sqlite3.Connection, attempt_id: str) -> sqlite3.Row:
     attempt = connection.execute(
         """SELECT a.*, t.launched, t.mode, t.owner_student_id, t.bank_id
@@ -1405,10 +1590,19 @@ def seconds_remaining(attempt: sqlite3.Row | Dict[str, Any]) -> Optional[int]:
     return max(0, math.ceil((expires_at - datetime.now(timezone.utc)).total_seconds()))
 
 
+def is_distributed_attempt(attempt: sqlite3.Row | Dict[str, Any]) -> bool:
+    keys = attempt.keys()
+    return bool(
+        (attempt["release_id"] if "release_id" in keys else None)
+        or (attempt["ticket_json"] if "ticket_json" in keys else None)
+    )
+
+
 def ensure_faculty_deadline(connection: sqlite3.Connection, attempt: sqlite3.Row) -> sqlite3.Row:
     """Backfill the timer for older live Faculty attempts created before expiry was stored."""
     if (
-        attempt["mode"] == "faculty"
+        not is_distributed_attempt(attempt)
+        and attempt["mode"] == "faculty"
         and attempt["launched"]
         and not attempt["expires_at"]
         and (started_at := parse_timestamp(attempt["started_at"]))
@@ -1423,6 +1617,15 @@ def finalize_attempt(connection: sqlite3.Connection, attempt_id: str) -> sqlite3
     attempt = get_attempt(connection, attempt_id)
     if attempt["status"] == "submitted":
         return attempt
+    if is_distributed_attempt(attempt):
+        raise HTTPException(
+            409,
+            {
+                "code": "distributed_submission_required",
+                "message": "This attempt must be submitted as its signed offline response bundle.",
+                "retryable": False,
+            },
+        )
     connection.execute(
         """UPDATE responses SET correct = CASE
            WHEN selected_answer IS NULL THEN 0
@@ -1446,7 +1649,11 @@ def finalize_attempt(connection: sqlite3.Connection, attempt_id: str) -> sqlite3
 
 
 def expire_attempt_if_needed(connection: sqlite3.Connection, attempt: sqlite3.Row) -> sqlite3.Row:
-    if attempt["status"] == "in_progress" and seconds_remaining(attempt) == 0:
+    if (
+        not is_distributed_attempt(attempt)
+        and attempt["status"] == "in_progress"
+        and seconds_remaining(attempt) == 0
+    ):
         return finalize_attempt(connection, attempt["attempt_id"])
     return attempt
 
@@ -1454,7 +1661,8 @@ def expire_attempt_if_needed(connection: sqlite3.Connection, attempt: sqlite3.Ro
 def finalize_expired_attempts(connection: sqlite3.Connection) -> int:
     expired = connection.execute(
         """SELECT attempt_id FROM attempts
-           WHERE status = 'in_progress' AND expires_at IS NOT NULL AND expires_at <= ?""",
+           WHERE status = 'in_progress' AND expires_at IS NOT NULL AND expires_at <= ?
+             AND release_id IS NULL AND ticket_json IS NULL""",
         (now(),),
     ).fetchall()
     for attempt in expired:
@@ -1497,6 +1705,154 @@ def display_media_for_attempt(
     if include_solution and attempt_id and "solution" in public:
         display_media["solution"] = [item(value, solution=True) for value in public["solution"]]
     return display_media
+
+
+def public_release_material(
+    connection: sqlite3.Connection, selected: list[sqlite3.Row]
+) -> tuple[list[PublicQuestion], dict[str, bytes]]:
+    """Snapshot public question content and embed its display-only assets."""
+    assets: dict[str, bytes] = {}
+
+    def embedded_asset(bank_id: int, stored_filename: str) -> str:
+        safe_filename = Path(stored_filename).name
+        if not safe_filename or safe_filename != stored_filename:
+            raise ValueError("Stored assessment media has an unsafe filename.")
+        extension = Path(safe_filename).suffix.lower()
+        if extension not in ALLOWED_ASSET_EXTENSIONS:
+            raise ValueError("Stored assessment media has an unsupported extension.")
+        content = (question_assets_dir() / str(bank_id) / safe_filename).read_bytes()
+        name = f"assets/{hashlib.sha256(content).hexdigest()}{extension}"
+        assets[name] = content
+        return name
+
+    questions: list[PublicQuestion] = []
+    for chosen in selected:
+        row = connection.execute(
+            """SELECT q.question_id, q.source_key, q.question_text, q.question_html, q.bank_id,
+                      q.category, COALESCE(NULLIF(q.chapter, ''), ?) AS chapter, q.stimulus_id,
+                      q.difficulty, q.option_a, q.option_b, q.option_c, q.option_d, q.options_json,
+                      q.display_media_json, s.stimulus_type, s.title AS stimulus_title,
+                      s.alt_text, s.asset_filename, s.content_json
+               FROM questions q
+               LEFT JOIN stimuli s ON s.bank_id = q.bank_id AND s.stimulus_id = q.stimulus_id
+               WHERE q.question_id = ?""",
+            (UNCATEGORIZED_CHAPTER, chosen["question_id"]),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"Selected question no longer exists: {chosen['question_id']}")
+
+        display_media = display_media_for_attempt(
+            row["display_media_json"], row["bank_id"], include_solution=False
+        )
+
+        def rewrite_media(item: dict[str, Any]) -> dict[str, Any]:
+            return {
+                **item,
+                "url": embedded_asset(row["bank_id"], Path(item["url"]).name),
+            }
+
+        embedded_media: dict[str, Any] = {}
+        if "question" in display_media:
+            embedded_media["question"] = rewrite_media(display_media["question"])
+        if "options" in display_media:
+            embedded_media["options"] = {
+                option: rewrite_media(item)
+                for option, item in sorted(display_media["options"].items())
+            }
+
+        stimulus: dict[str, Any] | None = None
+        if row["stimulus_id"] and row["stimulus_type"]:
+            stimulus = {
+                "id": row["stimulus_id"],
+                "type": row["stimulus_type"],
+                "title": row["stimulus_title"],
+                "alt_text": row["alt_text"],
+            }
+            if row["asset_filename"]:
+                stimulus["url"] = embedded_asset(row["bank_id"], row["asset_filename"])
+            else:
+                stimulus["content"] = json.loads(row["content_json"] or "{}")
+
+        questions.append(PublicQuestion(
+            question_id=row["question_id"],
+            source_key=str(row["source_key"] or f"question-{row['question_id']}"),
+            category=row["category"],
+            chapter=row["chapter"],
+            difficulty=row["difficulty"],
+            question_text=display_question_text(row["question_text"], row["source_key"]),
+            question_html=clean_display_text(row["question_html"]),
+            options=question_options(row),
+            stimulus=stimulus,
+            display_media=embedded_media,
+        ))
+    return questions, assets
+
+
+def frozen_review_material(selected: list[sqlite3.Row | Dict[str, Any]]) -> list[FrozenReviewQuestion]:
+    """Freeze the answer and readable solution for the selected release questions."""
+    reviews: list[FrozenReviewQuestion] = []
+    for row in selected:
+        steps = display_solution_steps(
+            row["question_text"], row["solution_steps"] or "[]", row["source_key"]
+        )
+        if not steps:
+            explanation = clean_display_text(row["explanation"] or "").strip()
+            steps = [explanation or "No solution steps were supplied for this question."]
+        reviews.append(FrozenReviewQuestion(
+            question_id=row["question_id"],
+            correct_answer=row["correct_answer"],
+            solution_steps=steps,
+        ))
+    return reviews
+
+
+def prepare_faculty_release(
+    connection: sqlite3.Connection,
+    test: sqlite3.Row,
+    *,
+    _created_artifact_paths: list[Path] | None = None,
+) -> ReleaseSummary:
+    """Prepare a legacy or newly inserted faculty test exactly once."""
+    if not connection.in_transaction:
+        connection.execute("BEGIN IMMEDIATE")
+    test = connection.execute("SELECT * FROM tests WHERE test_id = ?", (test["test_id"],)).fetchone()
+    if test is None:
+        raise ValueError("Assessment test no longer exists.")
+    if test["release_id"]:
+        config = app.state.coordinator_config
+        freeze_release_answer_state(connection, test["release_id"])
+        return load_release_manifest(
+            connection,
+            test["release_id"],
+            pack_dir=assessment_packs_dir(),
+            signing_public_key_b64=config.signing_public_key_b64,
+            pack_master_key=config.pack_master_key,
+        )
+    difficulties = decode_difficulties(test["difficulties"])
+    rules = validate_selection_rules(
+        connection,
+        test["bank_id"],
+        decode_selection_rules(test["composition"]),
+        MAX_ASSESSMENT_QUESTIONS,
+        difficulties,
+    )
+    selected = sample_questions(connection, test["bank_id"], rules, difficulties)
+    questions, assets = public_release_material(connection, selected)
+    config = app.state.coordinator_config
+    release = prepare_release(
+        connection,
+        test_id=test["test_id"],
+        selected_questions=questions,
+        review_questions=frozen_review_material(selected),
+        assets=assets,
+        pack_dir=assessment_packs_dir(),
+        signing_private_key_b64=config.signing_private_key_b64,
+        pack_master_key=config.pack_master_key,
+        now_iso=now(),
+        _created_artifact_paths=_created_artifact_paths,
+    )
+    freeze_release_answer_state(connection, release.release_id)
+    return release
 
 
 def serialize_attempt(connection: sqlite3.Connection, attempt: sqlite3.Row, include_answers: bool = False) -> Dict[str, Any]:
@@ -1616,9 +1972,43 @@ def result_for_attempt(connection: sqlite3.Connection, attempt_id: str) -> Dict[
 
 @app.on_event("startup")
 def startup() -> None:
-    ensure_schema()
-    seed_data()
-    copy_starter_question_files()
+    process_lock = getattr(app.state, "coordinator_process_lock", None)
+    if process_lock is None:
+        process_lock = CoordinatorProcessLock(DATA_DIR).acquire()
+        app.state.coordinator_process_lock = process_lock
+        app.state.coordinator_process_lock_release_on_shutdown = True
+    elif (
+        not isinstance(process_lock, CoordinatorProcessLock)
+        or not process_lock.held
+        or process_lock.data_dir != DATA_DIR.resolve()
+    ):
+        raise RuntimeError("The pre-held coordinator lifecycle lock is invalid.")
+    try:
+        ensure_schema()
+        recover_artifact_quarantine(DATA_DIR, DB_PATH)
+        app.state.coordinator_config.submission_writer.start()
+        seed_data()
+        copy_starter_question_files()
+        warm_pack_registry(app.state.coordinator_config)
+    except BaseException:
+        if getattr(app.state, "coordinator_process_lock_release_on_shutdown", False):
+            process_lock.release()
+            app.state.coordinator_process_lock = None
+        raise
+
+
+@app.on_event("shutdown")
+def shutdown_submission_writer() -> None:
+    try:
+        app.state.coordinator_config.submission_writer.stop()
+        close_pack_registry(app.state.coordinator_config)
+    finally:
+        process_lock = getattr(app.state, "coordinator_process_lock", None)
+        if process_lock is not None and getattr(
+            app.state, "coordinator_process_lock_release_on_shutdown", False
+        ):
+            process_lock.release()
+            app.state.coordinator_process_lock = None
 
 
 @app.get("/")
@@ -1630,7 +2020,13 @@ def home() -> FileResponse:
 def me(request: Request) -> Dict[str, Any]:
     if request.session.get("user", {}).get("role") == "student":
         require_user(request, "student")
-    return {"user": request.session.get("user")}
+    user = request.session.get("user")
+    return {
+        "user": user,
+        "csrf_token": request.session.get("admin_csrf")
+        if user and user.get("role") == "admin"
+        else None,
+    }
 
 
 @app.post("/api/login")
@@ -1663,7 +2059,14 @@ def login(payload: LoginPayload, request: Request) -> Dict[str, Any]:
                 ) from error
             user["login_token"] = login_token
         request.session["user"] = user
-    return {"user": request.session["user"]}
+        if role == "admin":
+            request.session["admin_csrf"] = secrets.token_urlsafe(32)
+        else:
+            request.session.pop("admin_csrf", None)
+    return {
+        "user": request.session["user"],
+        "csrf_token": request.session.get("admin_csrf") if role == "admin" else None,
+    }
 
 
 @app.post("/api/session/heartbeat")
@@ -1699,6 +2102,239 @@ def shutdown_server(request: Request) -> Dict[str, bool]:
     require_user(request, "admin")
     threading.Timer(0.5, os._exit, args=(0,)).start()
     return {"stopping": True}
+
+
+def _require_load_test_mode(request: Request) -> Dict[str, str]:
+    user = require_admin_mutation(request)
+    if os.environ.get("KSAT_LOAD_TEST") != "1":
+        raise HTTPException(404, "Not found.")
+    return user
+
+
+def _load_test_selectors(namespace: str, test_id: int, release_id: str):
+    return [
+        ("responses", "attempt_id IN (SELECT attempt_id FROM attempts WHERE test_id=?)", (test_id,)),
+        ("exam_violations", "attempt_id IN (SELECT attempt_id FROM attempts WHERE test_id=?)", (test_id,)),
+        ("submissions", "attempt_id IN (SELECT attempt_id FROM attempts WHERE test_id=?)", (test_id,)),
+        ("audit_events", "test_id=? OR attempt_id IN (SELECT attempt_id FROM attempts WHERE test_id=?)", (test_id, test_id)),
+        ("attempts", "test_id=?", (test_id,)),
+        ("release_questions", "release_id=?", (release_id,)),
+        ("load_test_runs", "namespace=?", (namespace,)),
+        ("assessment_releases", "release_id=?", (release_id,)),
+        ("tests", "test_id=? AND test_name=?", (test_id, f"{namespace}-TEST")),
+        ("devices", "label LIKE ?", (f"{namespace}-DEVICE-%",)),
+        ("students", "student_id LIKE ?", (f"{namespace}-STUDENT-%",)),
+        ("questions", "source_key LIKE ?", (f"{namespace}-Q-%",)),
+    ]
+
+
+def _load_test_run(request: Request, namespace: str) -> sqlite3.Row:
+    _require_load_test_mode(request)
+    if re.fullmatch(r"LOAD-[0-9A-F]{32}", namespace) is None:
+        raise HTTPException(404, "Load-test run not found.")
+    supplied = request.headers.get("x-ksat-load-ownership")
+    with db() as connection:
+        run = connection.execute(
+            "SELECT * FROM load_test_runs WHERE namespace=?", (namespace,)
+        ).fetchone()
+    expected = run["ownership_sha256"] if run is not None else "0" * 64
+    actual = hashlib.sha256((supplied or "").encode("utf-8")).hexdigest()
+    if run is None or not secrets.compare_digest(expected, actual):
+        raise HTTPException(403, "Load-test ownership verification failed.")
+    return run
+
+
+@app.post("/api/admin/load-tests", status_code=201)
+def create_load_test(payload: LoadTestPayload, request: Request) -> Dict[str, Any]:
+    _require_load_test_mode(request)
+    namespace = payload.namespace
+    password = secrets.token_urlsafe(32)
+    created = now()
+    created_artifacts: list[Path] = []
+    release_id = ""
+    try:
+        with db() as connection:
+            if connection.execute(
+                "SELECT 1 FROM load_test_runs WHERE namespace=?", (namespace,)
+            ).fetchone():
+                raise HTTPException(409, "Load-test namespace already exists.")
+            student_ids = [
+                f"{namespace}-STUDENT-{index:03d}" for index in range(payload.clients)
+            ]
+            password_hash = hash_password(password)
+            connection.executemany(
+                """INSERT INTO students
+                   (student_id,name,password_hash,class,section,created_at)
+                   VALUES (?,?,?,?,?,?)""",
+                [
+                    (student_id, f"{namespace} Student {index}", password_hash, "LOAD", "LOAD", created)
+                    for index, student_id in enumerate(student_ids)
+                ],
+            )
+            test_id = int(
+                connection.execute(
+                    """INSERT INTO tests
+                       (test_name,composition,created_at,active,launched,mode)
+                       VALUES (?,?,?,1,0,'faculty')""",
+                    (f"{namespace}-TEST", "{}", created),
+                ).lastrowid
+            )
+            selected: list[PublicQuestion] = []
+            for index in range(payload.questions):
+                correct = "ABCD"[index % 4]
+                options = {"A": "one", "B": "two", "C": "three", "D": "four"}
+                source_key = f"{namespace}-Q-{index + 1:03d}"
+                question_id = int(
+                    connection.execute(
+                        """INSERT INTO questions
+                           (question_text,source_key,category,chapter,difficulty,
+                            option_a,option_b,option_c,option_d,options_json,
+                            correct_answer,created_at)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (
+                            f"{namespace} Question {index + 1}?", source_key,
+                            "Load", "Load", "Easy", options["A"], options["B"],
+                            options["C"], options["D"],
+                            json.dumps(options, sort_keys=True, separators=(",", ":")),
+                            correct, created,
+                        ),
+                    ).lastrowid
+                )
+                selected.append(
+                    PublicQuestion(
+                        question_id=question_id,
+                        source_key=source_key,
+                        category="Load",
+                        chapter="Load",
+                        difficulty="Easy",
+                        question_text=f"{namespace} Question {index + 1}?",
+                        question_html=f"<p>{namespace} Question {index + 1}?</p>",
+                        options=options,
+                    )
+                )
+            release = prepare_release(
+                connection,
+                test_id=test_id,
+                selected_questions=selected,
+                review_questions=[
+                    FrozenReviewQuestion(
+                        question_id=question.question_id,
+                        correct_answer="ABCD"[index % 4],
+                        solution_steps=[f"The correct load-test option is {'ABCD'[index % 4]}."],
+                    )
+                    for index, question in enumerate(selected)
+                ],
+                assets={},
+                pack_dir=assessment_packs_dir(),
+                signing_private_key_b64=app.state.coordinator_config.signing_private_key_b64,
+                pack_master_key=app.state.coordinator_config.pack_master_key,
+                now_iso=created,
+                _created_artifact_paths=created_artifacts,
+            )
+            release_id = release.release_id
+            freeze_release_answer_state(connection, release_id)
+            current = datetime.now(timezone.utc)
+            closes = (current + timedelta(minutes=9)).isoformat(timespec="seconds")
+            connection.execute(
+                """UPDATE assessment_releases
+                   SET state='launched', launch_opens_at=?, launch_closes_at=?
+                   WHERE release_id=?""",
+                ((current - timedelta(minutes=1)).isoformat(timespec="seconds"), closes, release_id),
+            )
+            connection.execute(
+                "UPDATE tests SET launched=1, launch_expires_at=? WHERE test_id=?",
+                (closes, test_id),
+            )
+            connection.execute(
+                "INSERT INTO load_test_runs VALUES (?,?,?,?,?)",
+                (
+                    namespace,
+                    hashlib.sha256(payload.ownership_token.encode("utf-8")).hexdigest(),
+                    test_id,
+                    release_id,
+                    created,
+                ),
+            )
+    except BaseException:
+        for path in created_artifacts:
+            path.unlink(missing_ok=True)
+        raise
+    return {
+        "namespace": namespace,
+        "student_ids": student_ids,
+        "student_password": password,
+        "test_id": test_id,
+        "release_id": release_id,
+    }
+
+
+@app.get("/api/admin/load-tests/{namespace}")
+def load_test_status(namespace: str, request: Request) -> Dict[str, int]:
+    run = _load_test_run(request, namespace)
+    with db() as connection:
+        total = int(
+            connection.execute(
+                """SELECT COUNT(*) AS count FROM submissions s
+                   JOIN attempts a ON a.attempt_id=s.attempt_id WHERE a.test_id=?""",
+                (run["test_id"],),
+            ).fetchone()["count"]
+        )
+        distinct = int(
+            connection.execute(
+                """SELECT COUNT(DISTINCT s.attempt_id) AS count FROM submissions s
+                   JOIN attempts a ON a.attempt_id=s.attempt_id WHERE a.test_id=?""",
+                (run["test_id"],),
+            ).fetchone()["count"]
+        )
+    return {"submission_rows": total, "distinct_submission_rows": distinct}
+
+
+@app.delete("/api/admin/load-tests/{namespace}")
+def delete_load_test(namespace: str, request: Request) -> Dict[str, int]:
+    run = _load_test_run(request, namespace)
+    selectors = _load_test_selectors(namespace, run["test_id"], run["release_id"])
+    operation: ArtifactQuarantine | None = None
+    connection = connect_sqlite(DB_PATH)
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+
+        def count(table: str, clause: str, values: tuple[Any, ...]) -> int:
+            return int(
+                connection.execute(
+                    f"SELECT COUNT(*) AS count FROM {table} WHERE {clause}", values
+                ).fetchone()["count"]
+            )
+
+        created_rows = sum(count(*selector) for selector in selectors)
+        operation = ArtifactQuarantine(
+            DATA_DIR,
+            owner_kind="load_test",
+            owner_id=namespace,
+            artifacts=[assessment_packs_dir() / f"{run['release_id']}.ksatpack"],
+        )
+        operation.stage()
+        deleted_rows = 0
+        for table, clause, values in selectors:
+            deleted_rows += connection.execute(
+                f"DELETE FROM {table} WHERE {clause}", values
+            ).rowcount
+        residual_rows = sum(count(*selector) for selector in selectors)
+        _commit_artifact_deletion(connection)
+    except BaseException:
+        try:
+            connection.rollback()
+        finally:
+            if operation is not None:
+                operation.restore()
+        raise
+    finally:
+        connection.close()
+    operation.purge()
+    return {
+        "created_rows": created_rows,
+        "deleted_rows": deleted_rows,
+        "residual_rows": residual_rows,
+    }
 
 
 @app.get("/api/student/dashboard")
@@ -2035,6 +2671,93 @@ def remove_student(student_id: str, request: Request) -> Dict[str, Any]:
         raise HTTPException(404, str(error)) from error
 
 
+@app.get("/api/admin/devices")
+def list_distributed_devices(request: Request) -> Dict[str, Any]:
+    require_user(request, "admin")
+    with db() as connection:
+        device_rows = connection.execute(
+            """SELECT device_id, label, public_key_b64, status, enrolled_at, last_seen_at
+               FROM devices ORDER BY enrolled_at, device_id"""
+        ).fetchall()
+    devices = []
+    for row in device_rows:
+        try:
+            raw_key = base64.b64decode(row["public_key_b64"].encode("ascii"), validate=True)
+            if len(raw_key) != 32:
+                raise ValueError
+            fingerprint = hashlib.sha256(raw_key).hexdigest()[:12]
+        except (AttributeError, UnicodeError, binascii.Error, ValueError):
+            fingerprint = "invalid"
+        devices.append({
+            "device_id": row["device_id"], "label": row["label"],
+            "status": row["status"], "active": row["status"] == "active",
+            "enrolled_at": row["enrolled_at"], "last_seen_at": row["last_seen_at"],
+            "public_key_fingerprint": fingerprint,
+        })
+    return {"devices": devices}
+
+
+def _set_device_status(device_id: str, target: str, payload: AdminReasonPayload, request: Request) -> Dict[str, Any]:
+    user = require_admin_mutation(request)
+    reason = bounded_admin_reason(payload.reason)
+    event_type = "device_revoked" if target == "revoked" else "device_reactivated"
+    with db() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        device = connection.execute("SELECT status FROM devices WHERE device_id=?", (device_id,)).fetchone()
+        if device is None:
+            raise HTTPException(404, "Lab device not found.")
+        if device["status"] == target:
+            return {"device_id": device_id, "status": target, "changed": False}
+        if device["status"] not in {"active", "revoked"}:
+            raise HTTPException(409, "Lab device state requires faculty intervention.")
+        connection.execute("UPDATE devices SET status=? WHERE device_id=?", (target, device_id))
+        connection.execute(
+            "INSERT INTO audit_events (event_type,actor_id,details_json,occurred_at) VALUES (?,?,?,?)",
+            (event_type, user["id"], audit_details({"device_id":device_id,"reason":reason}), now()),
+        )
+    return {"device_id": device_id, "status": target, "changed": True}
+
+
+@app.post("/api/admin/devices/{device_id}/revoke")
+def revoke_device(device_id: str, payload: AdminReasonPayload, request: Request) -> Dict[str, Any]:
+    return _set_device_status(device_id, "revoked", payload, request)
+
+
+@app.post("/api/admin/devices/{device_id}/reactivate")
+def reactivate_device(device_id: str, payload: AdminReasonPayload, request: Request) -> Dict[str, Any]:
+    return _set_device_status(device_id, "active", payload, request)
+
+
+@app.post("/api/admin/devices/enrollment-code/rotate")
+def rotate_device_enrollment_code(payload: AdminReasonPayload, request: Request) -> Dict[str, Any]:
+    user = require_admin_mutation(request)
+    reason = bounded_admin_reason(payload.reason)
+    if os.getenv("KSAT_DEVICE_ENROLLMENT_CODE") is not None:
+        raise HTTPException(409, {
+            "code": "enrollment_code_managed_externally",
+            "message": "The enrollment code is managed by IT and cannot be rotated here.",
+            "retryable": False,
+        })
+    new_code = secrets.token_urlsafe(18)
+    with _ENROLLMENT_ROTATION_LOCK:
+        with db() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            rotated_at = now()
+            connection.execute(
+                """INSERT INTO coordinator_settings(setting_key,setting_value,updated_at)
+                   VALUES ('device_enrollment_code',?,?)
+                   ON CONFLICT(setting_key) DO UPDATE SET
+                     setting_value=excluded.setting_value,updated_at=excluded.updated_at""",
+                (new_code, rotated_at),
+            )
+            connection.execute(
+                "INSERT INTO audit_events (event_type,actor_id,details_json,occurred_at) VALUES ('device_enrollment_code_rotated',?,?,?)",
+                (user["id"], audit_details({"reason": reason}), rotated_at),
+            )
+        app.state.coordinator_config.device_enrollment_code = new_code
+    return {"rotated": True, "enrollment_code": new_code}
+
+
 @app.get("/api/admin/questions")
 def list_questions(request: Request) -> Dict[str, Any]:
     require_user(request, "admin")
@@ -2067,7 +2790,10 @@ def list_question_banks(request: Request) -> Dict[str, Any]:
 @app.delete("/api/admin/question-banks/{bank_id}")
 def delete_question_bank(bank_id: int, request: Request) -> Dict[str, Any]:
     require_user(request, "admin")
-    with db() as connection:
+    operation: ArtifactQuarantine | None = None
+    connection = connect_sqlite(DB_PATH)
+    try:
+        connection.execute("BEGIN IMMEDIATE")
         bank = connection.execute("SELECT bank_name FROM question_banks WHERE bank_id = ?", (bank_id,)).fetchone()
         if not bank:
             raise HTTPException(404, "Question bank not found.")
@@ -2098,7 +2824,26 @@ def delete_question_bank(bank_id: int, request: Request) -> Dict[str, Any]:
                 "SELECT COUNT(*) AS count FROM stimuli WHERE bank_id = ?", (bank_id,)
             ).fetchone()["count"],
         }
-
+        release_pack_filenames = [
+            row["content_pack_filename"]
+            for row in connection.execute(
+                "SELECT content_pack_filename FROM assessment_releases WHERE test_id IN (SELECT test_id FROM tests WHERE bank_id = ?)",
+                (bank_id,),
+            ).fetchall()
+        ]
+        operation = ArtifactQuarantine(
+            DATA_DIR,
+            owner_kind="question_bank",
+            owner_id=bank_id,
+            artifacts=[
+                question_assets_dir() / str(bank_id),
+                *(
+                    assessment_packs_dir() / Path(filename).name
+                    for filename in release_pack_filenames
+                ),
+            ],
+        )
+        operation.stage()
         connection.execute(
             """DELETE FROM exam_violations
                WHERE attempt_id IN (
@@ -2122,13 +2867,29 @@ def delete_question_bank(bank_id: int, request: Request) -> Dict[str, Any]:
             "DELETE FROM attempts WHERE test_id IN (SELECT test_id FROM tests WHERE bank_id = ?)",
             (bank_id,),
         )
+        connection.execute(
+            "DELETE FROM release_questions WHERE release_id IN (SELECT release_id FROM assessment_releases WHERE test_id IN (SELECT test_id FROM tests WHERE bank_id = ?))",
+            (bank_id,),
+        )
+        connection.execute(
+            "DELETE FROM assessment_releases WHERE test_id IN (SELECT test_id FROM tests WHERE bank_id = ?)",
+            (bank_id,),
+        )
         connection.execute("DELETE FROM tests WHERE bank_id = ?", (bank_id,))
         connection.execute("DELETE FROM stimuli WHERE bank_id = ?", (bank_id,))
         connection.execute("DELETE FROM questions WHERE bank_id = ?", (bank_id,))
         connection.execute("DELETE FROM question_banks WHERE bank_id = ?", (bank_id,))
-    asset_directory = question_assets_dir() / str(bank_id)
-    if asset_directory.exists():
-        shutil.rmtree(asset_directory)
+        _commit_artifact_deletion(connection)
+    except BaseException:
+        try:
+            connection.rollback()
+        finally:
+            if operation is not None:
+                operation.restore()
+        raise
+    finally:
+        connection.close()
+    operation.purge()
     return {"deleted": True, "bank_name": bank["bank_name"], "deleted_counts": deleted_counts}
 
 
@@ -2298,16 +3059,58 @@ def list_tests(request: Request) -> Dict[str, Any]:
     require_user(request, "admin")
     with db() as connection:
         tests = rows(connection.execute(
-            """SELECT t.*, b.bank_name,
+            """SELECT t.*, b.bank_name, r.state AS release_state,
+                      r.content_hash AS content_hash, r.content_pack_filename AS release_pack_filename,
+                      EXISTS(SELECT 1 FROM attempts submitted
+                             WHERE submitted.test_id = t.test_id AND submitted.status = 'submitted')
+                        AS has_submitted_attempt,
                       (SELECT COUNT(*) FROM attempts a WHERE a.test_id = t.test_id) AS attempt_count
                FROM tests t
                LEFT JOIN question_banks b ON b.bank_id = t.bank_id
+               LEFT JOIN assessment_releases r ON r.release_id = t.release_id
                WHERE t.mode = 'faculty' ORDER BY t.created_at DESC"""
         ).fetchall())
+        config = app.state.coordinator_config
+        eligible_count = connection.execute("SELECT COUNT(*) FROM students").fetchone()[0]
         for test in tests:
+            has_submitted_attempt = bool(test.pop("has_submitted_attempt"))
+            test["release_state"] = test.get("release_state") or (
+                "failed" if has_submitted_attempt else "preparing"
+            )
+            if test["release_state"] in {"prepared", "launched"}:
+                test.pop("release_pack_filename", None)
+                try:
+                    load_release_manifest(
+                        connection,
+                        test["release_id"],
+                        pack_dir=assessment_packs_dir(),
+                        signing_public_key_b64=config.signing_public_key_b64,
+                        pack_master_key=config.pack_master_key,
+                    )
+                except (KeyError, ValueError):
+                    test["release_state"] = "failed"
+            else:
+                test.pop("release_pack_filename", None)
             test["selection_rules"] = decode_selection_rules(test["composition"])
             test["difficulty_levels"] = decode_difficulties(test["difficulties"])
-            deadline = parse_timestamp(test.get("launch_expires_at"))
+            content_hash = test.get("content_hash")
+            test["content_hash_prefix"] = content_hash[:12] if isinstance(content_hash, str) else None
+            test.pop("content_hash", None)
+            counts = connection.execute(
+                """SELECT
+                     SUM(CASE WHEN status='in_progress' THEN 1 ELSE 0 END) AS started,
+                     SUM(CASE WHEN status='submitted' THEN 1 ELSE 0 END) AS submitted,
+                     SUM(CASE WHEN status='voided' THEN 1 ELSE 0 END) AS voided
+                   FROM attempts WHERE test_id=?""",
+                (test["test_id"],),
+            ).fetchone()
+            test["distributed_status"] = {
+                "eligible": eligible_count,
+                "started": int(counts["started"] or 0),
+                "submitted": int(counts["submitted"] or 0),
+                "voided": int(counts["voided"] or 0),
+            }
+            deadline = parse_timestamp(test.get("launch_closes_at") or test.get("launch_expires_at"))
             if test["launched"] and not deadline:
                 total_questions = sum(rule["quantity"] for rule in test["selection_rules"])
                 deadline = datetime.now(timezone.utc) + timedelta(seconds=total_questions * SECONDS_PER_FACULTY_QUESTION)
@@ -2318,7 +3121,10 @@ def list_tests(request: Request) -> Dict[str, Any]:
                FROM question_banks b LEFT JOIN questions q ON q.bank_id = b.bank_id AND q.active = 1
                GROUP BY b.bank_id ORDER BY b.imported_at DESC"""
         ).fetchall())
-        return {"tests": tests, "categories": CATEGORIES, "banks": banks}
+        writer = config.submission_writer
+        pending = writer.pending_count if writer is not None else 0
+        return {"tests": tests, "categories": CATEGORIES, "banks": banks,
+                "submission_queue_pending": pending}
 
 
 @app.post("/api/admin/tests")
@@ -2328,24 +3134,256 @@ def create_test(payload: TestPayload, request: Request) -> Dict[str, Any]:
     difficulties = normalize_difficulties(payload.difficulties)
     if not payload.test_name.strip():
         raise HTTPException(400, "Provide a test name.")
+    created_release: ReleaseSummary | None = None
+    created_artifact_paths: list[Path] = []
+    try:
+        with db() as connection:
+            rules = validate_selection_rules(connection, payload.bank_id, rules, MAX_ASSESSMENT_QUESTIONS, difficulties)
+            bank = connection.execute("SELECT bank_name FROM question_banks WHERE bank_id = ?", (payload.bank_id,)).fetchone()
+            if not bank:
+                raise HTTPException(404, "Choose an imported question bank.")
+            test_id = connection.execute(
+                "INSERT INTO tests (test_name, composition, bank_id, created_at, difficulties) VALUES (?, ?, ?, ?, ?)",
+                (payload.test_name.strip(), json.dumps(rules), payload.bank_id, now(), json.dumps(difficulties)),
+            ).lastrowid
+            test = connection.execute("SELECT * FROM tests WHERE test_id = ?", (test_id,)).fetchone()
+            created_release = prepare_faculty_release(
+                connection, test, _created_artifact_paths=created_artifact_paths
+            )
+        return {
+            "created": True,
+            "test_id": test_id,
+            "release_id": created_release.release_id,
+            "release_state": created_release.state,
+            "content_hash": created_release.content_hash,
+        }
+    except Exception:
+        for artifact_path in created_artifact_paths:
+            artifact_path.unlink(missing_ok=True)
+        raise
+
+
+@app.post("/api/admin/tests/{test_id}/duplicate")
+def duplicate_distributed_test(test_id: int, request: Request) -> Dict[str, Any]:
+    require_admin_mutation(request)
+    created_artifact_paths: list[Path] = []
+    try:
+        with db() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            source = connection.execute(
+                "SELECT * FROM tests WHERE test_id=? AND mode='faculty'", (test_id,)
+            ).fetchone()
+            if source is None:
+                raise HTTPException(404, "Faculty assessment not found.")
+            duplicate_id = connection.execute(
+                """INSERT INTO tests
+                   (test_name,composition,bank_id,created_at,active,launched,mode,owner_student_id,difficulties)
+                   VALUES (?,?,?,?,1,0,'faculty',NULL,?)""",
+                (f"{source['test_name']} Copy", source["composition"], source["bank_id"], now(), source["difficulties"]),
+            ).lastrowid
+            duplicate = connection.execute("SELECT * FROM tests WHERE test_id=?", (duplicate_id,)).fetchone()
+            release = prepare_faculty_release(
+                connection, duplicate, _created_artifact_paths=created_artifact_paths
+            )
+        return {"created": True, "test_id": duplicate_id, "release_id": release.release_id,
+                "release_state": release.state, "content_hash_prefix": release.content_hash[:12]}
+    except Exception:
+        for path in created_artifact_paths:
+            path.unlink(missing_ok=True)
+        raise
+
+
+@app.get("/api/admin/tests/{test_id}/distributed")
+def distributed_test_detail(test_id: int, request: Request) -> Dict[str, Any]:
+    require_user(request, "admin")
     with db() as connection:
-        rules = validate_selection_rules(connection, payload.bank_id, rules, MAX_ASSESSMENT_QUESTIONS, difficulties)
-        bank = connection.execute("SELECT bank_name FROM question_banks WHERE bank_id = ?", (payload.bank_id,)).fetchone()
-        if not bank:
-            raise HTTPException(404, "Choose an imported question bank.")
+        test = connection.execute(
+            "SELECT test_id,test_name,release_id FROM tests WHERE test_id=? AND mode='faculty'", (test_id,)
+        ).fetchone()
+        if test is None:
+            raise HTTPException(404, "Faculty assessment not found.")
+        attempts = rows(connection.execute(
+            """SELECT a.attempt_id,a.student_id,a.device_id,a.started_at,a.expires_at AS deadline,
+                      a.submitted_at,a.status,a.score,a.percentage,
+                      (SELECT COUNT(*) FROM exam_violations e WHERE e.attempt_id=a.attempt_id) AS violation_count
+               FROM attempts a WHERE a.test_id=? ORDER BY a.started_at,a.attempt_id""",
+            (test_id,),
+        ).fetchall())
+        writer = app.state.coordinator_config.submission_writer
+        return {"test": dict(test), "attempts": attempts,
+                "submission_queue_pending": writer.pending_count if writer is not None else 0}
+
+
+@app.get("/api/admin/attempts/{attempt_id}/order")
+def inspect_distributed_attempt_order(attempt_id: str, request: Request) -> Dict[str, Any]:
+    require_user(request, "admin")
+    exact_order = None
+    invalid_snapshot = False
+    with db() as connection:
+        attempt = connection.execute(
+            "SELECT attempt_id,release_id,order_seed FROM attempts WHERE attempt_id=?", (attempt_id,)
+        ).fetchone()
+        if attempt is None:
+            raise HTTPException(404, "Assessment attempt not found.")
+        try:
+            frozen = validate_release_answer_state(connection, attempt["release_id"])
+            canonical_ids = [row["question_id"] for row in frozen]
+            if not canonical_ids or len(canonical_ids) != len(set(canonical_ids)):
+                raise ValueError
+            exact_order = deterministic_question_order(canonical_ids, attempt["order_seed"])
+        except (ReleaseAnswerStateProblem, TypeError, ValueError, binascii.Error):
+            invalid_snapshot = True
+            connection.execute(
+                "UPDATE assessment_releases SET state=? WHERE release_id=?",
+                (INVALID_ANSWER_STATE, attempt["release_id"]),
+            )
+    if invalid_snapshot:
+        raise HTTPException(409, {"code":"attempt_order_invalid",
+            "message":"The stored attempt order requires faculty intervention.","retryable":False})
+    return {"attempt_id": attempt_id, "release_id": attempt["release_id"],
+            "question_order": exact_order}
+
+
+@app.post("/api/admin/attempts/{attempt_id}/void")
+def void_distributed_attempt(attempt_id: str, payload: VoidAttemptPayload, request: Request) -> Dict[str, Any]:
+    user = require_admin_mutation(request)
+    reason = bounded_admin_reason(payload.reason)
+    with db() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        attempt = connection.execute("SELECT * FROM attempts WHERE attempt_id=?", (attempt_id,)).fetchone()
+        if attempt is None:
+            raise HTTPException(404, "Assessment attempt not found.")
+        existing = connection.execute(
+            "SELECT details_json FROM audit_events WHERE event_type='attempt_voided' AND attempt_id=? ORDER BY audit_id DESC LIMIT 1",
+            (attempt_id,),
+        ).fetchone()
+        if attempt["status"] == "voided":
+            details = json.loads(existing["details_json"]) if existing else {}
+            if details.get("reason") != reason or bool(details.get("authorize_retake")) != payload.authorize_retake:
+                raise HTTPException(409, "This attempt was already voided with different instructions.")
+            return {"voided": True, "retake_authorized": bool(attempt["retake_authorized"]), "changed": False}
+        if attempt["status"] == "submitted" and not payload.confirm_submitted:
+            raise HTTPException(409, "Confirm explicitly before voiding an accepted submission.")
+        if attempt["status"] not in {"in_progress", "submitted"}:
+            raise HTTPException(409, "This attempt cannot be voided in its current state.")
         connection.execute(
-            "INSERT INTO tests (test_name, composition, bank_id, created_at, difficulties) VALUES (?, ?, ?, ?, ?)",
-            (payload.test_name.strip(), json.dumps(rules), payload.bank_id, now(), json.dumps(difficulties)),
+            "UPDATE attempts SET status='voided',retake_authorized=? WHERE attempt_id=?",
+            (1 if payload.authorize_retake else 0, attempt_id),
         )
-    return {"created": True}
+        connection.execute(
+            """INSERT INTO audit_events
+               (event_type,actor_id,attempt_id,test_id,details_json,occurred_at)
+               VALUES ('attempt_voided',?,?,?,?,?)""",
+            (user["id"], attempt_id, attempt["test_id"],
+             audit_details({"reason":reason,"authorize_retake":payload.authorize_retake,
+                            "submitted_evidence_confirmed":payload.confirm_submitted}), now()),
+        )
+    return {"voided": True, "retake_authorized": payload.authorize_retake, "changed": True}
+
+
+def _extend_active_attempt(
+    connection: sqlite3.Connection, attempt: sqlite3.Row, delta_seconds: int,
+    *, actor_id: str, reason: str, event_type: str,
+) -> SignedAttemptDeadlineUpdate:
+    prior = parse_timestamp(attempt["expires_at"])
+    if prior is None or not attempt["release_id"] or not attempt["device_id"]:
+        raise HTTPException(409, "The active attempt deadline is invalid.")
+    if prior <= datetime.now(timezone.utc):
+        raise HTTPException(409, "An expired attempt cannot be extended.")
+    try:
+        deadline = prior + timedelta(seconds=delta_seconds)
+    except OverflowError as error:
+        raise HTTPException(400, "The extended deadline is outside the supported range.") from error
+    revision = int(attempt["deadline_revision"] or 0) + 1
+    cumulative = int(attempt["deadline_extension_seconds"] or 0) + delta_seconds
+    if cumulative > 86_400:
+        raise HTTPException(400, "The cumulative attempt extension is too large.")
+    try:
+        signed_ticket = SignedAttemptTicket.model_validate_json(
+            attempt["ticket_json"], strict=True
+        )
+        verify_json(
+            app.state.coordinator_config.signing_public_key_b64,
+            signed_ticket.ticket,
+            signed_ticket.signature_b64,
+        )
+        base_deadline = signed_ticket.ticket.deadline.astimezone(timezone.utc)
+    except Exception as error:
+        raise HTTPException(409, "The active attempt ticket is invalid.") from error
+    if (
+        signed_ticket.ticket.attempt_id != attempt["attempt_id"]
+        or signed_ticket.ticket.release_id != attempt["release_id"]
+        or signed_ticket.ticket.device_id != attempt["device_id"]
+        or int((prior - base_deadline).total_seconds())
+           != int(attempt["deadline_extension_seconds"] or 0)
+    ):
+        raise HTTPException(409, "The active attempt ticket is invalid.")
+    update = AttemptDeadlineUpdate(
+        attempt_id=attempt["attempt_id"], release_id=attempt["release_id"],
+        device_id=attempt["device_id"], base_deadline=base_deadline,
+        prior_deadline=prior, deadline=deadline,
+        cumulative_extension_seconds=cumulative, revision=revision,
+        issued_at=datetime.now(timezone.utc),
+    )
+    signed = SignedAttemptDeadlineUpdate(
+        update=update,
+        signature_b64=sign_json(app.state.coordinator_config.signing_private_key_b64, update),
+    )
+    update_json = canonical_json(signed).decode("utf-8")
+    changed = connection.execute(
+        """UPDATE attempts SET expires_at=?,deadline_revision=?,deadline_extension_seconds=?,deadline_update_json=?
+           WHERE attempt_id=? AND status='in_progress' AND deadline_revision=? AND expires_at=?""",
+        (deadline.isoformat(timespec="seconds"), revision, cumulative, update_json,
+         attempt["attempt_id"], revision - 1, attempt["expires_at"]),
+    )
+    if changed.rowcount != 1:
+        raise HTTPException(409, "The attempt changed while it was being extended; retry safely.")
+    connection.execute(
+        """INSERT INTO audit_events
+           (event_type,actor_id,attempt_id,test_id,details_json,occurred_at)
+           VALUES (?,?,?,?,?,?)""",
+        (event_type, actor_id, attempt["attempt_id"], attempt["test_id"],
+         audit_details({"reason":reason,"deadline_before":prior.isoformat(timespec="seconds"),
+                        "deadline_after":deadline.isoformat(timespec="seconds"),
+                        "minutes":delta_seconds // 60,"revision":revision}), now()),
+    )
+    return signed
+
+
+@app.post("/api/admin/attempts/{attempt_id}/extend")
+def extend_distributed_attempt(
+    attempt_id: str, payload: DurationExtensionPayload, request: Request
+) -> Dict[str, Any]:
+    user = require_admin_mutation(request)
+    reason = bounded_admin_reason(payload.reason or "")
+    delta = payload.minutes * 60
+    with db() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        attempt = connection.execute("SELECT * FROM attempts WHERE attempt_id=?", (attempt_id,)).fetchone()
+        if attempt is None:
+            raise HTTPException(404, "Assessment attempt not found.")
+        if attempt["status"] != "in_progress" or not attempt["release_id"]:
+            raise HTTPException(409, "Only an active distributed attempt can be extended.")
+        signed = _extend_active_attempt(connection, attempt, delta, actor_id=user["id"], reason=reason,
+                                        event_type="attempt_extended")
+    return {"extended": True, "minutes": payload.minutes,
+            "deadline_before": signed.update.prior_deadline.isoformat(timespec="seconds"),
+            "deadline_after": signed.update.deadline.isoformat(timespec="seconds"),
+            "revision": signed.update.revision}
 
 
 @app.delete("/api/admin/tests/{test_id}")
 def delete_test(test_id: int, request: Request) -> Dict[str, Any]:
     require_user(request, "admin")
-    with db() as connection:
+    operation: ArtifactQuarantine | None = None
+    connection = connect_sqlite(DB_PATH)
+    try:
+        connection.execute("BEGIN IMMEDIATE")
         test = connection.execute(
-            "SELECT test_name FROM tests WHERE test_id = ? AND mode = 'faculty'", (test_id,)
+            """SELECT t.test_name, r.content_pack_filename
+               FROM tests t LEFT JOIN assessment_releases r ON r.release_id = t.release_id
+               WHERE t.test_id = ? AND t.mode = 'faculty'""",
+            (test_id,),
         ).fetchone()
         if not test:
             raise HTTPException(404, "Faculty assessment not found.")
@@ -2358,50 +3396,265 @@ def delete_test(test_id: int, request: Request) -> Dict[str, Any]:
             connection.execute(f"DELETE FROM exam_violations WHERE attempt_id IN ({placeholders})", attempt_ids)
             connection.execute(f"DELETE FROM responses WHERE attempt_id IN ({placeholders})", attempt_ids)
             connection.execute(f"DELETE FROM attempts WHERE attempt_id IN ({placeholders})", attempt_ids)
+        release_pack_filename = test["content_pack_filename"]
+        operation = ArtifactQuarantine(
+            DATA_DIR,
+            owner_kind="test",
+            owner_id=test_id,
+            artifacts=(
+                [assessment_packs_dir() / Path(release_pack_filename).name]
+                if release_pack_filename
+                else []
+            ),
+        )
+        operation.stage()
+        connection.execute(
+            "DELETE FROM release_questions WHERE release_id IN (SELECT release_id FROM assessment_releases WHERE test_id = ?)",
+            (test_id,),
+        )
+        connection.execute("DELETE FROM assessment_releases WHERE test_id = ?", (test_id,))
         connection.execute("DELETE FROM tests WHERE test_id = ?", (test_id,))
+        _commit_artifact_deletion(connection)
+    except BaseException:
+        try:
+            connection.rollback()
+        finally:
+            if operation is not None:
+                operation.restore()
+        raise
+    finally:
+        connection.close()
+    operation.purge()
     return {"deleted": True, "test_name": test["test_name"], "attempts_deleted": len(attempt_ids)}
 
 
 @app.post("/api/admin/tests/{test_id}/launch")
 def launch_test(test_id: int, request: Request) -> Dict[str, bool]:
     require_user(request, "admin")
-    with db() as connection:
-        test = connection.execute(
-            "SELECT composition FROM tests WHERE test_id = ? AND active = 1 AND mode = 'faculty'", (test_id,)
-        ).fetchone()
-        if not test:
-            raise HTTPException(404, "Test not found.")
-        total_questions = sum(rule["quantity"] for rule in decode_selection_rules(test["composition"]))
-        deadline = (datetime.now(timezone.utc) + timedelta(seconds=total_questions * SECONDS_PER_FACULTY_QUESTION)).isoformat(timespec="seconds")
-        connection.execute("UPDATE tests SET launched = 0, launch_expires_at = NULL WHERE mode = 'faculty'")
-        connection.execute("UPDATE tests SET launched = 1, launch_expires_at = ? WHERE test_id = ?", (deadline, test_id))
-        connection.execute("UPDATE attempts SET expires_at = ? WHERE test_id = ? AND status = 'in_progress'", (deadline, test_id))
-    return {"launched": True}
+    created_release: ReleaseSummary | None = None
+    created_artifact_paths: list[Path] = []
+    try:
+        with db() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            test = connection.execute(
+                "SELECT * FROM tests WHERE test_id = ? AND active = 1 AND mode = 'faculty'", (test_id,)
+            ).fetchone()
+            if not test:
+                raise HTTPException(404, "Test not found.")
+            legacy_timer_only = False
+            if not test["release_id"] and test["bank_id"] is None:
+                # Pre-bank placeholder rows have no content that can be snapshotted. Keep
+                # their established faculty timer behavior; startup migration assigns a
+                # bank to every real legacy assessment before it can reach this branch.
+                duration_seconds = sum(
+                    rule["quantity"] for rule in decode_selection_rules(test["composition"])
+                ) * SECONDS_PER_FACULTY_QUESTION
+                legacy_timer_only = True
+            elif not test["release_id"]:
+                submitted = connection.execute(
+                    "SELECT 1 FROM attempts WHERE test_id = ? AND status = 'submitted' LIMIT 1",
+                    (test_id,),
+                ).fetchone()
+                if submitted:
+                    raise HTTPException(
+                        409,
+                        "This historical assessment has submitted attempts and cannot be resampled.",
+                    )
+                created_release = prepare_faculty_release(
+                    connection, test, _created_artifact_paths=created_artifact_paths
+                )
+                release = created_release
+                duration_seconds = release.duration_seconds
+            else:
+                config = app.state.coordinator_config
+                try:
+                    freeze_release_answer_state(connection, test["release_id"])
+                    release = load_release_manifest(
+                        connection,
+                        test["release_id"],
+                        pack_dir=assessment_packs_dir(),
+                        signing_public_key_b64=config.signing_public_key_b64,
+                        pack_master_key=config.pack_master_key,
+                    )
+                except ReleaseAnswerStateProblem as error:
+                    raise HTTPException(
+                        409,
+                        {
+                            "code": "release_answer_state_invalid",
+                            "message": "The release private answer snapshot is incomplete. Create a new assessment.",
+                            "retryable": False,
+                        },
+                    ) from error
+                except ValueError as error:
+                    raise HTTPException(
+                        409, "Assessment release preparation failed. Create a new assessment."
+                    ) from error
+                duration_seconds = release.duration_seconds
+            if not legacy_timer_only and connection.execute(
+                "SELECT 1 FROM attempts WHERE release_id = ? LIMIT 1", (release.release_id,)
+            ).fetchone():
+                raise HTTPException(
+                    409,
+                    {
+                        "code": "release_already_used",
+                        "message": "This release already issued an attempt. Duplicate the assessment to run it again.",
+                        "retryable": False,
+                    },
+                )
+            launch_opens_at = datetime.now(timezone.utc)
+            launch_closes_at = launch_opens_at + (
+                timedelta(seconds=duration_seconds)
+                if legacy_timer_only
+                else timedelta(minutes=10)
+            )
+            deadline = launch_closes_at.isoformat(timespec="seconds")
+            connection.execute("UPDATE tests SET launched = 0, launch_expires_at = NULL WHERE mode = 'faculty'")
+            if legacy_timer_only:
+                connection.execute(
+                    """UPDATE tests
+                       SET launched = 1, launch_expires_at = ?, launch_closes_at = NULL,
+                           review_released_at = NULL
+                       WHERE test_id = ?""",
+                    (deadline, test_id),
+                )
+                connection.execute(
+                    "UPDATE attempts SET expires_at = ? WHERE test_id = ? AND status = 'in_progress'",
+                    (deadline, test_id),
+                )
+            else:
+                connection.execute(
+                    """UPDATE tests
+                       SET launched = 1, launch_expires_at = ?, launch_closes_at = ?,
+                           review_released_at = NULL
+                       WHERE test_id = ?""",
+                    (deadline, deadline, test_id),
+                )
+                connection.execute(
+                    """UPDATE assessment_releases
+                       SET state = 'launched', launch_opens_at = ?, launch_closes_at = ?
+                       WHERE release_id = ?""",
+                    (
+                        launch_opens_at.isoformat(timespec="seconds"),
+                        launch_closes_at.isoformat(timespec="seconds"),
+                        release.release_id,
+                    ),
+                )
+        return {"launched": True}
+    except Exception:
+        for artifact_path in created_artifact_paths:
+            artifact_path.unlink(missing_ok=True)
+        raise
 
 
 @app.post("/api/admin/tests/{test_id}/close")
 def close_test(test_id: int, request: Request) -> Dict[str, bool]:
     require_user(request, "admin")
     with db() as connection:
-        connection.execute("UPDATE tests SET launched = 0, launch_expires_at = NULL WHERE test_id = ? AND mode = 'faculty'", (test_id,))
+        connection.execute(
+            """UPDATE tests
+               SET launched = 0, launch_expires_at = NULL, review_released_at = ?
+               WHERE test_id = ? AND mode = 'faculty'""",
+            (now(), test_id),
+        )
     return {"closed": True}
 
 
 @app.post("/api/admin/tests/{test_id}/extend")
 def extend_test_duration(test_id: int, payload: DurationExtensionPayload, request: Request) -> Dict[str, Any]:
-    require_user(request, "admin")
+    user = require_admin_mutation(request)
+    if payload.reason is not None:
+        reason = bounded_admin_reason(payload.reason)
+        delta = payload.minutes * 60
+        with db() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            test = connection.execute(
+                "SELECT * FROM tests WHERE test_id=? AND mode='faculty'", (test_id,)
+            ).fetchone()
+            if test is None:
+                raise HTTPException(404, "Faculty assessment not found.")
+            if not test["release_id"]:
+                raise HTTPException(409, "Prepare the distributed assessment before extending it.")
+            release = connection.execute(
+                "SELECT duration_extension_seconds,state FROM assessment_releases WHERE release_id=?",
+                (test["release_id"],),
+            ).fetchone()
+            if release is None or release["state"] not in {"prepared", "launched"}:
+                raise HTTPException(409, "Assessment release is not ready to extend.")
+            before_policy = int(release["duration_extension_seconds"] or 0)
+            after_policy = before_policy + delta
+            if after_policy > 86_400:
+                raise HTTPException(400, "The cumulative duration extension is too large.")
+            connection.execute(
+                "UPDATE assessment_releases SET duration_extension_seconds=? WHERE release_id=?",
+                (after_policy, test["release_id"]),
+            )
+            active = connection.execute(
+                "SELECT * FROM attempts WHERE test_id=? AND status='in_progress' ORDER BY attempt_id",
+                (test_id,),
+            ).fetchall()
+            for attempt in active:
+                _extend_active_attempt(
+                    connection, attempt, delta, actor_id=user["id"], reason=reason,
+                    event_type="attempt_extended_by_test",
+                )
+            connection.execute(
+                """INSERT INTO audit_events
+                   (event_type,actor_id,test_id,details_json,occurred_at)
+                   VALUES ('test_duration_extended',?,?,?,?)""",
+                (user["id"], test_id, audit_details({"reason":reason,"minutes":payload.minutes,
+                    "duration_extension_before":before_policy,"duration_extension_after":after_policy,
+                    "attempts_extended":len(active)}), now()),
+            )
+        return {"extended": True, "minutes": payload.minutes, "attempts_extended": len(active),
+                "duration_extension_seconds": after_policy}
+
+    # Backward-compatible legacy operation: older coordinator browsers used this
+    # route to extend only the launch window. New faculty UI always supplies a reason.
     with db() as connection:
-        test = connection.execute("SELECT launched, mode, launch_expires_at FROM tests WHERE test_id = ?", (test_id,)).fetchone()
+        test = connection.execute(
+            """SELECT launched, mode, release_id, launch_expires_at, launch_closes_at
+               FROM tests WHERE test_id = ?""",
+            (test_id,),
+        ).fetchone()
         if not test or test["mode"] != "faculty":
             raise HTTPException(404, "Faculty assessment not found.")
         if not test["launched"]:
             raise HTTPException(409, "Launch the assessment before extending its duration.")
-        deadline = parse_timestamp(test["launch_expires_at"]) or datetime.now(timezone.utc)
+        deadline = parse_timestamp(
+            test["launch_closes_at"] or test["launch_expires_at"]
+        ) or datetime.now(timezone.utc)
         extended_deadline = deadline + timedelta(minutes=payload.minutes)
-        connection.execute("UPDATE tests SET launch_expires_at = ? WHERE test_id = ?", (extended_deadline.isoformat(timespec="seconds"), test_id))
-        attempts = connection.execute("SELECT attempt_id FROM attempts WHERE test_id = ? AND status = 'in_progress'", (test_id,)).fetchall()
-        for attempt in attempts:
-            connection.execute("UPDATE attempts SET expires_at = ? WHERE attempt_id = ?", (extended_deadline.isoformat(timespec="seconds"), attempt["attempt_id"]))
+        deadline_iso = extended_deadline.isoformat(timespec="seconds")
+        if test["release_id"]:
+            connection.execute(
+                """UPDATE tests
+                   SET launch_expires_at = ?, launch_closes_at = ?
+                   WHERE test_id = ?""",
+                (deadline_iso, deadline_iso, test_id),
+            )
+            updated_release = connection.execute(
+                """UPDATE assessment_releases SET launch_closes_at = ?
+                   WHERE release_id = ? AND state = 'launched'""",
+                (deadline_iso, test["release_id"]),
+            )
+            if updated_release.rowcount != 1:
+                raise HTTPException(409, "Assessment release is not ready to extend.")
+            attempts = []
+        else:
+            connection.execute(
+                "UPDATE tests SET launch_expires_at = ? WHERE test_id = ?",
+                (deadline_iso, test_id),
+            )
+            attempts = connection.execute(
+                """SELECT attempt_id FROM attempts
+                   WHERE test_id = ? AND status = 'in_progress'""",
+                (test_id,),
+            ).fetchall()
+            for attempt in attempts:
+                connection.execute(
+                    "UPDATE attempts SET expires_at = ? WHERE attempt_id = ?",
+                    (deadline_iso, attempt["attempt_id"]),
+                )
     return {"extended": True, "minutes": payload.minutes, "attempts_extended": len(attempts)}
 
 

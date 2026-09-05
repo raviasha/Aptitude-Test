@@ -1,40 +1,51 @@
 @echo off
-setlocal
-cd /d "%~dp0"
+setlocal EnableExtensions
+cd /d "%~dp0" || exit /b 1
 
-where py >nul 2>nul || (
-  echo Python launcher was not found. Install Python 3.10 or newer from python.org, then run this script again.
+if not defined KSAT_SIGNING_PFX (
+  echo KSAT_SIGNING_PFX is required for a production release.
+  exit /b 1
+)
+if not defined KSAT_SIGNING_PFX_PASSWORD (
+  echo KSAT_SIGNING_PFX_PASSWORD is required for a production release.
+  exit /b 1
+)
+if not defined KSAT_SIGNING_PUBLISHER (
+  echo KSAT_SIGNING_PUBLISHER is required for a production release.
+  exit /b 1
+)
+if not defined KSAT_SIGNING_TIMESTAMP_URL (
+  echo KSAT_SIGNING_TIMESTAMP_URL is required for a production release.
   exit /b 1
 )
 
-py -3 -m venv .build-venv
-call .build-venv\Scripts\activate.bat
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt pyinstaller
-
-set "PYINSTALLER_ROOT=%TEMP%\AptitudeLab-PyInstaller"
-python -m PyInstaller --noconfirm --clean --onefile --windowed --name KSATServer ^
-  --workpath "%PYINSTALLER_ROOT%\work" --specpath "%PYINSTALLER_ROOT%\spec" --distpath "%CD%\dist" ^
-  --add-data "%CD%\static;static" ^
-  --add-data "%CD%\templates\visual-data-interpretation.html;templates" ^
-  --add-data "%CD%\templates\visual-data-interpretation.json;templates" ^
-  --collect-all fastapi --collect-all starlette --collect-all uvicorn --collect-all multipart app.py
-if errorlevel 1 exit /b 1
-
-set "ISCC_EXE="
-where ISCC >nul 2>nul && set "ISCC_EXE=ISCC"
-if not defined ISCC_EXE if exist "%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe" set "ISCC_EXE=%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe"
-if not defined ISCC_EXE if exist "%ProgramFiles%\Inno Setup 6\ISCC.exe" set "ISCC_EXE=%ProgramFiles%\Inno Setup 6\ISCC.exe"
-if not defined ISCC_EXE if exist "%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" set "ISCC_EXE=%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe"
-if not defined ISCC_EXE (
-  echo.
-  echo The server executable was built at dist\KSATServer.exe.
-  echo Install Inno Setup 6, ensure ISCC is on PATH, then rerun this script to create the installer.
-  exit /b 1
+if defined KSAT_BUILD_PYTHON (
+  set "PYTHON_EXE=%KSAT_BUILD_PYTHON%"
+) else (
+  set "PYTHON_EXE=%CD%\.build-venv\Scripts\python.exe"
 )
 
-"%ISCC_EXE%" installer\AptitudeLab.iss
-if errorlevel 1 exit /b 1
+if not exist "%PYTHON_EXE%" (
+  where py >nul 2>nul || (
+    echo Python launcher was not found. Install Python 3.10 or newer.
+    exit /b 1
+  )
+  py -3 -m venv "%CD%\.build-venv" || exit /b 1
+)
+
+"%PYTHON_EXE%" -m pip install --disable-pip-version-check --no-input -r requirements.txt pyinstaller || exit /b 1
+
+if defined ISCC_EXE (
+  "%PYTHON_EXE%" scripts\windows_release.py all --root "%CD%" --python "%PYTHON_EXE%" --iscc "%ISCC_EXE%" --signing-pfx "%KSAT_SIGNING_PFX%" --signing-publisher "%KSAT_SIGNING_PUBLISHER%" --timestamp-url "%KSAT_SIGNING_TIMESTAMP_URL%" || exit /b 1
+) else (
+  "%PYTHON_EXE%" scripts\windows_release.py all --root "%CD%" --python "%PYTHON_EXE%" --signing-pfx "%KSAT_SIGNING_PFX%" --signing-publisher "%KSAT_SIGNING_PUBLISHER%" --timestamp-url "%KSAT_SIGNING_TIMESTAMP_URL%" || exit /b 1
+)
+
 echo.
-echo Complete: release\KSAT-Setup-1.3.4.exe
+echo Complete:
+echo   release\KSATCoordinator-2.0.0.exe
+echo   release\KSATClient-2.0.0.exe
+echo   release\KSATCoordinatorSetup-2.0.0.exe
+echo   release\KSATClientSetup-2.0.0.exe
+echo   release\SHA256SUMS.txt
 endlocal

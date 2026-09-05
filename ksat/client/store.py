@@ -1,0 +1,2040 @@
+"""Transactional SQLite persistence for the managed lab client."""
+
+from __future__ import annotations
+
+import base64
+import binascii
+import hashlib
+import hmac
+import json
+import math
+import os
+import re
+import sqlite3
+import tempfile
+import threading
+import uuid
+from contextlib import contextmanager
+from dataclasses import dataclass, replace
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Callable, Iterator, TypeVar
+
+from pydantic import BaseModel, ValidationError
+
+from ksat.protocol import (
+    IntegrityEvent,
+    SignedAttemptTicket,
+    SignedAttemptDeadlineUpdate,
+    SignedResponseBundle,
+    SubmissionReceipt,
+    canonical_json,
+)
+from ksat.sqlite import connect_sqlite
+
+
+_T = TypeVar("_T", bound=BaseModel)
+_HASH = re.compile(r"[0-9a-f]{64}\Z")
+_OPTION = re.compile(r"[A-E]\Z")
+_ACTIVE_STATES = ("in_progress", "sealed_pending")
+_STATE_INTEGRITY_ERROR = "Authenticated client state is invalid."
+_LEGACY_STATE_ERROR = "Legacy client state is invalid."
+_LEGACY_SCHEMA_VERSION = 1
+_AUTHENTICATED_SCHEMA_VERSION = 2
+_ZERO_MAC = "0" * 64
+_AUTHENTICATED_TABLES = (
+    "cached_content_packs",
+    "local_attempts",
+    "local_responses",
+    "local_integrity_events",
+    "submission_outbox",
+)
+_LEGACY_REQUIRED_COLUMNS = {
+    "cached_content_packs": {
+        "release_id", "content_hash", "pack_path", "verified", "cached_at",
+    },
+    "local_attempts": {
+        "attempt_id", "student_id", "release_id", "ticket_json",
+        "question_order_json", "current_question_id", "state", "deadline",
+        "remaining_seconds", "last_wall_time", "created_at", "sealed_at",
+        "sealed_bundle_json", "receipt_json", "deadline_revision",
+        "deadline_update_json",
+    },
+    "local_responses": {
+        "attempt_id", "question_id", "selected_answer", "saved_at",
+    },
+    "local_integrity_events": {
+        "event_id", "attempt_id", "event_type", "occurred_at",
+    },
+    "submission_outbox": {
+        "attempt_id", "bundle_json", "retry_count", "next_attempt_at",
+        "last_error", "status", "created_at",
+    },
+}
+
+
+class AttemptSealedError(RuntimeError):
+    pass
+
+
+class ClientStateMigrationRequired(ValueError):
+    pass
+
+
+@dataclass(frozen=True)
+class LocalAttemptRecord:
+    attempt_id: str
+    release_id: str
+    state: str
+    deadline: datetime
+    question_order: tuple[int, ...]
+    current_question_id: int
+    responses: dict[int, str | None]
+    remaining_seconds: int
+    sealed_at: datetime | None
+    receipt: SubmissionReceipt | None
+    ticket: SignedAttemptTicket
+    last_wall_time: datetime
+    deadline_revision: int = 0
+    deadline_update: SignedAttemptDeadlineUpdate | None = None
+
+
+@dataclass(frozen=True)
+class PendingSubmission:
+    attempt_id: str
+    bundle: SignedResponseBundle
+    retry_count: int
+    next_attempt_at: datetime
+    last_error: str | None
+    status: str = "pending"
+
+
+@dataclass(frozen=True)
+class _ValidatedAttemptSnapshot:
+    record: LocalAttemptRecord
+    sealed_bundle: SignedResponseBundle | None
+    receipt_json: str | None
+    outbox_json: str | None
+
+
+@dataclass(frozen=True)
+class _ValidatedJournalEntry:
+    sequence: int
+    operation: str
+    previous_mac: str
+    state_digest: str
+    entry_mac: str
+
+    @property
+    def anchor(self) -> tuple[int, str, str]:
+        return self.sequence, self.state_digest, self.entry_mac
+
+
+@dataclass(frozen=True)
+class _DatabaseGeneration:
+    version: int
+    tables: frozenset[str]
+    has_authenticated_records: bool
+    journal_entries: int
+    anchor_exists: bool
+
+
+def _aware(value: datetime, label: str = "Timestamp") -> datetime:
+    if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError(f"{label} must be timezone-aware.")
+    return value
+
+
+def _iso(value: datetime, label: str = "Timestamp") -> str:
+    return _aware(value, label).astimezone(timezone.utc).isoformat()
+
+
+def _parse_time(value: object, message: str) -> datetime:
+    if not isinstance(value, str):
+        raise ValueError(message)
+    try:
+        parsed = datetime.fromisoformat(value)
+        return _aware(parsed).astimezone(timezone.utc)
+    except (TypeError, ValueError) as error:
+        raise ValueError(message) from error
+
+
+def _uuid(value: object, label: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{label} is invalid.")
+    try:
+        parsed = uuid.UUID(value)
+    except (AttributeError, ValueError) as error:
+        raise ValueError(f"{label} is invalid.") from error
+    if str(parsed) != value:
+        raise ValueError(f"{label} is invalid.")
+    return value
+
+
+def _b64(value: object, length: int, label: str) -> bytes:
+    if not isinstance(value, str):
+        raise ValueError(f"{label} is invalid.")
+    try:
+        decoded = base64.b64decode(value.encode("ascii"), validate=True)
+    except (UnicodeEncodeError, binascii.Error, ValueError) as error:
+        raise ValueError(f"{label} is invalid.") from error
+    if len(decoded) != length or base64.b64encode(decoded).decode("ascii") != value:
+        raise ValueError(f"{label} is invalid.")
+    return decoded
+
+
+def _validate_finite_and_aware(value: object) -> None:
+    if isinstance(value, datetime):
+        _aware(value)
+    elif isinstance(value, float) and not math.isfinite(value):
+        raise ValueError("Persisted numeric values must be finite.")
+    elif isinstance(value, dict):
+        for nested in value.values():
+            _validate_finite_and_aware(nested)
+    elif isinstance(value, (list, tuple)):
+        for nested in value:
+            _validate_finite_and_aware(nested)
+    elif isinstance(value, BaseModel):
+        _validate_finite_and_aware(value.model_dump())
+
+
+def _duplicates_rejected(items):
+    result = {}
+    for key, value in items:
+        if key in result:
+            raise ValueError("Duplicate JSON key.")
+        result[key] = value
+    return result
+
+
+def _strict_json_object(raw: str, message: str) -> dict[str, object]:
+    try:
+        value = json.loads(
+            raw,
+            object_pairs_hook=_duplicates_rejected,
+            parse_constant=lambda _: (_ for _ in ()).throw(ValueError("Non-finite JSON.")),
+        )
+    except (TypeError, ValueError, json.JSONDecodeError) as error:
+        raise ValueError(message) from error
+    if not isinstance(value, dict):
+        raise ValueError(message)
+    if canonical_json(value).decode("utf-8") != raw:
+        raise ValueError(message)
+    return value
+
+
+def _model_json(value: _T, expected: type[_T]) -> tuple[_T, str]:
+    if not isinstance(value, expected):
+        raise ValueError(f"{expected.__name__} is invalid.")
+    _validate_finite_and_aware(value)
+    raw = canonical_json(value).decode("utf-8")
+    _strict_json_object(raw, f"{expected.__name__} is invalid.")
+    try:
+        validated = expected.model_validate_json(raw, strict=True)
+    except ValidationError as error:
+        raise ValueError(f"{expected.__name__} is invalid.") from error
+    return validated, raw
+
+
+def _stored_model(raw: object, expected: type[_T], message: str) -> _T:
+    if not isinstance(raw, str):
+        raise ValueError(message)
+    _strict_json_object(raw, message)
+    try:
+        value = expected.model_validate_json(raw, strict=True)
+        _validate_finite_and_aware(value)
+        return value
+    except (ValidationError, ValueError) as error:
+        raise ValueError(message) from error
+
+
+def _validate_ticket(ticket: SignedAttemptTicket) -> tuple[SignedAttemptTicket, str]:
+    ticket, raw = _model_json(ticket, SignedAttemptTicket)
+    value = ticket.ticket
+    _uuid(value.attempt_id, "Attempt identifier")
+    _uuid(value.device_id, "Device identifier")
+    _uuid(value.release_id, "Release identifier")
+    if not isinstance(value.student_id, str) or not value.student_id.strip():
+        raise ValueError("Student identifier is invalid.")
+    if not _HASH.fullmatch(value.content_hash):
+        raise ValueError("Content hash is invalid.")
+    _aware(value.started_at, "Attempt start")
+    _aware(value.deadline, "Attempt deadline")
+    if value.deadline <= value.started_at:
+        raise ValueError("Attempt deadline must follow its start.")
+    _b64(value.order_seed_b64, 32, "Question-order seed")
+    _b64(value.content_key_b64, 32, "Content key")
+    _b64(ticket.signature_b64, 64, "Attempt ticket signature")
+    return ticket, raw
+
+
+def _validate_receipt(receipt: SubmissionReceipt) -> tuple[SubmissionReceipt, str]:
+    receipt, raw = _model_json(receipt, SubmissionReceipt)
+    _uuid(receipt.attempt_id, "Attempt identifier")
+    _aware(receipt.accepted_at, "Receipt acceptance time")
+    if any(
+        not isinstance(value, int) or isinstance(value, bool) or value < 0
+        for value in (receipt.score, receipt.total_questions, receipt.attempted, receipt.violations)
+    ):
+        raise ValueError("Submission receipt counts are invalid.")
+    if not (receipt.score <= receipt.attempted <= receipt.total_questions):
+        raise ValueError("Submission receipt counts are invalid.")
+    if not math.isfinite(receipt.percentage):
+        raise ValueError("Persisted numeric values must be finite.")
+    expected_percentage = (
+        round(receipt.score / receipt.total_questions * 100, 1)
+        if receipt.total_questions
+        else 0.0
+    )
+    if not 0.0 <= receipt.percentage <= 100.0 or receipt.percentage != expected_percentage:
+        raise ValueError("Submission receipt percentage is invalid.")
+    return receipt, raw
+
+
+def _validate_bundle(bundle: SignedResponseBundle) -> tuple[SignedResponseBundle, str]:
+    bundle, raw = _model_json(bundle, SignedResponseBundle)
+    _validate_ticket(bundle.bundle.ticket)
+    _uuid(bundle.bundle.ticket.ticket.attempt_id, "Attempt identifier")
+    if not _HASH.fullmatch(bundle.bundle.content_hash):
+        raise ValueError("Content hash is invalid.")
+    _aware(bundle.bundle.sealed_at, "Seal time")
+    signature = _b64(bundle.device_signature_b64, 64, "Device signature")
+    if not any(signature):
+        raise ValueError("Device signature is invalid.")
+    seen = set()
+    for response in bundle.bundle.responses:
+        if (
+            not isinstance(response.question_id, int)
+            or isinstance(response.question_id, bool)
+            or response.question_id <= 0
+            or response.question_id in seen
+        ):
+            raise ValueError("Bundle responses are invalid.")
+        seen.add(response.question_id)
+        if response.selected_answer is not None and not _OPTION.fullmatch(response.selected_answer):
+            raise ValueError("Bundle responses are invalid.")
+    for event in bundle.bundle.integrity_events:
+        if not event.event_type.strip():
+            raise ValueError("Integrity event is invalid.")
+        _aware(event.occurred_at, "Integrity event time")
+    return bundle, raw
+
+
+def _validate_receipt_for_sealed_attempt(
+    receipt: SubmissionReceipt,
+    question_order: tuple[int, ...],
+    bundle: SignedResponseBundle,
+    message: str,
+) -> None:
+    if (
+        receipt.total_questions != len(question_order)
+        or receipt.attempted
+        != sum(item.selected_answer is not None for item in bundle.bundle.responses)
+        or receipt.violations != len(bundle.bundle.integrity_events)
+    ):
+        raise ValueError(message)
+
+
+class ClientStore:
+    @classmethod
+    def legacy_state_migration_required(
+        cls, database_path: Path, integrity_anchor_path: Path
+    ) -> bool:
+        path = Path(database_path)
+        if not path.is_file():
+            return False
+        connection = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+        try:
+            version = connection.execute("PRAGMA user_version").fetchone()[0]
+            if type(version) is not int or not 0 <= version <= _AUTHENTICATED_SCHEMA_VERSION:
+                raise ValueError(_STATE_INTEGRITY_ERROR)
+            tables = {
+                row[0]
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
+            has_records = any(
+                table in tables
+                and connection.execute(
+                    f'SELECT 1 FROM "{table}" LIMIT 1'
+                ).fetchone()
+                is not None
+                for table in _AUTHENTICATED_TABLES
+            )
+            journal_entries = (
+                connection.execute(
+                    "SELECT COUNT(*) FROM authenticated_state_journal"
+                ).fetchone()[0]
+                if "authenticated_state_journal" in tables
+                else 0
+            )
+        finally:
+            connection.close()
+        return (
+            version in {0, _LEGACY_SCHEMA_VERSION}
+            and has_records
+            and journal_entries == 0
+            and not os.path.lexists(Path(integrity_anchor_path))
+        )
+
+    def __init__(
+        self,
+        database_path: Path,
+        *,
+        connection_factory: Callable[[Path], sqlite3.Connection] = connect_sqlite,
+        integrity_key: bytes | None = None,
+        integrity_anchor_path: Path | None = None,
+        allow_legacy_state_migration: bool = False,
+    ):
+        if (integrity_key is None) != (integrity_anchor_path is None):
+            raise ValueError("Client state integrity key and anchor must be configured together.")
+        if integrity_key is not None and (
+            not isinstance(integrity_key, bytes) or len(integrity_key) < 32
+        ):
+            raise ValueError("Client state integrity key is invalid.")
+        if type(allow_legacy_state_migration) is not bool:
+            raise ValueError("Client state migration authorization is invalid.")
+        if allow_legacy_state_migration and integrity_key is None:
+            raise ValueError("Client state migration requires authenticated storage.")
+        self.database_path = Path(database_path)
+        self._integrity_key = integrity_key
+        self._integrity_anchor_path = (
+            Path(integrity_anchor_path) if integrity_anchor_path is not None else None
+        )
+        self.database_path.parent.mkdir(parents=True, exist_ok=True)
+        self.connection = connection_factory(self.database_path)
+        self._lock = threading.RLock()
+        self._closed = False
+        self._anchor_recovery_required = False
+        try:
+            generation = self._inspect_database_generation()
+            self._open_schema_generation(
+                generation,
+                allow_legacy_state_migration=allow_legacy_state_migration,
+            )
+        except BaseException:
+            self.connection.close()
+            self._closed = True
+            raise
+
+    def _inspect_database_generation(self) -> _DatabaseGeneration:
+        version = self.connection.execute("PRAGMA user_version").fetchone()[0]
+        if type(version) is not int or not 0 <= version <= _AUTHENTICATED_SCHEMA_VERSION:
+            raise ValueError(_STATE_INTEGRITY_ERROR)
+        tables = frozenset(
+            row[0]
+            for row in self.connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        )
+        has_authenticated_records = any(
+            table in tables
+            and self.connection.execute(
+                f'SELECT 1 FROM "{table}" LIMIT 1'
+            ).fetchone()
+            is not None
+            for table in _AUTHENTICATED_TABLES
+        )
+        journal_entries = (
+            self.connection.execute(
+                "SELECT COUNT(*) FROM authenticated_state_journal"
+            ).fetchone()[0]
+            if "authenticated_state_journal" in tables
+            else 0
+        )
+        anchor_exists = bool(
+            self._integrity_anchor_path is not None
+            and os.path.lexists(self._integrity_anchor_path)
+        )
+        return _DatabaseGeneration(
+            version=version,
+            tables=tables,
+            has_authenticated_records=has_authenticated_records,
+            journal_entries=journal_entries,
+            anchor_exists=anchor_exists,
+        )
+
+    def _open_schema_generation(
+        self,
+        generation: _DatabaseGeneration,
+        *,
+        allow_legacy_state_migration: bool,
+    ) -> None:
+        if self._integrity_key is None:
+            if (
+                generation.version == _AUTHENTICATED_SCHEMA_VERSION
+                or generation.journal_entries
+            ):
+                raise ValueError(_STATE_INTEGRITY_ERROR)
+            self._migrate()
+            self._set_schema_version(_LEGACY_SCHEMA_VERSION)
+            return
+
+        is_legacy = (
+            generation.version in {0, _LEGACY_SCHEMA_VERSION}
+            and generation.has_authenticated_records
+            and generation.journal_entries == 0
+            and not generation.anchor_exists
+        )
+        if is_legacy:
+            if not allow_legacy_state_migration:
+                raise ClientStateMigrationRequired(
+                    "Client state requires explicit administrator migration."
+                )
+            self._migrate_legacy_state()
+            return
+
+        if generation.version == _AUTHENTICATED_SCHEMA_VERSION and not (
+            generation.journal_entries and generation.anchor_exists
+        ):
+            if not (
+                allow_legacy_state_migration
+                and generation.journal_entries == 1
+                and not generation.anchor_exists
+            ):
+                raise ValueError(_STATE_INTEGRITY_ERROR)
+
+        if generation.journal_entries or generation.anchor_exists:
+            self._initialize_or_verify_authenticated_state(
+                allow_legacy_migration_recovery=allow_legacy_state_migration
+            )
+            self._migrate()
+        else:
+            self._migrate()
+            self._initialize_or_verify_authenticated_state()
+        self._set_schema_version(_AUTHENTICATED_SCHEMA_VERSION)
+
+    def _set_schema_version(self, version: int) -> None:
+        if version not in {_LEGACY_SCHEMA_VERSION, _AUTHENTICATED_SCHEMA_VERSION}:
+            raise ValueError("Client schema version is invalid.")
+        current = self.connection.execute("PRAGMA user_version").fetchone()[0]
+        if current == version:
+            return
+        self.connection.execute(f"PRAGMA user_version = {version}")
+        self.connection.commit()
+
+    def _migrate(self) -> None:
+        with self._lock:
+            self.connection.execute("BEGIN IMMEDIATE")
+            try:
+                self._apply_schema_migrations()
+                self.connection.commit()
+            except BaseException:
+                if self.connection.in_transaction:
+                    self.connection.rollback()
+                raise
+
+    def _apply_schema_migrations(self) -> None:
+        for statement in (
+            """CREATE TABLE IF NOT EXISTS cached_content_packs (
+                  release_id TEXT PRIMARY KEY,
+                  content_hash TEXT NOT NULL,
+                  pack_path TEXT NOT NULL,
+                  verified INTEGER NOT NULL CHECK (verified IN (0, 1)),
+                  cached_at TEXT NOT NULL
+                )""",
+            """CREATE TABLE IF NOT EXISTS local_attempts (
+                  attempt_id TEXT PRIMARY KEY,
+                  student_id TEXT NOT NULL,
+                  release_id TEXT NOT NULL,
+                  ticket_json TEXT NOT NULL,
+                  question_order_json TEXT NOT NULL,
+                  current_question_id INTEGER,
+                  state TEXT NOT NULL CHECK (state IN ('in_progress', 'sealed_pending', 'acknowledged')),
+                  deadline TEXT NOT NULL,
+                  remaining_seconds INTEGER NOT NULL CHECK (remaining_seconds >= 0),
+                  last_wall_time TEXT NOT NULL,
+                  created_at TEXT NOT NULL,
+                  sealed_at TEXT,
+                  sealed_bundle_json TEXT,
+                  receipt_json TEXT
+                  ,deadline_revision INTEGER NOT NULL DEFAULT 0
+                  ,deadline_update_json TEXT
+                )""",
+            """CREATE UNIQUE INDEX IF NOT EXISTS one_active_student_release
+                  ON local_attempts(student_id, release_id)
+                  WHERE state IN ('in_progress', 'sealed_pending')""",
+            """CREATE TABLE IF NOT EXISTS local_responses (
+                  attempt_id TEXT NOT NULL REFERENCES local_attempts(attempt_id) ON DELETE CASCADE,
+                  question_id INTEGER NOT NULL,
+                  selected_answer TEXT,
+                  saved_at TEXT NOT NULL,
+                  PRIMARY KEY(attempt_id, question_id)
+                )""",
+            """CREATE TABLE IF NOT EXISTS local_integrity_events (
+                  event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  attempt_id TEXT NOT NULL REFERENCES local_attempts(attempt_id) ON DELETE CASCADE,
+                  event_type TEXT NOT NULL,
+                  occurred_at TEXT NOT NULL
+                )""",
+            """CREATE TABLE IF NOT EXISTS submission_outbox (
+                  attempt_id TEXT PRIMARY KEY REFERENCES local_attempts(attempt_id) ON DELETE CASCADE,
+                  bundle_json TEXT NOT NULL,
+                  retry_count INTEGER NOT NULL CHECK (retry_count >= 0),
+                  next_attempt_at TEXT NOT NULL,
+                  last_error TEXT,
+                  status TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending', 'faculty_intervention_required')),
+                  created_at TEXT NOT NULL
+                )""",
+            """CREATE TABLE IF NOT EXISTS authenticated_state_journal (
+                  sequence INTEGER PRIMARY KEY CHECK (sequence > 0),
+                  operation TEXT NOT NULL,
+                  previous_mac TEXT NOT NULL,
+                  state_digest TEXT NOT NULL,
+                  entry_mac TEXT NOT NULL
+                )""",
+        ):
+            self.connection.execute(statement)
+        columns = {
+            row["name"]
+            for row in self.connection.execute("PRAGMA table_info(submission_outbox)")
+        }
+        if "status" not in columns:
+            self.connection.execute(
+                """ALTER TABLE submission_outbox
+                   ADD COLUMN status TEXT NOT NULL DEFAULT 'pending'
+                   CHECK (status IN ('pending', 'faculty_intervention_required'))"""
+            )
+        attempt_columns = {
+            row["name"]
+            for row in self.connection.execute("PRAGMA table_info(local_attempts)")
+        }
+        if "current_question_id" not in attempt_columns:
+            self.connection.execute(
+                "ALTER TABLE local_attempts ADD COLUMN current_question_id INTEGER"
+            )
+        if "deadline_revision" not in attempt_columns:
+            self.connection.execute(
+                "ALTER TABLE local_attempts ADD COLUMN deadline_revision INTEGER NOT NULL DEFAULT 0"
+            )
+        if "deadline_update_json" not in attempt_columns:
+            self.connection.execute(
+                "ALTER TABLE local_attempts ADD COLUMN deadline_update_json TEXT"
+            )
+
+    def _validate_legacy_state(self) -> None:
+        try:
+            version = self.connection.execute("PRAGMA user_version").fetchone()[0]
+            tables = {
+                row[0]
+                for row in self.connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
+            if (
+                version not in {0, _LEGACY_SCHEMA_VERSION}
+                or not set(_LEGACY_REQUIRED_COLUMNS).issubset(tables)
+                or (
+                    "authenticated_state_journal" in tables
+                    and self.connection.execute(
+                        "SELECT COUNT(*) FROM authenticated_state_journal"
+                    ).fetchone()[0]
+                    != 0
+                )
+            ):
+                raise ValueError(_LEGACY_STATE_ERROR)
+            for table, required in _LEGACY_REQUIRED_COLUMNS.items():
+                columns = {
+                    row[1]
+                    for row in self.connection.execute(
+                        f'PRAGMA table_info("{table}")'
+                    ).fetchall()
+                }
+                if not required.issubset(columns):
+                    raise ValueError(_LEGACY_STATE_ERROR)
+            if [row[0] for row in self.connection.execute("PRAGMA quick_check")] != ["ok"]:
+                raise ValueError(_LEGACY_STATE_ERROR)
+            if self.connection.execute("PRAGMA foreign_key_check").fetchone() is not None:
+                raise ValueError(_LEGACY_STATE_ERROR)
+            for child in ("local_responses", "local_integrity_events", "submission_outbox"):
+                if self.connection.execute(
+                    f"""SELECT 1 FROM {child} AS child
+                        LEFT JOIN local_attempts AS attempt
+                          ON attempt.attempt_id=child.attempt_id
+                        WHERE attempt.attempt_id IS NULL LIMIT 1"""
+                ).fetchone() is not None:
+                    raise ValueError(_LEGACY_STATE_ERROR)
+            if self.connection.execute(
+                "SELECT COUNT(*) FROM local_attempts "
+                "WHERE state IN ('in_progress', 'sealed_pending')"
+            ).fetchone()[0] > 1:
+                raise ValueError(_LEGACY_STATE_ERROR)
+            for row in self.connection.execute(
+                """SELECT release_id, content_hash, pack_path, verified, cached_at
+                   FROM cached_content_packs"""
+            ).fetchall():
+                _uuid(row["release_id"], "Legacy release identifier")
+                if (
+                    not isinstance(row["content_hash"], str)
+                    or not _HASH.fullmatch(row["content_hash"])
+                    or not isinstance(row["pack_path"], str)
+                    or not row["pack_path"]
+                    or not Path(row["pack_path"]).is_absolute()
+                    or type(row["verified"]) is not int
+                    or row["verified"] not in {0, 1}
+                ):
+                    raise ValueError(_LEGACY_STATE_ERROR)
+                _parse_time(row["cached_at"], _LEGACY_STATE_ERROR)
+            attempt_ids = [
+                row["attempt_id"]
+                for row in self.connection.execute(
+                    "SELECT attempt_id FROM local_attempts ORDER BY attempt_id"
+                ).fetchall()
+            ]
+            for attempt_id in attempt_ids:
+                self._validated_attempt_snapshot(
+                    self.connection, attempt_id, _LEGACY_STATE_ERROR
+                )
+            outbox_rows = self.connection.execute(
+                """SELECT attempt_id, bundle_json, retry_count, next_attempt_at,
+                          last_error, status, created_at
+                   FROM submission_outbox
+                   ORDER BY next_attempt_at, created_at, attempt_id"""
+            ).fetchall()
+            for row in outbox_rows:
+                self._validated_outbox_row(
+                    self.connection, row, _LEGACY_STATE_ERROR
+                )
+        except BaseException as error:
+            if isinstance(error, (KeyboardInterrupt, SystemExit)):
+                raise
+            if isinstance(error, ValueError) and str(error) == _LEGACY_STATE_ERROR:
+                raise
+            raise ValueError(_LEGACY_STATE_ERROR) from error
+
+    def _migrate_legacy_state(self) -> None:
+        with self._lock:
+            self.connection.execute("BEGIN IMMEDIATE")
+            try:
+                self._validate_legacy_state()
+                self._apply_schema_migrations()
+                anchor = self._append_authenticated_entry(
+                    self.connection, "legacy_v1_migration"
+                )
+                self.connection.execute(
+                    f"PRAGMA user_version = {_AUTHENTICATED_SCHEMA_VERSION}"
+                )
+                self.connection.commit()
+            except BaseException:
+                if self.connection.in_transaction:
+                    self.connection.rollback()
+                raise
+        self._write_anchor(*anchor)
+        self._verify_full_authenticated_state()
+
+    def migration_summary(self) -> dict[str, int]:
+        with self._read_transaction() as connection:
+            counts = {
+                "cached_packs": connection.execute(
+                    "SELECT COUNT(*) FROM cached_content_packs"
+                ).fetchone()[0],
+                "pending_outbox": connection.execute(
+                    "SELECT COUNT(*) FROM submission_outbox"
+                ).fetchone()[0],
+            }
+            for state in ("in_progress", "sealed_pending", "acknowledged"):
+                counts[f"{state}_attempts"] = connection.execute(
+                    "SELECT COUNT(*) FROM local_attempts WHERE state=?", (state,)
+                ).fetchone()[0]
+        return counts
+
+    @staticmethod
+    def _canonical_rows(connection: sqlite3.Connection, table: str) -> list[list[object]]:
+        cursor = connection.execute(f'SELECT * FROM "{table}"')
+        rows = [list(row) for row in cursor.fetchall()]
+        rows.sort(key=lambda row: canonical_json(row))
+        return rows
+
+    def _state_digest(self, connection: sqlite3.Connection) -> str:
+        state = {
+            table: self._canonical_rows(connection, table)
+            for table in _AUTHENTICATED_TABLES
+        }
+        return hashlib.sha256(canonical_json(state)).hexdigest()
+
+    def _journal_mac(
+        self, sequence: int, operation: str, previous_mac: str, state_digest: str
+    ) -> str:
+        assert self._integrity_key is not None
+        payload = canonical_json(
+            {
+                "operation": operation,
+                "previous_mac": previous_mac,
+                "sequence": sequence,
+                "state_digest": state_digest,
+            }
+        )
+        return hmac.new(self._integrity_key, payload, hashlib.sha256).hexdigest()
+
+    @staticmethod
+    def _anchor_bytes(sequence: int, state_digest: str, entry_mac: str) -> bytes:
+        return canonical_json(
+            {
+                "entry_mac": entry_mac,
+                "format_version": 1,
+                "sequence": sequence,
+                "state_digest": state_digest,
+            }
+        )
+
+    def _read_anchor(self) -> tuple[int, str, str]:
+        assert self._integrity_anchor_path is not None
+        try:
+            raw = self._integrity_anchor_path.read_bytes()
+            value = json.loads(
+                raw,
+                object_pairs_hook=_duplicates_rejected,
+                parse_constant=lambda _: (_ for _ in ()).throw(ValueError()),
+            )
+        except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as error:
+            raise ValueError(_STATE_INTEGRITY_ERROR) from error
+        if (
+            not isinstance(value, dict)
+            or set(value) != {"entry_mac", "format_version", "sequence", "state_digest"}
+            or value.get("format_version") != 1
+            or not isinstance(value.get("sequence"), int)
+            or isinstance(value.get("sequence"), bool)
+            or value["sequence"] <= 0
+            or not isinstance(value.get("entry_mac"), str)
+            or not _HASH.fullmatch(value["entry_mac"])
+            or not isinstance(value.get("state_digest"), str)
+            or not _HASH.fullmatch(value["state_digest"])
+            or canonical_json(value) != raw
+        ):
+            raise ValueError(_STATE_INTEGRITY_ERROR)
+        return value["sequence"], value["state_digest"], value["entry_mac"]
+
+    def _write_anchor(self, sequence: int, state_digest: str, entry_mac: str) -> None:
+        assert self._integrity_anchor_path is not None
+        path = self._integrity_anchor_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if os.path.lexists(path) and (path.is_symlink() or not path.is_file()):
+            raise ValueError(_STATE_INTEGRITY_ERROR)
+        descriptor, temporary_name = tempfile.mkstemp(
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+        )
+        temporary_path = Path(temporary_name)
+        try:
+            with os.fdopen(descriptor, "wb") as stream:
+                descriptor = -1
+                stream.write(self._anchor_bytes(sequence, state_digest, entry_mac))
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary_path, path)
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+            temporary_path.unlink(missing_ok=True)
+
+    def _latest_journal(self, connection: sqlite3.Connection) -> sqlite3.Row | None:
+        return connection.execute(
+            """SELECT sequence, operation, previous_mac, state_digest, entry_mac
+               FROM authenticated_state_journal ORDER BY sequence DESC LIMIT 1"""
+        ).fetchone()
+
+    def _validated_journal_row(
+        self, row: sqlite3.Row, *, expected_sequence: int | None = None,
+        expected_previous_mac: str | None = None,
+    ) -> _ValidatedJournalEntry:
+        try:
+            sequence = row["sequence"]
+            operation = row["operation"]
+            previous_mac = row["previous_mac"]
+            state_digest = row["state_digest"]
+            entry_mac = row["entry_mac"]
+        except (IndexError, KeyError, TypeError) as error:
+            raise ValueError(_STATE_INTEGRITY_ERROR) from error
+        if (
+            not isinstance(sequence, int)
+            or isinstance(sequence, bool)
+            or sequence <= 0
+            or expected_sequence is not None and sequence != expected_sequence
+            or not isinstance(operation, str)
+            or not operation
+            or len(operation) > 80
+            or not isinstance(previous_mac, str)
+            or not _HASH.fullmatch(previous_mac)
+            or expected_previous_mac is not None
+            and not hmac.compare_digest(previous_mac, expected_previous_mac)
+            or not isinstance(state_digest, str)
+            or not _HASH.fullmatch(state_digest)
+            or not isinstance(entry_mac, str)
+            or not _HASH.fullmatch(entry_mac)
+        ):
+            raise ValueError(_STATE_INTEGRITY_ERROR)
+        expected_mac = self._journal_mac(sequence, operation, previous_mac, state_digest)
+        if not hmac.compare_digest(entry_mac, expected_mac):
+            raise ValueError(_STATE_INTEGRITY_ERROR)
+        return _ValidatedJournalEntry(
+            sequence=sequence,
+            operation=operation,
+            previous_mac=previous_mac,
+            state_digest=state_digest,
+            entry_mac=entry_mac,
+        )
+
+    def _validated_journal_chain(
+        self, connection: sqlite3.Connection
+    ) -> tuple[_ValidatedJournalEntry, ...]:
+        rows = connection.execute(
+            """SELECT sequence, operation, previous_mac, state_digest, entry_mac
+               FROM authenticated_state_journal ORDER BY sequence"""
+        ).fetchall()
+        previous_mac = _ZERO_MAC
+        entries = []
+        for expected_sequence, row in enumerate(rows, start=1):
+            entry = self._validated_journal_row(
+                row,
+                expected_sequence=expected_sequence,
+                expected_previous_mac=previous_mac,
+            )
+            entries.append(entry)
+            previous_mac = entry.entry_mac
+        return tuple(entries)
+
+    def _verify_current_authenticated_state(self, connection: sqlite3.Connection) -> None:
+        latest = self._latest_journal(connection)
+        if latest is None:
+            raise ValueError(_STATE_INTEGRITY_ERROR)
+        entry = self._validated_journal_row(latest)
+        if not hmac.compare_digest(entry.state_digest, self._state_digest(connection)):
+            raise ValueError(_STATE_INTEGRITY_ERROR)
+        anchor_sequence, anchor_digest, anchor_mac = self._read_anchor()
+        if (
+            anchor_sequence != entry.sequence
+            or not hmac.compare_digest(anchor_digest, entry.state_digest)
+            or not hmac.compare_digest(anchor_mac, entry.entry_mac)
+        ):
+            raise ValueError(_STATE_INTEGRITY_ERROR)
+
+    def _verify_full_authenticated_state(self) -> None:
+        entries = self._validated_journal_chain(self.connection)
+        if not entries:
+            raise ValueError(_STATE_INTEGRITY_ERROR)
+        tail = entries[-1]
+        if not hmac.compare_digest(
+            tail.state_digest, self._state_digest(self.connection)
+        ):
+            raise ValueError(_STATE_INTEGRITY_ERROR)
+        anchor = self._read_anchor()
+        if anchor == tail.anchor:
+            return
+        if (
+            len(entries) >= 2
+            and anchor == entries[-2].anchor
+            and tail.sequence == entries[-2].sequence + 1
+        ):
+            self._write_anchor(*tail.anchor)
+            self._verify_current_authenticated_state(self.connection)
+            return
+        raise ValueError(_STATE_INTEGRITY_ERROR)
+
+    def _append_authenticated_entry(
+        self, connection: sqlite3.Connection, operation: str
+    ) -> tuple[int, str, str]:
+        latest = self._latest_journal(connection)
+        if latest is None:
+            sequence = 1
+            previous_mac = _ZERO_MAC
+        else:
+            previous = self._validated_journal_row(latest)
+            sequence = previous.sequence + 1
+            previous_mac = previous.entry_mac
+        state_digest = self._state_digest(connection)
+        entry_mac = self._journal_mac(sequence, operation, previous_mac, state_digest)
+        connection.execute(
+            "INSERT INTO authenticated_state_journal VALUES (?, ?, ?, ?, ?)",
+            (sequence, operation, previous_mac, state_digest, entry_mac),
+        )
+        return sequence, state_digest, entry_mac
+
+    def _initialize_or_verify_authenticated_state(
+        self, *, allow_legacy_migration_recovery: bool = False
+    ) -> None:
+        assert self._integrity_anchor_path is not None
+        anchor_exists = os.path.lexists(self._integrity_anchor_path)
+        journal_exists = self._latest_journal(self.connection) is not None
+        if anchor_exists and journal_exists:
+            self._verify_full_authenticated_state()
+            return
+        if anchor_exists:
+            raise ValueError(_STATE_INTEGRITY_ERROR)
+        if journal_exists:
+            entries = self._validated_journal_chain(self.connection)
+            has_existing_state = any(
+                self.connection.execute(f'SELECT 1 FROM "{table}" LIMIT 1').fetchone()
+                is not None
+                for table in _AUTHENTICATED_TABLES
+            )
+            initialize_recovery = (
+                len(entries) == 1
+                and entries[0].operation == "initialize"
+                and not has_existing_state
+                and hmac.compare_digest(
+                    entries[0].state_digest, self._state_digest(self.connection)
+                )
+            )
+            legacy_migration_recovery = (
+                allow_legacy_migration_recovery
+                and len(entries) == 1
+                and entries[0].operation == "legacy_v1_migration"
+                and has_existing_state
+                and self.connection.execute("PRAGMA user_version").fetchone()[0]
+                == _AUTHENTICATED_SCHEMA_VERSION
+                and hmac.compare_digest(
+                    entries[0].state_digest, self._state_digest(self.connection)
+                )
+            )
+            if initialize_recovery or legacy_migration_recovery:
+                self._write_anchor(*entries[0].anchor)
+                self._verify_current_authenticated_state(self.connection)
+                return
+            raise ValueError(_STATE_INTEGRITY_ERROR)
+        has_existing_state = any(
+            self.connection.execute(f'SELECT 1 FROM "{table}" LIMIT 1').fetchone()
+            is not None
+            for table in _AUTHENTICATED_TABLES
+        )
+        if has_existing_state:
+            raise ValueError(_STATE_INTEGRITY_ERROR)
+        self.connection.execute("BEGIN IMMEDIATE")
+        try:
+            anchor = self._append_authenticated_entry(self.connection, "initialize")
+            self.connection.commit()
+        except BaseException:
+            if self.connection.in_transaction:
+                self.connection.rollback()
+            raise
+        self._write_anchor(*anchor)
+
+    def _ensure_open(self) -> None:
+        if self._closed:
+            raise RuntimeError("Client store is closed.")
+
+    def _recover_pending_anchor(self) -> None:
+        if self._integrity_key is None or not self._anchor_recovery_required:
+            return
+        self._verify_full_authenticated_state()
+        self._anchor_recovery_required = False
+
+    @contextmanager
+    def _transaction(self) -> Iterator[sqlite3.Connection]:
+        with self._lock:
+            self._ensure_open()
+            self._recover_pending_anchor()
+            self.connection.execute("BEGIN IMMEDIATE")
+            try:
+                if self._integrity_key is not None:
+                    self._verify_current_authenticated_state(self.connection)
+                yield self.connection
+                anchor = (
+                    self._append_authenticated_entry(self.connection, "mutation")
+                    if self._integrity_key is not None
+                    else None
+                )
+                self.connection.commit()
+                if anchor is not None:
+                    try:
+                        self._write_anchor(*anchor)
+                    except BaseException:
+                        self._anchor_recovery_required = True
+                        raise
+            except BaseException:
+                if self.connection.in_transaction:
+                    self.connection.rollback()
+                raise
+
+    @contextmanager
+    def _read_transaction(self) -> Iterator[sqlite3.Connection]:
+        with self._lock:
+            self._ensure_open()
+            self._recover_pending_anchor()
+            self.connection.execute("BEGIN")
+            try:
+                if self._integrity_key is not None:
+                    self._verify_current_authenticated_state(self.connection)
+                yield self.connection
+                self.connection.commit()
+            except BaseException:
+                if self.connection.in_transaction:
+                    self.connection.rollback()
+                raise
+
+    def close(self) -> None:
+        with self._lock:
+            if not self._closed:
+                if self.connection.in_transaction:
+                    self.connection.rollback()
+                self.connection.close()
+                self._closed = True
+
+    def __enter__(self) -> ClientStore:
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        self.close()
+
+    def cache_pack(
+        self,
+        release_id: str,
+        content_hash: str,
+        pack_path: Path,
+        *,
+        verified: bool,
+        cached_at: datetime | None = None,
+    ) -> None:
+        _uuid(release_id, "Release identifier")
+        if not _HASH.fullmatch(content_hash):
+            raise ValueError("Content hash is invalid.")
+        if type(verified) is not bool:
+            raise ValueError("Content verification state is invalid.")
+        normalized_path = str(Path(pack_path).resolve())
+        timestamp = _iso(cached_at or datetime.now(timezone.utc), "Cache time")
+        with self._transaction() as connection:
+            existing = connection.execute(
+                "SELECT content_hash, pack_path, verified FROM cached_content_packs WHERE release_id=?",
+                (release_id,),
+            ).fetchone()
+            if existing is None:
+                connection.execute(
+                    "INSERT INTO cached_content_packs VALUES (?, ?, ?, ?, ?)",
+                    (release_id, content_hash, normalized_path, int(verified), timestamp),
+                )
+            elif existing["content_hash"] != content_hash or existing["pack_path"] != normalized_path:
+                raise ValueError("Cached content pack conflicts with the existing release record.")
+            elif verified and not existing["verified"]:
+                connection.execute(
+                    "UPDATE cached_content_packs SET verified=1, cached_at=? WHERE release_id=?",
+                    (timestamp, release_id),
+                )
+
+    def verified_pack(
+        self,
+        release_id: str,
+        content_hash: str | None = None,
+        pack_path: Path | None = None,
+    ) -> Path | None:
+        _uuid(release_id, "Release identifier")
+        with self._lock:
+            self._ensure_open()
+            row = self.connection.execute(
+                """SELECT content_hash, pack_path, verified, cached_at
+                   FROM cached_content_packs WHERE release_id=?""",
+                (release_id,),
+            ).fetchone()
+        if row is None or row["verified"] != 1:
+            return None
+        message = "Stored content pack record is invalid."
+        try:
+            if (
+                not isinstance(row["content_hash"], str)
+                or not _HASH.fullmatch(row["content_hash"])
+                or not isinstance(row["pack_path"], str)
+                or not row["pack_path"]
+                or not Path(row["pack_path"]).is_absolute()
+                or type(row["verified"]) is not int
+            ):
+                raise ValueError(message)
+            _parse_time(row["cached_at"], message)
+        except (TypeError, ValueError) as error:
+            if isinstance(error, ValueError) and str(error) == message:
+                raise
+            raise ValueError(message) from error
+        if content_hash is not None and row["content_hash"] != content_hash:
+            return None
+        if pack_path is not None and row["pack_path"] != str(Path(pack_path).resolve()):
+            return None
+        return Path(row["pack_path"])
+
+    @staticmethod
+    def _attempt_creation_values(
+        ticket: SignedAttemptTicket,
+        question_order: list[int] | tuple[int, ...],
+        remaining_seconds: int | None,
+        created_at: datetime | None,
+        last_wall_time: datetime | None,
+    ) -> tuple[SignedAttemptTicket, str, str, int, str, str, str]:
+        ticket, ticket_json = _validate_ticket(ticket)
+        if (
+            not isinstance(question_order, (list, tuple))
+            or not question_order
+            or any(type(item) is not int or item <= 0 for item in question_order)
+            or len(set(question_order)) != len(question_order)
+        ):
+            raise ValueError("Question order is invalid.")
+        order_json = canonical_json({"order": list(question_order)}).decode("utf-8")
+        attempt = ticket.ticket
+        default_remaining = max(0, int((attempt.deadline - attempt.started_at).total_seconds()))
+        remaining = default_remaining if remaining_seconds is None else remaining_seconds
+        if type(remaining) is not int or remaining < 0:
+            raise ValueError("Remaining time is invalid.")
+        created = created_at or attempt.started_at
+        wall = last_wall_time or created
+        created_iso = _iso(created, "Attempt creation time")
+        wall_iso = _iso(wall, "Wall checkpoint")
+        deadline_iso = _iso(attempt.deadline, "Attempt deadline")
+        return (
+            ticket,
+            ticket_json,
+            order_json,
+            remaining,
+            created_iso,
+            wall_iso,
+            deadline_iso,
+        )
+
+    def create_attempt(
+        self,
+        ticket: SignedAttemptTicket,
+        question_order: list[int] | tuple[int, ...],
+        *,
+        remaining_seconds: int | None = None,
+        created_at: datetime | None = None,
+        last_wall_time: datetime | None = None,
+    ) -> LocalAttemptRecord:
+        (
+            ticket,
+            ticket_json,
+            order_json,
+            remaining,
+            created_iso,
+            wall_iso,
+            deadline_iso,
+        ) = self._attempt_creation_values(
+            ticket,
+            question_order,
+            remaining_seconds,
+            created_at,
+            last_wall_time,
+        )
+        attempt = ticket.ticket
+        with self._transaction() as connection:
+            cached = connection.execute(
+                """SELECT 1 FROM cached_content_packs
+                   WHERE release_id=? AND content_hash=? AND verified=1""",
+                (attempt.release_id, attempt.content_hash),
+            ).fetchone()
+            if cached is None:
+                raise ValueError("Attempt requires the exact verified content pack.")
+            existing = connection.execute(
+                """SELECT ticket_json, question_order_json, deadline,
+                          remaining_seconds, last_wall_time, created_at
+                   FROM local_attempts WHERE attempt_id=?""",
+                (attempt.attempt_id,),
+            ).fetchone()
+            if existing is not None:
+                if (
+                    existing["ticket_json"] != ticket_json
+                    or existing["question_order_json"] != order_json
+                    or existing["deadline"] != deadline_iso
+                    or existing["remaining_seconds"] != remaining
+                    or existing["last_wall_time"] != wall_iso
+                    or existing["created_at"] != created_iso
+                ):
+                    raise ValueError(
+                        "Attempt identifier conflicts with the stored creation parameters."
+                    )
+            else:
+                active = connection.execute(
+                    """SELECT attempt_id FROM local_attempts
+                       WHERE state IN ('in_progress', 'sealed_pending')
+                       ORDER BY created_at, attempt_id LIMIT 1"""
+                ).fetchone()
+                if active is not None:
+                    raise ValueError(
+                        "Another local assessment attempt is already active."
+                    )
+                try:
+                    connection.execute(
+                        """INSERT INTO local_attempts
+                           (attempt_id, student_id, release_id, ticket_json, question_order_json,
+                            current_question_id, state, deadline, remaining_seconds,
+                            last_wall_time, created_at)
+                           VALUES (?, ?, ?, ?, ?, ?, 'in_progress', ?, ?, ?, ?)""",
+                        (
+                            attempt.attempt_id,
+                            attempt.student_id,
+                            attempt.release_id,
+                            ticket_json,
+                            order_json,
+                            question_order[0],
+                            deadline_iso,
+                            remaining,
+                            wall_iso,
+                            created_iso,
+                        ),
+                    )
+                except sqlite3.IntegrityError as error:
+                    raise ValueError(
+                        "Another local assessment attempt is already active."
+                    ) from error
+        return self.load_attempt(attempt.attempt_id)
+
+    def start_or_resume_attempt(
+        self,
+        ticket: SignedAttemptTicket,
+        question_order: list[int] | tuple[int, ...],
+        *,
+        remaining_seconds: int,
+        created_at: datetime,
+        last_wall_time: datetime,
+    ) -> LocalAttemptRecord:
+        """Create one runtime attempt or return the exact active ticket winner."""
+        (
+            ticket,
+            ticket_json,
+            order_json,
+            remaining,
+            created_iso,
+            wall_iso,
+            deadline_iso,
+        ) = self._attempt_creation_values(
+            ticket,
+            question_order,
+            remaining_seconds,
+            created_at,
+            last_wall_time,
+        )
+        attempt = ticket.ticket
+        with self._transaction() as connection:
+            cached = connection.execute(
+                """SELECT 1 FROM cached_content_packs
+                   WHERE release_id=? AND content_hash=? AND verified=1""",
+                (attempt.release_id, attempt.content_hash),
+            ).fetchone()
+            if cached is None:
+                raise ValueError("Attempt requires the exact verified content pack.")
+            active_rows = connection.execute(
+                """SELECT attempt_id, student_id, release_id, ticket_json,
+                          question_order_json
+                   FROM local_attempts
+                   WHERE state IN ('in_progress', 'sealed_pending')
+                   ORDER BY created_at, attempt_id"""
+            ).fetchall()
+            if len(active_rows) > 1:
+                raise ValueError(
+                    "Multiple active attempts require recovery intervention."
+                )
+            active = None if not active_rows else active_rows[0]
+            if active is not None:
+                if (
+                    active["attempt_id"] != attempt.attempt_id
+                    or active["student_id"] != attempt.student_id
+                    or active["release_id"] != attempt.release_id
+                    or active["ticket_json"] != ticket_json
+                    or active["question_order_json"] != order_json
+                ):
+                    raise ValueError(
+                        "Another local assessment attempt is already active."
+                    )
+                winner_id = active["attempt_id"]
+            else:
+                existing = connection.execute(
+                    "SELECT 1 FROM local_attempts WHERE attempt_id=?",
+                    (attempt.attempt_id,),
+                ).fetchone()
+                if existing is not None:
+                    raise ValueError(
+                        "Attempt identifier conflicts with the stored creation parameters."
+                    )
+                try:
+                    connection.execute(
+                        """INSERT INTO local_attempts
+                           (attempt_id, student_id, release_id, ticket_json,
+                            question_order_json, current_question_id, state, deadline, remaining_seconds,
+                            last_wall_time, created_at)
+                           VALUES (?, ?, ?, ?, ?, ?, 'in_progress', ?, ?, ?, ?)""",
+                        (
+                            attempt.attempt_id,
+                            attempt.student_id,
+                            attempt.release_id,
+                            ticket_json,
+                            order_json,
+                            question_order[0],
+                            deadline_iso,
+                            remaining,
+                            wall_iso,
+                            created_iso,
+                        ),
+                    )
+                except sqlite3.IntegrityError as error:
+                    raise ValueError(
+                        "Another local assessment attempt is already active."
+                    ) from error
+                winner_id = attempt.attempt_id
+        return self.load_attempt(winner_id)
+
+    @staticmethod
+    def _question_order(raw: object, message: str) -> tuple[int, ...]:
+        if not isinstance(raw, str):
+            raise ValueError(message)
+        value = _strict_json_object(raw, message)
+        order = value.get("order") if set(value) == {"order"} else None
+        if (
+            not isinstance(order, list)
+            or not order
+            or any(type(item) is not int or item <= 0 for item in order)
+            or len(set(order)) != len(order)
+        ):
+            raise ValueError(message)
+        return tuple(order)
+
+    def _validated_attempt_snapshot(
+        self,
+        connection: sqlite3.Connection,
+        attempt_id: str,
+        message: str,
+    ) -> _ValidatedAttemptSnapshot:
+        row = connection.execute(
+            "SELECT * FROM local_attempts WHERE attempt_id=?", (attempt_id,)
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"Unknown local attempt: {attempt_id}")
+        responses = connection.execute(
+            """SELECT question_id, selected_answer, saved_at
+               FROM local_responses WHERE attempt_id=?""",
+            (attempt_id,),
+        ).fetchall()
+        event_rows = connection.execute(
+            """SELECT event_type, occurred_at FROM local_integrity_events
+               WHERE attempt_id=? ORDER BY event_id""",
+            (attempt_id,),
+        ).fetchall()
+        outbox = connection.execute(
+            "SELECT bundle_json FROM submission_outbox WHERE attempt_id=?",
+            (attempt_id,),
+        ).fetchone()
+        outbox_json = None if outbox is None else outbox["bundle_json"]
+        try:
+            ticket = _stored_model(row["ticket_json"], SignedAttemptTicket, message)
+            _validate_ticket(ticket)
+            order = self._question_order(row["question_order_json"], message)
+            current_question_id = row["current_question_id"]
+            if current_question_id is None:
+                current_question_id = order[0]
+            deadline = _parse_time(row["deadline"], message)
+            deadline_revision = row["deadline_revision"]
+            deadline_update = None
+            if row["deadline_update_json"] is not None:
+                deadline_update = _stored_model(
+                    row["deadline_update_json"], SignedAttemptDeadlineUpdate, message
+                )
+                _aware(deadline_update.update.prior_deadline, "Deadline update")
+                _aware(deadline_update.update.deadline, "Deadline update")
+                _aware(deadline_update.update.issued_at, "Deadline update")
+            last_wall = _parse_time(row["last_wall_time"], message)
+            _parse_time(row["created_at"], message)
+            sealed_at = None if row["sealed_at"] is None else _parse_time(row["sealed_at"], message)
+            sealed_bundle = None
+            if row["sealed_bundle_json"] is not None:
+                sealed_bundle = _stored_model(
+                    row["sealed_bundle_json"], SignedResponseBundle, message
+                )
+                _validate_bundle(sealed_bundle)
+            receipt = None
+            if row["receipt_json"] is not None:
+                receipt = _stored_model(row["receipt_json"], SubmissionReceipt, message)
+                _validate_receipt(receipt)
+            if (
+                row["attempt_id"] != ticket.ticket.attempt_id
+                or row["release_id"] != ticket.ticket.release_id
+                or row["student_id"] != ticket.ticket.student_id
+                or type(deadline_revision) is not int
+                or deadline_revision < 0
+                or (deadline_revision == 0 and deadline != ticket.ticket.deadline.astimezone(timezone.utc))
+                or (deadline_revision > 0 and (
+                    deadline_update is None
+                    or deadline_update.update.revision != deadline_revision
+                    or deadline_update.update.attempt_id != row["attempt_id"]
+                    or deadline_update.update.release_id != row["release_id"]
+                    or deadline_update.update.device_id != ticket.ticket.device_id
+                    or deadline_update.update.base_deadline.astimezone(timezone.utc)
+                       != ticket.ticket.deadline.astimezone(timezone.utc)
+                    or deadline_update.update.deadline.astimezone(timezone.utc) != deadline
+                    or deadline <= ticket.ticket.deadline.astimezone(timezone.utc)
+                    or int((deadline - ticket.ticket.deadline.astimezone(timezone.utc)).total_seconds())
+                       != deadline_update.update.cumulative_extension_seconds
+                    or deadline_update.update.prior_deadline.astimezone(timezone.utc) >= deadline
+                ))
+                or row["state"] not in (*_ACTIVE_STATES, "acknowledged")
+                or type(current_question_id) is not int
+                or current_question_id not in order
+                or type(row["remaining_seconds"]) is not int
+                or row["remaining_seconds"] < 0
+                or (row["state"] == "in_progress" and sealed_at is not None)
+                or (row["state"] != "in_progress" and sealed_at is None)
+                or (row["state"] == "in_progress") != (sealed_bundle is None)
+                or (
+                    sealed_bundle is not None
+                    and (
+                        sealed_bundle.bundle.ticket != ticket
+                        or sealed_bundle.bundle.ticket.ticket.attempt_id != row["attempt_id"]
+                        or sealed_bundle.bundle.sealed_at != sealed_at
+                    )
+                )
+                or (row["state"] == "acknowledged") != (receipt is not None)
+                or (row["state"] == "sealed_pending") != (outbox is not None)
+                or (
+                    outbox is not None
+                    and row["sealed_bundle_json"] != outbox_json
+                )
+            ):
+                raise ValueError(message)
+            response_map = {question_id: None for question_id in order}
+            for response in responses:
+                question_id = response["question_id"]
+                selected = response["selected_answer"]
+                if question_id not in response_map or (
+                    selected is not None and not _OPTION.fullmatch(selected)
+                ):
+                    raise ValueError(message)
+                _parse_time(response["saved_at"], message)
+                response_map[question_id] = selected
+            stored_events = []
+            for event_row in event_rows:
+                if (
+                    not isinstance(event_row["event_type"], str)
+                    or not event_row["event_type"].strip()
+                    or len(event_row["event_type"]) > 200
+                ):
+                    raise ValueError(message)
+                stored_events.append(
+                    IntegrityEvent(
+                        event_type=event_row["event_type"],
+                        occurred_at=_parse_time(event_row["occurred_at"], message),
+                    )
+                )
+            if sealed_bundle is not None and (
+                sealed_bundle.bundle.content_hash != ticket.ticket.content_hash
+                or [item.question_id for item in sealed_bundle.bundle.responses] != list(order)
+                or {
+                    item.question_id: item.selected_answer
+                    for item in sealed_bundle.bundle.responses
+                }
+                != response_map
+                or sealed_bundle.bundle.integrity_events != stored_events
+                or sealed_at is None
+                or sealed_at < ticket.ticket.started_at
+                or (
+                    receipt is not None
+                    and receipt.accepted_at < sealed_at
+                )
+            ):
+                raise ValueError(message)
+            if receipt is not None:
+                _validate_receipt_for_sealed_attempt(
+                    receipt, order, sealed_bundle, message
+                )
+        except (KeyError, TypeError, ValueError) as error:
+            if isinstance(error, ValueError) and str(error) == message:
+                raise
+            raise ValueError(message) from error
+        return _ValidatedAttemptSnapshot(
+            record=LocalAttemptRecord(
+                attempt_id=row["attempt_id"],
+                release_id=row["release_id"],
+                state=row["state"],
+                deadline=deadline,
+                question_order=order,
+                current_question_id=current_question_id,
+                responses=response_map,
+                remaining_seconds=row["remaining_seconds"],
+                sealed_at=sealed_at,
+                receipt=receipt,
+                ticket=ticket,
+                last_wall_time=last_wall,
+                deadline_revision=deadline_revision,
+                deadline_update=deadline_update,
+            ),
+            sealed_bundle=sealed_bundle,
+            receipt_json=row["receipt_json"],
+            outbox_json=outbox_json,
+        )
+
+    def load_attempt(self, attempt_id: str) -> LocalAttemptRecord:
+        with self._read_transaction() as connection:
+            snapshot = self._validated_attempt_snapshot(
+                connection, attempt_id, "Stored attempt data is invalid."
+            )
+        return snapshot.record
+
+    def active_attempt(
+        self, *, student_id: str | None = None, release_id: str | None = None
+    ) -> LocalAttemptRecord | None:
+        clauses = ["state IN ('in_progress', 'sealed_pending')"]
+        values: list[str] = []
+        if student_id is not None:
+            clauses.append("student_id=?")
+            values.append(student_id)
+        if release_id is not None:
+            clauses.append("release_id=?")
+            values.append(release_id)
+        with self._lock:
+            self._ensure_open()
+            rows = self.connection.execute(
+                f"SELECT attempt_id FROM local_attempts WHERE {' AND '.join(clauses)} ORDER BY created_at, attempt_id",
+                values,
+            ).fetchall()
+        if len(rows) > 1:
+            raise ValueError("Multiple active attempts require recovery intervention.")
+        return None if not rows else self.load_attempt(rows[0]["attempt_id"])
+
+    @staticmethod
+    def _editable(connection: sqlite3.Connection, attempt_id: str) -> sqlite3.Row:
+        row = connection.execute(
+            "SELECT state, question_order_json FROM local_attempts WHERE attempt_id=?",
+            (attempt_id,),
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"Unknown local attempt: {attempt_id}")
+        if row["state"] != "in_progress":
+            raise AttemptSealedError("The attempt is sealed and cannot be changed.")
+        return row
+
+    def save_answer(
+        self, attempt_id: str, question_id: int, selected_answer: str | None, *, saved_at: datetime
+    ) -> None:
+        if type(question_id) is not int or question_id <= 0:
+            raise ValueError("Question identifier is invalid.")
+        if selected_answer is not None and (
+            not isinstance(selected_answer, str) or not _OPTION.fullmatch(selected_answer)
+        ):
+            raise ValueError("Selected answer is invalid.")
+        saved_iso = _iso(saved_at, "Answer save time")
+        with self._transaction() as connection:
+            row = self._editable(connection, attempt_id)
+            if question_id not in self._question_order(
+                row["question_order_json"], "Stored attempt data is invalid."
+            ):
+                raise ValueError("Question is not part of the local attempt.")
+            connection.execute(
+                """INSERT INTO local_responses
+                   (attempt_id, question_id, selected_answer, saved_at) VALUES (?, ?, ?, ?)
+                   ON CONFLICT(attempt_id, question_id) DO UPDATE SET
+                     selected_answer=excluded.selected_answer, saved_at=excluded.saved_at""",
+                (attempt_id, question_id, selected_answer, saved_iso),
+            )
+
+    def save_answer_checkpoint(
+        self,
+        attempt_id: str,
+        question_id: int,
+        selected_answer: str | None,
+        *,
+        saved_at: datetime,
+        remaining_seconds: int,
+        last_wall_time: datetime,
+    ) -> None:
+        """Persist one answer and its monotonic clock checkpoint atomically."""
+
+        if type(question_id) is not int or question_id <= 0:
+            raise ValueError("Question identifier is invalid.")
+        if selected_answer is not None and (
+            not isinstance(selected_answer, str) or not _OPTION.fullmatch(selected_answer)
+        ):
+            raise ValueError("Selected answer is invalid.")
+        if type(remaining_seconds) is not int or remaining_seconds < 0:
+            raise ValueError("Remaining time is invalid.")
+        saved_iso = _iso(saved_at, "Answer save time")
+        wall_iso = _iso(last_wall_time, "Wall checkpoint")
+        with self._transaction() as connection:
+            row = self._editable(connection, attempt_id)
+            if question_id not in self._question_order(
+                row["question_order_json"], "Stored attempt data is invalid."
+            ):
+                raise ValueError("Question is not part of the local attempt.")
+            current = connection.execute(
+                "SELECT remaining_seconds FROM local_attempts WHERE attempt_id=?",
+                (attempt_id,),
+            ).fetchone()["remaining_seconds"]
+            if remaining_seconds > current:
+                raise ValueError("Remaining time cannot increase.")
+            connection.execute(
+                """UPDATE local_attempts SET remaining_seconds=?, last_wall_time=?
+                   WHERE attempt_id=?""",
+                (remaining_seconds, wall_iso, attempt_id),
+            )
+            connection.execute(
+                """INSERT INTO local_responses
+                   (attempt_id, question_id, selected_answer, saved_at) VALUES (?, ?, ?, ?)
+                   ON CONFLICT(attempt_id, question_id) DO UPDATE SET
+                     selected_answer=excluded.selected_answer, saved_at=excluded.saved_at""",
+                (attempt_id, question_id, selected_answer, saved_iso),
+            )
+
+    def save_position(self, attempt_id: str, question_id: int) -> None:
+        if type(question_id) is not int or question_id <= 0:
+            raise ValueError("Question identifier is invalid.")
+        with self._transaction() as connection:
+            row = self._editable(connection, attempt_id)
+            if question_id not in self._question_order(
+                row["question_order_json"], "Stored attempt data is invalid."
+            ):
+                raise ValueError("Question is not part of the local attempt.")
+            connection.execute(
+                "UPDATE local_attempts SET current_question_id=? WHERE attempt_id=?",
+                (question_id, attempt_id),
+            )
+
+    def record_integrity_event(
+        self, attempt_id: str, event_type: str, *, occurred_at: datetime
+    ) -> int:
+        if not isinstance(event_type, str) or not event_type.strip() or len(event_type) > 200:
+            raise ValueError("Integrity event type is invalid.")
+        occurred_iso = _iso(occurred_at, "Integrity event time")
+        with self._transaction() as connection:
+            self._editable(connection, attempt_id)
+            cursor = connection.execute(
+                "INSERT INTO local_integrity_events (attempt_id, event_type, occurred_at) VALUES (?, ?, ?)",
+                (attempt_id, event_type, occurred_iso),
+            )
+            return int(cursor.lastrowid)
+
+    def integrity_events(self, attempt_id: str) -> tuple[IntegrityEvent, ...]:
+        with self._read_transaction() as connection:
+            exists = connection.execute(
+                "SELECT 1 FROM local_attempts WHERE attempt_id=?", (attempt_id,)
+            ).fetchone()
+            if exists is None:
+                raise KeyError(f"Unknown local attempt: {attempt_id}")
+            rows = connection.execute(
+                """SELECT event_type, occurred_at FROM local_integrity_events
+                   WHERE attempt_id=? ORDER BY event_id""",
+                (attempt_id,),
+            ).fetchall()
+        try:
+            return tuple(
+                IntegrityEvent(
+                    event_type=row["event_type"],
+                    occurred_at=_parse_time(row["occurred_at"], "Stored integrity event is invalid."),
+                )
+                for row in rows
+            )
+        except (ValidationError, ValueError) as error:
+            raise ValueError("Stored integrity event is invalid.") from error
+
+    def update_timer_checkpoint(
+        self,
+        attempt_id: str,
+        remaining_seconds: int,
+        *,
+        last_wall_time: datetime,
+    ) -> None:
+        if type(remaining_seconds) is not int or remaining_seconds < 0:
+            raise ValueError("Remaining time is invalid.")
+        wall_iso = _iso(last_wall_time, "Wall checkpoint")
+        with self._transaction() as connection:
+            row = self._editable(connection, attempt_id)
+            current = connection.execute(
+                "SELECT remaining_seconds FROM local_attempts WHERE attempt_id=?",
+                (attempt_id,),
+            ).fetchone()["remaining_seconds"]
+            if remaining_seconds > current:
+                raise ValueError("Remaining time cannot increase.")
+            connection.execute(
+                """UPDATE local_attempts SET remaining_seconds=?, last_wall_time=?
+                   WHERE attempt_id=?""",
+                (remaining_seconds, wall_iso, attempt_id),
+            )
+
+    def apply_deadline_update(
+        self,
+        attempt_id: str,
+        signed_update: SignedAttemptDeadlineUpdate,
+        *,
+        remaining_before: int,
+        last_wall_time: datetime,
+    ) -> LocalAttemptRecord:
+        if type(remaining_before) is not int or remaining_before < 0:
+            raise ValueError("Remaining time is invalid.")
+        wall_iso = _iso(last_wall_time, "Wall checkpoint")
+        update = signed_update.update
+        update_json = canonical_json(signed_update).decode("utf-8")
+        with self._transaction() as connection:
+            row = connection.execute(
+                "SELECT * FROM local_attempts WHERE attempt_id=?", (attempt_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(attempt_id)
+            if row["state"] != "in_progress":
+                raise AttemptSealedError("Sealed attempts cannot be extended.")
+            ticket = _stored_model(
+                row["ticket_json"], SignedAttemptTicket, "Stored attempt data is invalid."
+            ).ticket
+            current_deadline = _parse_time(row["deadline"], "Stored attempt data is invalid.")
+            deadline = _aware(update.deadline).astimezone(timezone.utc)
+            baseline = ticket.deadline.astimezone(timezone.utc)
+            update_baseline = _aware(update.base_deadline).astimezone(timezone.utc)
+            current_cumulative = int((current_deadline - baseline).total_seconds())
+            cumulative = int((deadline - baseline).total_seconds())
+            delta = cumulative - current_cumulative
+            if (
+                update.attempt_id != attempt_id
+                or update.release_id != row["release_id"]
+                or update.device_id != ticket.device_id
+                or update.revision <= row["deadline_revision"]
+                or update_baseline != baseline
+                or deadline < current_deadline
+                or delta < 0
+                or cumulative != update.cumulative_extension_seconds
+                or remaining_before > row["remaining_seconds"]
+            ):
+                raise ValueError("Deadline update is invalid or stale.")
+            connection.execute(
+                """UPDATE local_attempts
+                   SET deadline=?, remaining_seconds=?, last_wall_time=?,
+                       deadline_revision=?, deadline_update_json=?
+                   WHERE attempt_id=?""",
+                (
+                    deadline.isoformat(),
+                    remaining_before + delta,
+                    wall_iso,
+                    update.revision,
+                    update_json,
+                    attempt_id,
+                ),
+            )
+        return self.load_attempt(attempt_id)
+
+    def seal_attempt(
+        self,
+        attempt_id: str,
+        bundle: SignedResponseBundle,
+        *,
+        sealed_at: datetime,
+    ) -> LocalAttemptRecord:
+        sealed_iso = _iso(sealed_at, "Seal time")
+        bundle, bundle_json = _validate_bundle(bundle)
+        with self._transaction() as connection:
+            row = connection.execute(
+                "SELECT * FROM local_attempts WHERE attempt_id=?", (attempt_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"Unknown local attempt: {attempt_id}")
+            if row["state"] != "in_progress":
+                if row["sealed_at"] == sealed_iso and row["sealed_bundle_json"] == bundle_json:
+                    pass
+                else:
+                    raise ValueError("Sealed attempt conflicts with the stored submission bundle.")
+            else:
+                ticket = _stored_model(
+                    row["ticket_json"], SignedAttemptTicket, "Stored attempt data is invalid."
+                )
+                if sealed_at < ticket.ticket.started_at:
+                    raise ValueError("Seal time cannot precede the attempt start.")
+                order = self._question_order(
+                    row["question_order_json"], "Stored attempt data is invalid."
+                )
+                saved_rows = connection.execute(
+                    "SELECT question_id, selected_answer FROM local_responses WHERE attempt_id=?",
+                    (attempt_id,),
+                ).fetchall()
+                saved = {item: None for item in order}
+                for saved_row in saved_rows:
+                    if saved_row["question_id"] not in saved:
+                        raise ValueError("Stored attempt data is invalid.")
+                    saved[saved_row["question_id"]] = saved_row["selected_answer"]
+                events = connection.execute(
+                    """SELECT event_type, occurred_at FROM local_integrity_events
+                       WHERE attempt_id=? ORDER BY event_id""",
+                    (attempt_id,),
+                ).fetchall()
+                expected_events = [
+                    IntegrityEvent(event_type=item["event_type"], occurred_at=_parse_time(
+                        item["occurred_at"], "Stored integrity event is invalid."
+                    ))
+                    for item in events
+                ]
+                if (
+                    bundle.bundle.ticket != ticket
+                    or bundle.bundle.ticket.ticket.attempt_id != attempt_id
+                    or bundle.bundle.content_hash != ticket.ticket.content_hash
+                    or bundle.bundle.sealed_at != sealed_at
+                    or [item.question_id for item in bundle.bundle.responses] != list(order)
+                    or {item.question_id: item.selected_answer for item in bundle.bundle.responses} != saved
+                    or bundle.bundle.integrity_events != expected_events
+                ):
+                    raise ValueError("Submission bundle does not match the stored attempt.")
+                connection.execute(
+                    """UPDATE local_attempts
+                       SET state='sealed_pending', sealed_at=?, sealed_bundle_json=?
+                       WHERE attempt_id=?""",
+                    (sealed_iso, bundle_json, attempt_id),
+                )
+                connection.execute(
+                    """INSERT INTO submission_outbox
+                       (attempt_id, bundle_json, retry_count, next_attempt_at, last_error, status, created_at)
+                       VALUES (?, ?, 0, ?, NULL, 'pending', ?)""",
+                    (attempt_id, bundle_json, sealed_iso, sealed_iso),
+                )
+        return self.load_attempt(attempt_id)
+
+    def _validated_outbox_row(
+        self,
+        connection: sqlite3.Connection,
+        row: sqlite3.Row,
+        message: str,
+    ) -> PendingSubmission:
+        try:
+            snapshot = self._validated_attempt_snapshot(
+                connection, row["attempt_id"], message
+            )
+            bundle = snapshot.sealed_bundle
+            next_attempt = _parse_time(row["next_attempt_at"], message)
+            _parse_time(row["created_at"], message)
+            if (
+                snapshot.record.state != "sealed_pending"
+                or bundle is None
+                or snapshot.outbox_json != row["bundle_json"]
+                or type(row["retry_count"]) is not int
+                or row["retry_count"] < 0
+                or row["status"] not in {
+                    "pending", "faculty_intervention_required"
+                }
+                or (
+                    row["status"] == "faculty_intervention_required"
+                    and not row["last_error"]
+                )
+                or (
+                    row["last_error"] is not None
+                    and (
+                        not isinstance(row["last_error"], str)
+                        or len(row["last_error"]) > 2000
+                    )
+                )
+            ):
+                raise ValueError(message)
+        except (KeyError, TypeError, ValueError) as error:
+            if isinstance(error, ValueError) and str(error) == message:
+                raise
+            raise ValueError(message) from error
+        return PendingSubmission(
+            attempt_id=row["attempt_id"],
+            bundle=bundle,
+            retry_count=row["retry_count"],
+            next_attempt_at=next_attempt,
+            last_error=row["last_error"],
+            status=row["status"],
+        )
+
+    def pending_submissions(
+        self, *, due_at: datetime | None = None
+    ) -> list[PendingSubmission]:
+        values: tuple[str, ...] = ()
+        where = ""
+        if due_at is not None:
+            where = "WHERE o.status='pending' AND o.next_attempt_at<=?"
+            values = (_iso(due_at, "Outbox due time"),)
+        with self._read_transaction() as connection:
+            rows = connection.execute(
+                f"""SELECT o.attempt_id, o.bundle_json, o.retry_count,
+                            o.next_attempt_at, o.last_error, o.status, o.created_at
+                    FROM submission_outbox AS o
+                    {where}
+                    ORDER BY o.next_attempt_at, o.created_at, o.attempt_id""",
+                values,
+            ).fetchall()
+            pending = [
+                self._validated_outbox_row(
+                    connection, row, "Stored submission outbox data is invalid."
+                )
+                for row in rows
+            ]
+        return pending
+
+    def record_retry(
+        self,
+        attempt_id: str,
+        *,
+        next_attempt_at: datetime,
+        last_error: str | None,
+    ) -> PendingSubmission:
+        next_iso = _iso(next_attempt_at, "Retry time")
+        if last_error is not None and (
+            not isinstance(last_error, str) or len(last_error) > 2000
+        ):
+            raise ValueError("Retry error is invalid.")
+        with self._transaction() as connection:
+            state = connection.execute(
+                "SELECT state FROM local_attempts WHERE attempt_id=?", (attempt_id,)
+            ).fetchone()
+            if state is None:
+                raise KeyError(f"Unknown local attempt: {attempt_id}")
+            if state["state"] != "sealed_pending":
+                raise ValueError("Only a pending sealed attempt can be retried.")
+            cursor = connection.execute(
+                """UPDATE submission_outbox
+                   SET retry_count=retry_count+1, next_attempt_at=?, last_error=?, status='pending'
+                   WHERE attempt_id=? AND status='pending'""",
+                (next_iso, last_error, attempt_id),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("Sealed attempt is missing its submission outbox record.")
+        return next(item for item in self.pending_submissions() if item.attempt_id == attempt_id)
+
+    def require_faculty_intervention(
+        self, attempt_id: str, *, last_error: str
+    ) -> PendingSubmission:
+        if not isinstance(last_error, str) or not last_error or len(last_error) > 2000:
+            raise ValueError("Intervention error is invalid.")
+        with self._transaction() as connection:
+            state = connection.execute(
+                "SELECT state FROM local_attempts WHERE attempt_id=?", (attempt_id,)
+            ).fetchone()
+            if state is None:
+                raise KeyError(f"Unknown local attempt: {attempt_id}")
+            if state["state"] != "sealed_pending":
+                raise ValueError("Only a pending sealed attempt can require intervention.")
+            cursor = connection.execute(
+                """UPDATE submission_outbox
+                   SET status='faculty_intervention_required', last_error=?
+                   WHERE attempt_id=?""",
+                (last_error, attempt_id),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("Sealed attempt is missing its submission outbox record.")
+        return next(item for item in self.pending_submissions() if item.attempt_id == attempt_id)
+
+    def acknowledge(self, attempt_id: str, receipt: SubmissionReceipt) -> LocalAttemptRecord:
+        receipt, receipt_json = _validate_receipt(receipt)
+        if receipt.attempt_id != attempt_id:
+            raise ValueError("Acknowledgment attempt identifier does not match.")
+        with self._transaction() as connection:
+            snapshot = self._validated_attempt_snapshot(
+                connection, attempt_id, "Stored attempt data is invalid."
+            )
+            record = snapshot.record
+            sealed_bundle = snapshot.sealed_bundle
+            if sealed_bundle is None:
+                raise ValueError("Stored attempt data is invalid.")
+            _validate_receipt_for_sealed_attempt(
+                receipt,
+                record.question_order,
+                sealed_bundle,
+                "Receipt does not match the sealed attempt.",
+            )
+            if record.state == "acknowledged":
+                if snapshot.receipt_json != receipt_json:
+                    raise ValueError("Acknowledgment conflicts with the stored receipt.")
+                acknowledged = record
+            elif record.state != "sealed_pending":
+                raise ValueError("Only a pending sealed attempt can be acknowledged.")
+            else:
+                if record.sealed_at is None:
+                    raise ValueError("Stored attempt data is invalid.")
+                if receipt.accepted_at < record.sealed_at:
+                    raise ValueError("Receipt acceptance time cannot precede the seal time.")
+                connection.execute(
+                    """UPDATE local_attempts SET state='acknowledged', receipt_json=?
+                       WHERE attempt_id=?""",
+                    (receipt_json, attempt_id),
+                )
+                connection.execute(
+                    "DELETE FROM submission_outbox WHERE attempt_id=?", (attempt_id,)
+                )
+                acknowledged = replace(record, state="acknowledged", receipt=receipt)
+        return acknowledged

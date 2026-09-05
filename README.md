@@ -1,6 +1,11 @@
-# Aptitude Lab — Server Installation
+# Aptitude Lab / KSAT 2.0
 
-The Windows installer installs a single server executable, creates a Desktop shortcut, and opens the application at `http://localhost:8000`. Student computers use `http://<SERVER-LAN-IP>:8000`.
+KSAT 2.0 ships separate Windows installers for the HTTPS faculty coordinator and
+the loopback-only lab client. See the
+[distributed-assessment operations runbook](docs/distributed-assessment-operations.md)
+for installation, enrollment, launch, outage recovery, backup, load validation,
+and diagnostics. The legacy central-browser workflow remains available for
+personal practice and historical data.
 
 ## Question-bank formats
 
@@ -62,6 +67,12 @@ Faculty-launched assessments remain exclusive while they are live.
 Faculty and students can filter new assessment/practice sets by difficulty. A
 Faculty-launched assessment is timed at one minute per question, can be taken
 only once per student, and shows its final score immediately after submission.
+Answers and worked solutions remain hidden at that point. After Faculty uses
+**Close**, the submitting student can reopen the completed assessment on any
+enrolled client, sign in, and review every question in their original randomized
+order together with their choice, the correct choice, and frozen solution steps.
+Start-window expiry alone does not release a review. Older releases that lack a
+frozen review compartment report that detailed review is unavailable.
 The Faculty dashboard lists submitted results and exam-integrity violations in
 addition to the CSV export.
 
@@ -78,14 +89,19 @@ lock), after which the student can register that USN again.
 ## Build the Windows installer
 
 Run [`build-windows.bat`](build-windows.bat) on a Windows computer with Python
-3.10+ and Inno Setup 6 installed. The build explicitly packages only the sample
-pair from `templates`; files in `question-banks` remain separate. It produces:
+3.10+, Node.js, Inno Setup 6.7.3, and `innoextract`. The fail-fast build produces:
 
 ```text
-release\Aptitude-Lab-Setup.exe
+release\KSATCoordinatorSetup-2.0.0.exe
+release\KSATClientSetup-2.0.0.exe
 ```
 
-Install that file on the designated lab server. The installer adds a private-network Windows Firewall rule for port 8000 and places the Desktop shortcut.
+Detailed build, smoke, recursive payload-scan, and hash verification steps are in
+[`WINDOWS_EXE_BUILD.md`](WINDOWS_EXE_BUILD.md). Physical installation and trust
+store/firewall changes require separate institutional authorization. Production
+builds fail closed unless an institution-controlled Authenticode identity,
+publisher pin, and HTTPS timestamp service are supplied; the ephemeral test
+identity is verification-only and never a distributable credential.
 
 ## Demo accounts
 
@@ -93,3 +109,51 @@ Install that file on the designated lab server. The installer adds a private-net
 - Faculty: `faculty` / `faculty123`
 
 Change demo passwords and set a strong `SESSION_SECRET` before production use.
+
+## Distributed lab assessments
+
+Faculty assessments are prepared as immutable encrypted releases for the installed
+KSAT Client. Answer selection, navigation, autosave, and the per-student timer run
+on the lab computer; the coordinator receives only the sealed final response and
+scores it centrally. Personal practice continues to use the coordinator browser
+workflow unchanged.
+
+On Windows, a protected LocalSystem service owns the device identity, signed
+requests, assessment state, cached packs, and submission outbox. Student
+shortcuts open its constrained loopback UI; ordinary lab accounts do not receive
+direct write access to the authoritative files.
+
+The Faculty **Tests** page shows release readiness, a short content-hash prefix,
+the ten-minute start window, eligible/started/submitted/voided counts, submission
+queue pressure, and enrolled lab computers. Faculty can revoke or reactivate a
+computer, rotate the one-time enrollment code, duplicate a used assessment into
+a new immutable release, inspect an attempt's deterministic question order, and
+perform reasoned/audited void, retake, and timer-extension operations. Enrollment
+codes are displayed only in the successful rotation response.
+
+Timer extensions do not rewrite the signed assessment pack. New attempts receive
+the current audited release-extension policy in their signed ticket. Active
+clients poll a small, answer-free, device-bound control endpoint at a jittered
+interval and apply only a newer coordinator-signed deadline revision; offline
+clients continue safely and apply it when connectivity returns.
+
+Before first distributed deployment, stop/close every active faculty assessment
+and run the compatibility upgrade against the coordinator data paths. Always
+preview it first:
+
+```powershell
+python scripts/upgrade_distributed_assessments.py `
+  "C:\ProgramData\Aptitude Lab\aptitude.db" `
+  "C:\ProgramData\Aptitude Lab" --dry-run
+```
+
+Remove `--dry-run` to perform the live additive migration. A timestamped,
+integrity-checked SQLite backup is created in `backups` before any live schema or
+release change. Re-running the command is safe: it preserves existing students,
+questions, practice/history, attempts, responses, scores, and violations, and
+prepares only eligible unlaunched faculty tests that have no historical
+submission or release.
+
+Run the 30-client, 100-client, and outage release gates and follow the complete
+[operator runbook](docs/distributed-assessment-operations.md) before deploying
+to lab computers.

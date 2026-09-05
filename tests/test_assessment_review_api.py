@@ -88,6 +88,19 @@ class AssessmentReviewAuthorizationTests(unittest.TestCase):
             )
 
         self.connection.execute("UPDATE tests SET launched=0 WHERE test_id=7")
+        self.assertEqual("waiting", list_completed_assessments(
+            self.connection, student_id="S100"
+        )[0].review_state)
+        with self.assertRaisesRegex(ReviewProblem, "Faculty closes"):
+            issue_review_grant(
+                self.connection, attempt_id=ATTEMPT_ID,
+                student_id="S100", pack_master_key=self.master_key,
+            )
+
+        self.connection.execute(
+            "UPDATE tests SET review_released_at=? WHERE test_id=7",
+            ("2026-09-05T09:30:00+00:00",),
+        )
         grant = issue_review_grant(
             self.connection, attempt_id=ATTEMPT_ID,
             student_id="S100", pack_master_key=self.master_key,
@@ -100,7 +113,10 @@ class AssessmentReviewAuthorizationTests(unittest.TestCase):
         )[0].review_state)
 
     def test_review_is_owned_by_the_submitting_student(self):
-        self.connection.execute("UPDATE tests SET launched=0 WHERE test_id=7")
+        self.connection.execute(
+            "UPDATE tests SET launched=0,review_released_at=? WHERE test_id=7",
+            ("2026-09-05T09:30:00+00:00",),
+        )
         with self.assertRaises(ReviewProblem):
             issue_review_grant(
                 self.connection, attempt_id=ATTEMPT_ID,

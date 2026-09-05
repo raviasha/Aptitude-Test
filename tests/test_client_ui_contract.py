@@ -32,6 +32,17 @@ process.stdout.write(JSON.stringify({
         self.assertIn("/api/reviews", source)
         self.assertNotIn("innerHTML", source)
 
+    def test_acknowledged_score_survives_transient_review_poll_failures(self):
+        source = SCRIPT.read_text(encoding="utf-8")
+        acknowledged = source[
+            source.index("function renderAcknowledged"):
+            source.index("function showProblem")
+        ]
+        self.assertIn("checkAcknowledgedReview", acknowledged)
+        self.assertNotIn("loadAssessments", acknowledged)
+        self.assertIn("async function checkAcknowledgedReview", source)
+        self.assertIn("Could not check yet. Your result remains available", source)
+
     def test_static_contract_has_safe_local_state_machine_and_no_coordinator_secrets(self):
         source = SCRIPT.read_text(encoding="utf-8")
         self.assertIn("Your answers are safe and will upload automatically.", source)

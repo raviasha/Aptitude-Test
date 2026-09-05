@@ -396,7 +396,7 @@ git commit -m "feat: freeze faculty solution material"
 - Modify: `ksat/coordinator/routes.py:1-125,620-810`
 
 **Interfaces:**
-- Consumes: Task 1 review models; Task 2 content/review key unwrapping; existing `_verified_device`, `_verified_student`, coordinator config, submissions, responses, and `tests.launched` close state.
+- Consumes: Task 1 review models; Task 2 content/review key unwrapping; existing `_verified_device`, `_verified_student`, coordinator config, submissions, responses, and the dedicated `tests.review_released_at` explicit-close marker.
 - Produces: `ReviewProblem`, `list_completed_assessments(connection, *, student_id) -> list[CompletedAssessmentSummary]`, `issue_review_grant(connection, *, attempt_id, student_id, pack_master_key) -> AssessmentReviewGrant`, `GET /api/client/v1/reviews`, and `GET /api/client/v1/reviews/{attempt_id}`.
 
 - [ ] **Step 1: Write a real coordinator API fixture**
@@ -413,7 +413,10 @@ def test_review_waits_for_explicit_faculty_close(self):
     self.assertEqual(409, before.status_code)
     self.assertEqual("review_not_released", before.json()["detail"]["code"])
     with app.db() as connection:
-        connection.execute("UPDATE tests SET launched=0 WHERE test_id=?", (self.test_id,))
+        connection.execute(
+            "UPDATE tests SET launched=0,review_released_at=? WHERE test_id=?",
+            (app.now(), self.test_id),
+        )
     after = self.device_get(f"/api/client/v1/reviews/{self.attempt_id}", student_id="S100")
     self.assertEqual(200, after.status_code, after.text)
     self.assertEqual([7, 3], [item["question_id"] for item in after.json()["responses"]])
@@ -450,12 +453,12 @@ Expected: FAIL because the review service and routes do not exist.
 ```python
 review_state = (
     "unavailable" if row["wrapped_review_key_b64"] is None
-    else "waiting" if row["launched"]
+    else "waiting" if row["launched"] or row["review_released_at"] is None
     else "available"
 )
 ```
 
-`issue_review_grant` uses one query constrained by `a.attempt_id=? AND a.student_id=?`, returns 404 `review_not_found` for non-ownership, returns 409 `submission_not_accepted` unless both the attempt and submission are accepted, returns 409 `review_unavailable` for missing frozen review material, and returns 409 `review_not_released` while `tests.launched=1`. Only after all gates pass may it unwrap keys and read ordered responses.
+`issue_review_grant` uses one query constrained by `a.attempt_id=? AND a.student_id=?`, returns 404 `review_not_found` for non-ownership, returns 409 `submission_not_accepted` unless both the attempt and submission are accepted, returns 409 `review_unavailable` for missing frozen review material, and returns 409 `review_not_released` while `tests.launched=1` or `tests.review_released_at` is null. The launch path clears this marker; only the explicit Faculty close action sets it. Only after all gates pass may it unwrap keys and read ordered responses.
 
 Validate that response rows are contiguous zero-based, cover the manifest question IDs exactly once, and use permitted options from frozen scoring rows. Return:
 

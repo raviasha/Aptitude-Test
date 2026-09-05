@@ -29,7 +29,9 @@ class CoordinatorSchemaTests(unittest.TestCase):
         tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         self.assertTrue({"devices", "assessment_releases", "release_questions", "submissions", "audit_events"} <= tables)
         attempt_columns = {row[1] for row in connection.execute("PRAGMA table_info(attempts)")}
+        test_columns = {row[1] for row in connection.execute("PRAGMA table_info(tests)")}
         self.assertTrue({"release_id", "device_id", "order_seed", "ticket_json", "sealed_at", "submission_hash"} <= attempt_columns)
+        self.assertIn("review_released_at", test_columns)
         release_columns = {row[1] for row in connection.execute("PRAGMA table_info(assessment_releases)")}
         question_columns = {row[1] for row in connection.execute("PRAGMA table_info(release_questions)")}
         self.assertIn("wrapped_review_key_b64", release_columns)

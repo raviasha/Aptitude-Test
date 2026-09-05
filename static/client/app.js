@@ -593,18 +593,66 @@ if (typeof document !== 'undefined') {
     stopPolling();
   }
 
-  function renderAcknowledged(result) {
+  function scheduleAcknowledgedReview(result) {
+    if (ui.reviewPollHandle !== null) window.clearTimeout(ui.reviewPollHandle);
+    ui.reviewPollHandle = window.setTimeout(
+      () => checkAcknowledgedReview(result), reviewPollDelay,
+    );
+  }
+
+  async function checkAcknowledgedReview(result) {
+    try {
+      const completed = await request('/api/reviews');
+      const summary = completed.reviews.find((item) => item.attempt_id === result.attempt_id);
+      renderAcknowledged(result, summary ? summary.review_state : 'waiting');
+    } catch (_error) {
+      renderAcknowledged(result, 'retry');
+    }
+  }
+
+  function renderAcknowledged(result, reviewState = 'waiting') {
     showStatus('Result received', 'The coordinator accepted and scored your submission.');
     const score = document.createElement('p');
     score.className = 'result-score';
     setSafeText(score, `${result.score} / ${result.total_questions} (${result.percentage}%)`);
     elements.actionArea.append(score);
-    const waiting = document.createElement('p');
-    setSafeText(waiting, 'Answers and solutions will be available after Faculty closes the assessment.');
-    elements.actionArea.append(waiting, button('Check review availability', loadAssessments));
+    const reviewStatus = document.createElement('p');
+    if (reviewState === 'available') {
+      setSafeText(reviewStatus, 'Faculty has closed the assessment. Your review is ready.');
+      const reviewButton = button('Review answers', async () => {
+        reviewButton.disabled = true;
+        try {
+          renderReview(await request(`/api/reviews/${encodeURIComponent(result.attempt_id)}`));
+        } catch (error) {
+          showProblem(error.problem);
+          reviewButton.disabled = false;
+        }
+      });
+      elements.actionArea.append(reviewStatus, reviewButton);
+    } else if (reviewState === 'unavailable') {
+      setSafeText(reviewStatus, 'Detailed review is unavailable for this older assessment.');
+      const unavailable = button('Detailed review unavailable', () => {});
+      unavailable.disabled = true;
+      elements.actionArea.append(reviewStatus, unavailable);
+    } else {
+      setSafeText(
+        reviewStatus,
+        reviewState === 'retry'
+          ? 'Could not check yet. Your result remains available; review will be checked again.'
+          : 'Answers and solutions will be available after Faculty closes the assessment.',
+      );
+      elements.actionArea.append(
+        reviewStatus,
+        button('Check review availability', () => checkAcknowledgedReview(result)),
+      );
+    }
     stopPolling();
-    if (ui.reviewPollHandle !== null) window.clearTimeout(ui.reviewPollHandle);
-    ui.reviewPollHandle = window.setTimeout(loadAssessments, reviewPollDelay);
+    if (reviewState === 'waiting' || reviewState === 'retry') {
+      scheduleAcknowledgedReview(result);
+    } else {
+      if (ui.reviewPollHandle !== null) window.clearTimeout(ui.reviewPollHandle);
+      ui.reviewPollHandle = null;
+    }
   }
 
   function showProblem(problem = {}) {

@@ -19,6 +19,7 @@ from ksat.protocol import (
     SignedAttemptDeadlineUpdate,
     SubmissionReceipt,
     canonical_json,
+    deterministic_question_order,
 )
 from ksat.sqlite import connect_sqlite
 
@@ -406,10 +407,20 @@ def validate_and_score(
             raise _problem("invalid_timestamp", "An integrity-event timestamp is outside the attempt.")
 
     response_by_id = {item.question_id: item.selected_answer for item in bundle.responses}
+    try:
+        accepted_order = deterministic_question_order(
+            expected_ids, ticket.order_seed_b64, ticket.shuffle_algorithm
+        )
+    except ValueError as error:
+        raise _problem(
+            "attempt_identity_mismatch", "The submitted attempt identity is invalid."
+        ) from error
+    frozen_by_id = {row["question_id"]: row for row in frozen_rows}
     scored_rows: list[tuple[int, str | None, int, str, str]] = []
     score = 0
     attempted = 0
-    for row in frozen_rows:
+    for question_id in accepted_order:
+        row = frozen_by_id[question_id]
         try:
             allowed = json.loads(row["options_json"])
         except (TypeError, json.JSONDecodeError) as error:

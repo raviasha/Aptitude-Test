@@ -175,6 +175,15 @@ class DistributedAttemptStartTests(unittest.TestCase):
 
         with app.db() as connection:
             connection.execute("UPDATE tests SET launched=0 WHERE test_id=?", (self.test_id,))
+        still_waiting = self.device_get(path, student_id="S100")
+        self.assertEqual(409, still_waiting.status_code)
+        self.assertNotIn("key_b64", still_waiting.text)
+
+        with app.db() as connection:
+            connection.execute(
+                "UPDATE tests SET review_released_at=? WHERE test_id=?",
+                (OPEN.isoformat(), self.test_id),
+            )
         available = self.device_get(path, student_id="S100")
         self.assertEqual(200, available.status_code, available.text)
         self.assertEqual([7, 3], [item["question_id"] for item in available.json()["responses"]])
@@ -1260,6 +1269,11 @@ class DistributedAttemptStartTests(unittest.TestCase):
             closed = self.client.post(f"/api/admin/tests/{self.test_id}/close")
             relaunched = self.client.post(f"/api/admin/tests/{self.test_id}/launch")
         self.assertEqual(200, closed.status_code, closed.text)
+        with app.db() as connection:
+            review_released_at = connection.execute(
+                "SELECT review_released_at FROM tests WHERE test_id=?", (self.test_id,)
+            ).fetchone()[0]
+        self.assertIsNotNone(review_released_at)
         self.assertEqual(409, relaunched.status_code, relaunched.text)
         self.assertEqual("release_already_used", relaunched.json()["detail"]["code"])
         with app.db() as connection:

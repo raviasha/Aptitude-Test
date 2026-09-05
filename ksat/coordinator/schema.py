@@ -115,6 +115,7 @@ def migrate_distributed_schema(connection: sqlite3.Connection) -> None:
     )
     _ensure_column(connection, "tests", "release_id TEXT")
     _ensure_column(connection, "tests", "launch_closes_at TEXT")
+    _ensure_column(connection, "tests", "review_released_at TEXT")
     _ensure_column(connection, "attempts", "release_id TEXT")
     _ensure_column(connection, "attempts", "device_id TEXT")
     _ensure_column(connection, "attempts", "order_seed TEXT")

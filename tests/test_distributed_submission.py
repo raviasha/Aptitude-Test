@@ -24,6 +24,7 @@ from ksat.protocol import (
     SignedAttemptDeadlineUpdate,
     SignedResponseBundle,
     canonical_json,
+    deterministic_question_order,
     device_request_bytes,
 )
 
@@ -252,6 +253,19 @@ class DistributedSubmissionTests(unittest.TestCase):
         self.assertEqual(1, first.json()["attempted"])
         self.assertEqual(1, self.count("submissions"))
         self.assertEqual(2, self.count("responses"))
+        expected_order = deterministic_question_order(
+            [self.q1, self.q2], self.ticket.order_seed_b64
+        )
+        self.assertNotEqual([self.q1, self.q2], expected_order)
+        with app.db() as connection:
+            stored_order = [
+                row["question_id"]
+                for row in connection.execute(
+                    "SELECT question_id FROM responses WHERE attempt_id=? ORDER BY question_order",
+                    (self.attempt_id,),
+                ).fetchall()
+            ]
+        self.assertEqual(expected_order, stored_order)
 
     def test_modified_bundle_signature_is_rejected(self):
         signed = self.bundle({self.q1: "B", self.q2: "A"})

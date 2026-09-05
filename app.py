@@ -3512,7 +3512,8 @@ def launch_test(test_id: int, request: Request) -> Dict[str, bool]:
             if legacy_timer_only:
                 connection.execute(
                     """UPDATE tests
-                       SET launched = 1, launch_expires_at = ?, launch_closes_at = NULL
+                       SET launched = 1, launch_expires_at = ?, launch_closes_at = NULL,
+                           review_released_at = NULL
                        WHERE test_id = ?""",
                     (deadline, test_id),
                 )
@@ -3523,7 +3524,8 @@ def launch_test(test_id: int, request: Request) -> Dict[str, bool]:
             else:
                 connection.execute(
                     """UPDATE tests
-                       SET launched = 1, launch_expires_at = ?, launch_closes_at = ?
+                       SET launched = 1, launch_expires_at = ?, launch_closes_at = ?,
+                           review_released_at = NULL
                        WHERE test_id = ?""",
                     (deadline, deadline, test_id),
                 )
@@ -3548,7 +3550,12 @@ def launch_test(test_id: int, request: Request) -> Dict[str, bool]:
 def close_test(test_id: int, request: Request) -> Dict[str, bool]:
     require_user(request, "admin")
     with db() as connection:
-        connection.execute("UPDATE tests SET launched = 0, launch_expires_at = NULL WHERE test_id = ? AND mode = 'faculty'", (test_id,))
+        connection.execute(
+            """UPDATE tests
+               SET launched = 0, launch_expires_at = NULL, review_released_at = ?
+               WHERE test_id = ? AND mode = 'faculty'""",
+            (now(), test_id),
+        )
     return {"closed": True}
 
 

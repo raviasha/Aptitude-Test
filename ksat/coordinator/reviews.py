@@ -34,7 +34,11 @@ class ReviewProblem(ValueError):
 def _review_state(row: sqlite3.Row) -> str:
     if not row["wrapped_review_key_b64"]:
         return "unavailable"
-    return "waiting" if bool(row["launched"]) else "available"
+    return (
+        "available"
+        if row["review_released_at"] and not bool(row["launched"])
+        else "waiting"
+    )
 
 
 def list_completed_assessments(
@@ -42,6 +46,7 @@ def list_completed_assessments(
 ) -> list[CompletedAssessmentSummary]:
     rows = connection.execute(
         """SELECT a.attempt_id,a.release_id,a.test_id,t.test_name,t.launched,
+                  t.review_released_at,
                   a.score,a.total_questions,a.percentage,s.accepted_at,
                   ar.wrapped_review_key_b64
            FROM attempts a
@@ -77,6 +82,7 @@ def issue_review_grant(
 ) -> AssessmentReviewGrant:
     row = connection.execute(
         """SELECT a.attempt_id,a.student_id,a.release_id,a.status,t.launched,
+                  t.review_released_at,
                   ar.content_hash,ar.wrapped_content_key_b64,ar.wrapped_review_key_b64
            FROM attempts a
            JOIN submissions s ON s.attempt_id=a.attempt_id
@@ -90,7 +96,7 @@ def issue_review_grant(
             "review_not_found", "The completed assessment review was not found.",
             status_code=404,
         )
-    if bool(row["launched"]):
+    if bool(row["launched"]) or not row["review_released_at"]:
         raise ReviewProblem(
             "review_not_released",
             "Review will be available after Faculty closes the assessment.",

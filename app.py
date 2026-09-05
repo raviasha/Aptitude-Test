@@ -66,6 +66,7 @@ from ksat.coordinator.submissions import (
 from ksat.crypto import load_or_create_coordinator_keyring, sign_json, verify_json
 from ksat.protocol import (
     AttemptDeadlineUpdate,
+    FrozenReviewQuestion,
     PublicQuestion,
     ReleaseSummary,
     SignedAttemptDeadlineUpdate,
@@ -647,7 +648,9 @@ def sample_questions(
     selected_ids: set[int] = set()
     for rule in rules:
         pool = connection.execute(
-            f"""SELECT question_id, category, COALESCE(NULLIF(chapter, ''), ?) AS chapter, stimulus_id
+            f"""SELECT question_id, source_key, question_text, correct_answer,
+                      solution_steps, explanation, category,
+                      COALESCE(NULLIF(chapter, ''), ?) AS chapter, stimulus_id
                FROM questions
                WHERE bank_id = ? AND active = 1 AND category = ? AND difficulty IN ({placeholders})
                   AND COALESCE(NULLIF(chapter, ''), ?) = ?""",
@@ -1785,6 +1788,24 @@ def public_release_material(
     return questions, assets
 
 
+def frozen_review_material(selected: list[sqlite3.Row | Dict[str, Any]]) -> list[FrozenReviewQuestion]:
+    """Freeze the answer and readable solution for the selected release questions."""
+    reviews: list[FrozenReviewQuestion] = []
+    for row in selected:
+        steps = display_solution_steps(
+            row["question_text"], row["solution_steps"] or "[]", row["source_key"]
+        )
+        if not steps:
+            explanation = clean_display_text(row["explanation"] or "").strip()
+            steps = [explanation or "No solution steps were supplied for this question."]
+        reviews.append(FrozenReviewQuestion(
+            question_id=row["question_id"],
+            correct_answer=row["correct_answer"],
+            solution_steps=steps,
+        ))
+    return reviews
+
+
 def prepare_faculty_release(
     connection: sqlite3.Connection,
     test: sqlite3.Row,
@@ -1822,6 +1843,7 @@ def prepare_faculty_release(
         connection,
         test_id=test["test_id"],
         selected_questions=questions,
+        review_questions=frozen_review_material(selected),
         assets=assets,
         pack_dir=assessment_packs_dir(),
         signing_private_key_b64=config.signing_private_key_b64,
@@ -2194,6 +2216,14 @@ def create_load_test(payload: LoadTestPayload, request: Request) -> Dict[str, An
                 connection,
                 test_id=test_id,
                 selected_questions=selected,
+                review_questions=[
+                    FrozenReviewQuestion(
+                        question_id=question.question_id,
+                        correct_answer="ABCD"[index % 4],
+                        solution_steps=[f"The correct load-test option is {'ABCD'[index % 4]}."],
+                    )
+                    for index, question in enumerate(selected)
+                ],
                 assets={},
                 pack_dir=assessment_packs_dir(),
                 signing_private_key_b64=app.state.coordinator_config.signing_private_key_b64,

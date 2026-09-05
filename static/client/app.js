@@ -1,6 +1,7 @@
 'use strict';
 
 const sealedMessage = 'Your answers are safe and will upload automatically.';
+const reviewPollDelay = 5000;
 
 const problemMessages = {
   coordinator_unavailable: 'The assessment server is temporarily unavailable. Your saved work is safe.',
@@ -9,7 +10,17 @@ const problemMessages = {
   device_inactive: 'This lab computer is not registered. Ask Faculty or IT for help.',
   corrupt_local_attempt: 'Saved assessment data could not be verified. Do not close the application; ask Faculty for help.',
   faculty_intervention_required: 'The sealed submission needs Faculty attention. Your answers remain saved on this computer.',
+  review_not_released: 'Review will be available after Faculty closes the assessment.',
+  review_unavailable: 'Detailed review is unavailable for this older assessment.',
 };
+
+function reviewChoiceState(selected, correct) {
+  return {
+    state: selected === null ? 'unanswered' : selected === correct ? 'correct' : 'incorrect',
+    selected,
+    correct,
+  };
+}
 
 function problemMessage(code, diagnosticReference) {
   if (Object.prototype.hasOwnProperty.call(problemMessages, code)) {
@@ -70,6 +81,11 @@ function assetUrl(attemptId, reference) {
   return match ? `/api/attempts/${encodeURIComponent(attemptId)}/assets/${match[1]}` : null;
 }
 
+function reviewAssetUrl(attemptId, reference) {
+  const source = assetUrl(attemptId, reference);
+  return source ? source.replace('/api/attempts/', '/api/reviews/') : null;
+}
+
 const exported = {
   assetUrl,
   canEdit,
@@ -77,6 +93,9 @@ const exported = {
   persistOptimisticAnswer,
   problemMessage,
   problemMessages,
+  reviewChoiceState,
+  reviewAssetUrl,
+  reviewPollDelay,
   restoreSelection,
   saveStatusMessage,
   sealedMessage,
@@ -120,6 +139,7 @@ if (typeof document !== 'undefined') {
     saving: false,
     saveState: 'saved',
     positionSaving: false,
+    reviewPollHandle: null,
   };
 
   async function request(path, options = {}) {
@@ -176,9 +196,9 @@ if (typeof document !== 'undefined') {
     while (node.firstChild) node.removeChild(node.firstChild);
   }
 
-  function createPublicImage(attemptId, media) {
+  function createPublicImage(attemptId, media, review = false) {
     if (!media || typeof media !== 'object') return null;
-    const source = assetUrl(attemptId, media.url);
+    const source = review ? reviewAssetUrl(attemptId, media.url) : assetUrl(attemptId, media.url);
     if (!source) return null;
     const image = document.createElement('img');
     image.className = 'public-media';
@@ -263,14 +283,16 @@ if (typeof document !== 'undefined') {
   async function loadAssessments() {
     showStatus('Available assessments', 'Checking for an assessment launched by Faculty.');
     try {
-      const payload = await request('/api/assessments');
+      const [payload, completed] = await Promise.all([
+        request('/api/assessments'), request('/api/reviews'),
+      ]);
       clear(elements.actionArea);
-      if (!payload.assessments.length) {
-        setSafeText(elements.statusCopy, 'No assessment is ready yet. This page will check again.');
-        window.setTimeout(loadAssessments, 3000);
-        return;
-      }
-      setSafeText(elements.statusCopy, 'Choose the launched assessment when Faculty asks you to begin.');
+      setSafeText(
+        elements.statusCopy,
+        payload.assessments.length
+          ? 'Choose the launched assessment when Faculty asks you to begin.'
+          : 'No assessment is ready to start.',
+      );
       payload.assessments.forEach((assessment) => {
         const row = document.createElement('div');
         row.className = 'assessment-row';
@@ -299,9 +321,119 @@ if (typeof document !== 'undefined') {
         row.append(name, action);
         elements.actionArea.append(row);
       });
+      if (completed.reviews.length) {
+        const heading = document.createElement('h3');
+        setSafeText(heading, 'Completed assessments');
+        elements.actionArea.append(heading);
+      }
+      let waiting = false;
+      completed.reviews.forEach((assessment) => {
+        const row = document.createElement('div');
+        row.className = 'assessment-row review-summary';
+        const details = document.createElement('div');
+        const name = document.createElement('strong');
+        const score = document.createElement('p');
+        setSafeText(name, assessment.test_name);
+        setSafeText(score, `${assessment.score} / ${assessment.total_questions} (${assessment.percentage}%)`);
+        details.append(name, score);
+        let action;
+        if (assessment.review_state === 'available') {
+          action = button('Review answers', async () => {
+            action.disabled = true;
+            try {
+              renderReview(await request(`/api/reviews/${encodeURIComponent(assessment.attempt_id)}`));
+            } catch (error) {
+              showProblem(error.problem);
+              action.disabled = false;
+            }
+          });
+        } else if (assessment.review_state === 'waiting') {
+          waiting = true;
+          action = button('Waiting for Faculty to close', loadAssessments);
+        } else {
+          action = button('Detailed review unavailable', () => {});
+          action.disabled = true;
+        }
+        row.append(details, action);
+        elements.actionArea.append(row);
+      });
+      if (!payload.assessments.length && !completed.reviews.length) {
+        setSafeText(elements.statusCopy, 'No assessment is ready yet. This page will check again.');
+      }
+      if (ui.reviewPollHandle !== null) window.clearTimeout(ui.reviewPollHandle);
+      ui.reviewPollHandle = (waiting || (!payload.assessments.length && !completed.reviews.length))
+        ? window.setTimeout(loadAssessments, reviewPollDelay)
+        : null;
     } catch (error) {
       showProblem(error.problem);
     }
+  }
+
+  function renderReview(review) {
+    if (ui.reviewPollHandle !== null) window.clearTimeout(ui.reviewPollHandle);
+    ui.reviewPollHandle = null;
+    showStatus(review.test_name, 'Review of your submitted answers.');
+    const list = document.createElement('div');
+    list.className = 'review-list';
+    review.questions.forEach((item, index) => {
+      const card = document.createElement('section');
+      card.className = 'review-question';
+      const heading = document.createElement('h3');
+      const text = document.createElement('p');
+      setSafeText(heading, `Question ${index + 1}`);
+      setSafeText(text, item.question.question_text);
+      card.append(heading, text);
+      if (item.question.stimulus && item.question.stimulus.type === 'image') {
+        const image = createPublicImage(review.attempt_id, item.question.stimulus, true);
+        if (image) card.append(image);
+      }
+      const displayMedia = item.question.display_media || {};
+      const questionImage = createPublicImage(review.attempt_id, displayMedia.question, true);
+      if (questionImage) card.append(questionImage);
+      const choice = reviewChoiceState(item.selected_answer, item.correct_answer);
+      Object.entries(item.question.options).forEach(([key, value]) => {
+        const option = document.createElement('div');
+        option.className = 'review-option';
+        if (key === choice.selected) option.classList.add('student-choice');
+        if (key === choice.correct) option.classList.add('correct-choice');
+        const copy = document.createElement('span');
+        setSafeText(copy, `${key}. ${value}`);
+        option.append(copy);
+        const optionImage = createPublicImage(
+          review.attempt_id, displayMedia.options && displayMedia.options[key], true,
+        );
+        if (optionImage) option.append(optionImage);
+        if (key === choice.selected) {
+          const badge = document.createElement('strong');
+          setSafeText(badge, 'Your choice');
+          option.append(badge);
+        }
+        if (key === choice.correct) {
+          const badge = document.createElement('strong');
+          setSafeText(badge, 'Correct choice');
+          option.append(badge);
+        }
+        card.append(option);
+      });
+      if (choice.state === 'unanswered') {
+        const unanswered = document.createElement('p');
+        unanswered.className = 'review-state-unanswered';
+        setSafeText(unanswered, 'Your choice: Unanswered');
+        card.append(unanswered);
+      }
+      const solutionHeading = document.createElement('h4');
+      const steps = document.createElement('ol');
+      steps.className = 'solution-steps';
+      setSafeText(solutionHeading, 'Solution steps');
+      item.solution_steps.forEach((step) => {
+        const line = document.createElement('li');
+        setSafeText(line, step);
+        steps.append(line);
+      });
+      card.append(solutionHeading, steps);
+      list.append(card);
+    });
+    elements.actionArea.append(list, button('Back to completed assessments', loadAssessments));
   }
 
   function formatTime(seconds) {
@@ -467,7 +599,12 @@ if (typeof document !== 'undefined') {
     score.className = 'result-score';
     setSafeText(score, `${result.score} / ${result.total_questions} (${result.percentage}%)`);
     elements.actionArea.append(score);
+    const waiting = document.createElement('p');
+    setSafeText(waiting, 'Answers and solutions will be available after Faculty closes the assessment.');
+    elements.actionArea.append(waiting, button('Check review availability', loadAssessments));
     stopPolling();
+    if (ui.reviewPollHandle !== null) window.clearTimeout(ui.reviewPollHandle);
+    ui.reviewPollHandle = window.setTimeout(loadAssessments, reviewPollDelay);
   }
 
   function showProblem(problem = {}) {

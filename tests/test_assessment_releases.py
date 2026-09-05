@@ -23,13 +23,16 @@ from ksat.coordinator.releases import (
     load_release_manifest,
     prepare_release,
     unwrap_release_content_key,
+    unwrap_release_review_key,
     wrap_release_content_key,
 )
 from ksat.coordinator.schema import migrate_distributed_schema
 from ksat.crypto import decrypt_pack, encrypt_pack, generate_ed25519_keypair, sign_json, verify_json
 from ksat.protocol import (
+    FrozenReviewQuestion,
     MATH_FLOOR_DIVISION_ERROR,
     PublicQuestion,
+    ReviewContent,
     canonical_json,
     canonicalize_math_floor_division_markup,
 )
@@ -208,6 +211,28 @@ class AssessmentReleaseTests(unittest.TestCase):
             now_iso="2026-08-31T09:00:00+00:00",
         )
 
+    def test_frozen_review_material_uses_steps_and_explanation_fallback(self):
+        reviews = app.frozen_review_material([
+            {
+                "question_id": 7,
+                "question_text": "Seven?",
+                "source_key": "q-7",
+                "correct_answer": "B",
+                "solution_steps": '["First frozen step.", "Second frozen step."]',
+                "explanation": "Ignored explanation.",
+            },
+            {
+                "question_id": 3,
+                "question_text": "Three?",
+                "source_key": "q-3",
+                "correct_answer": "A",
+                "solution_steps": "[]",
+                "explanation": "Fallback explanation.",
+            },
+        ])
+        self.assertEqual(["First frozen step.", "Second frozen step."], reviews[0].solution_steps)
+        self.assertEqual(["Fallback explanation."], reviews[1].solution_steps)
+
     def test_release_freezes_questions_excludes_private_material_and_verifies_signature(self):
         release = self.prepare_release_with_two_questions()
         pack_path = self.pack_dir / release.content_pack_filename
@@ -275,6 +300,43 @@ class AssessmentReleaseTests(unittest.TestCase):
                 "SELECT question_id, canonical_order FROM release_questions ORDER BY canonical_order"
             )],
         )
+
+    def test_review_material_is_separately_encrypted_and_frozen(self):
+        release = prepare_release(
+            self.connection,
+            test_id=41,
+            selected_questions=self.public_questions(),
+            review_questions=[
+                FrozenReviewQuestion(question_id=7, correct_answer="B", solution_steps=["Seven is the answer."]),
+                FrozenReviewQuestion(question_id=3, correct_answer="A", solution_steps=["Three is the answer."]),
+            ],
+            assets={self.asset_name: self.asset_bytes},
+            pack_dir=self.pack_dir,
+            signing_private_key_b64=self.private_key_b64,
+            pack_master_key=self.master_key,
+            now_iso="2026-08-31T09:00:00+00:00",
+        )
+        row = self.connection.execute(
+            "SELECT * FROM assessment_releases WHERE release_id = ?", (release.release_id,)
+        ).fetchone()
+        content_key = unwrap_release_content_key(
+            self.master_key, release.release_id, release.wrapped_content_key_b64
+        )
+        outer = decrypt_pack(
+            content_key, release.release_id, (self.pack_dir / release.content_pack_filename).read_bytes()
+        )
+        with zipfile.ZipFile(io.BytesIO(outer)) as archive:
+            encrypted_review = archive.read("review.json.enc")
+        self.assertNotIn(b"Seven is the answer", encrypted_review)
+        review_key = unwrap_release_review_key(
+            self.master_key, release.release_id, row["wrapped_review_key_b64"]
+        )
+        review = ReviewContent.model_validate_json(
+            decrypt_pack(review_key, f"{release.release_id}:review:v1", encrypted_review), strict=True
+        )
+        self.assertEqual([3, 7], [item.question_id for item in review.questions])
+        with self.assertRaises(ValueError):
+            decrypt_pack(content_key, f"{release.release_id}:review:v1", encrypted_review)
 
     def test_wrapped_content_keys_use_fresh_authenticated_encryption(self):
         content_key = b"k" * 32
@@ -2042,6 +2104,18 @@ class FacultyReleaseFlowTests(unittest.TestCase):
         self.assertNotIn("content_hash", item)
         self.assertEqual(12, len(item["content_hash_prefix"]))
         self.assertTrue(item["release_id"])
+        with app.db() as connection:
+            frozen_release = connection.execute(
+                "SELECT manifest_json,wrapped_review_key_b64 FROM assessment_releases WHERE release_id=?",
+                (item["release_id"],),
+            ).fetchone()
+            frozen_question = connection.execute(
+                "SELECT solution_steps_json FROM release_questions WHERE release_id=?",
+                (item["release_id"],),
+            ).fetchone()
+        self.assertEqual(2, json.loads(frozen_release["manifest_json"])["pack_format_version"])
+        self.assertTrue(frozen_release["wrapped_review_key_b64"])
+        self.assertTrue(frozen_question["solution_steps_json"])
         pack_path = app.DATA_DIR / "Assessment Releases" / f"{item['release_id']}.ksatpack"
         pack_bytes = pack_path.read_bytes()
         pack_mtime = pack_path.stat().st_mtime_ns

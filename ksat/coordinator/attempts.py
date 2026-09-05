@@ -18,7 +18,7 @@ from ksat.coordinator.submissions import (
 )
 from ksat.crypto import sign_json
 from ksat.protocol import (
-    PACK_FORMAT_VERSION,
+    SUPPORTED_PACK_FORMAT_VERSIONS,
     AttemptStartResponse,
     AttemptTicket,
     PublicReleaseDescriptor,
@@ -78,7 +78,7 @@ def list_prefetchable_releases(connection: sqlite3.Connection) -> list[dict[str,
         except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
             raise _problem("content_not_ready", "Assessment content is not ready.") from error
         if (
-            pack_format_version != PACK_FORMAT_VERSION
+            pack_format_version not in SUPPORTED_PACK_FORMAT_VERSIONS
             or canonical_json(manifest).decode("utf-8") != row["manifest_json"]
             or manifest.release_id != row["release_id"]
             or manifest.duration_seconds != row["duration_seconds"]

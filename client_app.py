@@ -80,6 +80,8 @@ _KNOWN_PUBLIC_MESSAGES = {
     "device_inactive": "This lab computer is not registered. Ask Faculty or IT for help.",
     "corrupt_local_attempt": "Saved assessment data could not be verified. Do not close the application; ask Faculty for help.",
     "faculty_intervention_required": _INTERVENTION_MESSAGE,
+    "review_not_released": "Review will be available after Faculty closes the assessment.",
+    "review_unavailable": "Detailed review is unavailable for this older assessment.",
     "client_configuration_rollback_failed": (
         "The saved assessment server configuration could not be verified. "
         "Ask IT for help before starting an assessment."
@@ -1779,6 +1781,29 @@ def create_client_app(services: ClientServices | None = None) -> FastAPI:
             },
         )
 
+    @app.get("/api/reviews/{attempt_id}/assets/{filename}")
+    async def public_review_asset(attempt_id: str, filename: str):
+        attempt_id = _strict_uuid(attempt_id, "Attempt identifier")
+        current = require_services()
+        if current.coordinator.session is None:
+            raise ClientApiProblem("client_session_required", "Student login is required.", 401)
+        if _PUBLIC_ASSET_FILENAME.fullmatch(filename) is None or current.runtime is None:
+            raise ClientApiProblem("asset_not_found", "The requested asset was not found.", 404)
+        try:
+            asset = current.runtime.review_asset(
+                attempt_id, f"assets/{filename}", student_id=current.coordinator.session.student_id
+            )
+        except (KeyError, ValueError, TypeError):
+            raise ClientApiProblem("asset_not_found", "The requested asset was not found.", 404) from None
+        return Response(
+            content=asset.content,
+            media_type=asset.media_type,
+            headers={
+                "Content-Security-Policy": "default-src 'none'; sandbox",
+                "Content-Disposition": "inline",
+            },
+        )
+
     @app.post("/api/device/enroll")
     async def enroll(body: EnrollmentBody):
         current = require_services()
@@ -2045,6 +2070,73 @@ def create_client_app(services: ClientServices | None = None) -> FastAPI:
                 _assessment_payload(row, current.store, context) for row in rows
             ]
         }
+
+    @app.get("/api/reviews")
+    async def reviews():
+        current = require_services()
+        if current.coordinator.session is None:
+            raise ClientApiProblem("client_session_required", "Student login is required.", 401)
+        try:
+            rows = current.coordinator.completed_reviews()
+        except CoordinatorProblem as error:
+            raise _map_coordinator_problem(error) from error
+        return {"reviews": [_jsonable(row) for row in rows]}
+
+    @app.get("/api/reviews/{attempt_id}")
+    async def review(attempt_id: str):
+        attempt_id = _strict_uuid(attempt_id, "Attempt identifier")
+        current = require_services()
+        session = current.coordinator.session
+        if session is None:
+            raise ClientApiProblem("client_session_required", "Student login is required.", 401)
+        if current.runtime is None:
+            raise ClientApiProblem("device_inactive", _KNOWN_PUBLIC_MESSAGES["device_inactive"], 403)
+        try:
+            summaries = current.coordinator.completed_reviews()
+            summary = next((item for item in summaries if item.attempt_id == attempt_id), None)
+            if summary is None:
+                raise ClientApiProblem("review_not_found", "The completed assessment review was not found.", 404)
+            if summary.review_state == "waiting":
+                raise ClientApiProblem(
+                    "review_not_released", _KNOWN_PUBLIC_MESSAGES["review_not_released"], 409
+                )
+            if summary.review_state == "unavailable":
+                raise ClientApiProblem(
+                    "review_unavailable", _KNOWN_PUBLIC_MESSAGES["review_unavailable"], 409
+                )
+            grant = current.coordinator.review(attempt_id)
+            if (
+                grant.attempt_id != attempt_id
+                or grant.student_id != session.student_id
+                or grant.release_id != summary.release_id
+            ):
+                raise ClientApiProblem(
+                    "invalid_coordinator_response",
+                    "The coordinator returned an invalid response.",
+                    409,
+                )
+            pack_path = current.store.verified_pack(grant.release_id, grant.content_hash)
+            if pack_path is None:
+                context.prefetch(grant.release_id)
+                pack_path = current.store.verified_pack(grant.release_id, grant.content_hash)
+            if pack_path is None:
+                raise ClientApiProblem("content_not_ready", "Assessment content is not ready.", 409)
+            assembled = current.runtime.open_review(
+                pack_path,
+                grant,
+                student_id=session.student_id,
+                test_name=summary.test_name,
+            )
+            return _jsonable(assembled)
+        except CoordinatorProblem as error:
+            raise _map_coordinator_problem(error) from error
+        except ValueError as error:
+            raise ClientApiProblem(
+                "content_hash_mismatch",
+                _KNOWN_PUBLIC_MESSAGES["content_hash_mismatch"],
+                409,
+                diagnostic_reference=_diagnostic_reference(),
+            ) from error
 
     @app.post("/api/assessments/{release_id}/start")
     async def start(release_id: str, body: ConfirmBody):

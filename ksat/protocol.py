@@ -7,6 +7,7 @@ import json
 import math
 import re
 import unicodedata
+import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Iterator, Literal, Sequence
@@ -16,7 +17,9 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 
 PROTOCOL_VERSION = 1
-PACK_FORMAT_VERSION = 1
+CURRENT_PACK_FORMAT_VERSION = 2
+PACK_FORMAT_VERSION = CURRENT_PACK_FORMAT_VERSION
+SUPPORTED_PACK_FORMAT_VERSIONS = frozenset({1, CURRENT_PACK_FORMAT_VERSION})
 SHUFFLE_ALGORITHM = "sha256-rank-v1"
 MATH_FLOOR_DIVISION_CLASS = "math-floor-division"
 MATH_FLOOR_DIVISION_OPEN = '<code class="math-floor-division">'
@@ -407,6 +410,170 @@ class PublicQuestion(ProtocolModel):
         return value
 
 
+AnswerKey = Literal["A", "B", "C", "D", "E"]
+
+
+def _canonical_uuid(value: str, label: str) -> str:
+    try:
+        parsed = uuid.UUID(value)
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise ValueError(f"{label} must be a canonical UUID.") from exc
+    if str(parsed) != value:
+        raise ValueError(f"{label} must be a canonical UUID.")
+    return value
+
+
+def _sha256_hex(value: str) -> str:
+    if re.fullmatch(r"[0-9a-f]{64}", value) is None:
+        raise ValueError("Content hash must be a lowercase SHA-256 value.")
+    return value
+
+
+def _base64_key(value: str) -> str:
+    try:
+        decoded = base64.b64decode(value, validate=True)
+    except (ValueError, TypeError) as exc:
+        raise ValueError("Review keys must be valid base64.") from exc
+    if len(decoded) != 32 or base64.b64encode(decoded).decode("ascii") != value:
+        raise ValueError("Review keys must encode exactly 32 bytes.")
+    return value
+
+
+class FrozenReviewQuestion(ProtocolModel):
+    question_id: int = Field(gt=0)
+    correct_answer: AnswerKey
+    solution_steps: list[str] = Field(min_length=1, max_length=100)
+
+    @field_validator("solution_steps")
+    @classmethod
+    def non_blank_steps(cls, value: list[str]) -> list[str]:
+        if any(not step.strip() or len(step) > 10_000 for step in value):
+            raise ValueError("Review solution steps must be non-empty bounded strings.")
+        return value
+
+
+class ReviewContent(ProtocolModel):
+    questions: list[FrozenReviewQuestion] = Field(min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def unique_questions(self) -> "ReviewContent":
+        identifiers = [item.question_id for item in self.questions]
+        if len(identifiers) != len(set(identifiers)):
+            raise ValueError("Review question identifiers must be unique.")
+        return self
+
+
+class ReviewResponseEntry(ProtocolModel):
+    question_id: int = Field(gt=0)
+    question_order: int = Field(ge=0)
+    selected_answer: AnswerKey | None = None
+
+
+class CompletedAssessmentSummary(ProtocolModel):
+    attempt_id: str
+    release_id: str
+    test_id: int = Field(gt=0)
+    test_name: str = Field(min_length=1, max_length=200)
+    accepted_at: datetime
+    score: int = Field(ge=0)
+    total_questions: int = Field(gt=0, le=500)
+    percentage: float = Field(ge=0, le=100)
+    review_state: Literal["waiting", "available", "unavailable"]
+
+    @field_validator("attempt_id")
+    @classmethod
+    def valid_attempt_id(cls, value: str) -> str:
+        return _canonical_uuid(value, "Attempt identifier")
+
+    @field_validator("release_id")
+    @classmethod
+    def valid_release_id(cls, value: str) -> str:
+        return _canonical_uuid(value, "Release identifier")
+
+    @field_validator("accepted_at")
+    @classmethod
+    def aware_accepted_at(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("Accepted time must include a timezone.")
+        return value
+
+    @field_validator("percentage")
+    @classmethod
+    def finite_percentage(cls, value: float) -> float:
+        if not math.isfinite(value):
+            raise ValueError("Percentage must be finite.")
+        return value
+
+
+class AssessmentReviewGrant(ProtocolModel):
+    attempt_id: str
+    student_id: str = Field(min_length=1, max_length=100)
+    release_id: str
+    content_hash: str
+    content_key_b64: str
+    review_key_b64: str
+    responses: list[ReviewResponseEntry] = Field(min_length=1, max_length=500)
+
+    @field_validator("attempt_id")
+    @classmethod
+    def valid_attempt_id(cls, value: str) -> str:
+        return _canonical_uuid(value, "Attempt identifier")
+
+    @field_validator("release_id")
+    @classmethod
+    def valid_release_id(cls, value: str) -> str:
+        return _canonical_uuid(value, "Release identifier")
+
+    @field_validator("content_hash")
+    @classmethod
+    def valid_content_hash(cls, value: str) -> str:
+        return _sha256_hex(value)
+
+    @field_validator("content_key_b64", "review_key_b64")
+    @classmethod
+    def valid_keys(cls, value: str) -> str:
+        return _base64_key(value)
+
+    @model_validator(mode="after")
+    def ordered_unique_responses(self) -> "AssessmentReviewGrant":
+        identifiers = [item.question_id for item in self.responses]
+        orders = [item.question_order for item in self.responses]
+        if len(identifiers) != len(set(identifiers)) or sorted(orders) != list(range(len(orders))):
+            raise ValueError("Review responses must have unique questions and contiguous order.")
+        return self
+
+
+class ReviewedQuestion(ProtocolModel):
+    question: PublicQuestion
+    selected_answer: AnswerKey | None = None
+    correct_answer: AnswerKey
+    solution_steps: list[str] = Field(min_length=1, max_length=100)
+
+    @field_validator("solution_steps")
+    @classmethod
+    def non_blank_steps(cls, value: list[str]) -> list[str]:
+        if any(not step.strip() or len(step) > 10_000 for step in value):
+            raise ValueError("Review solution steps must be non-empty bounded strings.")
+        return value
+
+
+class AssessmentReview(ProtocolModel):
+    attempt_id: str
+    release_id: str
+    test_name: str = Field(min_length=1, max_length=200)
+    questions: list[ReviewedQuestion] = Field(min_length=1, max_length=500)
+
+    @field_validator("attempt_id")
+    @classmethod
+    def valid_attempt_id(cls, value: str) -> str:
+        return _canonical_uuid(value, "Attempt identifier")
+
+    @field_validator("release_id")
+    @classmethod
+    def valid_release_id(cls, value: str) -> str:
+        return _canonical_uuid(value, "Release identifier")
+
+
 class ReleaseSummary(ProtocolModel):
     release_id: str
     test_id: int
@@ -444,7 +611,7 @@ def device_request_bytes(method: str, path: str, body: bytes, timestamp: str, no
 
 class ReleaseManifest(ProtocolModel):
     protocol_version: int = PROTOCOL_VERSION
-    pack_format_version: int = PACK_FORMAT_VERSION
+    pack_format_version: int = CURRENT_PACK_FORMAT_VERSION
     release_id: str
     test_id: int
     test_name: str

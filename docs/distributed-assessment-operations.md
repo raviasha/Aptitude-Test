@@ -104,8 +104,9 @@ single HMAC-valid migration tail whose state digest and version-2 stamp match.
 2. Create the faculty assessment. Review question count, duration (one minute
    per question), and immutable release status.
 3. Allow clients to prefetch the single shared encrypted pack before students
-   begin. A prepared pack is reusable by all enrolled clients but contains no
-   answer metadata.
+   begin. A prepared pack is reusable by all enrolled clients. Its review
+   compartment is separately encrypted, and the review key is never disclosed
+   before Faculty closes the assessment.
 4. Select **Launch** once. The launch creates a 10-minute start window. Each
    student receives the same question identifiers in a deterministic per-ticket
    question order; options are not shuffled. Each student’s timer begins when
@@ -113,10 +114,24 @@ single HMAC-valid migration tail whose state digest and version-2 stamp match.
 5. Monitor eligible, started, submitted, voided, queued, and intervention
    counts. Do not duplicate/relaunch a release after any ticket has been issued;
    use **Duplicate** to create a new immutable release.
+6. Submission acknowledgment reveals the score only. When the assessment is
+   finished, select **Close** to release answer reviews. The launch-window clock
+   expiring does not release solutions. Closing is irreversible from a secrecy
+   perspective because authorized students can retain review information once
+   displayed.
 
 Answer selection, navigation, autosave, integrity events, and timer updates are
 local and must remain responsive during a coordinator outage. A student can
 resume only on the same computer and keeps the original deadline.
+
+After Faculty closes an assessment, only students with an accepted submission
+can review it. A submitting student may sign in again on another enrolled lab
+client; the coordinator reauthorizes access and releases the frozen review keys
+over the authenticated TLS connection. The client shows questions in that
+student's saved randomized order, their selected or unanswered state, the
+correct choice, and frozen solution steps. It does not store decrypted reviews
+in the client database. Releases created before the review compartment was
+introduced remain usable for scores but show “Detailed review unavailable.”
 
 ## Submission queues and outage recovery
 

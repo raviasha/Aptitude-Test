@@ -6,10 +6,14 @@ from datetime import datetime, timezone
 from pydantic import ValidationError
 
 from ksat.protocol import (
+    CURRENT_PACK_FORMAT_VERSION,
     AttemptDeadlineUpdate,
     AttemptTicket,
+    FrozenReviewQuestion,
     MATH_FLOOR_DIVISION_ERROR,
     ReleaseManifest,
+    ReviewContent,
+    SUPPORTED_PACK_FORMAT_VERSIONS,
     SignedAttemptDeadlineUpdate,
     canonical_json,
     canonicalize_math_floor_division_markup,
@@ -19,6 +23,32 @@ from ksat.protocol import (
 
 
 class ProtocolTests(unittest.TestCase):
+    def test_review_contracts_are_strict_and_question_ids_are_unique(self):
+        question = FrozenReviewQuestion(
+            question_id=7,
+            correct_answer="B",
+            solution_steps=["Add the two values.", "The result is 4."],
+        )
+        self.assertEqual(7, ReviewContent(questions=[question]).questions[0].question_id)
+        with self.assertRaises(ValidationError):
+            ReviewContent(questions=[question, question])
+        with self.assertRaises(ValidationError):
+            FrozenReviewQuestion(question_id=7, correct_answer="Z", solution_steps=["step"])
+        with self.assertRaises(ValidationError):
+            FrozenReviewQuestion(question_id=7, correct_answer="B", solution_steps=[" "])
+
+    def test_new_manifests_use_v2_while_v1_remains_supported(self):
+        self.assertEqual(2, CURRENT_PACK_FORMAT_VERSION)
+        self.assertEqual(frozenset({1, 2}), SUPPORTED_PACK_FORMAT_VERSIONS)
+        manifest = ReleaseManifest(
+            release_id="33333333-3333-4333-8333-333333333333",
+            test_id=7,
+            test_name="Aptitude",
+            duration_seconds=120,
+            canonical_question_ids=[3, 7],
+        )
+        self.assertEqual(2, manifest.pack_format_version)
+
     def test_unterminated_code_tokens_do_not_tail_scan_each_candidate(self):
         malformed = "<code" * 16_000
         started = time.perf_counter()

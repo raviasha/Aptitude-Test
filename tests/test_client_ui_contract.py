@@ -12,6 +12,26 @@ INDEX = ROOT / "static" / "client" / "index.html"
 
 
 class ClientUiContractTests(unittest.TestCase):
+    def test_review_choice_states_and_poll_delay_execute_in_javascript(self):
+        result = self._run_node(
+            """
+const ui = require(process.argv[1]);
+process.stdout.write(JSON.stringify({
+  correct: ui.reviewChoiceState('B', 'B'),
+  incorrect: ui.reviewChoiceState('A', 'B'),
+  unanswered: ui.reviewChoiceState(null, 'B'),
+  delay: ui.reviewPollDelay
+}));
+"""
+        )
+        self.assertEqual({"state": "correct", "selected": "B", "correct": "B"}, result["correct"])
+        self.assertEqual({"state": "incorrect", "selected": "A", "correct": "B"}, result["incorrect"])
+        self.assertEqual({"state": "unanswered", "selected": None, "correct": "B"}, result["unanswered"])
+        self.assertEqual(5000, result["delay"])
+        source = SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("/api/reviews", source)
+        self.assertNotIn("innerHTML", source)
+
     def test_static_contract_has_safe_local_state_machine_and_no_coordinator_secrets(self):
         source = SCRIPT.read_text(encoding="utf-8")
         self.assertIn("Your answers are safe and will upload automatically.", source)

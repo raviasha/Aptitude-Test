@@ -22,12 +22,16 @@ from ksat.client.identity import DeviceIdentity
 from ksat.client.store import AttemptSealedError, ClientStore, LocalAttemptRecord
 from ksat.crypto import decrypt_pack, sha256_hex, sign_json, verify_json
 from ksat.protocol import (
+    AssessmentReview,
+    AssessmentReviewGrant,
     SignedAttemptDeadlineUpdate,
-    PACK_FORMAT_VERSION,
+    SUPPORTED_PACK_FORMAT_VERSIONS,
     PROTOCOL_VERSION,
     AttemptStartResponse,
     PublicQuestion,
     PublicReleaseDescriptor,
+    ReviewContent,
+    ReviewedQuestion,
     ReleaseManifest,
     ReleaseSummary,
     ResponseBundle,
@@ -153,6 +157,8 @@ class AssessmentRuntime:
         self._attempt_id: str | None = None
         self._questions: dict[int, PublicQuestion] = {}
         self._assets: dict[str, PublicAsset] = {}
+        self._review_assets: dict[str, dict[str, PublicAsset]] = {}
+        self._review_asset_owners: dict[str, str] = {}
         self._anchor_monotonic: float | None = None
         self._anchor_remaining = 0.0
         self._anchor_trusted_wall: datetime | None = None
@@ -194,7 +200,7 @@ class AssessmentRuntime:
         if (
             descriptor.release_id != manifest.release_id
             or manifest.protocol_version != PROTOCOL_VERSION
-            or manifest.pack_format_version != PACK_FORMAT_VERSION
+            or manifest.pack_format_version not in SUPPORTED_PACK_FORMAT_VERSIONS
             or descriptor.test_id != manifest.test_id
             or descriptor.duration_seconds != manifest.duration_seconds
             or descriptor.canonical_question_ids != manifest.canonical_question_ids
@@ -271,7 +277,7 @@ class AssessmentRuntime:
                 != prepared.descriptor.manifest.canonical_question_ids
             ):
                 raise ValueError("Attempt ticket does not match the prepared assessment release.")
-            questions, manifest, assets = self._open_pack(
+            questions, manifest, assets, _ = self._open_pack(
                 pack_path,
                 ticket.release_id,
                 ticket.content_hash,
@@ -482,7 +488,7 @@ class AssessmentRuntime:
                 )
             if ticket.device_id != self.identity.device_id:
                 raise ValueError("Local attempt cannot be recovered on this device.")
-            questions, manifest, assets = self._open_pack(
+            questions, manifest, assets, _ = self._open_pack(
                 self._verified_attempt_pack(record),
                 ticket.release_id,
                 ticket.content_hash,
@@ -577,7 +583,7 @@ class AssessmentRuntime:
         release_id: str,
         content_hash: str,
         content_key_b64: str,
-    ) -> tuple[dict[int, PublicQuestion], ReleaseManifest, dict[str, PublicAsset]]:
+    ) -> tuple[dict[int, PublicQuestion], ReleaseManifest, dict[str, PublicAsset], bytes | None]:
         encrypted = Path(path).read_bytes()
         if sha256_hex(encrypted) != content_hash:
             raise ValueError("Cached assessment content hash does not match.")
@@ -624,8 +630,16 @@ class AssessmentRuntime:
                     legacy_canonical_questions,
                 }:
                     raise ValueError("Assessment pack questions are not canonical.")
-                if names != ["manifest.json", "questions.json", *manifest.asset_names]:
+                expected_names = ["manifest.json", "questions.json"]
+                if manifest.pack_format_version == 2:
+                    expected_names.append("review.json.enc")
+                expected_names.extend(manifest.asset_names)
+                if names != expected_names:
                     raise ValueError("Assessment pack entries do not match its manifest.")
+                review_ciphertext = (
+                    bytes(archive.read("review.json.enc"))
+                    if manifest.pack_format_version == 2 else None
+                )
                 if manifest.asset_names != sorted(set(manifest.asset_names)):
                     raise ValueError("Assessment pack asset list is not canonical.")
                 referenced_assets: set[str] = set()
@@ -668,7 +682,7 @@ class AssessmentRuntime:
         ids = [item.question_id for item in question_list]
         if (
             manifest.protocol_version != PROTOCOL_VERSION
-            or manifest.pack_format_version != PACK_FORMAT_VERSION
+            or manifest.pack_format_version not in SUPPORTED_PACK_FORMAT_VERSIONS
             or manifest.release_id != release_id
             or ids != manifest.canonical_question_ids
             or not ids
@@ -676,7 +690,81 @@ class AssessmentRuntime:
             or any(type(item) is not int or item <= 0 for item in ids)
         ):
             raise ValueError("Assessment pack question linkage is invalid.")
-        return {item.question_id: item for item in question_list}, manifest, assets
+        return {item.question_id: item for item in question_list}, manifest, assets, review_ciphertext
+
+    def open_review(
+        self,
+        pack_path: Path,
+        grant: AssessmentReviewGrant,
+        *,
+        student_id: str,
+        test_name: str,
+    ) -> AssessmentReview:
+        """Decrypt a close-authorized review and join it by immutable question ID."""
+        if grant.student_id != student_id or not student_id.strip():
+            raise ValueError("Assessment review does not belong to this student.")
+        questions, manifest, assets, ciphertext = self._open_pack(
+            pack_path,
+            grant.release_id,
+            grant.content_hash,
+            grant.content_key_b64,
+        )
+        if manifest.pack_format_version != 2 or ciphertext is None:
+            raise ValueError("Detailed review is unavailable for this assessment.")
+        try:
+            review_key = base64.b64decode(grant.review_key_b64.encode("ascii"), validate=True)
+        except (UnicodeEncodeError, ValueError) as error:
+            raise ValueError("Assessment review key is invalid.") from error
+        if len(review_key) != 32 or base64.b64encode(review_key).decode("ascii") != grant.review_key_b64:
+            raise ValueError("Assessment review key is invalid.")
+        try:
+            review_bytes = decrypt_pack(
+                review_key, f"{grant.release_id}:review:v1", ciphertext
+            )
+            content = ReviewContent.model_validate_json(review_bytes, strict=True)
+        except (ValidationError, ValueError) as error:
+            raise ValueError("Assessment review material is invalid.") from error
+        if canonical_json(content) != review_bytes:
+            raise ValueError("Assessment review material is not canonical.")
+        response_ids = {item.question_id for item in grant.responses}
+        review_by_id = {item.question_id: item for item in content.questions}
+        manifest_ids = set(manifest.canonical_question_ids)
+        if response_ids != manifest_ids or set(review_by_id) != manifest_ids or set(questions) != manifest_ids:
+            raise ValueError("Assessment review question linkage is invalid.")
+        reviewed: list[ReviewedQuestion] = []
+        for response in sorted(grant.responses, key=lambda item: item.question_order):
+            question = questions[response.question_id]
+            frozen = review_by_id[response.question_id]
+            if (
+                response.selected_answer is not None
+                and response.selected_answer not in question.options
+            ) or frozen.correct_answer not in question.options:
+                raise ValueError("Assessment review answer linkage is invalid.")
+            reviewed.append(ReviewedQuestion(
+                question=question,
+                selected_answer=response.selected_answer,
+                correct_answer=frozen.correct_answer,
+                solution_steps=frozen.solution_steps,
+            ))
+        result = AssessmentReview(
+            attempt_id=grant.attempt_id,
+            release_id=grant.release_id,
+            test_name=test_name,
+            questions=reviewed,
+        )
+        with self._lock:
+            self._review_assets[grant.attempt_id] = dict(assets)
+            self._review_asset_owners[grant.attempt_id] = grant.student_id
+        return result
+
+    def review_asset(self, attempt_id: str, reference: str, *, student_id: str) -> PublicAsset:
+        with self._lock:
+            if self._review_asset_owners.get(attempt_id) != student_id:
+                raise KeyError("Assessment review asset is unavailable.")
+            try:
+                return self._review_assets[attempt_id][reference]
+            except KeyError as error:
+                raise KeyError("Assessment review asset is unavailable.") from error
 
     def _verified_attempt_pack(self, record: LocalAttemptRecord) -> Path:
         path = self.store.verified_pack(

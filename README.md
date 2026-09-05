@@ -67,6 +67,12 @@ Faculty-launched assessments remain exclusive while they are live.
 Faculty and students can filter new assessment/practice sets by difficulty. A
 Faculty-launched assessment is timed at one minute per question, can be taken
 only once per student, and shows its final score immediately after submission.
+Answers and worked solutions remain hidden at that point. After Faculty uses
+**Close**, the submitting student can reopen the completed assessment on any
+enrolled client, sign in, and review every question in their original randomized
+order together with their choice, the correct choice, and frozen solution steps.
+Start-window expiry alone does not release a review. Older releases that lack a
+frozen review compartment report that detailed review is unavailable.
 The Faculty dashboard lists submitted results and exam-integrity violations in
 addition to the CSV export.
 

@@ -28,7 +28,7 @@ from ksat.coordinator.auth import issue_student_access_token
 from ksat.coordinator.attempts import AttemptProblem, issue_attempt_ticket
 from ksat.coordinator.releases import prepare_release, unwrap_release_content_key
 from ksat.crypto import generate_ed25519_keypair
-from ksat.protocol import PublicQuestion, PublicReleaseDescriptor, device_request_bytes
+from ksat.protocol import FrozenReviewQuestion, PublicQuestion, PublicReleaseDescriptor, device_request_bytes
 from ksat.sqlite import connect_sqlite
 
 
@@ -111,6 +111,14 @@ class DistributedAttemptStartTests(unittest.TestCase):
                 connection,
                 test_id=self.test_id,
                 selected_questions=questions,
+                review_questions=[
+                    FrozenReviewQuestion(
+                        question_id=question.question_id,
+                        correct_answer="A",
+                        solution_steps=[f"Solution for question {question.question_id}."],
+                    )
+                    for question in questions
+                ],
                 assets={},
                 pack_dir=app.assessment_packs_dir(),
                 signing_private_key_b64=self.config.signing_private_key_b64,
@@ -130,6 +138,48 @@ class DistributedAttemptStartTests(unittest.TestCase):
         for label in ("device-a", "device-b", "device-c", "device-d"):
             self.add_device(label)
         self.set_launch_state(True)
+
+    def test_review_route_withholds_keys_until_close_and_enforces_student_ownership(self):
+        attempt_id = str(uuid.uuid4())
+        with app.db() as connection:
+            connection.execute(
+                """INSERT INTO attempts
+                   (attempt_id,student_id,test_id,started_at,submitted_at,status,total_questions,
+                    attempted,correct,score,percentage,release_id,device_id)
+                   VALUES (?,?,?,?,?,'submitted',2,1,1,1,50,?,?)""",
+                (
+                    attempt_id, "S100", self.test_id,
+                    OPEN.isoformat(), OPEN.isoformat(), self.release_id,
+                    self.devices["device-a"][0],
+                ),
+            )
+            connection.executemany(
+                """INSERT INTO responses
+                   (attempt_id,question_id,selected_answer,correct,category,chapter,question_order)
+                   VALUES (?,?,?,?,?,?,?)""",
+                [
+                    (attempt_id, 7, "A", 1, "Quantitative Aptitude", "Arithmetic", 0),
+                    (attempt_id, 3, None, 0, "Quantitative Aptitude", "Arithmetic", 1),
+                ],
+            )
+            connection.execute(
+                """INSERT INTO submissions
+                   (attempt_id,bundle_hash,bundle_json,accepted_at,receipt_json)
+                   VALUES (?,?,?,?,'{}')""",
+                (attempt_id, "b" * 64, "{}", OPEN.isoformat()),
+            )
+        path = f"/api/client/v1/reviews/{attempt_id}"
+        waiting = self.device_get(path, student_id="S100")
+        self.assertEqual(409, waiting.status_code)
+        self.assertNotIn("key_b64", waiting.text)
+
+        with app.db() as connection:
+            connection.execute("UPDATE tests SET launched=0 WHERE test_id=?", (self.test_id,))
+        available = self.device_get(path, student_id="S100")
+        self.assertEqual(200, available.status_code, available.text)
+        self.assertEqual([7, 3], [item["question_id"] for item in available.json()["responses"]])
+        foreign = self.device_get(path, student_id="S101")
+        self.assertEqual(404, foreign.status_code)
 
     def tearDown(self):
         self.client.close()

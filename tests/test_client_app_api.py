@@ -57,6 +57,7 @@ class FakeStore:
         self.receipt = None
         self.pending = []
         self.closed = 0
+        self.verified_path = None
 
     def active_attempt(self):
         if self.snapshot and self.snapshot.state in {"in_progress", "sealed_pending"}:
@@ -85,7 +86,7 @@ class FakeStore:
         )
 
     def verified_pack(self, release_id, content_hash=None):
-        return None
+        return self.verified_path
 
     def pending_submissions(self, **_kwargs):
         return list(self.pending)
@@ -106,6 +107,7 @@ class FakeRuntime:
         self.start_calls = []
         self.position_calls = []
         self.seal_count = 0
+        self.review_calls = []
         self.expire_on_snapshot = False
         self.questions = {
             7: SimpleNamespace(
@@ -196,6 +198,18 @@ class FakeRuntime:
         self.start_calls.append((response, student_id))
         return self.store.snapshot
 
+    def open_review(self, pack_path, grant, *, student_id, test_name):
+        self.review_calls.append((pack_path, grant, student_id, test_name))
+        return {
+            "attempt_id": grant.attempt_id,
+            "release_id": grant.release_id,
+            "test_name": test_name,
+            "questions": [{
+                "question": {"question_id": 7, "question_text": "Seven?", "options": {"A": "6", "B": "7"}},
+                "selected_answer": "A", "correct_answer": "B", "solution_steps": ["Seven step"],
+            }],
+        }
+
 
 class FakeCoordinator:
     def __init__(self):
@@ -206,6 +220,8 @@ class FakeCoordinator:
         self.start_response = object()
         self.closed = 0
         self.request_timeout_seconds = 10.0
+        self.review_rows = []
+        self.review_grant = None
 
     @property
     def session(self):
@@ -241,6 +257,14 @@ class FakeCoordinator:
     def assessments(self):
         self.calls.append(("assessments",))
         return self.assessment_rows
+
+    def completed_reviews(self):
+        self.calls.append(("reviews",))
+        return self.review_rows
+
+    def review(self, attempt_id):
+        self.calls.append(("review", attempt_id))
+        return self.review_grant
 
     def download_pack(self, entry, path):
         self.calls.append(("download", entry, path))
@@ -312,6 +336,33 @@ class ClientAppApiTests(unittest.TestCase):
 
     def tearDown(self):
         self.client_context.__exit__(None, None, None)
+
+    def test_available_post_close_review_is_exposed_without_keys(self):
+        summary = SimpleNamespace(
+            attempt_id=ATTEMPT_ID, release_id=RELEASE_ID, test_id=7,
+            test_name="Aptitude", accepted_at=NOW, score=1,
+            total_questions=2, percentage=50.0, review_state="available",
+            model_dump=lambda **_: {
+                "attempt_id": ATTEMPT_ID, "release_id": RELEASE_ID, "test_id": 7,
+                "test_name": "Aptitude", "accepted_at": NOW.isoformat(), "score": 1,
+                "total_questions": 2, "percentage": 50.0, "review_state": "available",
+            },
+        )
+        self.coordinator.review_rows = [summary]
+        self.coordinator.review_grant = SimpleNamespace(
+            attempt_id=ATTEMPT_ID, student_id="S100", release_id=RELEASE_ID,
+            content_hash="a" * 64, content_key_b64="secret-content",
+            review_key_b64="secret-review", responses=[],
+        )
+        self.store.verified_path = self.root / "review.ksatpack"
+        listing = self.client.get("/api/reviews", headers={"Host": "127.0.0.1:8010"})
+        self.assertEqual(200, listing.status_code)
+        self.assertNotIn("key", listing.text.lower())
+        detail = self.client.get(
+            f"/api/reviews/{ATTEMPT_ID}", headers={"Host": "127.0.0.1:8010"}
+        )
+        self.assertEqual(200, detail.status_code, detail.text)
+        self.assertEqual(7, detail.json()["questions"][0]["question"]["question_id"])
 
     def test_answer_and_violation_routes_are_local_only(self):
         self.coordinator.calls.clear()

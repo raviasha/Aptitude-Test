@@ -103,6 +103,14 @@ input { min-height: 44px; padding: .65rem .75rem; border: 2px solid #8b9bb0; bor
 .answer.selected::after { content: "Selected"; margin-left: auto; font-weight: 800; }
 .danger { border-color: var(--danger); background: var(--danger); }
 .result-score { font-size: 2rem; font-weight: 800; }
+.review-summary p { margin: .35rem 0 0; color: var(--muted); }
+.review-list { display: grid; gap: 1rem; margin: 1.25rem 0; }
+.review-question { padding: 1rem; border: 1px solid #cbd5e1; border-radius: .75rem; }
+.review-option { display: flex; justify-content: space-between; gap: 1rem; margin-top: .5rem; padding: .75rem; border: 2px solid #cbd5e1; border-radius: .5rem; }
+.review-option.student-choice { border-color: #9a6700; background: #fff7d6; }
+.review-option.correct-choice { border-color: var(--success); background: #d9f4e4; }
+.review-state-unanswered { font-weight: 700; color: var(--danger); }
+.solution-steps { white-space: pre-wrap; line-height: 1.55; }
 
 .fullscreen-gate { position: fixed; inset: 0; z-index: 10; display: grid; place-items: center; padding: 1rem; background: rgb(15 23 42 / 92%); }
 .fullscreen-gate[hidden] { display: none; }

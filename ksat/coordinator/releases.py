@@ -27,11 +27,14 @@ from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 from ksat.crypto import decrypt_pack, encrypt_pack, sha256_hex, sign_json, verify_json
 from ksat.protocol import (
+    CURRENT_PACK_FORMAT_VERSION,
+    FrozenReviewQuestion,
     MATH_FLOOR_DIVISION_CLASS,
     MATH_FLOOR_DIVISION_ERROR,
-    PACK_FORMAT_VERSION,
+    SUPPORTED_PACK_FORMAT_VERSIONS,
     PROTOCOL_VERSION,
     PublicQuestion,
+    ReviewContent,
     ReleaseManifest,
     ReleaseSummary,
     canonicalize_math_floor_division_expression,
@@ -99,6 +102,34 @@ def unwrap_release_content_key(master_key: bytes, release_id: str, wrapped_b64: 
     except ValueError as error:
         raise ValueError("Wrapped release content key is invalid.") from error
     return _require_key(content_key, "Release content key")
+
+
+def _review_aad(release_id: str) -> str:
+    return f"{_require_stored_release_id(release_id)}:review:v1"
+
+
+def _review_key_aad(release_id: str) -> str:
+    return f"{_require_stored_release_id(release_id)}:review-key:v1"
+
+
+def wrap_release_review_key(master_key: bytes, release_id: str, review_key: bytes) -> str:
+    master_key = _require_key(master_key, "Pack master key")
+    review_key = _require_key(review_key, "Release review key")
+    return base64.b64encode(encrypt_pack(master_key, _review_key_aad(release_id), review_key)).decode("ascii")
+
+
+def unwrap_release_review_key(master_key: bytes, release_id: str, wrapped_b64: str) -> bytes:
+    master_key = _require_key(master_key, "Pack master key")
+    wrapped = _strict_base64(
+        wrapped_b64,
+        length=_WRAPPED_KEY_ENVELOPE_BYTES,
+        message="Wrapped release review key is invalid.",
+    )
+    try:
+        review_key = decrypt_pack(master_key, _review_key_aad(release_id), wrapped)
+    except ValueError as error:
+        raise ValueError("Wrapped release review key is invalid.") from error
+    return _require_key(review_key, "Release review key")
 
 
 def _private_marker(value: str) -> bool:
@@ -479,14 +510,18 @@ def _build_pack_payload(
     manifest: ReleaseManifest,
     question_payloads: list[dict[str, Any]],
     assets: list[tuple[str, bytes]],
+    review_ciphertext: bytes | None = None,
 ) -> bytes:
     stream = io.BytesIO()
     with zipfile.ZipFile(stream, "w") as archive:
-        for name, content in (
+        entries: list[tuple[str, bytes]] = [
             ("manifest.json", canonical_json(manifest)),
             ("questions.json", canonical_json(question_payloads)),
-            *assets,
-        ):
+        ]
+        if review_ciphertext is not None:
+            entries.append(("review.json.enc", review_ciphertext))
+        entries.extend(assets)
+        for name, content in entries:
             info, value = _zip_entry(name, content)
             archive.writestr(info, value)
     return stream.getvalue()
@@ -624,6 +659,7 @@ def _inspect_pack(
     plaintext: bytes | BinaryIO,
     manifest: ReleaseManifest,
     canonical_question_ids: list[int],
+    review_key: bytes | None = None,
 ) -> None:
     source = io.BytesIO(plaintext) if isinstance(plaintext, bytes) else plaintext
     source.seek(0)
@@ -631,7 +667,10 @@ def _inspect_pack(
         with zipfile.ZipFile(source) as archive:
             infos = archive.infolist()
             names = [info.filename for info in infos]
-            expected_names = ["manifest.json", "questions.json", *manifest.asset_names]
+            expected_names = ["manifest.json", "questions.json"]
+            if manifest.pack_format_version == 2:
+                expected_names.append("review.json.enc")
+            expected_names.extend(manifest.asset_names)
             if names != expected_names or len(names) != len(set(names)) or any(info.is_dir() for info in infos):
                 raise ValueError("Stored assessment pack entries are invalid.")
             if any(info.date_time != _FIXED_ZIP_TIMESTAMP for info in infos):
@@ -639,6 +678,9 @@ def _inspect_pack(
             packed_manifest = _load_pack_json(archive.read("manifest.json"), "manifest")
             packed_questions_json = archive.read("questions.json")
             packed_questions = _load_pack_json(packed_questions_json, "questions")
+            review_ciphertext = (
+                archive.read("review.json.enc") if manifest.pack_format_version == 2 else None
+            )
             for asset_name in manifest.asset_names:
                 digest = asset_name.split("/", 1)[1].split(".", 1)[0]
                 with archive.open(asset_name) as asset:
@@ -659,6 +701,16 @@ def _inspect_pack(
         raise ValueError("Stored assessment pack question linkage is inconsistent.")
     if _referenced_asset_names(canonical_payloads) != set(manifest.asset_names):
         raise ValueError("Stored assessment pack asset references are inconsistent.")
+    if manifest.pack_format_version == 2:
+        if review_key is None or review_ciphertext is None:
+            raise ValueError("Stored assessment review material is unavailable.")
+        try:
+            review_bytes = decrypt_pack(review_key, _review_aad(manifest.release_id), review_ciphertext)
+            review = ReviewContent.model_validate_json(review_bytes, strict=True)
+        except Exception as error:
+            raise ValueError("Stored assessment review material is invalid.") from error
+        if canonical_json(review) != review_bytes or [q.question_id for q in review.questions] != canonical_question_ids:
+            raise ValueError("Stored assessment review linkage is inconsistent.")
 
 
 def _summary_from_row(
@@ -694,7 +746,7 @@ def _summary_from_row(
         raise ValueError("Stored assessment release manifest is invalid.") from error
     if (
         manifest.protocol_version != PROTOCOL_VERSION
-        or manifest.pack_format_version != PACK_FORMAT_VERSION
+        or manifest.pack_format_version not in SUPPORTED_PACK_FORMAT_VERSIONS
     ):
         raise ValueError("Stored assessment release version is unsupported.")
     test = connection.execute(
@@ -786,12 +838,20 @@ def _summary_from_row(
             if owned_encrypted_file is not None:
                 owned_encrypted_file.close()
             raise
+        review_key = None
+        if manifest.pack_format_version == 2:
+            wrapped_review_key = row["wrapped_review_key_b64"]
+            if not isinstance(wrapped_review_key, str):
+                raise ValueError("Stored assessment review key is unavailable.")
+            review_key = unwrap_release_review_key(
+                pack_master_key, expected_release_id, wrapped_review_key
+            )
         plaintext_file: BinaryIO | None = None
         try:
             plaintext_file = _decrypt_pack_stream(
                 content_key, expected_release_id, encrypted_pack_file
             )
-            _inspect_pack(plaintext_file, manifest, question_ids)
+            _inspect_pack(plaintext_file, manifest, question_ids, review_key)
         finally:
             if plaintext_file is not None:
                 plaintext_file.close()
@@ -839,6 +899,7 @@ def prepare_release(
     *,
     test_id: int,
     selected_questions: Sequence[PublicQuestion | Mapping[str, Any]],
+    review_questions: Sequence[FrozenReviewQuestion | Mapping[str, Any]] | None = None,
     assets: Mapping[str, bytes],
     pack_dir: Path,
     signing_private_key_b64: str,
@@ -873,7 +934,23 @@ def prepare_release(
     release_id = str(uuid.uuid4())
     canonical_question_ids = [item["question_id"] for item in question_payloads]
     duration_seconds = len(canonical_question_ids) * 60
+    review_content: ReviewContent | None = None
+    review_key: bytes | None = None
+    review_ciphertext: bytes | None = None
+    wrapped_review_key_b64: str | None = None
+    if review_questions is not None:
+        parsed_review = [
+            item if isinstance(item, FrozenReviewQuestion) else FrozenReviewQuestion.model_validate(item)
+            for item in review_questions
+        ]
+        review_by_id = {item.question_id: item for item in parsed_review}
+        if len(review_by_id) != len(parsed_review) or set(review_by_id) != set(canonical_question_ids):
+            raise ValueError("Assessment review questions must exactly match public questions.")
+        review_content = ReviewContent(
+            questions=[review_by_id[question_id] for question_id in canonical_question_ids]
+        )
     manifest = ReleaseManifest(
+        pack_format_version=(CURRENT_PACK_FORMAT_VERSION if review_content is not None else 1),
         release_id=release_id,
         test_id=test_id,
         test_name=test["test_name"],
@@ -881,7 +958,17 @@ def prepare_release(
         canonical_question_ids=canonical_question_ids,
         asset_names=asset_names,
     )
-    plaintext = _build_pack_payload(manifest, question_payloads, validated_assets)
+    if review_content is not None:
+        review_key = _require_key(os.urandom(32), "Release review key")
+        review_ciphertext = encrypt_pack(
+            review_key, _review_aad(release_id), canonical_json(review_content)
+        )
+        wrapped_review_key_b64 = wrap_release_review_key(
+            pack_master_key, release_id, review_key
+        )
+    plaintext = _build_pack_payload(
+        manifest, question_payloads, validated_assets, review_ciphertext
+    )
     content_key = _require_key(os.urandom(32), "Release content key")
     encrypted = encrypt_pack(content_key, release_id, plaintext)
     content_hash = sha256_hex(encrypted)
@@ -915,8 +1002,8 @@ def prepare_release(
             """INSERT INTO assessment_releases
                (release_id, test_id, state, duration_seconds, manifest_json,
                 content_pack_filename, content_hash, content_signature_b64,
-                wrapped_content_key_b64, created_at)
-               VALUES (?, ?, 'prepared', ?, ?, ?, ?, ?, ?, ?)""",
+                wrapped_content_key_b64, wrapped_review_key_b64, created_at)
+               VALUES (?, ?, 'prepared', ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 release_id,
                 test_id,
@@ -926,13 +1013,23 @@ def prepare_release(
                 content_hash,
                 content_signature_b64,
                 wrapped_content_key_b64,
+                wrapped_review_key_b64,
                 now_iso,
             ),
         )
         connection.executemany(
-            "INSERT INTO release_questions (release_id, question_id, canonical_order) VALUES (?, ?, ?)",
+            """INSERT INTO release_questions
+               (release_id, question_id, canonical_order, correct_answer, solution_steps_json)
+               VALUES (?, ?, ?, ?, ?)""",
             [
-                (release_id, question_id, canonical_order)
+                (
+                    release_id,
+                    question_id,
+                    canonical_order,
+                    review_by_id[question_id].correct_answer if review_content is not None else None,
+                    canonical_json({"steps": review_by_id[question_id].solution_steps}).decode("utf-8")
+                    if review_content is not None else None,
+                )
                 for canonical_order, question_id in enumerate(canonical_question_ids)
             ],
         )
@@ -976,5 +1073,7 @@ __all__ = [
     "load_release_manifest",
     "prepare_release",
     "unwrap_release_content_key",
+    "unwrap_release_review_key",
     "wrap_release_content_key",
+    "wrap_release_review_key",
 ]

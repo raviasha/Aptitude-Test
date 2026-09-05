@@ -58,13 +58,13 @@ The coordinator exposes an authenticated, device-signed review endpoint for one 
 
 Before Faculty closes the assessment, the endpoint returns a stable `review_not_released` conflict and never returns the review key, correct answers, or solution material. Merely reaching the end of the ten-minute start window does not release solutions; the existing Faculty **Close** action is the authority boundary.
 
-After authorization, the endpoint returns a strictly typed review grant containing the release identifier and content hash, the base64-encoded review key, and the student's accepted ordered answers. The key is transported only through the existing authenticated TLS connection after the close gate; it is never placed in the pre-staged pack or attempt ticket. The grant is bound to the authenticated attempt and contains no data for other students.
+After authorization, the endpoint returns a strictly typed review grant containing the release identifier and content hash, the base64-encoded assessment-content and review keys, and the student's accepted ordered answers. Both keys are transported only through the existing authenticated TLS connection after the close gate. The review key is never placed in the pre-staged pack or attempt ticket; the content key is repeated in the grant so another enrolled computer can decrypt the outer pack without possessing the original device-bound attempt ticket. The grant is bound to the authenticated attempt and contains no data for other students.
 
 ## Client flow and persistence
 
 The loopback client result route requests the review grant from the coordinator only after the local attempt has an acknowledged submission receipt. It verifies that the grant matches the local ticket, release, content hash, student, and question coverage before decrypting `review.json.enc`.
 
-For same-machine review, the client uses its verified cached pack. For review on another enrolled computer, the coordinator exposes a student-owned completed-assessment list; the client downloads and verifies the immutable pack before applying the selected attempt's review grant. The client stores no plaintext review material before the close gate. A successfully authorized review may be cached in the local client store so the student can continue reading it through a temporary network interruption.
+For same-machine review, the client uses its verified cached pack. For review on another enrolled computer, the coordinator exposes a student-owned completed-assessment list; the client downloads and verifies the immutable pack before applying the selected attempt's review grant. The client stores no plaintext review material before the close gate. After authorization, the loopback process returns the assembled review to the local UI, which can continue displaying it through a temporary network interruption. A restart or later sign-in fetches and authorizes the review again instead of persisting answer keys on disk.
 
 The client UI polls only for review availability while the acknowledged result screen is open, using bounded intervals and stopping on logout or navigation. A manual **Check for review** action remains available after transient coordinator errors.
 
@@ -96,7 +96,6 @@ Unused prepared releases created before this feature may be upgraded only when t
 - `ksat/coordinator/releases.py`: freeze, encrypt, sign, validate, and migrate review material.
 - `ksat/coordinator/routes.py`: student-owned completed-assessment discovery and post-close review authorization endpoints.
 - `ksat/client/coordinator.py`: strict coordinator review call and validation.
-- `ksat/client/store.py`: durable authorized-review cache without pre-close plaintext.
 - `client_app.py`: loopback availability and review routes plus pack/grant verification.
 - `static/client/app.js` and `static/client/styles.css`: waiting, retry, and per-question review UI.
 - Focused coordinator, client, protocol, migration, security, UI-contract, and end-to-end tests.

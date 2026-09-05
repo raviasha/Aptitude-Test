@@ -22,15 +22,18 @@ from ksat.crypto import (
     verify_json,
 )
 from ksat.protocol import (
+    AssessmentReviewGrant,
     AttemptDeadlineUpdate,
     AttemptStartResponse,
     AttemptTicket,
+    FrozenReviewQuestion,
     PublicQuestion,
     PublicDisplayMedia,
     PublicMediaItem,
     PublicReleaseDescriptor,
     ReleaseManifest,
     ReleaseSummary,
+    ReviewContent,
     SignedAttemptTicket,
     SignedAttemptDeadlineUpdate,
     canonical_json,
@@ -94,6 +97,7 @@ class ClientRuntimeTests(unittest.TestCase):
         self.clock = FakeClock()
         self.store = ClientStore(self.db_path)
         self.manifest = ReleaseManifest(
+            pack_format_version=1,
             release_id=self.release_id,
             test_id=41,
             test_name="Placement Set",
@@ -205,6 +209,59 @@ class ClientRuntimeTests(unittest.TestCase):
     def _prepare_and_start(self):
         self.runtime.prepare(self.summary, self.manifest, self.pack_path)
         return self.runtime.start(self.start_response, student_id=self.student_id)
+
+    def test_open_review_joins_by_question_id_in_attempt_order(self):
+        review_key = b"r" * 32
+        manifest = self.manifest.model_copy(update={"pack_format_version": 2})
+        review_content = ReviewContent(questions=[
+            FrozenReviewQuestion(question_id=7, correct_answer="B", solution_steps=["Seven step"]),
+            FrozenReviewQuestion(question_id=3, correct_answer="A", solution_steps=["Three step"]),
+        ])
+        ciphertext = encrypt_pack(
+            review_key,
+            f"{self.release_id}:review:v1",
+            canonical_json(review_content),
+        )
+        self._write_pack(
+            self.questions,
+            manifest=manifest,
+            extra_entries=(("review.json.enc", ciphertext),),
+        )
+        grant = AssessmentReviewGrant(
+            attempt_id=self.attempt_id,
+            student_id=self.student_id,
+            release_id=self.release_id,
+            content_hash=sha256_hex(self.pack_path.read_bytes()),
+            content_key_b64=base64.b64encode(self.content_key).decode("ascii"),
+            review_key_b64=base64.b64encode(review_key).decode("ascii"),
+            responses=[
+                {"question_id": 3, "question_order": 0, "selected_answer": None},
+                {"question_id": 7, "question_order": 1, "selected_answer": "A"},
+            ],
+        )
+        review = self.runtime.open_review(
+            self.pack_path, grant, student_id=self.student_id, test_name="Placement Set"
+        )
+        self.assertEqual([3, 7], [item.question.question_id for item in review.questions])
+        self.assertEqual(["Three step"], review.questions[0].solution_steps)
+        self.assertEqual("A", review.questions[1].selected_answer)
+        self.assertEqual("B", review.questions[1].correct_answer)
+        with self.assertRaisesRegex(ValueError, "review material"):
+            self.runtime.open_review(
+                self.pack_path,
+                grant.model_copy(update={
+                    "review_key_b64": base64.b64encode(b"x" * 32).decode("ascii")
+                }),
+                student_id=self.student_id,
+                test_name="Placement Set",
+            )
+        with self.assertRaisesRegex(ValueError, "hash"):
+            self.runtime.open_review(
+                self.pack_path,
+                grant.model_copy(update={"content_hash": "f" * 64}),
+                student_id=self.student_id,
+                test_name="Placement Set",
+            )
 
     def _reopen(self):
         self.store.close()
@@ -689,7 +746,7 @@ class ClientRuntimeTests(unittest.TestCase):
 
     def test_prepare_and_start_reject_unsupported_protocol_versions(self):
         unsupported_manifest = self.manifest.model_copy(
-            update={"pack_format_version": 2}
+            update={"pack_format_version": 3}
         )
         self._write_pack(self.questions, manifest=unsupported_manifest)
         unsupported_summary = self._summary()

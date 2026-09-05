@@ -15,6 +15,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from ksat.client.identity import DeviceIdentity
 from ksat.crypto import generate_ed25519_keypair, sign_json
 from ksat.protocol import (
+    ClientSession,
     AttemptStartResponse,
     AttemptTicket,
     PublicReleaseDescriptor,
@@ -61,6 +62,7 @@ class CoordinatorClientTests(unittest.TestCase):
         self.pack = b"encrypted assessment pack"
         self.content_hash = hashlib.sha256(self.pack).hexdigest()
         self.manifest = ReleaseManifest(
+            pack_format_version=1,
             release_id=self.release_id,
             test_id=7,
             test_name="Aptitude",
@@ -158,6 +160,50 @@ class CoordinatorClientTests(unittest.TestCase):
         receipt = self.make_client(handler, store).enroll("Lab 01", "one-time-code")
         self.assertEqual(self.device_id, receipt.device_id)
         self.assertEqual([(self.device_id, self.coordinator_public)], store.saved)
+
+    def test_completed_reviews_and_grant_are_typed_and_authenticated(self):
+        attempt_id = str(uuid.uuid4())
+        seen_nonces = set()
+        token = "student-token"
+
+        def handler(request):
+            self.assert_device_proof(request, seen_nonces, bearer=token)
+            if request.url.path == "/api/client/v1/reviews":
+                return httpx.Response(200, json=[{
+                    "attempt_id": attempt_id,
+                    "release_id": self.release_id,
+                    "test_id": 7,
+                    "test_name": "Aptitude",
+                    "accepted_at": "2026-09-05T09:00:00Z",
+                    "score": 1,
+                    "total_questions": 2,
+                    "percentage": 50.0,
+                    "review_state": "available",
+                }])
+            self.assertEqual(f"/api/client/v1/reviews/{attempt_id}", request.url.path)
+            return httpx.Response(200, json={
+                "attempt_id": attempt_id,
+                "student_id": "S100",
+                "release_id": self.release_id,
+                "content_hash": self.content_hash,
+                "content_key_b64": base64.b64encode(b"c" * 32).decode("ascii"),
+                "review_key_b64": base64.b64encode(b"r" * 32).decode("ascii"),
+                "responses": [
+                    {"question_id": 7, "question_order": 0, "selected_answer": "B"},
+                    {"question_id": 3, "question_order": 1, "selected_answer": None},
+                ],
+            })
+
+        client = self.make_client(handler)
+        client._session = ClientSession(
+            access_token=token,
+            student_id="S100",
+            student_name="Student",
+            device_id=self.device_id,
+            expires_in_seconds=300,
+        )
+        self.assertEqual(attempt_id, client.completed_reviews()[0].attempt_id)
+        self.assertEqual([7, 3], [item.question_id for item in client.review(attempt_id).responses])
 
     def test_already_enrolled_identity_is_not_sent_for_reenrollment(self):
         requests = []

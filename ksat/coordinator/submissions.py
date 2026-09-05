@@ -191,8 +191,19 @@ def freeze_release_answer_state(connection: sqlite3.Connection, release_id: str)
         raise ReleaseAnswerStateProblem(
             "The unused release cannot be repaired because a source question is missing."
         )
+    review_steps_by_id = {
+        row["question_id"]: row["solution_steps_json"]
+        for row in connection.execute(
+            "SELECT question_id,solution_steps_json FROM release_questions WHERE release_id=?",
+            (release_id,),
+        ).fetchall()
+    }
     frozen = [
-        (release_id, question_id, order, *_source_answer_snapshot(source_by_id[question_id]))
+        (
+            release_id, question_id, order,
+            *_source_answer_snapshot(source_by_id[question_id]),
+            review_steps_by_id.get(question_id),
+        )
         for order, question_id in enumerate(question_ids)
     ]
 
@@ -202,8 +213,8 @@ def freeze_release_answer_state(connection: sqlite3.Connection, release_id: str)
         connection.executemany(
             """INSERT INTO release_questions
                (release_id, question_id, canonical_order, options_json,
-                correct_answer, category, chapter)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                correct_answer, category, chapter, solution_steps_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             frozen,
         )
         validate_release_answer_state(connection, release_id)

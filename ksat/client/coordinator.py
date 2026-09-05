@@ -24,12 +24,14 @@ from pydantic import Field, ValidationError, model_validator
 from ksat.client.identity import DeviceIdentity
 from ksat.crypto import verify_json
 from ksat.protocol import (
+    AssessmentReviewGrant,
     AttemptStartResponse,
     ClientLoginRequest,
     ClientSession,
+    CompletedAssessmentSummary,
     DeviceEnrollmentReceipt,
     DeviceEnrollmentRequest,
-    PACK_FORMAT_VERSION,
+    SUPPORTED_PACK_FORMAT_VERSIONS,
     PROTOCOL_VERSION,
     ProtocolModel,
     PublicReleaseDescriptor,
@@ -109,7 +111,7 @@ class ReleaseCatalogEntry(ProtocolModel):
             or self.pack_signature_b64 != descriptor.content_signature_b64
             or self.pack_format_version != descriptor.manifest.pack_format_version
             or descriptor.manifest.protocol_version != PROTOCOL_VERSION
-            or descriptor.manifest.pack_format_version != PACK_FORMAT_VERSION
+            or descriptor.manifest.pack_format_version not in SUPPORTED_PACK_FORMAT_VERSIONS
             or descriptor.release_id != descriptor.manifest.release_id
             or descriptor.test_id != descriptor.manifest.test_id
             or descriptor.duration_seconds != descriptor.manifest.duration_seconds
@@ -577,6 +579,53 @@ class CoordinatorClient:
             raise CoordinatorProblem(
                 "invalid_coordinator_response", "The coordinator returned an invalid response.", False
             ) from error
+
+    def completed_reviews(self) -> list[CompletedAssessmentSummary]:
+        body = self._request_bytes("GET", f"{_API_PREFIX}/reviews", bearer=True)
+        value = _decode_json(body, "invalid_coordinator_response")
+        if not isinstance(value, list):
+            raise CoordinatorProblem(
+                "invalid_coordinator_response", "The coordinator returned an invalid response.", False
+            )
+        try:
+            reviews = [
+                CompletedAssessmentSummary.model_validate_json(canonical_json(item), strict=True)
+                for item in value
+            ]
+            if len({item.attempt_id for item in reviews}) != len(reviews):
+                raise ValueError("Duplicate completed assessment.")
+            return reviews
+        except (ValidationError, ValueError, TypeError) as error:
+            raise CoordinatorProblem(
+                "invalid_coordinator_response", "The coordinator returned an invalid response.", False
+            ) from error
+
+    def review(self, attempt_id: str) -> AssessmentReviewGrant:
+        try:
+            parsed = uuid.UUID(attempt_id)
+        except (AttributeError, ValueError) as error:
+            raise ValueError("Attempt identifier is invalid.") from error
+        if str(parsed) != attempt_id:
+            raise ValueError("Attempt identifier is invalid.")
+        grant = self._typed(
+            AssessmentReviewGrant,
+            self._request_bytes(
+                "GET", f"{_API_PREFIX}/reviews/{attempt_id}", bearer=True
+            ),
+            exact_keys={
+                "attempt_id", "student_id", "release_id", "content_hash",
+                "content_key_b64", "review_key_b64", "responses",
+            },
+        )
+        if (
+            grant.attempt_id != attempt_id
+            or self._session is None
+            or grant.student_id != self._session.student_id
+        ):
+            raise CoordinatorProblem(
+                "invalid_coordinator_response", "The coordinator returned an invalid response.", False
+            )
+        return grant
 
     def start_attempt(self, release_id: str, confirmed_content_hash: str) -> AttemptStartResponse:
         body = canonical_json({

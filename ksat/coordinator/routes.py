@@ -34,12 +34,19 @@ from ksat.coordinator.attempts import (
     preflight_attempt_start,
 )
 from ksat.coordinator.releases import load_release_manifest
+from ksat.coordinator.reviews import (
+    ReviewProblem,
+    issue_review_grant,
+    list_completed_assessments,
+)
 from ksat.coordinator.submissions import SubmissionProblem, validate_and_score
 from ksat.crypto import verify_json
 from ksat.protocol import (
+    AssessmentReviewGrant,
     AttemptStartResponse,
     ClientLoginRequest,
     ClientSession,
+    CompletedAssessmentSummary,
     DeviceEnrollmentReceipt,
     DeviceEnrollmentRequest,
     SignedResponseBundle,
@@ -97,6 +104,10 @@ def _raise_submission_http(error: SubmissionProblem) -> None:
         detail=error.detail(),
         headers=headers,
     ) from error
+
+
+def _raise_review_http(error: ReviewProblem) -> None:
+    raise HTTPException(status_code=error.status_code, detail=error.detail()) from error
 
 
 def utc_now() -> datetime:
@@ -652,6 +663,41 @@ async def launched_assessments(request: Request) -> dict[str, Any]:
         _raise_http(error)
     except AttemptProblem as error:
         _raise_attempt_http(error)
+    finally:
+        connection.close()
+
+
+@router.get("/reviews", response_model=list[CompletedAssessmentSummary])
+async def completed_reviews(request: Request) -> list[CompletedAssessmentSummary]:
+    config = _config(request)
+    connection = connect_sqlite(config.db_path)
+    try:
+        device_id = await _verified_device(request, connection)
+        student_id = _verified_student(request, config, device_id)
+        return list_completed_assessments(connection, student_id=student_id)
+    except AuthenticationProblem as error:
+        _raise_http(error)
+    finally:
+        connection.close()
+
+
+@router.get("/reviews/{attempt_id}", response_model=AssessmentReviewGrant)
+async def assessment_review(attempt_id: str, request: Request) -> AssessmentReviewGrant:
+    config = _config(request)
+    connection = connect_sqlite(config.db_path)
+    try:
+        device_id = await _verified_device(request, connection)
+        student_id = _verified_student(request, config, device_id)
+        return issue_review_grant(
+            connection,
+            attempt_id=attempt_id,
+            student_id=student_id,
+            pack_master_key=config.pack_master_key,
+        )
+    except AuthenticationProblem as error:
+        _raise_http(error)
+    except ReviewProblem as error:
+        _raise_review_http(error)
     finally:
         connection.close()
 

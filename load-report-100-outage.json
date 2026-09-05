@@ -1,0 +1,97 @@
+{
+  "accepted_results": 100,
+  "cleanup": {
+    "attempt_ids": 100,
+    "created_rows": 10602,
+    "deleted_rows": 10602,
+    "residual_rows": 0
+  },
+  "clients": 100,
+  "completed": true,
+  "coordinator": {
+    "cpu_percent_process_average": 6.707,
+    "memory_rss_bytes_peak": 126345216,
+    "scope": "coordinator_subprocess_only",
+    "sqlite_bytes": 6762072
+  },
+  "corruption_or_signature_error_count": 0,
+  "duplicate_count": 0,
+  "editable_sealed_attempt_count": 0,
+  "errors": {
+    "coordinator_unavailable": 100
+  },
+  "failed_enforced_thresholds": [],
+  "latency_ms": {
+    "local_answer": {
+      "count": 10000,
+      "maximum": 269.346,
+      "p50": 24.432,
+      "p95": 32.612,
+      "p99": 43.347
+    },
+    "request": {
+      "count": 700,
+      "maximum": 3429.346,
+      "p50": 296.199,
+      "p95": 3077.626,
+      "p99": 3387.312
+    },
+    "submission_ack": {
+      "count": 100,
+      "maximum": 3429.346,
+      "p50": 2902.37,
+      "p95": 3394.398,
+      "p99": 3411.391
+    }
+  },
+  "maximum_writer_queue_depth": 1,
+  "metrics_availability": "available",
+  "missing_attempt_count": 0,
+  "mode": "production_https_subprocess",
+  "network": {
+    "certificate_store_modified": false,
+    "endpoint": "disposable_loopback_https",
+    "trust": "generated_file_pinned_ca"
+  },
+  "observed_start_spread_seconds": 30.0,
+  "outage": {
+    "acknowledged_after_restart": 100,
+    "coordinator_service_restarted": true,
+    "enabled": true,
+    "sealed_pending_before_restart": 100
+  },
+  "performance_thresholds_enforced": true,
+  "questions": 100,
+  "request_counts": {
+    "GET /api/client/v1/assessments": 100,
+    "GET /api/client/v1/releases": 100,
+    "GET /api/client/v1/releases/c29fd8de-3869-4034-9c34-29cf3b688df0/pack": 100,
+    "POST /api/client/v1/attempts/start": 100,
+    "POST /api/client/v1/devices/enroll": 100,
+    "POST /api/client/v1/session": 100,
+    "POST /api/client/v1/submissions": 200
+  },
+  "run_id": "LOAD-3756E966-E0C0-4112-83EE-E2B83DC58717",
+  "schema_version": 1,
+  "start_spread_seconds": 30.0,
+  "status_counts": {
+    "0": 100,
+    "200": 700
+  },
+  "submission_spread_seconds": 0.0,
+  "submissions_before_barrier": 0,
+  "thresholds": {
+    "all_results_acknowledged": true,
+    "all_submission_calls_observed": true,
+    "all_submission_latencies_observed": true,
+    "cleanup_zero_residual_rows": true,
+    "local_answer_p99_below_100_ms": true,
+    "requested_start_spread_observed": true,
+    "submission_ack_p95_below_10_s": true,
+    "zero_corruption_or_signature_errors": true,
+    "zero_database_locked_errors": true,
+    "zero_duplicates": true,
+    "zero_missing": true,
+    "zero_submissions_before_barrier": true
+  }
+}

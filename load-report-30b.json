@@ -1,0 +1,94 @@
+{
+  "accepted_results": 30,
+  "cleanup": {
+    "attempt_ids": 30,
+    "created_rows": 3322,
+    "deleted_rows": 3322,
+    "residual_rows": 0
+  },
+  "clients": 30,
+  "completed": true,
+  "coordinator": {
+    "cpu_percent_process_average": 5.67,
+    "memory_rss_bytes_peak": 110755840,
+    "scope": "coordinator_subprocess_only",
+    "sqlite_bytes": 3751648
+  },
+  "corruption_or_signature_error_count": 0,
+  "duplicate_count": 0,
+  "editable_sealed_attempt_count": 0,
+  "errors": {},
+  "failed_enforced_thresholds": [],
+  "latency_ms": {
+    "local_answer": {
+      "count": 3000,
+      "maximum": 117.818,
+      "p50": 26.255,
+      "p95": 33.548,
+      "p99": 44.079
+    },
+    "request": {
+      "count": 210,
+      "maximum": 2431.231,
+      "p50": 311.317,
+      "p95": 2401.962,
+      "p99": 2420.631
+    },
+    "submission_ack": {
+      "count": 30,
+      "maximum": 2431.231,
+      "p50": 2354.81,
+      "p95": 2421.237,
+      "p99": 2428.411
+    }
+  },
+  "maximum_writer_queue_depth": 2,
+  "metrics_availability": "available",
+  "missing_attempt_count": 0,
+  "mode": "production_https_subprocess",
+  "network": {
+    "certificate_store_modified": false,
+    "endpoint": "disposable_loopback_https",
+    "trust": "generated_file_pinned_ca"
+  },
+  "observed_start_spread_seconds": 30.0,
+  "outage": {
+    "acknowledged_after_restart": 30,
+    "coordinator_service_restarted": false,
+    "enabled": false,
+    "sealed_pending_before_restart": 0
+  },
+  "performance_thresholds_enforced": true,
+  "questions": 100,
+  "request_counts": {
+    "GET /api/client/v1/assessments": 30,
+    "GET /api/client/v1/releases": 30,
+    "GET /api/client/v1/releases/cb0e5b74-2f6c-4068-a892-f3af3529403d/pack": 30,
+    "POST /api/client/v1/attempts/start": 30,
+    "POST /api/client/v1/devices/enroll": 30,
+    "POST /api/client/v1/session": 30,
+    "POST /api/client/v1/submissions": 30
+  },
+  "run_id": "LOAD-74115445-D2EE-48A6-B7DA-2359E9F4DB8B",
+  "schema_version": 1,
+  "start_spread_seconds": 30.0,
+  "status_counts": {
+    "200": 210
+  },
+  "submission_spread_seconds": 0.0,
+  "submissions_before_barrier": 0,
+  "thresholds": {
+    "all_results_acknowledged": true,
+    "all_submission_calls_observed": true,
+    "all_submission_latencies_observed": true,
+    "cleanup_zero_residual_rows": true,
+    "local_answer_p99_below_100_ms": true,
+    "requested_start_spread_observed": true,
+    "submission_ack_p95_below_10_s": true,
+    "zero_corruption_or_signature_errors": true,
+    "zero_database_locked_errors": true,
+    "zero_duplicates": true,
+    "zero_missing": true,
+    "zero_submissions_before_barrier": true
+  }
+}

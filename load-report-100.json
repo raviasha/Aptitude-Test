@@ -1,0 +1,94 @@
+{
+  "accepted_results": 100,
+  "cleanup": {
+    "attempt_ids": 100,
+    "created_rows": 10602,
+    "deleted_rows": 10602,
+    "residual_rows": 0
+  },
+  "clients": 100,
+  "completed": true,
+  "coordinator": {
+    "cpu_percent_process_average": 6.528,
+    "memory_rss_bytes_peak": 150282240,
+    "scope": "coordinator_subprocess_only",
+    "sqlite_bytes": 6070160
+  },
+  "corruption_or_signature_error_count": 0,
+  "duplicate_count": 0,
+  "editable_sealed_attempt_count": 0,
+  "errors": {},
+  "failed_enforced_thresholds": [],
+  "latency_ms": {
+    "local_answer": {
+      "count": 10000,
+      "maximum": 245.954,
+      "p50": 24.843,
+      "p95": 34.265,
+      "p99": 52.782
+    },
+    "request": {
+      "count": 700,
+      "maximum": 3382.797,
+      "p50": 313.343,
+      "p95": 2967.988,
+      "p99": 3359.99
+    },
+    "submission_ack": {
+      "count": 100,
+      "maximum": 3382.797,
+      "p50": 2743.789,
+      "p95": 3361.572,
+      "p99": 3377.31
+    }
+  },
+  "maximum_writer_queue_depth": 2,
+  "metrics_availability": "available",
+  "missing_attempt_count": 0,
+  "mode": "production_https_subprocess",
+  "network": {
+    "certificate_store_modified": false,
+    "endpoint": "disposable_loopback_https",
+    "trust": "generated_file_pinned_ca"
+  },
+  "observed_start_spread_seconds": 30.0,
+  "outage": {
+    "acknowledged_after_restart": 100,
+    "coordinator_service_restarted": false,
+    "enabled": false,
+    "sealed_pending_before_restart": 0
+  },
+  "performance_thresholds_enforced": true,
+  "questions": 100,
+  "request_counts": {
+    "GET /api/client/v1/assessments": 100,
+    "GET /api/client/v1/releases": 100,
+    "GET /api/client/v1/releases/b6a581e0-51af-4f9e-a785-83403b70b723/pack": 100,
+    "POST /api/client/v1/attempts/start": 100,
+    "POST /api/client/v1/devices/enroll": 100,
+    "POST /api/client/v1/session": 100,
+    "POST /api/client/v1/submissions": 100
+  },
+  "run_id": "LOAD-D0C2F643-A9B0-4CA3-9650-48D01F4E3ADD",
+  "schema_version": 1,
+  "start_spread_seconds": 30.0,
+  "status_counts": {
+    "200": 700
+  },
+  "submission_spread_seconds": 0.0,
+  "submissions_before_barrier": 0,
+  "thresholds": {
+    "all_results_acknowledged": true,
+    "all_submission_calls_observed": true,
+    "all_submission_latencies_observed": true,
+    "cleanup_zero_residual_rows": true,
+    "local_answer_p99_below_100_ms": true,
+    "requested_start_spread_observed": true,
+    "submission_ack_p95_below_10_s": true,
+    "zero_corruption_or_signature_errors": true,
+    "zero_database_locked_errors": true,
+    "zero_duplicates": true,
+    "zero_missing": true,
+    "zero_submissions_before_barrier": true
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "clients": 30,
+  "completed": false,
+  "coordinator": {
+    "cpu_percent_process_average": null,
+    "memory_rss_bytes_peak": null,
+    "sqlite_bytes": null
+  },
+  "failed_enforced_thresholds": [
+    "gate_execution_completed"
+  ],
+  "failure": {
+    "code": "gate_execution_failed"
+  },
+  "maximum_writer_queue_depth": null,
+  "metrics_availability": "unavailable",
+  "mode": "production_https_subprocess",
+  "outage": {
+    "coordinator_service_restarted": false,
+    "enabled": false
+  },
+  "questions": 100,
+  "schema_version": 1,
+  "start_spread_seconds": 30.0,
+  "submission_spread_seconds": 0.0,
+  "thresholds": {
+    "gate_execution_completed": false
+  }
+}

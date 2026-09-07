@@ -3,9 +3,7 @@
 import base64
 import binascii
 import heapq
-import hashlib
 import os
-import secrets
 import sqlite3
 import tempfile
 import threading
@@ -239,20 +237,22 @@ def register_device(
     connection: sqlite3.Connection,
     request: DeviceEnrollmentRequest,
     *,
-    expected_enrollment_code: str,
     coordinator_public_key_b64: str,
     now_iso: str,
 ) -> DeviceEnrollmentReceipt:
-    supplied_code = request.enrollment_code if isinstance(request.enrollment_code, str) else ""
-    expected_code = expected_enrollment_code if isinstance(expected_enrollment_code, str) else ""
-    supplied_digest = hashlib.sha256(supplied_code.encode("utf-8")).digest()
-    expected_digest = hashlib.sha256(expected_code.encode("utf-8")).digest()
-    if not secrets.compare_digest(supplied_digest, expected_digest):
-        raise _problem("invalid_enrollment_code", "The enrollment code is invalid.", status_code=403)
     label = request.label.strip()
     if not label:
         raise _problem("invalid_device_key", "The device key is invalid.", status_code=400)
     _public_key(request.public_key_b64)
+    existing = connection.execute(
+        "SELECT device_id FROM devices WHERE public_key_b64 = ? ORDER BY enrolled_at LIMIT 1",
+        (request.public_key_b64,),
+    ).fetchone()
+    if existing is not None:
+        return DeviceEnrollmentReceipt(
+            device_id=existing["device_id"],
+            coordinator_public_key_b64=coordinator_public_key_b64,
+        )
     device_id = str(uuid.uuid4())
     connection.execute(
         """INSERT INTO devices (device_id, label, public_key_b64, status, enrolled_at)

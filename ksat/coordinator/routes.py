@@ -4,9 +4,12 @@ import hashlib
 import os
 import re
 import shutil
+import sqlite3
 import stat
 import tempfile
 import threading
+import time
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -44,6 +47,7 @@ from ksat.crypto import verify_json
 from ksat.protocol import (
     AssessmentReviewGrant,
     AttemptStartResponse,
+    ClientRegistrationRequest,
     ClientLoginRequest,
     ClientSession,
     CompletedAssessmentSummary,
@@ -52,6 +56,7 @@ from ksat.protocol import (
     SignedResponseBundle,
     SignedAttemptDeadlineUpdate,
     SignedAttemptTicket,
+    StudentRegistrationReceipt,
     SubmissionReceipt,
 )
 from ksat.sqlite import connect_sqlite
@@ -76,6 +81,65 @@ _CONTENT_HASH = re.compile(r"[0-9a-f]{64}\Z")
 _PACK_COPY_CHUNK_BYTES = 1024 * 1024
 _PACK_SPOOL_MEMORY_BYTES = 1024 * 1024
 _MAX_PACK_SNAPSHOT_BYTES = 64 * 1024 * 1024
+_DEVICE_ENROLLMENT_LOCK = threading.Lock()
+_REGISTRATION_HASH_SLOTS = threading.BoundedSemaphore(4)
+
+
+class RegistrationRateLimiter:
+    """Small in-memory admission gate for the coordinator's expensive bcrypt path."""
+
+    def __init__(
+        self,
+        *,
+        per_device_limit: int,
+        global_limit: int,
+        window_seconds: int,
+    ) -> None:
+        if any(
+            type(value) is not int or value <= 0
+            for value in (per_device_limit, global_limit, window_seconds)
+        ):
+            raise ValueError("Registration rate limits must be positive integers.")
+        self.per_device_limit = per_device_limit
+        self.global_limit = global_limit
+        self.window_seconds = window_seconds
+        self._device_events: dict[str, deque[float]] = {}
+        self._global_events: deque[tuple[float, str]] = deque()
+        self._lock = threading.Lock()
+
+    def admit(self, device_id: str, *, now: float | None = None) -> None:
+        accepted_at = time.monotonic() if now is None else now
+        cutoff = accepted_at - self.window_seconds
+        with self._lock:
+            while self._global_events and self._global_events[0][0] <= cutoff:
+                expired_at, expired_device = self._global_events.popleft()
+                device_events = self._device_events.get(expired_device)
+                if device_events and device_events[0] == expired_at:
+                    device_events.popleft()
+                if device_events is not None and not device_events:
+                    del self._device_events[expired_device]
+            device_events = self._device_events.setdefault(device_id, deque())
+            if (
+                len(device_events) >= self.per_device_limit
+                or len(self._global_events) >= self.global_limit
+            ):
+                if not device_events:
+                    del self._device_events[device_id]
+                raise AuthenticationProblem(
+                    "registration_rate_limited",
+                    "Too many accounts are being created. Wait one minute and try again.",
+                    status_code=429,
+                    retryable=True,
+                )
+            device_events.append(accepted_at)
+            self._global_events.append((accepted_at, device_id))
+
+
+_REGISTRATION_RATE_LIMITER = RegistrationRateLimiter(
+    per_device_limit=6,
+    global_limit=300,
+    window_seconds=60,
+)
 
 
 class AttemptStartRequest(BaseModel):
@@ -90,7 +154,12 @@ def _config(request: Request) -> CoordinatorConfig:
 
 
 def _raise_http(error: AuthenticationProblem) -> None:
-    raise HTTPException(status_code=error.status_code, detail=error.detail()) from error
+    headers = {"Retry-After": "60"} if error.code == "registration_rate_limited" else None
+    raise HTTPException(
+        status_code=error.status_code,
+        detail=error.detail(),
+        headers=headers,
+    ) from error
 
 
 def _raise_attempt_http(error: AttemptProblem) -> None:
@@ -498,17 +567,89 @@ def _assert_encrypted_pack_ready(connection, config: CoordinatorConfig, release_
 @router.post("/devices/enroll", response_model=DeviceEnrollmentReceipt)
 def enroll_device(payload: DeviceEnrollmentRequest, request: Request) -> DeviceEnrollmentReceipt:
     config = _config(request)
+    with _DEVICE_ENROLLMENT_LOCK:
+        connection = connect_sqlite(config.db_path)
+        try:
+            receipt = register_device(
+                connection,
+                payload,
+                coordinator_public_key_b64=config.signing_public_key_b64,
+                now_iso=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            )
+            connection.commit()
+            return receipt
+        except AuthenticationProblem as error:
+            connection.rollback()
+            _raise_http(error)
+        finally:
+            connection.close()
+
+
+@router.post(
+    "/students/register",
+    response_model=StudentRegistrationReceipt,
+    status_code=201,
+)
+async def register_student_from_client(
+    payload: ClientRegistrationRequest,
+    request: Request,
+) -> StudentRegistrationReceipt:
+    config = _config(request)
     connection = connect_sqlite(config.db_path)
     try:
-        receipt = register_device(
-            connection,
-            payload,
-            expected_enrollment_code=config.device_enrollment_code,
-            coordinator_public_key_b64=config.signing_public_key_b64,
-            now_iso=datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        )
-        connection.commit()
-        return receipt
+        device_id = await _verified_device(request, connection)
+        student_id = payload.student_id.strip().upper()
+        name = payload.name.strip()
+        student_class = payload.student_class.strip()
+        section = payload.section.strip().upper()
+        password_bytes = payload.password.encode("utf-8")
+        if (
+            not student_id
+            or not name
+            or not student_class
+            or not section
+            or len(password_bytes) > 72
+        ):
+            raise AuthenticationProblem(
+                "invalid_registration",
+                "The student registration details are invalid.",
+                status_code=422,
+            )
+        _REGISTRATION_RATE_LIMITER.admit(device_id)
+        if not _REGISTRATION_HASH_SLOTS.acquire(blocking=False):
+            raise AuthenticationProblem(
+                "registration_rate_limited",
+                "Too many accounts are being created. Wait one minute and try again.",
+                status_code=429,
+                retryable=True,
+            )
+        try:
+            password_hash = await run_in_threadpool(
+                lambda: bcrypt.hashpw(password_bytes, bcrypt.gensalt()).decode()
+            )
+        finally:
+            _REGISTRATION_HASH_SLOTS.release()
+        try:
+            connection.execute(
+                "INSERT INTO students VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    student_id,
+                    name,
+                    password_hash,
+                    student_class,
+                    section,
+                    utc_now().isoformat(timespec="seconds"),
+                ),
+            )
+            connection.commit()
+        except sqlite3.IntegrityError as error:
+            connection.rollback()
+            raise AuthenticationProblem(
+                "student_id_exists",
+                "That Student ID is already registered.",
+                status_code=409,
+            ) from error
+        return StudentRegistrationReceipt(student_id=student_id, name=name)
     except AuthenticationProblem as error:
         connection.rollback()
         _raise_http(error)

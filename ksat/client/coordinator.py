@@ -26,6 +26,7 @@ from ksat.crypto import verify_json
 from ksat.protocol import (
     AssessmentReviewGrant,
     AttemptStartResponse,
+    ClientRegistrationRequest,
     ClientLoginRequest,
     ClientSession,
     CompletedAssessmentSummary,
@@ -38,6 +39,7 @@ from ksat.protocol import (
     SignedResponseBundle,
     SignedAttemptDeadlineUpdate,
     SubmissionReceipt,
+    StudentRegistrationReceipt,
     canonical_json,
     device_request_bytes,
 )
@@ -454,16 +456,18 @@ class CoordinatorClient:
                 "invalid_coordinator_response", "The coordinator returned an invalid response.", False
             ) from error
 
-    def enroll(self, label: str, enrollment_code: str) -> DeviceEnrollmentReceipt:
+    def enroll(
+        self, label: str, _legacy_enrollment_code: str | None = None
+    ) -> DeviceEnrollmentReceipt:
         identity = self._current_identity(enrolled=False)
         if identity.device_id is not None or identity.coordinator_public_key_b64 is not None:
             raise CoordinatorProblem(
                 "device_already_enrolled", "This lab computer is already enrolled.", False
             )
         payload = DeviceEnrollmentRequest(
-            label=label, public_key_b64=identity.public_key_b64, enrollment_code=enrollment_code
+            label=label, public_key_b64=identity.public_key_b64
         )
-        body = canonical_json(payload)
+        body = canonical_json(payload.model_dump(mode="json", exclude_none=True))
         receipt = self._typed(
             DeviceEnrollmentReceipt,
             self._request_bytes("POST", f"{_API_PREFIX}/devices/enroll", body=body, signed=False),
@@ -492,6 +496,29 @@ class CoordinatorClient:
                 receipt.device_id, receipt.coordinator_public_key_b64,
             )
         return receipt
+
+    def register_student(
+        self,
+        *,
+        student_id: str,
+        name: str,
+        student_class: str,
+        section: str,
+        password: str,
+    ) -> StudentRegistrationReceipt:
+        payload = ClientRegistrationRequest(
+            student_id=student_id,
+            name=name,
+            student_class=student_class,
+            section=section,
+            password=password,
+        )
+        body = canonical_json(payload)
+        return self._typed(
+            StudentRegistrationReceipt,
+            self._request_bytes("POST", f"{_API_PREFIX}/students/register", body=body),
+            exact_keys={"student_id", "name"},
+        )
 
     def login(self, student_id: str, password: str) -> ClientSession:
         self._session = None

@@ -126,10 +126,21 @@ direct write access to the authoritative files.
 The Faculty **Tests** page shows release readiness, a short content-hash prefix,
 the ten-minute start window, eligible/started/submitted/voided counts, submission
 queue pressure, and enrolled lab computers. Faculty can revoke or reactivate a
-computer, rotate the one-time enrollment code, duplicate a used assessment into
-a new immutable release, inspect an attempt's deterministic question order, and
-perform reasoned/audited void, retake, and timer-extension operations. Enrollment
-codes are displayed only in the successful rotation response.
+computer, duplicate a used assessment into a new immutable release, inspect an
+attempt's deterministic question order, and perform reasoned/audited void,
+retake, and timer-extension operations. A newly installed client registers its
+protected device identity automatically using the Windows computer name; no
+computer label or enrollment code is entered by the student.
+
+Automatic registration assumes the coordinator port is reachable only from
+institution-managed lab computers. Private-network firewall or VLAN isolation
+is the enrollment trust boundary; do not expose the coordinator port to public
+or untrusted networks.
+
+Students can create their own account from the installed client sign-in screen.
+The installed-client registration request is accepted only from an automatically
+registered active client, and Faculty can view or delete the resulting student
+account from the coordinator.
 
 Timer extensions do not rewrite the signed assessment pack. New attempts receive
 the current audited release-extension policy in their signed ticket. Active

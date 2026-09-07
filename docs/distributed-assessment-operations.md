@@ -31,14 +31,25 @@ full test suite, executable smoke, recursive PyInstaller/Inno extraction scan,
    `coordinator-ca.pem` and `coordinator-public.json`.
 5. Copy only those two public files to approved removable media or a protected
    software-distribution share. Never distribute `secrets`, `aptitude.db`,
-   enrollment codes, session tokens, or assessment packs.
+   session tokens or assessment packs.
 6. Verify the installer-owned inbound firewall rule is private-profile only,
    names the installed coordinator executable, and matches the chosen port.
+
+Automatic device registration deliberately has no student-entered enrollment
+code. The private lab network is therefore the enrollment trust boundary: use
+firewall or VLAN controls so only institution-managed lab computers can reach
+the coordinator port, and never expose that port to a public or student-owned
+network.
+
+As a deployment acceptance check, confirm the coordinator URL succeeds from a
+managed lab client and fails from an unmanaged or student-owned computer on a
+different network segment. Record both results with the firewall/VLAN change
+ticket before enabling student access.
 
 The coordinator must be backed up before clients are enrolled. See “Backup and
 restore” below.
 
-## Install and enroll each lab client
+## Install each lab client
 
 1. Verify `KSATClientSetup-2.0.0.exe`, `coordinator-ca.pem`, and
    `coordinator-public.json` hashes through the approved channel.
@@ -48,12 +59,10 @@ restore” below.
 3. Confirm the client opens only `http://127.0.0.1:8010`; it must create no
    inbound firewall rule. Confirm ordinary lab accounts cannot directly modify
    `identity`, `state`, or `packs`; their shortcut opens only the loopback UI.
-4. In Faculty **Devices**, rotate the one-time enrollment code. Treat the
-   successful response as a secret and do not capture it in screenshots or
-   logs.
-5. At each client, enroll the named machine once. Confirm it appears as active
-   in Faculty **Devices**, then rotate the enrollment code again after the
-   batch is complete.
+4. Open the client. It registers its protected device identity automatically
+   using the Windows computer name; there is no enrollment form or code.
+5. Confirm the computer appears as active in Faculty **Devices**. A student may
+   then choose **New student? Create account** on the client sign-in screen.
 
 To revoke a lost or reimaged machine, use Faculty **Devices → Revoke**, record a
 reason, and verify subsequent signed requests fail. Reactivate only after the
@@ -180,7 +189,7 @@ runtime configuration, start on the same hostname/port, and verify the public
 CA/signing fingerprint before reopening the lab. Test restore regularly on an
 authorized disposable machine.
 
-## Certificate, key, and enrollment-code operations
+## Certificate, key, and device-registration operations
 
 Back up before renewal. Stop the coordinator and run the documented
 `--renew-certificate --confirm-renewal` command as Administrator. Renewal keeps
@@ -188,10 +197,10 @@ the local CA and protocol signing key and replaces only the hostname server
 key/certificate. A deliberate CA replacement is a trust migration: reinstall
 and validate the new public bundle on every client before service resumes.
 
-Rotate the enrollment code after every enrollment batch, any suspected
-disclosure, and personnel handoff. Rotation invalidates the prior authority but
-does not change enrolled device identities. Never rotate protocol signing or
-pack keys independently of a complete controlled backup/restore plan.
+Client device identities register automatically on first connection. Faculty can
+revoke a computer whose installation is no longer trusted and reactivate it only
+after verifying the machine. Never rotate protocol signing or pack keys
+independently of a complete controlled backup/restore plan.
 
 ## Upgrade dry-run and historical preservation
 
@@ -287,7 +296,7 @@ Record the UTC time, coordinator version, client version, diagnostic reference,
 device label (not private key), assessment/release ID, attempt ID, and visible
 state. Collect Windows Event Viewer application entries, coordinator/client
 application logs, the load report, SQLite integrity result, disk-free space,
-DNS resolution, and TCP reachability. Redact passwords, enrollment codes,
+DNS resolution, and TCP reachability. Redact passwords,
 cookies, bearer/session tokens, private keys, response bundles, database rows,
 and question content before sharing. Preserve original files through the
 institution’s protected incident channel.

@@ -150,16 +150,45 @@ class CoordinatorClientTests(unittest.TestCase):
             self.assertEqual({
                 "label": "Lab 01",
                 "public_key_b64": self.device_public,
-                "enrollment_code": "one-time-code",
             }, json.loads(request.content))
             return httpx.Response(200, json={
                 "device_id": self.device_id,
                 "coordinator_public_key_b64": self.coordinator_public,
             })
 
-        receipt = self.make_client(handler, store).enroll("Lab 01", "one-time-code")
+        receipt = self.make_client(handler, store).enroll("Lab 01")
         self.assertEqual(self.device_id, receipt.device_id)
         self.assertEqual([(self.device_id, self.coordinator_public)], store.saved)
+
+    def test_student_registration_is_device_signed_and_returns_normalized_identity(self):
+        seen = set()
+
+        def handler(request):
+            self.assertEqual("/api/client/v1/students/register", request.url.path)
+            self.assert_device_proof(request, seen)
+            self.assertEqual({
+                "student_id": "1ks26ai007",
+                "name": "New Student",
+                "student_class": "AIML",
+                "section": "B",
+                "password": "new-password",
+            }, json.loads(request.content))
+            return httpx.Response(201, json={
+                "student_id": "1KS26AI007",
+                "name": "New Student",
+            })
+
+        registered = self.make_client(handler).register_student(
+            student_id="1ks26ai007",
+            name="New Student",
+            student_class="AIML",
+            section="B",
+            password="new-password",
+        )
+
+        self.assertEqual("1KS26AI007", registered.student_id)
+        self.assertEqual("New Student", registered.name)
+        self.assertEqual(1, len(seen))
 
     def test_completed_reviews_and_grant_are_typed_and_authenticated(self):
         attempt_id = str(uuid.uuid4())

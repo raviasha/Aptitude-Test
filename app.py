@@ -375,7 +375,6 @@ def now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-_ENROLLMENT_ROTATION_LOCK = threading.Lock()
 
 
 def bounded_admin_reason(value: str) -> str:
@@ -441,6 +440,7 @@ def delete_student(student_id: str) -> Dict[str, str]:
             placeholders = ",".join("?" for _ in attempt_ids)
             connection.execute(f"DELETE FROM exam_violations WHERE attempt_id IN ({placeholders})", attempt_ids)
             connection.execute(f"DELETE FROM responses WHERE attempt_id IN ({placeholders})", attempt_ids)
+            connection.execute(f"DELETE FROM submissions WHERE attempt_id IN ({placeholders})", attempt_ids)
             connection.execute(f"DELETE FROM attempts WHERE attempt_id IN ({placeholders})", attempt_ids)
         connection.execute("DELETE FROM tests WHERE owner_student_id = ?", (normalized_id,))
         connection.execute("DELETE FROM student_sessions WHERE student_id = ?", (normalized_id,))
@@ -2726,36 +2726,6 @@ def revoke_device(device_id: str, payload: AdminReasonPayload, request: Request)
 @app.post("/api/admin/devices/{device_id}/reactivate")
 def reactivate_device(device_id: str, payload: AdminReasonPayload, request: Request) -> Dict[str, Any]:
     return _set_device_status(device_id, "active", payload, request)
-
-
-@app.post("/api/admin/devices/enrollment-code/rotate")
-def rotate_device_enrollment_code(payload: AdminReasonPayload, request: Request) -> Dict[str, Any]:
-    user = require_admin_mutation(request)
-    reason = bounded_admin_reason(payload.reason)
-    if os.getenv("KSAT_DEVICE_ENROLLMENT_CODE") is not None:
-        raise HTTPException(409, {
-            "code": "enrollment_code_managed_externally",
-            "message": "The enrollment code is managed by IT and cannot be rotated here.",
-            "retryable": False,
-        })
-    new_code = secrets.token_urlsafe(18)
-    with _ENROLLMENT_ROTATION_LOCK:
-        with db() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            rotated_at = now()
-            connection.execute(
-                """INSERT INTO coordinator_settings(setting_key,setting_value,updated_at)
-                   VALUES ('device_enrollment_code',?,?)
-                   ON CONFLICT(setting_key) DO UPDATE SET
-                     setting_value=excluded.setting_value,updated_at=excluded.updated_at""",
-                (new_code, rotated_at),
-            )
-            connection.execute(
-                "INSERT INTO audit_events (event_type,actor_id,details_json,occurred_at) VALUES ('device_enrollment_code_rotated',?,?,?)",
-                (user["id"], audit_details({"reason": reason}), rotated_at),
-            )
-        app.state.coordinator_config.device_enrollment_code = new_code
-    return {"rotated": True, "enrollment_code": new_code}
 
 
 @app.get("/api/admin/questions")

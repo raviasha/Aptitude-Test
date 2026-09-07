@@ -219,7 +219,7 @@ class ProtocolModel(BaseModel):
 class DeviceEnrollmentRequest(BaseModel):
     label: str
     public_key_b64: str
-    enrollment_code: str
+    enrollment_code: str | None = None
 
 
 class DeviceEnrollmentReceipt(BaseModel):
@@ -239,6 +239,19 @@ class ClientSession(BaseModel):
     student_name: str
     device_id: str
     expires_in_seconds: int = 43_200
+
+
+class ClientRegistrationRequest(ProtocolModel):
+    student_id: str = Field(min_length=1, max_length=100)
+    name: str = Field(min_length=1, max_length=200)
+    student_class: str = Field(min_length=1, max_length=100)
+    section: str = Field(min_length=1, max_length=20)
+    password: str = Field(min_length=6, max_length=1024)
+
+
+class StudentRegistrationReceipt(ProtocolModel):
+    student_id: str = Field(min_length=1, max_length=100)
+    name: str = Field(min_length=1, max_length=200)
 
 
 _PUBLIC_ASSET_URL = re.compile(r"assets/[0-9a-f]{64}\.(?:png|jpe?g|webp|svg)\Z")

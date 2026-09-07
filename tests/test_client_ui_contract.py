@@ -12,6 +12,57 @@ INDEX = ROOT / "static" / "client" / "index.html"
 
 
 class ClientUiContractTests(unittest.TestCase):
+    def test_registration_payload_requires_matching_passwords_and_excludes_confirmation(self):
+        result = self._run_node(
+            """
+const ui = require(process.argv[1]);
+let mismatch;
+let shortPassword;
+try {
+  ui.registrationPayload({
+    student_id: ' S100 ', name: ' Student One ', student_class: ' AIML ',
+    section: ' a ', password: 'student123', confirm_password: 'different'
+  });
+} catch (error) {
+  mismatch = error.message;
+}
+try {
+  ui.registrationPayload({
+    student_id: 'S100', name: 'Student One', student_class: 'AIML',
+    section: 'A', password: '12345', confirm_password: '12345'
+  });
+} catch (error) {
+  shortPassword = error.message;
+}
+process.stdout.write(JSON.stringify({
+  valid: ui.registrationPayload({
+    student_id: ' S100 ', name: ' Student One ', student_class: ' AIML ',
+    section: ' a ', password: 'student123', confirm_password: 'student123'
+  }),
+  mismatch,
+  shortPassword
+}));
+"""
+        )
+        self.assertEqual(
+            {
+                "student_id": "S100",
+                "name": "Student One",
+                "student_class": "AIML",
+                "section": "a",
+                "password": "student123",
+            },
+            result["valid"],
+        )
+        self.assertEqual("Passwords do not match.", result["mismatch"])
+        self.assertEqual(
+            "Password must be at least 6 characters.", result["shortPassword"]
+        )
+        source = SCRIPT.read_text(encoding="utf-8")
+        self.assertNotIn("Enrollment code", source)
+        self.assertNotIn("Computer label", source)
+        self.assertIn("New student? Create account", source)
+
     def test_review_choice_states_and_poll_delay_execute_in_javascript(self):
         result = self._run_node(
             """
@@ -101,7 +152,8 @@ process.stdout.write(JSON.stringify({
 const ui = require(process.argv[1]);
 const codes = [
   'coordinator_unavailable', 'start_window_closed', 'content_hash_mismatch',
-  'device_inactive', 'corrupt_local_attempt', 'faculty_intervention_required'
+  'device_inactive', 'corrupt_local_attempt', 'faculty_intervention_required',
+  'invalid_registration', 'student_id_exists', 'registration_rate_limited'
 ];
 process.stdout.write(JSON.stringify({
   messages: Object.fromEntries(codes.map(code => [code, ui.problemMessage(code)])),
@@ -132,6 +184,18 @@ process.stdout.write(JSON.stringify({
         self.assertEqual(
             "The sealed submission needs Faculty attention. Your answers remain saved on this computer.",
             result["messages"]["faculty_intervention_required"],
+        )
+        self.assertEqual(
+            "Check the student details and use a password of at least 6 characters.",
+            result["messages"]["invalid_registration"],
+        )
+        self.assertEqual(
+            "That Student ID is already registered.",
+            result["messages"]["student_id_exists"],
+        )
+        self.assertEqual(
+            "Too many accounts are being created. Wait one minute and try again.",
+            result["messages"]["registration_rate_limited"],
         )
         self.assertEqual(
             "The requested action could not be completed. Reference: KSAT-ABC1234567",

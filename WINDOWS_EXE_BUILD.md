@@ -78,7 +78,7 @@ The installer writes only the program under Program Files. Runtime data is retai
 C:\ProgramData\KSAT Coordinator
 ```
 
-The first launch creates private protocol keys, the pack key, enrollment code, browser-session secret, client-session signing secret, a private local CA, and its server key under the administrator/SYSTEM-only `secrets` directory. Never copy or email that directory. Give lab IT only these read-only public files:
+The first launch creates private protocol keys, the pack key, browser-session secret, client-session signing secret, a private local CA, and its server key under the administrator/SYSTEM-only `secrets` directory. An older enrollment value may remain for upgrade compatibility, but current clients neither request nor use it. Never copy or email the secrets directory. Give lab IT only these read-only public files:
 
 ```text
 C:\ProgramData\KSAT Coordinator\public\coordinator-ca.pem
@@ -119,6 +119,9 @@ installer opens no inbound firewall port. On every install or repair it
 independently verifies the saved configuration and machine-root CA. It records
 the exact thumbprint only when it actually adds a certificate, so uninstall
 removes neither a pre-existing CA nor a later replacement that it did not add.
+On first launch the client automatically registers its protected device identity
+with the coordinator using the Windows computer name. Students do not enter a
+computer label or enrollment code.
 
 Silent first install example (quote all paths and account names):
 
@@ -152,7 +155,7 @@ Back up the coordinator first, stop it, and run the elevated installed executabl
 "C:\Program Files\KSAT Coordinator\KSATCoordinator.exe" --renew-certificate --confirm-renewal
 ```
 
-Renewal first acquires the same OS lifecycle lock held by the coordinator and therefore refuses while it is running. It preserves the protocol-signing key, pack key, enrollment code, and local CA; it replaces only the server key/certificate and refreshes the public export. If IT deliberately replaces the CA, redistribute and validate the new public bundle on every client before service resumes. Trust rotation is never automatic.
+Renewal first acquires the same OS lifecycle lock held by the coordinator and therefore refuses while it is running. It preserves the protocol-signing key, pack key, legacy compatibility data, and local CA; it replaces only the server key/certificate and refreshes the public export. If IT deliberately replaces the CA, redistribute and validate the new public bundle on every client before service resumes. Trust rotation is never automatic.
 
 ## Backup, upgrade, rollback, and uninstall
 

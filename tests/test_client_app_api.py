@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import socket
 import sqlite3
 import tempfile
 import threading
@@ -227,9 +228,15 @@ class FakeCoordinator:
     def session(self):
         return self._session
 
-    def enroll(self, label, enrollment_code):
-        self.calls.append(("enroll", label, enrollment_code))
+    def enroll(self, label):
+        self.calls.append(("enroll", label))
         return SimpleNamespace(device_id="55555555-5555-4555-8555-555555555555")
+
+    def register_student(self, *, student_id, name, student_class, section, password):
+        self.calls.append((
+            "register", student_id, name, student_class, section, password,
+        ))
+        return SimpleNamespace(student_id=student_id.strip().upper(), name=name.strip())
 
     def login(self, student_id, password):
         self.calls.append(("login", student_id, password))
@@ -363,6 +370,81 @@ class ClientAppApiTests(unittest.TestCase):
         )
         self.assertEqual(200, detail.status_code, detail.text)
         self.assertEqual(7, detail.json()["questions"][0]["question"]["question_id"])
+
+    def test_local_registration_forwards_only_student_fields_to_the_coordinator(self):
+        response = self.client.post(
+            "/api/register",
+            json={
+                "student_id": "1ks26ai007",
+                "name": "New Student",
+                "student_class": "AIML",
+                "section": "B",
+                "password": "new-password",
+            },
+            headers=self.mutation_headers,
+        )
+
+        self.assertEqual(201, response.status_code, response.text)
+        self.assertEqual(
+            (
+                "register",
+                "1ks26ai007",
+                "New Student",
+                "AIML",
+                "B",
+                "new-password",
+            ),
+            self.coordinator.calls[-1],
+        )
+        self.assertEqual(
+            {"state": "login", "student": {"student_id": "1KS26AI007", "name": "New Student"}},
+            response.json(),
+        )
+
+    def test_unenrolled_client_registers_automatically_with_the_windows_hostname(self):
+        from client_app import ClientServices, create_client_app
+
+        identity_store = FakeIdentityStore(enrolled=False)
+        coordinator = FakeCoordinator()
+
+        def auto_enroll(label):
+            coordinator.calls.append(("enroll", label))
+            identity_store.identity = SimpleNamespace(
+                device_id="55555555-5555-4555-8555-555555555555",
+                coordinator_public_key_b64="public-binding",
+                private_key_b64="must-never-leak",
+                public_key_b64="device-public",
+            )
+            return SimpleNamespace(device_id=identity_store.identity.device_id)
+
+        coordinator.enroll = auto_enroll
+        services = ClientServices(
+            identity_store,
+            FakeStore(None),
+            None,
+            coordinator,
+            FakeOutbox(),
+            cache_dir=self.root / "automatic-packs",
+        )
+        app_under_test = create_client_app(services)
+        with TestClient(app_under_test, base_url="http://127.0.0.1:8011") as client:
+            page = client.get("/", headers={"Host": "127.0.0.1:8011"})
+            csrf = re.search(
+                r'<meta name="ksat-csrf" content="([A-Za-z0-9_-]+)">', page.text
+            ).group(1)
+            response = client.post(
+                "/api/device/enroll",
+                json={},
+                headers={
+                    "Host": "127.0.0.1:8011",
+                    "Origin": "http://127.0.0.1:8011",
+                    "X-KSAT-CSRF": csrf,
+                },
+            )
+
+        self.assertEqual(200, response.status_code, response.text)
+        self.assertEqual(("enroll", socket.gethostname()), coordinator.calls[-1])
+        self.assertEqual("login", response.json()["state"])
 
     def test_answer_and_violation_routes_are_local_only(self):
         self.coordinator.calls.clear()

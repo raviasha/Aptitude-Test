@@ -16,6 +16,7 @@ from itsdangerous import URLSafeTimedSerializer
 
 import app
 import ksat.coordinator.auth as coordinator_auth
+import ksat.coordinator.routes as coordinator_routes
 from ksat.crypto import generate_ed25519_keypair
 from ksat.protocol import device_request_bytes
 
@@ -67,14 +68,273 @@ class ClientAuthApiTests(unittest.TestCase):
         app.app.state.coordinator_config = self.original_coordinator_config
         self.temp_dir.cleanup()
 
-    def enroll(self, label):
+    def enroll(self, label, *, public_key=None):
         response = self.client.post("/api/client/v1/devices/enroll", json={
             "label": label,
-            "public_key_b64": self.public_key,
-            "enrollment_code": "lab-enroll-test",
+            "public_key_b64": public_key or self.public_key,
         })
         self.assertEqual(response.status_code, 200, response.text)
         return response.json()
+
+    def test_enrollment_succeeds_without_a_user_supplied_code(self):
+        response = self.client.post("/api/client/v1/devices/enroll", json={
+            "label": "LAB-PC-01",
+            "public_key_b64": self.public_key,
+        })
+
+        self.assertEqual(200, response.status_code, response.text)
+        with app.db() as connection:
+            device = connection.execute(
+                "SELECT label, status FROM devices WHERE device_id = ?",
+                (response.json()["device_id"],),
+            ).fetchone()
+        self.assertEqual(("LAB-PC-01", "active"), tuple(device))
+
+    def test_automatic_enrollment_retry_reuses_the_same_device_record(self):
+        payload = {
+            "label": "LAB-PC-01",
+            "public_key_b64": self.public_key,
+        }
+
+        first = self.client.post("/api/client/v1/devices/enroll", json=payload)
+        second = self.client.post("/api/client/v1/devices/enroll", json=payload)
+
+        self.assertEqual(200, first.status_code, first.text)
+        self.assertEqual(200, second.status_code, second.text)
+        self.assertEqual(first.json()["device_id"], second.json()["device_id"])
+        with app.db() as connection:
+            count = connection.execute(
+                "SELECT COUNT(*) FROM devices WHERE public_key_b64 = ?",
+                (self.public_key,),
+            ).fetchone()[0]
+        self.assertEqual(1, count)
+
+    def test_concurrent_automatic_enrollment_creates_one_device_record(self):
+        payload = {
+            "label": "LAB-PC-01",
+            "public_key_b64": self.public_key,
+        }
+        barrier = threading.Barrier(6)
+
+        def enroll_at_once(_index):
+            barrier.wait()
+            response = self.client.post("/api/client/v1/devices/enroll", json=payload)
+            return response.status_code, response.json()
+
+        with ThreadPoolExecutor(max_workers=6) as executor:
+            results = list(executor.map(enroll_at_once, range(6)))
+
+        self.assertTrue(all(status == 200 for status, _body in results), results)
+        self.assertEqual(1, len({body["device_id"] for _status, body in results}))
+        with app.db() as connection:
+            count = connection.execute(
+                "SELECT COUNT(*) FROM devices WHERE public_key_b64 = ?",
+                (self.public_key,),
+            ).fetchone()[0]
+        self.assertEqual(1, count)
+
+    def test_enrolled_device_can_register_a_student_and_use_the_new_login(self):
+        enrolled = self.enroll("LAB-PC-01")
+        registration = self.device_post(
+            "/api/client/v1/students/register",
+            enrolled["device_id"],
+            payload={
+                "student_id": " 1ks26ai007 ",
+                "name": "  New Student  ",
+                "student_class": " AIML ",
+                "section": " b ",
+                "password": "new-password",
+            },
+        )
+
+        self.assertEqual(201, registration.status_code, registration.text)
+        self.assertEqual(
+            {"student_id": "1KS26AI007", "name": "New Student"},
+            registration.json(),
+        )
+        login = self.device_post(
+            "/api/client/v1/session",
+            enrolled["device_id"],
+            payload={
+                "student_id": "1KS26AI007",
+                "password": "new-password",
+                "device_id": enrolled["device_id"],
+            },
+        )
+        self.assertEqual(200, login.status_code, login.text)
+        self.assertEqual("New Student", login.json()["student_name"])
+
+    def test_student_registration_rejects_an_unsigned_network_request(self):
+        response = self.client.post(
+            "/api/client/v1/students/register",
+            json={
+                "student_id": "S200",
+                "name": "Unsigned Student",
+                "student_class": "AIML",
+                "section": "A",
+                "password": "new-password",
+            },
+        )
+
+        self.assertEqual(403, response.status_code, response.text)
+        self.assertEqual("device_inactive", response.json()["detail"]["code"])
+        with app.db() as connection:
+            self.assertIsNone(
+                connection.execute(
+                    "SELECT 1 FROM students WHERE student_id='S200'"
+                ).fetchone()
+            )
+
+    def test_duplicate_student_registration_returns_a_stable_conflict(self):
+        enrolled = self.enroll("LAB-PC-01")
+        payload = {
+            "student_id": "S100",
+            "name": "Another Student",
+            "student_class": "AIML",
+            "section": "A",
+            "password": "new-password",
+        }
+
+        response = self.device_post(
+            "/api/client/v1/students/register",
+            enrolled["device_id"],
+            payload=payload,
+        )
+
+        self.assertEqual(409, response.status_code, response.text)
+        self.assertEqual("student_id_exists", response.json()["detail"]["code"])
+
+    def test_registration_per_device_limit_rejects_before_password_hashing(self):
+        enrolled = self.enroll("LAB-PC-01")
+        limiter = coordinator_routes.RegistrationRateLimiter(
+            per_device_limit=1,
+            global_limit=10,
+            window_seconds=60,
+        )
+        with (
+            patch.object(coordinator_routes, "_REGISTRATION_RATE_LIMITER", limiter),
+            patch.object(
+                coordinator_routes.bcrypt,
+                "hashpw",
+                return_value=b"test-password-hash",
+            ) as hashpw,
+        ):
+            first = self.device_post(
+                "/api/client/v1/students/register",
+                enrolled["device_id"],
+                payload={
+                    "student_id": "S201",
+                    "name": "Student 201",
+                    "student_class": "AIML",
+                    "section": "A",
+                    "password": "new-password",
+                },
+            )
+            rejected = self.device_post(
+                "/api/client/v1/students/register",
+                enrolled["device_id"],
+                payload={
+                    "student_id": "S202",
+                    "name": "Student 202",
+                    "student_class": "AIML",
+                    "section": "A",
+                    "password": "new-password",
+                },
+            )
+
+        self.assertEqual(201, first.status_code, first.text)
+        self.assertEqual(429, rejected.status_code, rejected.text)
+        self.assertEqual("60", rejected.headers["Retry-After"])
+        self.assertEqual(
+            "registration_rate_limited", rejected.json()["detail"]["code"]
+        )
+        self.assertEqual(1, hashpw.call_count)
+        with app.db() as connection:
+            self.assertIsNone(
+                connection.execute(
+                    "SELECT 1 FROM students WHERE student_id='S202'"
+                ).fetchone()
+            )
+
+    def test_registration_global_limit_applies_across_devices(self):
+        first_device = self.enroll("LAB-PC-01")
+        second_private_key, second_public_key = generate_ed25519_keypair()
+        second_device = self.enroll("LAB-PC-02", public_key=second_public_key)
+        limiter = coordinator_routes.RegistrationRateLimiter(
+            per_device_limit=10,
+            global_limit=1,
+            window_seconds=60,
+        )
+        with (
+            patch.object(coordinator_routes, "_REGISTRATION_RATE_LIMITER", limiter),
+            patch.object(
+                coordinator_routes.bcrypt,
+                "hashpw",
+                return_value=b"test-password-hash",
+            ) as hashpw,
+        ):
+            first = self.device_post(
+                "/api/client/v1/students/register",
+                first_device["device_id"],
+                payload={
+                    "student_id": "S203",
+                    "name": "Student 203",
+                    "student_class": "AIML",
+                    "section": "A",
+                    "password": "new-password",
+                },
+            )
+            rejected = self.device_post(
+                "/api/client/v1/students/register",
+                second_device["device_id"],
+                private_key=second_private_key,
+                payload={
+                    "student_id": "S204",
+                    "name": "Student 204",
+                    "student_class": "AIML",
+                    "section": "A",
+                    "password": "new-password",
+                },
+            )
+
+        self.assertEqual(201, first.status_code, first.text)
+        self.assertEqual(429, rejected.status_code, rejected.text)
+        self.assertEqual(1, hashpw.call_count)
+
+    def test_registration_hash_capacity_rejects_without_scheduling_bcrypt(self):
+        enrolled = self.enroll("LAB-PC-01")
+        limiter = coordinator_routes.RegistrationRateLimiter(
+            per_device_limit=10,
+            global_limit=10,
+            window_seconds=60,
+        )
+        occupied_slots = threading.BoundedSemaphore(1)
+        occupied_slots.acquire()
+        try:
+            with (
+                patch.object(coordinator_routes, "_REGISTRATION_RATE_LIMITER", limiter),
+                patch.object(coordinator_routes, "_REGISTRATION_HASH_SLOTS", occupied_slots),
+                patch.object(coordinator_routes.bcrypt, "hashpw") as hashpw,
+            ):
+                rejected = self.device_post(
+                    "/api/client/v1/students/register",
+                    enrolled["device_id"],
+                    payload={
+                        "student_id": "S205",
+                        "name": "Student 205",
+                        "student_class": "AIML",
+                        "section": "A",
+                        "password": "new-password",
+                    },
+                )
+        finally:
+            occupied_slots.release()
+
+        self.assertEqual(429, rejected.status_code, rejected.text)
+        self.assertEqual(
+            "registration_rate_limited", rejected.json()["detail"]["code"]
+        )
+        hashpw.assert_not_called()
 
     def device_post(
         self,
@@ -116,28 +376,13 @@ class ClientAuthApiTests(unittest.TestCase):
             "X-KSAT-Signature": base64.b64encode(signature).decode("ascii"),
         }
 
-    def test_enrollment_requires_the_configured_code(self):
+    def test_legacy_enrollment_code_is_ignored_during_client_upgrade(self):
         response = self.client.post("/api/client/v1/devices/enroll", json={
             "label": "Lab-01",
             "public_key_b64": self.public_key,
             "enrollment_code": "wrong",
         })
-        self.assertEqual(response.status_code, 403)
-        self.assertEqual(response.json()["detail"]["code"], "invalid_enrollment_code")
-
-    def test_unicode_enrollment_code_returns_structured_rejection(self):
-        client = TestClient(app.app, raise_server_exceptions=False)
-        try:
-            response = client.post("/api/client/v1/devices/enroll", json={
-                "label": "Lab-01",
-                "public_key_b64": self.public_key,
-                "enrollment_code": "wrong-🔒",
-            })
-        finally:
-            client.close()
-
-        self.assertEqual(response.status_code, 403)
-        self.assertEqual(response.json()["detail"]["code"], "invalid_enrollment_code")
+        self.assertEqual(response.status_code, 200, response.text)
 
     def test_generated_client_session_secret_is_stable_and_separate_from_browser_secret(self):
         first = app.app.state.coordinator_config.session_secret
@@ -469,7 +714,8 @@ class ClientAuthApiTests(unittest.TestCase):
 
     def test_authenticated_nonce_flood_is_bounded_per_device_and_globally(self):
         first = self.enroll("Lab-01")
-        second = self.enroll("Lab-02")
+        second_private_key, second_public_key = generate_ed25519_keypair()
+        second = self.enroll("Lab-02", public_key=second_public_key)
         cache = coordinator_auth.NonceReplayCache(
             ttl_seconds=300,
             global_limit=5,
@@ -478,11 +724,12 @@ class ClientAuthApiTests(unittest.TestCase):
             rate_window_seconds=60,
         )
 
-        def signed_login(device_id):
+        def signed_login(device_id, private_key=None):
             return self.device_post(
                 "/api/client/v1/session",
                 device_id,
                 nonce=str(uuid.uuid4()),
+                private_key=private_key,
                 payload={
                     "student_id": "S100",
                     "password": "student123",
@@ -493,8 +740,10 @@ class ClientAuthApiTests(unittest.TestCase):
         with patch.object(coordinator_auth, "_NONCE_CACHE", cache):
             accepted_first = [signed_login(first["device_id"]) for _ in range(3)]
             per_device_rejected = signed_login(first["device_id"])
-            accepted_second = [signed_login(second["device_id"]) for _ in range(2)]
-            global_rejected = signed_login(second["device_id"])
+            accepted_second = [
+                signed_login(second["device_id"], second_private_key) for _ in range(2)
+            ]
+            global_rejected = signed_login(second["device_id"], second_private_key)
 
         self.assertEqual([200] * 3, [item.status_code for item in accepted_first])
         self.assertEqual([200] * 2, [item.status_code for item in accepted_second])

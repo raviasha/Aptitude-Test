@@ -8,6 +8,9 @@ const problemMessages = {
   start_window_closed: 'The 10-minute start window has closed. Ask Faculty for help.',
   content_hash_mismatch: 'The assessment download failed verification and will be downloaded again.',
   device_inactive: 'This lab computer is not registered. Ask Faculty or IT for help.',
+  invalid_registration: 'Check the student details and use a password of at least 6 characters.',
+  student_id_exists: 'That Student ID is already registered.',
+  registration_rate_limited: 'Too many accounts are being created. Wait one minute and try again.',
   corrupt_local_attempt: 'Saved assessment data could not be verified. Do not close the application; ask Faculty for help.',
   faculty_intervention_required: 'The sealed submission needs Faculty attention. Your answers remain saved on this computer.',
   review_not_released: 'Review will be available after Faculty closes the assessment.',
@@ -97,6 +100,23 @@ function saveStatusMessage(state) {
   return 'Saved locally';
 }
 
+function registrationPayload(values) {
+  const password = String(values.password || '');
+  if (password.length < 6) {
+    throw new Error('Password must be at least 6 characters.');
+  }
+  if (values.password !== values.confirm_password) {
+    throw new Error('Passwords do not match.');
+  }
+  return {
+    student_id: String(values.student_id || '').trim(),
+    name: String(values.name || '').trim(),
+    student_class: String(values.student_class || '').trim(),
+    section: String(values.section || '').trim(),
+    password,
+  };
+}
+
 async function persistOptimisticAnswer(attempt, questionId, selected, write, onState) {
   const key = String(questionId);
   const previous = attempt.responses[key] == null ? null : attempt.responses[key];
@@ -147,6 +167,7 @@ const exported = {
   reviewFailureAction,
   reviewAssetUrl,
   reviewPollDelay,
+  registrationPayload,
   restoreSelection,
   saveStatusMessage,
   sealedMessage,
@@ -275,32 +296,18 @@ if (typeof document !== 'undefined') {
     clear(elements.actionArea);
   }
 
-  function renderDeviceSetup() {
-    showStatus('Set up this lab computer', 'Enter the one-time details provided by Faculty or IT.');
-    const form = document.createElement('form');
-    const label = input('Computer label', 'text', 'off');
-    const code = input('Enrollment code', 'password', 'off');
-    const submit = button('Register computer', () => {});
-    submit.type = 'submit';
-    form.append(label.label, code.label, submit);
-    form.addEventListener('submit', async (event) => {
-      event.preventDefault();
-      submit.disabled = true;
-      try {
-        await request('/api/device/enroll', {
-          method: 'POST',
-          body: JSON.stringify({ label: label.control.value, enrollment_code: code.control.value }),
-        });
-        await refreshState();
-      } catch (error) {
-        showProblem(error.problem);
-        submit.disabled = false;
-      } finally {
-        code.control.value = '';
-      }
-    });
-    elements.actionArea.append(form);
-    label.control.focus();
+  async function renderDeviceSetup() {
+    showStatus('Connecting this lab computer', 'Completing automatic setup with the assessment server.');
+    try {
+      await request('/api/device/enroll', {
+        method: 'POST',
+        body: JSON.stringify({}),
+      });
+      await refreshState();
+    } catch (error) {
+      showProblem(error.problem);
+      elements.actionArea.append(button('Try again', renderDeviceSetup, 'secondary'));
+    }
   }
 
   function renderLogin() {
@@ -310,7 +317,8 @@ if (typeof document !== 'undefined') {
     const password = input('Password', 'password', 'current-password');
     const submit = button('Sign in', () => {});
     submit.type = 'submit';
-    form.append(student.label, password.label, submit);
+    const register = button('New student? Create account', renderRegistration, 'secondary');
+    form.append(student.label, password.label, submit, register);
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
       submit.disabled = true;
@@ -329,6 +337,60 @@ if (typeof document !== 'undefined') {
     });
     elements.actionArea.append(form);
     student.control.focus();
+  }
+
+  function renderRegistration() {
+    showStatus('Create student account', 'Use your official student details.');
+    const form = document.createElement('form');
+    const name = input('Student name', 'text', 'name');
+    const student = input('Student ID / USN', 'text', 'username');
+    const studentClass = input('Class', 'text', 'organization');
+    const section = input('Section', 'text', 'off');
+    const password = input('Password', 'password', 'new-password');
+    const confirmation = input('Confirm password', 'password', 'new-password');
+    password.control.minLength = 6;
+    confirmation.control.minLength = 6;
+    studentClass.control.value = 'AIML';
+    section.control.value = 'A';
+    const submit = button('Create account', () => {});
+    submit.type = 'submit';
+    const back = button('Back to sign in', renderLogin, 'secondary');
+    form.append(
+      name.label, student.label, studentClass.label, section.label,
+      password.label, confirmation.label, submit, back,
+    );
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      submit.disabled = true;
+      try {
+        const payload = registrationPayload({
+          student_id: student.control.value,
+          name: name.control.value,
+          student_class: studentClass.control.value,
+          section: section.control.value,
+          password: password.control.value,
+          confirm_password: confirmation.control.value,
+        });
+        await request('/api/register', {
+          method: 'POST',
+          body: JSON.stringify(payload),
+        });
+        announce('Account created. You can now sign in.');
+        renderLogin();
+      } catch (error) {
+        const message = error.problem
+          ? problemMessage(error.problem.code, error.problem.diagnostic_reference)
+          : error.message;
+        setSafeText(elements.statusCopy, message);
+        announce(message, true);
+        submit.disabled = false;
+      } finally {
+        password.control.value = '';
+        confirmation.control.value = '';
+      }
+    });
+    elements.actionArea.append(form);
+    name.control.focus();
   }
 
   async function loadAssessments() {

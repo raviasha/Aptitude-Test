@@ -11,6 +11,20 @@ SCRIPT = ROOT / "static" / "app.js"
 
 
 class FacultyUiContractTests(unittest.TestCase):
+    def test_manual_enrollment_code_control_is_absent(self):
+        source = SCRIPT.read_text(encoding="utf-8")
+
+        self.assertNotIn("data-rotate-enrollment", source)
+        self.assertNotIn("Rotate enrollment code", source)
+
+    def test_student_deletion_warns_about_faculty_assessment_history(self):
+        source = SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn(
+            "practice and faculty assessment history, including submissions and results",
+            source,
+        )
+
     def test_used_release_has_no_launch_control_and_directs_faculty_to_duplicate(self):
         result = self._run_node(
             """

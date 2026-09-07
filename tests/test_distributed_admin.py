@@ -185,34 +185,50 @@ class DistributedAdminTests(unittest.TestCase):
         restored = self.admin_post(f"/api/admin/devices/{self.device_id}/reactivate", {"reason":"Machine repaired"})
         self.assertEqual(restored.status_code, 200)
 
-    def test_rotate_enrollment_code_returns_secret_once_and_invalidates_old(self):
-        old = app.app.state.coordinator_config.device_enrollment_code
-        response = self.admin_post("/api/admin/devices/enrollment-code/rotate", {"reason":"Routine lab rotation"})
-        self.assertEqual(response.status_code, 200)
-        new = response.json()["enrollment_code"]
-        self.assertNotEqual(new, old)
-        self.assertGreaterEqual(len(new), 24)
-        self.assertNotIn(new, json.dumps(self.admin_get("/api/admin/devices").json()))
-        self.assertEqual(app.app.state.coordinator_config.device_enrollment_code, new)
-        app.configure_coordinator_state(app.app)
-        self.assertEqual(new, app.app.state.coordinator_config.device_enrollment_code)
+    def test_manual_enrollment_code_route_is_removed(self):
+        response = self.admin_post(
+            "/api/admin/devices/enrollment-code/rotate",
+            {"reason": "No longer supported"},
+        )
 
-    def test_externally_managed_enrollment_code_rejects_rotation_without_mutation(self):
-        before = app.app.state.coordinator_config.device_enrollment_code
-        with patch.dict(os.environ, {"KSAT_DEVICE_ENROLLMENT_CODE": "managed-by-it"}):
-            response = self.admin_post(
-                "/api/admin/devices/enrollment-code/rotate",
-                {"reason": "Must not override IT"},
+        self.assertEqual(404, response.status_code)
+
+    def test_faculty_can_delete_a_student_with_an_immutable_submission(self):
+        with app.db() as connection:
+            connection.execute(
+                "UPDATE attempts SET status='submitted', submitted_at=? WHERE attempt_id=?",
+                (app.now(), self.attempt_id),
             )
-        self.assertEqual(409, response.status_code)
-        self.assertEqual("enrollment_code_managed_externally", response.json()["detail"]["code"])
-        self.assertEqual(before, app.app.state.coordinator_config.device_enrollment_code)
+            connection.execute(
+                "INSERT INTO submissions VALUES (?,?,?,?,'{}')",
+                (self.attempt_id, "a" * 64, '{"sealed":"evidence"}', app.now()),
+            )
+        client = TestClient(app.app, raise_server_exceptions=False)
+        client.cookies.update(self.client.cookies)
+        try:
+            response = client.delete(
+                "/api/admin/students/S0",
+                headers={"X-KSAT-CSRF": self.csrf_token},
+            )
+        finally:
+            client.close()
+
+        self.assertEqual(200, response.status_code, response.text)
         with app.db() as connection:
             self.assertEqual(
-                0,
-                connection.execute(
-                    "SELECT COUNT(*) FROM audit_events WHERE event_type='device_enrollment_code_rotated'"
-                ).fetchone()[0],
+                (0, 0, 0),
+                (
+                    connection.execute(
+                        "SELECT COUNT(*) FROM submissions WHERE attempt_id=?",
+                        (self.attempt_id,),
+                    ).fetchone()[0],
+                    connection.execute(
+                        "SELECT COUNT(*) FROM attempts WHERE student_id='S0'"
+                    ).fetchone()[0],
+                    connection.execute(
+                        "SELECT COUNT(*) FROM students WHERE student_id='S0'"
+                    ).fetchone()[0],
+                ),
             )
 
     def test_exact_attempt_order_is_derived_without_answers(self):
@@ -363,10 +379,7 @@ class DistributedAdminTests(unittest.TestCase):
 
     def test_new_admin_routes_reject_non_admin_without_side_effects(self):
         stranger = TestClient(app.app)
-        before = app.app.state.coordinator_config.device_enrollment_code
-        self.assertEqual(stranger.post("/api/admin/devices/enrollment-code/rotate", json={"reason":"Not allowed"}).status_code, 401)
         self.assertEqual(stranger.post(f"/api/admin/attempts/{self.attempt_id}/void", json={"reason":"Not allowed"}).status_code, 401)
-        self.assertEqual(app.app.state.coordinator_config.device_enrollment_code, before)
         stranger.close()
 
     def test_hostile_origin_and_cross_session_csrf_fail_before_duplicate_side_effects(self):
@@ -403,7 +416,6 @@ class DistributedAdminTests(unittest.TestCase):
             ("DELETE", "/api/admin/students/{student_id}"),
             ("POST", "/api/admin/devices/{device_id}/revoke"),
             ("POST", "/api/admin/devices/{device_id}/reactivate"),
-            ("POST", "/api/admin/devices/enrollment-code/rotate"),
             ("DELETE", "/api/admin/question-banks/{bank_id}"),
             ("POST", "/api/admin/question-banks/import"),
             ("POST", "/api/admin/question-banks/import-package"),

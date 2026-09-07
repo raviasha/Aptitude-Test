@@ -13,6 +13,7 @@ import os
 import re
 import random
 import secrets
+import socket
 import sqlite3
 import tempfile
 import threading
@@ -78,6 +79,9 @@ _KNOWN_PUBLIC_MESSAGES = {
     "start_window_closed": "The 10-minute start window has closed. Ask Faculty for help.",
     "content_hash_mismatch": "The assessment download failed verification and will be downloaded again.",
     "device_inactive": "This lab computer is not registered. Ask Faculty or IT for help.",
+    "invalid_registration": "Check the student details and use a password of at least 6 characters.",
+    "student_id_exists": "That Student ID is already registered.",
+    "registration_rate_limited": "Too many accounts are being created. Wait one minute and try again.",
     "corrupt_local_attempt": "Saved assessment data could not be verified. Do not close the application; ask Faculty for help.",
     "faculty_intervention_required": _INTERVENTION_MESSAGE,
     "review_not_released": "Review will be available after Faculty closes the assessment.",
@@ -93,14 +97,17 @@ class _StrictBody(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid")
 
 
-class EnrollmentBody(_StrictBody):
-    label: str = Field(min_length=1, max_length=120)
-    enrollment_code: str = Field(min_length=1, max_length=256)
-
-
 class LoginBody(_StrictBody):
     student_id: str = Field(min_length=1, max_length=100)
     password: str = Field(min_length=1, max_length=1024)
+
+
+class RegistrationBody(_StrictBody):
+    student_id: str = Field(min_length=1, max_length=100)
+    name: str = Field(min_length=1, max_length=200)
+    student_class: str = Field(min_length=1, max_length=100)
+    section: str = Field(min_length=1, max_length=20)
+    password: str = Field(min_length=6, max_length=1024)
 
 
 class PrefetchBody(_StrictBody):
@@ -1805,9 +1812,12 @@ def create_client_app(services: ClientServices | None = None) -> FastAPI:
         )
 
     @app.post("/api/device/enroll")
-    async def enroll(body: EnrollmentBody):
+    async def enroll():
         current = require_services()
-        receipt = current.coordinator.enroll(body.label.strip(), body.enrollment_code)
+        if getattr(context.identity, "device_id", None) is not None:
+            return {"state": "login", "device_id": context.identity.device_id}
+        label = socket.gethostname().strip()[:120] or "KSAT Client"
+        receipt = current.coordinator.enroll(label)
         context.identity = current.identity_store.load_or_create()
         context._validate_expected_key()
         context._ensure_runtime()
@@ -2042,6 +2052,21 @@ def create_client_app(services: ClientServices | None = None) -> FastAPI:
         current = require_services()
         session = current.coordinator.login(body.student_id, body.password)
         return {"state": "waiting_or_ready", "student": _student_payload(session)}
+
+    @app.post("/api/register", status_code=201)
+    async def register(body: RegistrationBody):
+        current = require_services()
+        student = current.coordinator.register_student(
+            student_id=body.student_id,
+            name=body.name,
+            student_class=body.student_class,
+            section=body.section,
+            password=body.password,
+        )
+        return {
+            "state": "login",
+            "student": {"student_id": student.student_id, "name": student.name},
+        }
 
     @app.post("/api/logout")
     async def logout(body: ConfirmBody):

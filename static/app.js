@@ -1,5 +1,5 @@
-const app = document.querySelector('#app');
-const toast = document.querySelector('#toast');
+const app = typeof document === 'undefined' ? null : document.querySelector('#app');
+const toast = typeof document === 'undefined' ? null : document.querySelector('#toast');
 const BUILD_VERSION = '2.0.0';
 let state = { user: null, csrfToken: null, attempt: null, questionIndex: 0 };
 let examGuard = {active:false, deadlineMs:null, timerId:null, syncTimerId:null, submitting:false, lastViolation:null, needsResume:false};
@@ -14,6 +14,12 @@ const esc = value => String(value ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;',
 const pct = value => `${Number(value || 0).toFixed(1).replace('.0','')}%`;
 const optionEntries = question => Object.entries(question.options || {});
 const compositionTotal = test => (test.selection_rules || []).reduce((sum, rule) => sum + Number(rule.quantity || 0), 0);
+
+const facultyLaunchAction = test => test.launched
+  ? `<button class="secondary small" data-close-test="${test.test_id}">Close</button>`
+  : test.release_used
+    ? '<span class="warn">Used · duplicate to rerun</span>'
+    : `<button class="primary small" data-launch-test="${test.test_id}" ${test.release_state === 'failed' ? 'disabled' : ''}>${['prepared', 'launched'].includes(test.release_state) ? 'Launch' : 'Prepare & launch'}</button>`;
 
 const institutionRail = side => side === 'left'
   ? `<aside class="institution-rail institution-rail-left" aria-label="KSIT and KSAT logos">
@@ -353,11 +359,13 @@ function renderAttempt() {
   document.querySelector('[data-submit]')?.addEventListener('click', () => submitAttempt(false));
   document.querySelector('[data-exit]')?.addEventListener('click', studentDashboard);
 }
-window.renderAttemptForValidation = (attempt, questionIndex = 0) => {
-  state.attempt = attempt;
-  state.questionIndex = questionIndex;
-  renderAttempt();
-};
+if (typeof window !== 'undefined') {
+  window.renderAttemptForValidation = (attempt, questionIndex = 0) => {
+    state.attempt = attempt;
+    state.questionIndex = questionIndex;
+    renderAttempt();
+  };
+}
 async function saveAnswer(questionId, answer) { try { const result = await api(`/api/attempts/${state.attempt.attempt_id}/responses/${questionId}`, {method:'PUT',body:{answer}}); const question = state.attempt.questions.find(item => item.question_id === questionId); question.selected_answer = answer; if (result.feedback) question.feedback = result.feedback; renderAttempt(); } catch(error) { notify(error.message,true); if (state.attempt.proctored) resultScreen(state.attempt.attempt_id).catch(() => {}); } }
 async function submitAttempt(timerExpired = false) {
   if (examGuard.submitting) return;
@@ -423,7 +431,7 @@ async function tests() {
   const releaseStatus = test => ['prepared', 'launched'].includes(test.release_state)
     ? `<span class="ok">Ready</span><small><code>${esc(test.content_hash_prefix || '')}</code></small>`
     : test.release_state === 'failed' ? '<span class="warn">Preparation failed</span>' : '<span class="muted">Preparing</span>';
-  layout('Create a <em>test.</em>', 'Choose a difficulty and quantities from the selected bank’s categories and chapters.', `<section class="grid two"><article class="card"><p class="eyebrow">New assessment</p><h2>Question composition</h2><form id="test-form"><label>Test name<input name="test_name" required placeholder="Placement Readiness · Set 02" /></label><label>Question bank<select id="test-bank" name="bank_id" required><option value="">Choose a bank…</option>${data.banks.map(bank => `<option value="${bank.bank_id}">${esc(bank.bank_name)} · ${bank.question_count} active questions</option>`).join('')}</select></label><label>Difficulty<select id="test-difficulty"><option value="all">All difficulty levels</option>${difficulties.map(level => `<option value="${level}">${level}</option>`).join('')}</select></label><div id="test-composition" class="taxonomy"><p class="muted">Choose a question bank to see its categories and chapters.</p></div><p class="composition-total">Selected: <strong id="test-total">0</strong> / 500</p><button class="primary">Create test →</button></form></article><article class="card"><p class="eyebrow">Current and past tests · submission queue ${Number(data.submission_queue_pending || 0)}</p><h2>Test library</h2><div class="table-scroll"><table><thead><tr><th>Name</th><th>Bank</th><th>Difficulty</th><th>Questions</th><th>Content</th><th>Status</th><th>Start window</th><th>Action</th></tr></thead><tbody>${data.tests.map(test => `<tr><td>${esc(test.test_name)}<small>${test.attempt_count} attempt${test.attempt_count===1?'':'s'}</small></td><td>${esc(test.bank_name || '—')}</td><td>${esc(difficultyLabel(test.difficulty_levels))}</td><td>${compositionTotal(test)}</td><td>${releaseStatus(test)}</td><td>${Number(test.distributed_status?.started||0)} started · ${Number(test.distributed_status?.submitted||0)} submitted · ${Number(test.distributed_status?.voided||0)} voided</td><td>${test.launched ? `<strong data-faculty-timer data-test-id="${test.test_id}" data-deadline="${test.remaining_seconds != null ? Date.now()+test.remaining_seconds*1000 : 0}">${test.remaining_seconds != null ? formatTime(test.remaining_seconds) : 'Closed'}</strong>` : '—'}</td><td><div class="row-actions">${test.launched ? `<button class="secondary small" data-close-test="${test.test_id}">Close</button>` : `<button class="primary small" data-launch-test="${test.test_id}" ${test.release_state === 'failed' ? 'disabled' : ''}>${['prepared', 'launched'].includes(test.release_state) ? 'Launch' : 'Prepare & launch'}</button>`}<button class="secondary small" data-duplicate-test="${test.test_id}">Duplicate</button><button class="secondary small" data-extend-test="${test.test_id}">Extend</button><button class="danger small" data-delete-test="${test.test_id}" data-test-name="${esc(test.test_name)}" data-attempt-count="${test.attempt_count}">Delete</button></div></td></tr>`).join('')}</tbody></table></div></article></section><section class="card"><div class="heading"><div><p class="eyebrow">Managed lab computers</p><h2>${deviceData.devices.length} enrolled devices</h2></div><button class="secondary" data-rotate-enrollment>Rotate enrollment code</button></div><div class="table-scroll"><table><thead><tr><th>Label</th><th>Device</th><th>Fingerprint</th><th>Enrolled</th><th>State</th></tr></thead><tbody>${deviceData.devices.map(device => `<tr><td>${esc(device.label)}</td><td><code>${esc(device.device_id)}</code></td><td><code>${esc(device.public_key_fingerprint)}</code></td><td>${date(device.enrolled_at)}</td><td><button class="secondary small" data-device-state="${device.active?'revoke':'reactivate'}" data-device-id="${esc(device.device_id)}">${device.active?'Revoke':'Reactivate'}</button></td></tr>`).join('')}</tbody></table></div></section>`, adminNav('tests'));
+  layout('Create a <em>test.</em>', 'Choose a difficulty and quantities from the selected bank’s categories and chapters.', `<section class="grid two"><article class="card"><p class="eyebrow">New assessment</p><h2>Question composition</h2><form id="test-form"><label>Test name<input name="test_name" required placeholder="Placement Readiness · Set 02" /></label><label>Question bank<select id="test-bank" name="bank_id" required><option value="">Choose a bank…</option>${data.banks.map(bank => `<option value="${bank.bank_id}">${esc(bank.bank_name)} · ${bank.question_count} active questions</option>`).join('')}</select></label><label>Difficulty<select id="test-difficulty"><option value="all">All difficulty levels</option>${difficulties.map(level => `<option value="${level}">${level}</option>`).join('')}</select></label><div id="test-composition" class="taxonomy"><p class="muted">Choose a question bank to see its categories and chapters.</p></div><p class="composition-total">Selected: <strong id="test-total">0</strong> / 500</p><button class="primary">Create test →</button></form></article><article class="card"><p class="eyebrow">Current and past tests · submission queue ${Number(data.submission_queue_pending || 0)}</p><h2>Test library</h2><div class="table-scroll"><table><thead><tr><th>Name</th><th>Bank</th><th>Difficulty</th><th>Questions</th><th>Content</th><th>Status</th><th>Start window</th><th>Action</th></tr></thead><tbody>${data.tests.map(test => `<tr><td>${esc(test.test_name)}<small>${test.attempt_count} attempt${test.attempt_count===1?'':'s'}</small></td><td>${esc(test.bank_name || '—')}</td><td>${esc(difficultyLabel(test.difficulty_levels))}</td><td>${compositionTotal(test)}</td><td>${releaseStatus(test)}</td><td>${Number(test.distributed_status?.started||0)} started · ${Number(test.distributed_status?.submitted||0)} submitted · ${Number(test.distributed_status?.voided||0)} voided</td><td>${test.launched ? `<strong data-faculty-timer data-test-id="${test.test_id}" data-deadline="${test.remaining_seconds != null ? Date.now()+test.remaining_seconds*1000 : 0}">${test.remaining_seconds != null ? formatTime(test.remaining_seconds) : 'Closed'}</strong>` : '—'}</td><td><div class="row-actions">${facultyLaunchAction(test)}<button class="secondary small" data-duplicate-test="${test.test_id}">Duplicate</button><button class="secondary small" data-extend-test="${test.test_id}">Extend</button><button class="danger small" data-delete-test="${test.test_id}" data-test-name="${esc(test.test_name)}" data-attempt-count="${test.attempt_count}">Delete</button></div></td></tr>`).join('')}</tbody></table></div></article></section><section class="card"><div class="heading"><div><p class="eyebrow">Managed lab computers</p><h2>${deviceData.devices.length} enrolled devices</h2></div><button class="secondary" data-rotate-enrollment>Rotate enrollment code</button></div><div class="table-scroll"><table><thead><tr><th>Label</th><th>Device</th><th>Fingerprint</th><th>Enrolled</th><th>State</th></tr></thead><tbody>${deviceData.devices.map(device => `<tr><td>${esc(device.label)}</td><td><code>${esc(device.device_id)}</code></td><td><code>${esc(device.public_key_fingerprint)}</code></td><td>${date(device.enrolled_at)}</td><td><button class="secondary small" data-device-state="${device.active?'revoke':'reactivate'}" data-device-id="${esc(device.device_id)}">${device.active?'Revoke':'Reactivate'}</button></td></tr>`).join('')}</tbody></table></div></section>`, adminNav('tests'));
   const manageAttempts = document.createElement('button');
   manageAttempts.className = 'secondary'; manageAttempts.textContent = 'Inspect / manage attempts';
   document.querySelector('main>.heading')?.append(manageAttempts);
@@ -475,4 +483,5 @@ async function students() {
 }
 
 async function boot() { try { const result=await api('/api/me'); state.user=result.user; state.csrfToken=result.csrf_token || null; state.user ? home() : loginScreen(); } catch { loginScreen(); } }
-boot();
+if (typeof module !== 'undefined' && module.exports) module.exports = {facultyLaunchAction};
+if (typeof document !== 'undefined') boot();

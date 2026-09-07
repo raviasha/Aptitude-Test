@@ -333,6 +333,34 @@ class DistributedAdminTests(unittest.TestCase):
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM attempts WHERE test_id=?", (duplicate["test_id"],)).fetchone()[0], 0)
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM audit_events WHERE test_id=?", (duplicate["test_id"],)).fetchone()[0], 0)
 
+    def test_duplicate_of_used_assessment_launches_with_a_fresh_release(self):
+        duplicated = self.admin_post(f"/api/admin/tests/{self.test_id}/duplicate", {})
+        self.assertEqual(200, duplicated.status_code, duplicated.text)
+        duplicate = duplicated.json()
+
+        launched = self.admin_post(f"/api/admin/tests/{duplicate['test_id']}/launch", {})
+
+        self.assertEqual(200, launched.status_code, launched.text)
+        listed = self.admin_get("/api/admin/tests")
+        self.assertEqual(200, listed.status_code, listed.text)
+        by_id = {item["test_id"]: item for item in listed.json()["tests"]}
+        self.assertIs(by_id[self.test_id].get("release_used"), True)
+        self.assertIs(by_id[duplicate["test_id"]].get("release_used"), False)
+        with app.db() as connection:
+            copied = connection.execute(
+                "SELECT release_id,launched FROM tests WHERE test_id=?",
+                (duplicate["test_id"],),
+            ).fetchone()
+            self.assertNotEqual(self.release_id, copied["release_id"])
+            self.assertEqual(1, copied["launched"])
+            self.assertEqual(
+                0,
+                connection.execute(
+                    "SELECT COUNT(*) FROM attempts WHERE release_id=?",
+                    (copied["release_id"],),
+                ).fetchone()[0],
+            )
+
     def test_new_admin_routes_reject_non_admin_without_side_effects(self):
         stranger = TestClient(app.app)
         before = app.app.state.coordinator_config.device_enrollment_code
@@ -478,6 +506,50 @@ class DistributedAdminTests(unittest.TestCase):
         self.assertEqual(original, pack.read_bytes())
         quarantine = app.DATA_DIR / ".artifact-quarantine"
         self.assertFalse(quarantine.exists() and any(quarantine.iterdir()))
+
+    def test_delete_submitted_assessment_removes_immutable_submission_first(self):
+        with app.db() as connection:
+            connection.execute(
+                "UPDATE attempts SET status='submitted',submitted_at=? WHERE attempt_id=?",
+                (app.now(), self.attempt_id),
+            )
+            connection.execute(
+                "INSERT INTO submissions VALUES (?,?,?,?,'{}')",
+                (self.attempt_id, "a" * 64, '{"sealed":"evidence"}', app.now()),
+            )
+        pack = app.assessment_packs_dir() / f"{self.release_id}.ksatpack"
+        client = TestClient(app.app, raise_server_exceptions=False)
+        client.cookies.update(self.client.cookies)
+        try:
+            deleted = client.delete(
+                f"/api/admin/tests/{self.test_id}",
+                headers={"X-KSAT-CSRF": self.csrf_token},
+            )
+        finally:
+            client.close()
+
+        self.assertEqual(200, deleted.status_code, deleted.text)
+        with app.db() as connection:
+            self.assertEqual(
+                (0, 0, 0, 0),
+                (
+                    connection.execute(
+                        "SELECT COUNT(*) FROM submissions WHERE attempt_id=?",
+                        (self.attempt_id,),
+                    ).fetchone()[0],
+                    connection.execute(
+                        "SELECT COUNT(*) FROM attempts WHERE test_id=?", (self.test_id,)
+                    ).fetchone()[0],
+                    connection.execute(
+                        "SELECT COUNT(*) FROM assessment_releases WHERE test_id=?",
+                        (self.test_id,),
+                    ).fetchone()[0],
+                    connection.execute(
+                        "SELECT COUNT(*) FROM tests WHERE test_id=?", (self.test_id,)
+                    ).fetchone()[0],
+                ),
+            )
+        self.assertFalse(pack.exists())
 
     def test_question_bank_delete_leaves_durable_gc_record_when_purge_fails(self):
         from ksat.coordinator.artifacts import recover_artifact_quarantine

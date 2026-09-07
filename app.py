@@ -3064,6 +3064,9 @@ def list_tests(request: Request) -> Dict[str, Any]:
                       EXISTS(SELECT 1 FROM attempts submitted
                              WHERE submitted.test_id = t.test_id AND submitted.status = 'submitted')
                         AS has_submitted_attempt,
+                      EXISTS(SELECT 1 FROM attempts used
+                             WHERE used.release_id = t.release_id)
+                        AS release_used,
                       (SELECT COUNT(*) FROM attempts a WHERE a.test_id = t.test_id) AS attempt_count
                FROM tests t
                LEFT JOIN question_banks b ON b.bank_id = t.bank_id
@@ -3074,6 +3077,7 @@ def list_tests(request: Request) -> Dict[str, Any]:
         eligible_count = connection.execute("SELECT COUNT(*) FROM students").fetchone()[0]
         for test in tests:
             has_submitted_attempt = bool(test.pop("has_submitted_attempt"))
+            test["release_used"] = bool(test["release_used"])
             test["release_state"] = test.get("release_state") or (
                 "failed" if has_submitted_attempt else "preparing"
             )
@@ -3395,6 +3399,7 @@ def delete_test(test_id: int, request: Request) -> Dict[str, Any]:
             placeholders = ",".join("?" for _ in attempt_ids)
             connection.execute(f"DELETE FROM exam_violations WHERE attempt_id IN ({placeholders})", attempt_ids)
             connection.execute(f"DELETE FROM responses WHERE attempt_id IN ({placeholders})", attempt_ids)
+            connection.execute(f"DELETE FROM submissions WHERE attempt_id IN ({placeholders})", attempt_ids)
             connection.execute(f"DELETE FROM attempts WHERE attempt_id IN ({placeholders})", attempt_ids)
         release_pack_filename = test["content_pack_filename"]
         operation = ArtifactQuarantine(

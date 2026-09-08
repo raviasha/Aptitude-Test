@@ -34,6 +34,7 @@ from ksat.protocol import (
     ReleaseManifest,
     ReleaseSummary,
     ReviewContent,
+    SubmissionReceipt,
     SignedAttemptTicket,
     SignedAttemptDeadlineUpdate,
     canonical_json,
@@ -135,6 +136,35 @@ class ClientRuntimeTests(unittest.TestCase):
             self.store.close()
         finally:
             self.temporary_directory.cleanup()
+
+    def test_completed_attempt_can_be_dismissed_without_deleting_its_record(self):
+        self.runtime.prepare(self.summary, self.manifest, self.pack_path)
+        self.runtime.start(self.start_response, student_id=self.student_id)
+        self.runtime.submit()
+        receipt = SubmissionReceipt(
+            attempt_id=self.attempt_id,
+            accepted_at=STARTED + timedelta(seconds=1),
+            score=0,
+            total_questions=2,
+            attempted=0,
+            percentage=0.0,
+            violations=0,
+        )
+        self.store.acknowledge(self.attempt_id, receipt)
+
+        self.assertEqual("acknowledged", self.runtime.snapshot().state)
+        self.runtime.dismiss_completed_attempt()
+
+        with self.assertRaisesRegex(RuntimeError, "No local assessment attempt is active"):
+            self.runtime.snapshot()
+        self.assertEqual("acknowledged", self.store.load_attempt(self.attempt_id).state)
+
+    def test_active_attempt_cannot_be_dismissed(self):
+        self.runtime.prepare(self.summary, self.manifest, self.pack_path)
+        self.runtime.start(self.start_response, student_id=self.student_id)
+
+        self.assertFalse(self.runtime.dismiss_completed_attempt())
+        self.assertEqual("in_progress", self.runtime.snapshot().state)
 
     def _pack_plaintext(self, questions, *, manifest=None, extra_entries=()):
         stream = io.BytesIO()

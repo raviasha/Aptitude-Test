@@ -2,6 +2,7 @@
 
 const sealedMessage = 'Your answers are safe and will upload automatically.';
 const reviewPollDelay = 5000;
+const browserSessionKey = 'ksat-browser-session-active';
 
 const problemMessages = {
   coordinator_unavailable: 'The assessment server is temporarily unavailable. Your saved work is safe.',
@@ -117,6 +118,28 @@ function registrationPayload(values) {
   };
 }
 
+function beginBrowserSession(storage) {
+  try {
+    const fresh = storage.getItem(browserSessionKey) !== 'true';
+    storage.setItem(browserSessionKey, 'true');
+    return fresh;
+  } catch (_error) {
+    return false;
+  }
+}
+
+function shouldAutoLogout(freshBrowserSession, state) {
+  return freshBrowserSession
+    && (state === 'waiting_or_ready' || state === 'acknowledged_result');
+}
+
+async function logoutStudent(requester) {
+  return requester('/api/logout', {
+    method: 'POST',
+    body: JSON.stringify({ confirmed: true }),
+  });
+}
+
 async function persistOptimisticAnswer(attempt, questionId, selected, write, onState) {
   const key = String(questionId);
   const previous = attempt.responses[key] == null ? null : attempt.responses[key];
@@ -158,7 +181,9 @@ function reviewAssetUrl(attemptId, reference) {
 const exported = {
   acknowledgedReviewStatus,
   assetUrl,
+  beginBrowserSession,
   canEdit,
+  logoutStudent,
   optimisticSelection,
   persistOptimisticAnswer,
   problemMessage,
@@ -172,6 +197,7 @@ const exported = {
   saveStatusMessage,
   sealedMessage,
   setSafeText,
+  shouldAutoLogout,
 };
 
 if (typeof module !== 'undefined' && module.exports) {
@@ -180,6 +206,7 @@ if (typeof module !== 'undefined' && module.exports) {
 
 if (typeof document !== 'undefined') {
   const csrf = document.querySelector('meta[name="ksat-csrf"]').content;
+  let freshBrowserSession = beginBrowserSession(window.sessionStorage);
   const elements = {
     statusPanel: document.getElementById('status-panel'),
     statusTitle: document.getElementById('status-title'),
@@ -249,6 +276,34 @@ if (typeof document !== 'undefined') {
     if (className) item.className = className;
     item.addEventListener('click', handler);
     return item;
+  }
+
+  function signOutButton() {
+    const action = button('Sign out', async () => {
+      action.disabled = true;
+      try {
+        await logoutStudent(request);
+        stopPolling();
+        if (ui.reviewPollHandle !== null) window.clearTimeout(ui.reviewPollHandle);
+        ui.reviewPollHandle = null;
+        ui.state = 'login';
+        ui.attempt = null;
+        ui.questionIndex = 0;
+        setSafeText(elements.timer, '--:--');
+        if (document.fullscreenElement && typeof document.exitFullscreen === 'function') {
+          try {
+            await document.exitFullscreen();
+          } catch (_error) {
+            // The session is already signed out even if the browser refuses this cosmetic step.
+          }
+        }
+        renderLogin();
+      } catch (error) {
+        showProblem(error.problem);
+        action.disabled = false;
+      }
+    }, 'secondary');
+    return action;
   }
 
   function input(labelText, type, autocomplete) {
@@ -476,6 +531,7 @@ if (typeof document !== 'undefined') {
       ui.reviewPollHandle = (waiting || (!payload.assessments.length && !completed.reviews.length))
         ? window.setTimeout(loadAssessments, reviewPollDelay)
         : null;
+      elements.actionArea.append(signOutButton());
     } catch (error) {
       showProblem(error.problem);
     }
@@ -545,7 +601,11 @@ if (typeof document !== 'undefined') {
       card.append(solutionHeading, steps);
       list.append(card);
     });
-    elements.actionArea.append(list, button('Back to completed assessments', loadAssessments));
+    elements.actionArea.append(
+      list,
+      button('Back to completed assessments', loadAssessments),
+      signOutButton(),
+    );
   }
 
   function formatTime(seconds) {
@@ -761,6 +821,7 @@ if (typeof document !== 'undefined') {
         button(status.label, () => checkAcknowledgedReview(result)),
       );
     }
+    elements.actionArea.append(signOutButton());
     stopPolling();
     if (status.autoRetry) {
       scheduleAcknowledgedReview(result);
@@ -813,6 +874,15 @@ if (typeof document !== 'undefined') {
   async function refreshState() {
     try {
       const state = await request('/api/state');
+      if (shouldAutoLogout(freshBrowserSession, state.state)) {
+        freshBrowserSession = false;
+        await logoutStudent(request);
+        ui.state = 'login';
+        ui.attempt = null;
+        setSafeText(elements.timer, '--:--');
+        return renderLogin();
+      }
+      freshBrowserSession = false;
       ui.state = state.state;
       if (state.state === 'device_setup') return renderDeviceSetup();
       if (state.state === 'login') return renderLogin();

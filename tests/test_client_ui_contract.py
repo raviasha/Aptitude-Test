@@ -12,6 +12,78 @@ INDEX = ROOT / "static" / "client" / "index.html"
 
 
 class ClientUiContractTests(unittest.TestCase):
+    def test_browser_session_marker_distinguishes_reopen_from_same_tab_refresh(self):
+        result = self._run_node(
+            """
+const ui = require(process.argv[1]);
+function storage() {
+  const values = new Map();
+  return {
+    getItem: key => values.has(key) ? values.get(key) : null,
+    setItem: (key, value) => values.set(key, value)
+  };
+}
+const firstTab = storage();
+process.stdout.write(JSON.stringify({
+  firstOpen: ui.beginBrowserSession(firstTab),
+  sameTabRefresh: ui.beginBrowserSession(firstTab),
+  reopenedTab: ui.beginBrowserSession(storage())
+}));
+"""
+        )
+        self.assertEqual(
+            {"firstOpen": True, "sameTabRefresh": False, "reopenedTab": True},
+            result,
+        )
+
+    def test_fresh_browser_session_logs_out_only_idle_or_completed_students(self):
+        result = self._run_node(
+            """
+const ui = require(process.argv[1]);
+const states = [
+  'login', 'device_setup', 'waiting_or_ready', 'in_progress',
+  'sealed_pending', 'faculty_intervention_required', 'acknowledged_result'
+];
+process.stdout.write(JSON.stringify({
+  fresh: Object.fromEntries(states.map(state => [state, ui.shouldAutoLogout(true, state)])),
+  resumed: Object.fromEntries(states.map(state => [state, ui.shouldAutoLogout(false, state)]))
+}));
+"""
+        )
+        self.assertEqual(
+            {
+                "login": False,
+                "device_setup": False,
+                "waiting_or_ready": True,
+                "in_progress": False,
+                "sealed_pending": False,
+                "faculty_intervention_required": False,
+                "acknowledged_result": True,
+            },
+            result["fresh"],
+        )
+        self.assertTrue(all(value is False for value in result["resumed"].values()))
+
+    def test_logout_posts_explicit_confirmation(self):
+        result = self._run_node(
+            """
+const ui = require(process.argv[1]);
+const calls = [];
+ui.logoutStudent(async (path, options) => {
+  calls.push({path, options});
+  return {state: 'login'};
+}).then(response => process.stdout.write(JSON.stringify({calls, response})));
+"""
+        )
+        self.assertEqual(
+            [{
+                "path": "/api/logout",
+                "options": {"method": "POST", "body": '{"confirmed":true}'},
+            }],
+            result["calls"],
+        )
+        self.assertEqual({"state": "login"}, result["response"])
+
     def test_registration_payload_requires_matching_passwords_and_excludes_confirmation(self):
         result = self._run_node(
             """

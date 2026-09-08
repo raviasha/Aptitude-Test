@@ -2073,8 +2073,15 @@ def create_client_app(services: ClientServices | None = None) -> FastAPI:
         if not body.confirmed:
             raise ClientApiProblem("confirmation_required", "Logout confirmation is required.", 422)
         current = require_services()
-        current.coordinator.logout()
         snapshot = current_snapshot()
+        current.coordinator.logout()
+        if (
+            snapshot is not None
+            and snapshot.state == "acknowledged"
+            and current.runtime is not None
+        ):
+            current.runtime.dismiss_completed_attempt()
+            snapshot = current_snapshot()
         return {"state": _attempt_payload(context, snapshot, include_questions=False)["state"] if snapshot else "login"}
 
     @app.post("/api/content/prefetch")

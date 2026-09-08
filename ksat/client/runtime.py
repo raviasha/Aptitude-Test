@@ -466,6 +466,17 @@ class AssessmentRuntime:
                 return self._snapshot_record(record)
             return self._seal(record)
 
+    def dismiss_completed_attempt(self) -> bool:
+        """Remove an acknowledged attempt from the active view without deleting its record."""
+        with self._lock:
+            if self._attempt_id is None:
+                return False
+            record = self.store.load_attempt(self._attempt_id)
+            if record.state != "acknowledged":
+                return False
+            self._clear_active()
+            return True
+
     def recover(self) -> AttemptSnapshot | None:
         with self._lock:
             record = self.store.active_attempt()

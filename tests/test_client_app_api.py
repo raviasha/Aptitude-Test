@@ -151,6 +151,10 @@ class FakeRuntime:
             self.submit()
         return self.store.snapshot
 
+    def dismiss_completed_attempt(self):
+        if self.store.snapshot is not None and self.store.snapshot.state == "acknowledged":
+            self.store.snapshot = None
+
     def question(self, question_id):
         return self.questions[question_id]
 
@@ -370,6 +374,41 @@ class ClientAppApiTests(unittest.TestCase):
         )
         self.assertEqual(200, detail.status_code, detail.text)
         self.assertEqual(7, detail.json()["questions"][0]["question"]["question_id"])
+
+    def test_logout_clears_completed_attempt_view_and_coordinator_session(self):
+        self.snapshot.state = "acknowledged"
+        self.store.receipt = SimpleNamespace(
+            attempt_id=ATTEMPT_ID,
+            accepted_at=NOW,
+            score=0,
+            total_questions=2,
+            attempted=0,
+            percentage=0.0,
+            violations=0,
+            model_dump=lambda **_: {
+                "attempt_id": ATTEMPT_ID,
+                "accepted_at": NOW,
+                "score": 0,
+                "total_questions": 2,
+                "attempted": 0,
+                "percentage": 0.0,
+                "violations": 0,
+            },
+        )
+        response = self.client.post(
+            "/api/logout",
+            json={"confirmed": True},
+            headers=self.mutation_headers,
+        )
+
+        self.assertEqual(200, response.status_code, response.text)
+        self.assertEqual({"state": "login"}, response.json())
+        self.assertIsNone(self.coordinator.session)
+        self.assertIsNone(self.store.snapshot)
+        state = self.client.get(
+            "/api/state", headers={"Host": "127.0.0.1:8010"}
+        )
+        self.assertEqual("login", state.json()["state"])
 
     def test_local_registration_forwards_only_student_fields_to_the_coordinator(self):
         response = self.client.post(

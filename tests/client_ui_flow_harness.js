@@ -149,6 +149,18 @@ async function boot(initialState = 'waiting_or_ready', routes = {}) {
 }
 
 const scenarios = {
+  async login_shows_supported_departments() {
+    const page = await boot('login');
+    const form = page.actions().children.find(child => child.tagName === 'form');
+    const selects = form.querySelectorAll('*').filter(child => child.tagName === 'select');
+    assert.equal(selects.length, 1);
+    assert.equal(selects[0].value, 'AIML');
+    assert.deepEqual(
+      selects[0].children.map(option => option.textContent),
+      ['CSE', 'AIML', 'CS&D', 'CCE', 'CSE (ICB)', 'ECE', 'ME', 'MCA', 'Science and Humanities'],
+    );
+    assert.equal(page.elements.get('rights-notice').hidden, false);
+  },
   async pending_review_waits_for_faculty_close() {
     const page = await boot('sealed_pending');
     assert.ok(page.getButton('Check review availability'));

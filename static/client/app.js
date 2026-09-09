@@ -3,6 +3,7 @@
 const sealedMessage = 'Your answers are safe and will upload automatically.';
 const reviewPollDelay = 5000;
 const browserSessionKey = 'ksat-browser-session-active';
+const departments = ['CSE', 'AIML', 'CS&D', 'CCE', 'CSE (ICB)', 'ECE', 'ME', 'MCA', 'Science and Humanities'];
 
 const problemMessages = {
   coordinator_unavailable: 'The assessment server is temporarily unavailable. Your saved work is safe.',
@@ -227,6 +228,7 @@ if (typeof document !== 'undefined') {
     enterFullscreen: document.getElementById('enter-fullscreen'),
     announcer: document.getElementById('announcer'),
     errorAnnouncer: document.getElementById('error-announcer'),
+    rightsNotice: document.getElementById('rights-notice'),
   };
 
   const ui = {
@@ -280,6 +282,7 @@ if (typeof document !== 'undefined') {
     ui.viewRequests.clear();
     ui.view = view;
     ui.viewGeneration += 1;
+    elements.rightsNotice.hidden = view !== 'login' && view !== 'registration';
     if (view === 'starting_attempt' || view === 'signing_out') {
       elements.actionArea.querySelectorAll('button').forEach(item => { item.disabled = true; });
     }
@@ -356,6 +359,24 @@ if (typeof document !== 'undefined') {
     return { label, control };
   }
 
+  function select(labelText, values, selectedValue) {
+    const label = document.createElement('label');
+    label.className = 'field';
+    const caption = document.createElement('span');
+    setSafeText(caption, labelText);
+    const control = document.createElement('select');
+    control.required = true;
+    values.forEach((value) => {
+      const option = document.createElement('option');
+      option.value = value;
+      setSafeText(option, value);
+      control.append(option);
+    });
+    control.value = selectedValue;
+    label.append(caption, control);
+    return { label, control };
+  }
+
   function clear(node) {
     while (node.firstChild) node.removeChild(node.firstChild);
   }
@@ -409,12 +430,13 @@ if (typeof document !== 'undefined') {
     ui.localReview = null;
     showStatus('Student sign in', 'Sign in while connected to the assessment network.');
     const form = document.createElement('form');
+    const department = select('Department', departments, 'AIML');
     const student = input('Student ID', 'text', 'username');
     const password = input('Password', 'password', 'current-password');
     const submit = button('Sign in', () => {});
     submit.type = 'submit';
     const register = button('New student? Create account', renderRegistration, 'secondary');
-    form.append(student.label, password.label, submit, register);
+    form.append(department.label, student.label, password.label, submit, register);
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
       submit.disabled = true;

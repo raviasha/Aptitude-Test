@@ -78,6 +78,10 @@
   font-size: 10px;
 }
 
+.campus-login-card > small + small {
+  margin-top: 4px;
+}
+
 .campus-login-card.register-card {
   padding-top: 26px;
   padding-bottom: 26px;

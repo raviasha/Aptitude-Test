@@ -12,6 +12,11 @@ INDEX = ROOT / "static" / "client" / "index.html"
 
 
 class ClientUiContractTests(unittest.TestCase):
+    def test_login_shows_supported_departments_and_rights_notice(self):
+        self._run_flow("login_shows_supported_departments")
+        index = INDEX.read_text(encoding="utf-8")
+        self.assertIn("Rights Reserved: AIML Department, KSIT", index)
+
     def test_pending_upload_reveals_local_score_and_review_only_after_faculty_close(self):
         self._run_flow("pending_review_waits_for_faculty_close")
 

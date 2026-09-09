@@ -1,4 +1,6 @@
+from html.parser import HTMLParser
 from pathlib import Path
+import subprocess
 import unittest
 
 
@@ -7,16 +9,116 @@ BRANDING_CSS = Path(__file__).with_name("static") / "branding.css"
 INDEX_HTML = Path(__file__).with_name("static") / "index.html"
 
 
+class LoginMarkupParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.in_department = False
+        self.current_option = None
+        self.departments = []
+        self.current_small = None
+        self.small_texts = []
+
+    def handle_starttag(self, tag, attrs):
+        attributes = dict(attrs)
+        if tag == "select" and attributes.get("id") == "department":
+            self.in_department = True
+        elif tag == "option" and self.in_department:
+            self.current_option = {
+                "value": attributes.get("value"),
+                "selected": "selected" in attributes,
+                "text": [],
+            }
+        elif tag == "small":
+            self.current_small = []
+
+    def handle_data(self, data):
+        if self.current_option is not None:
+            self.current_option["text"].append(data)
+        if self.current_small is not None:
+            self.current_small.append(data)
+
+    def handle_endtag(self, tag):
+        if tag == "option" and self.current_option is not None:
+            self.current_option["label"] = "".join(self.current_option.pop("text")).strip()
+            self.departments.append(self.current_option)
+            self.current_option = None
+        elif tag == "select" and self.in_department:
+            self.in_department = False
+        elif tag == "small" and self.current_small is not None:
+            self.small_texts.append("".join(self.current_small).strip())
+            self.current_small = None
+
+
+def render_login_markup():
+    javascript = r"""
+const fs = require('fs');
+const appNode = { innerHTML: '' };
+const idleNode = { addEventListener() {}, classList: { add() {}, remove() {}, toggle() {} } };
+global.document = {
+  querySelector(selector) {
+    if (selector === '#app') return appNode;
+    return idleNode;
+  },
+  querySelectorAll() { return []; },
+};
+global.window = { addEventListener() {} };
+global.fetch = () => Promise.reject(new Error('offline test'));
+eval(fs.readFileSync(process.argv[1], 'utf8'));
+setImmediate(() => process.stdout.write(appNode.innerHTML));
+"""
+    completed = subprocess.run(
+        ["node", "-e", javascript, str(APP_JS)],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    parser = LoginMarkupParser()
+    parser.feed(completed.stdout)
+    return parser
+
+
 class FeedbackUiTests(unittest.TestCase):
     def test_login_defaults_to_student_and_aiml_without_faculty_credentials(self):
         source = APP_JS.read_text(encoding="utf-8")
+        login = render_login_markup()
 
         self.assertIn('data-role="student" aria-pressed="true"', source)
-        self.assertIn('<option value="AIML" selected>AIML</option>', source)
+        self.assertEqual(
+            [department["value"] for department in login.departments if department["selected"]],
+            ["AIML"],
+        )
         self.assertIn('value="AIML" required', source)
         self.assertNotIn("Faculty demo:", source)
         self.assertNotIn("faculty123", source)
         self.assertNotIn("AI & DS", source)
+
+    def test_coordinator_login_lists_all_supported_departments_in_order(self):
+        login = render_login_markup()
+
+        self.assertEqual(
+            login.departments,
+            [
+                {"value": "CSE", "selected": False, "label": "CSE"},
+                {"value": "AIML", "selected": True, "label": "AIML"},
+                {"value": "CS&D", "selected": False, "label": "CS&D"},
+                {"value": "CCE", "selected": False, "label": "CCE"},
+                {"value": "CSE (ICB)", "selected": False, "label": "CSE (ICB)"},
+                {"value": "ECE", "selected": False, "label": "ECE"},
+                {"value": "ME", "selected": False, "label": "ME"},
+                {"value": "MCA", "selected": False, "label": "MCA"},
+                {
+                    "value": "Science and Humanities",
+                    "selected": False,
+                    "label": "Science and Humanities",
+                },
+            ],
+        )
+
+    def test_coordinator_login_ends_with_department_rights_notice(self):
+        login = render_login_markup()
+
+        self.assertEqual(login.small_texts[-1], "Rights Reserved: AIML Department, KSIT")
 
     def test_timed_attempt_and_question_status_are_rendered_for_students(self):
         script = APP_JS.read_text(encoding="utf-8")

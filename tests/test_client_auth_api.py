@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import json
 import os
@@ -10,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
+import httpx
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi.testclient import TestClient
 from itsdangerous import URLSafeTimedSerializer
@@ -575,6 +577,98 @@ class ClientAuthApiTests(unittest.TestCase):
         })
         self.assertEqual(response.status_code, 401)
         self.assertEqual(response.json()["detail"]["code"], "invalid_credentials")
+
+    def test_password_validation_does_not_block_other_coordinator_requests(self):
+        enrolled = self.enroll("Lab-01")
+        device_id = enrolled["device_id"]
+        hash_entered = threading.Event()
+        release_hash = threading.Event()
+        original_checkpw = coordinator_routes.bcrypt.checkpw
+
+        def held_password_check(password, password_hash):
+            hash_entered.set()
+            release_hash.wait(timeout=5)
+            return original_checkpw(password, password_hash)
+
+        async def exercise():
+            path = "/api/client/v1/session"
+            body = _json_bytes({
+                "student_id": "S100", "password": "student123", "device_id": device_id,
+            })
+            headers = self.device_headers(
+                "POST", path, device_id, body,
+                datetime.now(timezone.utc).isoformat(timespec="seconds"), str(uuid.uuid4()),
+            )
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app.app), base_url="http://testserver",
+            ) as client:
+                login = asyncio.create_task(client.post(path, content=body, headers=headers))
+                try:
+                    self.assertTrue(await asyncio.to_thread(hash_entered.wait, 5))
+                    build = await client.get("/api/build")
+                    self.assertEqual(200, build.status_code, build.text)
+                    self.assertFalse(
+                        login.done(),
+                        "An unrelated request must finish while password validation is still held.",
+                    )
+                finally:
+                    release_hash.set()
+                    response = await login
+                self.assertEqual(200, response.status_code, response.text)
+
+        with patch.object(coordinator_routes.bcrypt, "checkpw", side_effect=held_password_check):
+            asyncio.run(exercise())
+
+    def test_session_rechecks_account_and_device_after_password_validation(self):
+        enrolled = self.enroll("Lab-01")
+        device_id = enrolled["device_id"]
+        original_checkpw = coordinator_routes.bcrypt.checkpw
+        with app.db() as connection:
+            original_student = tuple(connection.execute(
+                "SELECT * FROM students WHERE student_id = 'S100'"
+            ).fetchone())
+
+        for change, expected_status, expected_code in (
+            ("delete_student", 401, "invalid_credentials"),
+            ("change_password", 401, "invalid_credentials"),
+            ("revoke_device", 403, "device_inactive"),
+        ):
+            with self.subTest(change=change):
+                with app.db() as connection:
+                    connection.execute("INSERT OR REPLACE INTO students VALUES (?, ?, ?, ?, ?, ?)", original_student)
+                    connection.execute("UPDATE devices SET status = 'active' WHERE device_id = ?", (device_id,))
+                hash_entered = threading.Event()
+                release_hash = threading.Event()
+
+                def held_password_check(password, password_hash):
+                    hash_entered.set()
+                    if not release_hash.wait(timeout=5):
+                        raise AssertionError("The account change did not release password validation.")
+                    return original_checkpw(password, password_hash)
+
+                with (
+                    patch.object(coordinator_routes.bcrypt, "checkpw", side_effect=held_password_check),
+                    ThreadPoolExecutor(max_workers=1) as executor,
+                ):
+                    login = executor.submit(
+                        self.device_post, "/api/client/v1/session", device_id,
+                        payload={"student_id": "S100", "password": "student123", "device_id": device_id},
+                    )
+                    try:
+                        self.assertTrue(hash_entered.wait(timeout=5))
+                        with app.db() as connection:
+                            if change == "delete_student":
+                                connection.execute("DELETE FROM students WHERE student_id = 'S100'")
+                            elif change == "change_password":
+                                connection.execute("UPDATE students SET password_hash = 'changed' WHERE student_id = 'S100'")
+                            else:
+                                connection.execute("UPDATE devices SET status = 'revoked' WHERE device_id = ?", (device_id,))
+                    finally:
+                        release_hash.set()
+                    response = login.result(timeout=10)
+                self.assertEqual(expected_status, response.status_code, response.text)
+                self.assertEqual(expected_code, response.json()["detail"]["code"])
+                self.assertNotIn("access_token", response.json())
 
     def test_session_payload_must_match_signing_device(self):
         enrolled = self.enroll("Lab-01")

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import argparse
+import asyncio
 import binascii
 import hashlib
 import ipaddress
@@ -22,11 +23,13 @@ import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import wraps
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Request
+from starlette.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
@@ -922,7 +925,10 @@ class _ClientContext:
         if snapshot is not None and snapshot.state == "in_progress":
             self._start_control_thread()
         elif snapshot is not None:
-            self._stop_control_thread()
+            # Sealing must wake the durable upload immediately, even when a
+            # deadline request is in flight. Keep ownership until it exits;
+            # shutdown and coordinator replacement still perform a full join.
+            self._stop_control_thread(wait=False)
         if (
             snapshot is None
             or snapshot.state != "sealed_pending"
@@ -955,7 +961,11 @@ class _ClientContext:
         ):
             return
         with self._control_condition:
+            if self._prefetch_shutdown_requested:
+                return
             if self._control_thread is not None and self._control_thread.is_alive():
+                if self._control_stop:
+                    self._schedule_control_restart(self.services)
                 self._control_condition.notify_all()
                 return
             self._control_stop = False
@@ -995,9 +1005,12 @@ class _ClientContext:
                             continue
                         try:
                             update = services.coordinator.deadline_update(attempt_id)
+                            with self._control_condition:
+                                if self._control_stop:
+                                    return
                             if update is not None:
                                 self.observe_snapshot(services.runtime.apply_deadline_update(update))
-                        except (CoordinatorProblem, ValueError, KeyError, OSError, sqlite3.Error):
+                        except (CoordinatorProblem, AttemptSealedError, ValueError, KeyError, OSError, sqlite3.Error):
                             continue
                 finally:
                     with self._control_condition:
@@ -1009,14 +1022,15 @@ class _ClientContext:
                 target=poll, name="ksat-attempt-control", daemon=True
             )
             thread = self._control_thread
-        try:
-            thread.start()
-        except BaseException:
-            with self._control_condition:
+            try:
+                # Publish and start under the same condition so another
+                # observation cannot replace a not-yet-started owned worker.
+                thread.start()
+            except BaseException:
                 if self._control_thread is thread and thread.ident is None:
                     self._control_thread = None
                 self._control_condition.notify_all()
-            raise
+                raise
 
     def _control_join_timeout(self) -> float:
         if self.services is None:
@@ -1032,7 +1046,7 @@ class _ClientContext:
             raise RuntimeError("Coordinator request timeout contract is invalid.")
         return float(request_timeout) + 0.5
 
-    def _stop_control_thread(self) -> bool:
+    def _stop_control_thread(self, *, wait: bool = True) -> bool:
         with self._control_condition:
             self._control_stop = True
             self._control_condition.notify_all()
@@ -1040,7 +1054,7 @@ class _ClientContext:
             if thread is not None and thread.ident is None:
                 self._control_thread = None
                 return True
-        if thread is not None and thread is not threading.current_thread():
+        if wait and thread is not None and thread is not threading.current_thread():
             thread.join(timeout=self._control_join_timeout())
         with self._control_condition:
             if self._control_thread is thread and (thread is None or not thread.is_alive()):
@@ -1086,6 +1100,11 @@ class _ClientContext:
                             self.services is services
                             and not self._prefetch_shutdown_requested
                         )
+                    with self._control_condition:
+                        # Relinquish this completed restart before starting the
+                        # next poll, which may itself need a later restart.
+                        if self._control_restart_thread is current_thread:
+                            self._control_restart_thread = None
                     if restart:
                         self._start_control_thread()
                 finally:
@@ -1547,6 +1566,16 @@ def _map_coordinator_problem(error: CoordinatorProblem) -> ClientApiProblem:
 
 def create_client_app(services: ClientServices | None = None) -> FastAPI:
     context = _ClientContext(services)
+    coordinator_operation_lock = asyncio.Lock()
+
+    def coordinator_operation(handler):
+        """Keep session changes and service replacement ordered across awaits."""
+        @wraps(handler)
+        async def guarded(*args, **kwargs):
+            async with coordinator_operation_lock:
+                return await handler(*args, **kwargs)
+
+        return guarded
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -1554,7 +1583,8 @@ def create_client_app(services: ClientServices | None = None) -> FastAPI:
         try:
             yield
         finally:
-            context.shutdown()
+            async with coordinator_operation_lock:
+                context.shutdown()
 
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.client_context = context
@@ -1792,13 +1822,14 @@ def create_client_app(services: ClientServices | None = None) -> FastAPI:
     async def public_review_asset(attempt_id: str, filename: str):
         attempt_id = _strict_uuid(attempt_id, "Attempt identifier")
         current = require_services()
-        if current.coordinator.session is None:
+        session = current.coordinator.session
+        if session is None:
             raise ClientApiProblem("client_session_required", "Student login is required.", 401)
         if _PUBLIC_ASSET_FILENAME.fullmatch(filename) is None or current.runtime is None:
             raise ClientApiProblem("asset_not_found", "The requested asset was not found.", 404)
         try:
             asset = current.runtime.review_asset(
-                attempt_id, f"assets/{filename}", student_id=current.coordinator.session.student_id
+                attempt_id, f"assets/{filename}", student_id=session.student_id
             )
         except (KeyError, ValueError, TypeError):
             raise ClientApiProblem("asset_not_found", "The requested asset was not found.", 404) from None
@@ -1812,12 +1843,13 @@ def create_client_app(services: ClientServices | None = None) -> FastAPI:
         )
 
     @app.post("/api/device/enroll")
+    @coordinator_operation
     async def enroll():
         current = require_services()
         if getattr(context.identity, "device_id", None) is not None:
             return {"state": "login", "device_id": context.identity.device_id}
         label = socket.gethostname().strip()[:120] or "KSAT Client"
-        receipt = current.coordinator.enroll(label)
+        receipt = await run_in_threadpool(current.coordinator.enroll, label)
         context.identity = current.identity_store.load_or_create()
         context._validate_expected_key()
         context._ensure_runtime()
@@ -1826,6 +1858,7 @@ def create_client_app(services: ClientServices | None = None) -> FastAPI:
         return {"state": "login", "device_id": receipt.device_id}
 
     @app.post("/api/device/coordinator")
+    @coordinator_operation
     async def configure_coordinator(body: CoordinatorConfigurationBody):
         require_configuration_integrity()
         if not body.confirmed:
@@ -2048,15 +2081,18 @@ def create_client_app(services: ClientServices | None = None) -> FastAPI:
         return {"state": "login", "configuration": "updated"}
 
     @app.post("/api/login")
+    @coordinator_operation
     async def login(body: LoginBody):
         current = require_services()
-        session = current.coordinator.login(body.student_id, body.password)
+        session = await run_in_threadpool(current.coordinator.login, body.student_id, body.password)
         return {"state": "waiting_or_ready", "student": _student_payload(session)}
 
     @app.post("/api/register", status_code=201)
+    @coordinator_operation
     async def register(body: RegistrationBody):
         current = require_services()
-        student = current.coordinator.register_student(
+        student = await run_in_threadpool(
+            current.coordinator.register_student,
             student_id=body.student_id,
             name=body.name,
             student_class=body.student_class,
@@ -2069,6 +2105,7 @@ def create_client_app(services: ClientServices | None = None) -> FastAPI:
         }
 
     @app.post("/api/logout")
+    @coordinator_operation
     async def logout(body: ConfirmBody):
         if not body.confirmed:
             raise ClientApiProblem("confirmation_required", "Logout confirmation is required.", 422)
@@ -2085,18 +2122,20 @@ def create_client_app(services: ClientServices | None = None) -> FastAPI:
         return {"state": _attempt_payload(context, snapshot, include_questions=False)["state"] if snapshot else "login"}
 
     @app.post("/api/content/prefetch")
+    @coordinator_operation
     async def prefetch(body: PrefetchBody):
         release_id = _strict_uuid(body.release_id, "Release identifier")
         try:
-            prepared = context.prefetch(release_id)
+            prepared = await run_in_threadpool(context.prefetch, release_id)
         except CoordinatorProblem as error:
             raise _map_coordinator_problem(error) from error
         return {"state": "ready", "release_id": prepared[0]}
 
     @app.get("/api/assessments")
+    @coordinator_operation
     async def assessments():
         current = require_services()
-        rows = current.coordinator.assessments()
+        rows = await run_in_threadpool(current.coordinator.assessments)
         return {
             "assessments": [
                 _assessment_payload(row, current.store, context) for row in rows
@@ -2104,17 +2143,19 @@ def create_client_app(services: ClientServices | None = None) -> FastAPI:
         }
 
     @app.get("/api/reviews")
+    @coordinator_operation
     async def reviews():
         current = require_services()
         if current.coordinator.session is None:
             raise ClientApiProblem("client_session_required", "Student login is required.", 401)
         try:
-            rows = current.coordinator.completed_reviews()
+            rows = await run_in_threadpool(current.coordinator.completed_reviews)
         except CoordinatorProblem as error:
             raise _map_coordinator_problem(error) from error
         return {"reviews": [_jsonable(row) for row in rows]}
 
     @app.get("/api/reviews/{attempt_id}")
+    @coordinator_operation
     async def review(attempt_id: str):
         attempt_id = _strict_uuid(attempt_id, "Attempt identifier")
         current = require_services()
@@ -2124,7 +2165,7 @@ def create_client_app(services: ClientServices | None = None) -> FastAPI:
         if current.runtime is None:
             raise ClientApiProblem("device_inactive", _KNOWN_PUBLIC_MESSAGES["device_inactive"], 403)
         try:
-            summaries = current.coordinator.completed_reviews()
+            summaries = await run_in_threadpool(current.coordinator.completed_reviews)
             summary = next((item for item in summaries if item.attempt_id == attempt_id), None)
             if summary is None:
                 raise ClientApiProblem("review_not_found", "The completed assessment review was not found.", 404)
@@ -2136,7 +2177,7 @@ def create_client_app(services: ClientServices | None = None) -> FastAPI:
                 raise ClientApiProblem(
                     "review_unavailable", _KNOWN_PUBLIC_MESSAGES["review_unavailable"], 409
                 )
-            grant = current.coordinator.review(attempt_id)
+            grant = await run_in_threadpool(current.coordinator.review, attempt_id)
             if (
                 grant.attempt_id != attempt_id
                 or grant.student_id != session.student_id
@@ -2149,7 +2190,7 @@ def create_client_app(services: ClientServices | None = None) -> FastAPI:
                 )
             pack_path = current.store.verified_pack(grant.release_id, grant.content_hash)
             if pack_path is None:
-                context.prefetch(grant.release_id)
+                await run_in_threadpool(context.prefetch, grant.release_id)
                 pack_path = current.store.verified_pack(grant.release_id, grant.content_hash)
             if pack_path is None:
                 raise ClientApiProblem("content_not_ready", "Assessment content is not ready.", 409)
@@ -2171,6 +2212,7 @@ def create_client_app(services: ClientServices | None = None) -> FastAPI:
             ) from error
 
     @app.post("/api/assessments/{release_id}/start")
+    @coordinator_operation
     async def start(release_id: str, body: ConfirmBody):
         release_id = _strict_uuid(release_id, "Release identifier")
         if not body.confirmed:
@@ -2184,7 +2226,9 @@ def create_client_app(services: ClientServices | None = None) -> FastAPI:
             raise ClientApiProblem("content_not_ready", "Assessment content is not ready.", 409)
         if current.runtime is None:
             raise ClientApiProblem("device_inactive", _KNOWN_PUBLIC_MESSAGES["device_inactive"], 403)
-        response = current.coordinator.start_attempt(release_id, entry.content_hash)
+        response = await run_in_threadpool(
+            current.coordinator.start_attempt, release_id, entry.content_hash
+        )
         snapshot = context.observe_snapshot(
             current.runtime.start(
                 response, student_id=current.coordinator.session.student_id

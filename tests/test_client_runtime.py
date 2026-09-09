@@ -166,6 +166,40 @@ class ClientRuntimeTests(unittest.TestCase):
         self.assertFalse(self.runtime.dismiss_completed_attempt())
         self.assertEqual("in_progress", self.runtime.snapshot().state)
 
+    def test_same_student_can_start_next_release_after_receipt_without_dismissing_result(self):
+        self._prepare_and_start()
+        self.runtime.answer(7, "B")
+        self.runtime.submit()
+        receipt = SubmissionReceipt(
+            attempt_id=self.attempt_id,
+            accepted_at=STARTED + timedelta(seconds=1),
+            score=1,
+            total_questions=2,
+            attempted=1,
+            percentage=50.0,
+            violations=0,
+        )
+        self.store.acknowledge(self.attempt_id, receipt)
+        self.assertEqual("acknowledged", self.runtime.snapshot().state)
+
+        summary, manifest, path, response = self._alternate_artifact()
+        ticket = response.ticket.ticket.model_copy(update={"student_id": self.student_id})
+        response = response.model_copy(update={"ticket": SignedAttemptTicket(
+            ticket=ticket,
+            signature_b64=sign_json(self.coordinator_private, ticket),
+        )})
+        self.runtime.prepare(summary, manifest, path)
+        next_attempt = self.runtime.start(response, student_id=self.student_id)
+
+        self.assertEqual("in_progress", next_attempt.state)
+        self.assertEqual(ticket.attempt_id, next_attempt.attempt_id)
+        self.assertNotEqual(self.attempt_id, next_attempt.attempt_id)
+        self.assertFalse(any(next_attempt.responses.values()))
+        previous = self.store.load_attempt(self.attempt_id)
+        self.assertEqual("acknowledged", previous.state)
+        self.assertEqual(receipt, previous.receipt)
+        self.assertEqual("B", previous.responses[7])
+
     def _pack_plaintext(self, questions, *, manifest=None, extra_entries=()):
         stream = io.BytesIO()
         with zipfile.ZipFile(stream, "w") as archive:

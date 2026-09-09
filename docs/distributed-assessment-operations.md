@@ -64,6 +64,18 @@ restore” below.
 5. Confirm the computer appears as active in Faculty **Devices**. A student may
    then choose **New student? Create account** on the client sign-in screen.
 
+After an accepted submission, the student can choose **Back to assessments**
+to take another launched test without signing out. The available-assessments
+screen checks again every five seconds and also has a **Refresh** button.
+Completed reviews load separately from the available test list; answers and
+solutions still require Faculty to close the test.
+
+For the communication-performance update, install the updated coordinator
+setup on the server and the updated client setup on each lab PC, outside an
+active test. Both programs changed. The existing 2.0 configuration, trust
+files, student records, and saved client attempts are retained by the
+installers; this update does not require recreating them.
+
 To revoke a lost or reimaged machine, use Faculty **Devices → Revoke**, record a
 reason, and verify subsequent signed requests fail. Reactivate only after the
 machine identity and custody have been checked. A reimaged machine should

@@ -239,6 +239,11 @@ if (typeof document !== 'undefined') {
     saveState: 'saved',
     positionSaving: false,
     reviewPollHandle: null,
+    view: null,
+    viewGeneration: 0,
+    viewRequests: new Set(),
+    acknowledgedCheck: null,
+    attemptPoll: null,
   };
 
   async function request(path, options = {}) {
@@ -265,6 +270,34 @@ if (typeof document !== 'undefined') {
     return payload;
   }
 
+  function beginView(view) {
+    stopPolling();
+    if (ui.reviewPollHandle !== null) window.clearTimeout(ui.reviewPollHandle);
+    ui.reviewPollHandle = null;
+    ui.viewRequests.forEach(controller => controller.abort());
+    ui.viewRequests.clear();
+    ui.view = view;
+    ui.viewGeneration += 1;
+    if (view === 'starting_attempt' || view === 'signing_out') {
+      elements.actionArea.querySelectorAll('button').forEach(item => { item.disabled = true; });
+    }
+    return ui.viewGeneration;
+  }
+
+  function ownsView(view, generation) {
+    return ui.view === view && ui.viewGeneration === generation;
+  }
+
+  async function viewRequest(path) {
+    const controller = new AbortController();
+    ui.viewRequests.add(controller);
+    try {
+      return await request(path, { signal: controller.signal });
+    } finally {
+      ui.viewRequests.delete(controller);
+    }
+  }
+
   function announce(message, error = false) {
     setSafeText(error ? elements.errorAnnouncer : elements.announcer, message);
   }
@@ -281,11 +314,10 @@ if (typeof document !== 'undefined') {
   function signOutButton() {
     const action = button('Sign out', async () => {
       action.disabled = true;
+      const generation = beginView('signing_out');
       try {
         await logoutStudent(request);
-        stopPolling();
-        if (ui.reviewPollHandle !== null) window.clearTimeout(ui.reviewPollHandle);
-        ui.reviewPollHandle = null;
+        if (!ownsView('signing_out', generation)) return;
         ui.state = 'login';
         ui.attempt = null;
         ui.questionIndex = 0;
@@ -299,8 +331,9 @@ if (typeof document !== 'undefined') {
         }
         renderLogin();
       } catch (error) {
+        if (!ownsView('signing_out', generation)) return;
         showProblem(error.problem);
-        action.disabled = false;
+        await refreshState();
       }
     }, 'secondary');
     return action;
@@ -366,6 +399,8 @@ if (typeof document !== 'undefined') {
   }
 
   function renderLogin() {
+    beginView('login');
+    ui.state = 'login';
     showStatus('Student sign in', 'Sign in while connected to the assessment network.');
     const form = document.createElement('form');
     const student = input('Student ID', 'text', 'username');
@@ -395,6 +430,7 @@ if (typeof document !== 'undefined') {
   }
 
   function renderRegistration() {
+    beginView('registration');
     showStatus('Create student account', 'Use your official student details.');
     const form = document.createElement('form');
     const name = input('Student name', 'text', 'name');
@@ -449,17 +485,42 @@ if (typeof document !== 'undefined') {
   }
 
   async function loadAssessments() {
+    const generation = beginView('assessments');
+    ui.state = 'waiting_or_ready';
     showStatus('Available assessments', 'Checking for an assessment launched by Faculty.');
+    const view = {
+      generation,
+      available: document.createElement('div'),
+      completed: document.createElement('div'),
+      assessmentBusy: false,
+      reviewBusy: false,
+    };
+    view.refresh = button('Refresh', () => refreshAssessmentView(view), 'secondary');
+    elements.actionArea.append(view.available, view.completed, view.refresh, signOutButton());
+    await refreshAssessmentView(view);
+  }
+
+  function refreshAssessmentView(view) {
+    const available = refreshAvailableAssessments(view);
+    refreshCompletedAssessments(view);
+    return available;
+  }
+
+  async function refreshAvailableAssessments(view) {
+    if (!ownsView('assessments', view.generation) || view.assessmentBusy) return;
+    view.assessmentBusy = true;
+    view.refresh.disabled = true;
+    if (ui.reviewPollHandle !== null) window.clearTimeout(ui.reviewPollHandle);
+    ui.reviewPollHandle = null;
     try {
-      const [payload, completed] = await Promise.all([
-        request('/api/assessments'), request('/api/reviews'),
-      ]);
-      clear(elements.actionArea);
+      const payload = await viewRequest('/api/assessments');
+      if (!ownsView('assessments', view.generation)) return;
+      clear(view.available);
       setSafeText(
         elements.statusCopy,
         payload.assessments.length
           ? 'Choose the launched assessment when Faculty asks you to begin.'
-          : 'No assessment is ready to start.',
+          : 'No assessment is ready to start. This page will check again.',
       );
       payload.assessments.forEach((assessment) => {
         const row = document.createElement('div');
@@ -467,34 +528,59 @@ if (typeof document !== 'undefined') {
         const name = document.createElement('strong');
         setSafeText(name, assessment.test_name);
         const action = button(assessment.content_ready ? 'Start' : 'Download', async () => {
+          if (!ownsView('assessments', view.generation)) return;
           action.disabled = true;
+          const generation = beginView('starting_attempt');
           try {
             if (!assessment.content_ready) {
               await request('/api/content/prefetch', {
                 method: 'POST', body: JSON.stringify({ release_id: assessment.release_id }),
               });
+              if (!ownsView('starting_attempt', generation)) return;
             }
             const attempt = await request(`/api/assessments/${encodeURIComponent(assessment.release_id)}/start`, {
               method: 'POST', body: JSON.stringify({ confirmed: true }),
             });
+            if (!ownsView('starting_attempt', generation)) return;
             ui.fullscreenReady = false;
             ui.saveState = 'saved';
             await enterFullscreen();
+            if (!ownsView('starting_attempt', generation)) return;
             renderAttempt(attempt);
           } catch (error) {
+            if (!ownsView('starting_attempt', generation)) return;
             showProblem(error.problem);
-            action.disabled = false;
+            await refreshState();
           }
         });
         row.append(name, action);
-        elements.actionArea.append(row);
+        view.available.append(row);
       });
+    } catch (error) {
+      if (ownsView('assessments', view.generation)) showProblem(error.problem);
+    } finally {
+      view.assessmentBusy = false;
+      if (ownsView('assessments', view.generation)) {
+        view.refresh.disabled = false;
+        ui.reviewPollHandle = window.setTimeout(
+          () => refreshAssessmentView(view), reviewPollDelay,
+        );
+      }
+    }
+  }
+
+  async function refreshCompletedAssessments(view) {
+    if (!ownsView('assessments', view.generation) || view.reviewBusy) return;
+    view.reviewBusy = true;
+    try {
+      const completed = await viewRequest('/api/reviews');
+      if (!ownsView('assessments', view.generation)) return;
+      clear(view.completed);
       if (completed.reviews.length) {
         const heading = document.createElement('h3');
         setSafeText(heading, 'Completed assessments');
-        elements.actionArea.append(heading);
+        view.completed.append(heading);
       }
-      let waiting = false;
       completed.reviews.forEach((assessment) => {
         const row = document.createElement('div');
         row.className = 'assessment-row review-summary';
@@ -507,39 +593,40 @@ if (typeof document !== 'undefined') {
         let action;
         if (assessment.review_state === 'available') {
           action = button('Review answers', async () => {
+            if (!ownsView('assessments', view.generation)) return;
             action.disabled = true;
-            try {
-              renderReview(await request(`/api/reviews/${encodeURIComponent(assessment.attempt_id)}`));
-            } catch (error) {
-              renderAcknowledgedFailure(assessment, error.problem);
-            }
+            await openReview(assessment);
           });
         } else if (assessment.review_state === 'waiting') {
-          waiting = true;
-          action = button('Waiting for Faculty to close', loadAssessments);
+          action = button('Waiting for Faculty to close', () => refreshAssessmentView(view));
         } else {
           action = button('Detailed review unavailable', () => {});
           action.disabled = true;
         }
         row.append(details, action);
-        elements.actionArea.append(row);
+        view.completed.append(row);
       });
-      if (!payload.assessments.length && !completed.reviews.length) {
-        setSafeText(elements.statusCopy, 'No assessment is ready yet. This page will check again.');
-      }
-      if (ui.reviewPollHandle !== null) window.clearTimeout(ui.reviewPollHandle);
-      ui.reviewPollHandle = (waiting || (!payload.assessments.length && !completed.reviews.length))
-        ? window.setTimeout(loadAssessments, reviewPollDelay)
-        : null;
-      elements.actionArea.append(signOutButton());
     } catch (error) {
-      showProblem(error.problem);
+      if (ownsView('assessments', view.generation)) {
+        announce(problemMessage(error.problem && error.problem.code), true);
+      }
+    } finally {
+      view.reviewBusy = false;
+    }
+  }
+
+  async function openReview(result) {
+    const generation = beginView('loading_review');
+    try {
+      const review = await viewRequest(`/api/reviews/${encodeURIComponent(result.attempt_id)}`);
+      if (ownsView('loading_review', generation)) renderReview(review);
+    } catch (error) {
+      if (ownsView('loading_review', generation)) renderAcknowledgedFailure(result, error.problem);
     }
   }
 
   function renderReview(review) {
-    if (ui.reviewPollHandle !== null) window.clearTimeout(ui.reviewPollHandle);
-    ui.reviewPollHandle = null;
+    beginView('review');
     showStatus(review.test_name, 'Review of your submitted answers.');
     const list = document.createElement('div');
     list.className = 'review-list';
@@ -603,7 +690,7 @@ if (typeof document !== 'undefined') {
     });
     elements.actionArea.append(
       list,
-      button('Back to completed assessments', loadAssessments),
+      button('Back to assessments', loadAssessments),
       signOutButton(),
     );
   }
@@ -621,6 +708,7 @@ if (typeof document !== 'undefined') {
   }
 
   function renderAttempt(attempt) {
+    if (ui.view !== 'attempt') beginView('attempt');
     ui.state = attempt.state;
     ui.attempt = attempt;
     setSafeText(elements.timer, formatTime(attempt.remaining_seconds));
@@ -767,22 +855,34 @@ if (typeof document !== 'undefined') {
 
   function scheduleAcknowledgedReview(result) {
     if (ui.reviewPollHandle !== null) window.clearTimeout(ui.reviewPollHandle);
+    const generation = ui.viewGeneration;
     ui.reviewPollHandle = window.setTimeout(
-      () => checkAcknowledgedReview(result), reviewPollDelay,
+      () => {
+        if (ownsView('acknowledged', generation)) checkAcknowledgedReview(result);
+      }, reviewPollDelay,
     );
   }
 
   async function checkAcknowledgedReview(result) {
+    const generation = ui.viewGeneration;
+    if (ui.view !== 'acknowledged' || ui.acknowledgedCheck === generation) return;
+    ui.acknowledgedCheck = generation;
+    if (ui.reviewPollHandle !== null) window.clearTimeout(ui.reviewPollHandle);
+    ui.reviewPollHandle = null;
     try {
-      const completed = await request('/api/reviews');
+      const completed = await viewRequest('/api/reviews');
+      if (!ownsView('acknowledged', generation)) return;
       const summary = completed.reviews.find((item) => item.attempt_id === result.attempt_id);
       renderAcknowledged(result, summary ? summary.review_state : 'waiting');
     } catch (error) {
+      if (!ownsView('acknowledged', generation)) return;
       renderAcknowledged(
         result,
         reviewFailureAction(error.problem),
         error.problem,
       );
+    } finally {
+      if (ui.acknowledgedCheck === generation) ui.acknowledgedCheck = null;
     }
   }
 
@@ -791,6 +891,8 @@ if (typeof document !== 'undefined') {
   }
 
   function renderAcknowledged(result, reviewState = 'waiting', problem = {}) {
+    if (ui.view !== 'acknowledged') beginView('acknowledged');
+    ui.state = 'acknowledged_result';
     showStatus('Result received', 'The coordinator accepted and scored your submission.');
     const score = document.createElement('p');
     score.className = 'result-score';
@@ -802,11 +904,7 @@ if (typeof document !== 'undefined') {
     if (status.action === 'review') {
       const reviewButton = button(status.label, async () => {
         reviewButton.disabled = true;
-        try {
-          renderReview(await request(`/api/reviews/${encodeURIComponent(result.attempt_id)}`));
-        } catch (error) {
-          renderAcknowledgedFailure(result, error.problem);
-        }
+        await openReview(result);
       });
       elements.actionArea.append(reviewStatus, reviewButton);
     } else if (status.action === 'unavailable') {
@@ -821,7 +919,7 @@ if (typeof document !== 'undefined') {
         button(status.label, () => checkAcknowledgedReview(result)),
       );
     }
-    elements.actionArea.append(signOutButton());
+    elements.actionArea.append(button('Back to assessments', loadAssessments), signOutButton());
     stopPolling();
     if (status.autoRetry) {
       scheduleAcknowledgedReview(result);
@@ -838,16 +936,26 @@ if (typeof document !== 'undefined') {
   }
 
   async function pollAttempt() {
-    if (!ui.attempt || ui.saving || ui.positionSaving) return;
+    if (ui.view !== 'attempt' || !ui.attempt || ui.saving || ui.positionSaving) return;
+    const generation = ui.viewGeneration;
+    if (ui.attemptPoll === generation) return;
+    ui.attemptPoll = generation;
+    const attemptId = ui.attempt.attempt_id;
+    const state = ui.state;
     try {
-      const attempt = await request(`/api/attempts/${encodeURIComponent(ui.attempt.attempt_id)}`);
-      if (attempt.state === 'acknowledged_result') {
-        const result = await request(`/api/attempts/${encodeURIComponent(ui.attempt.attempt_id)}/result`);
+      const attempt = await viewRequest(`/api/attempts/${encodeURIComponent(attemptId)}`);
+      if (!ownsView('attempt', generation)) return;
+      if (attempt.state === 'acknowledged_result' && !attempt.result) {
+        const result = await viewRequest(`/api/attempts/${encodeURIComponent(attemptId)}/result`);
         attempt.result = result.result;
       }
+      if (!ownsView('attempt', generation)
+          || ui.state !== state || ui.saving || ui.positionSaving) return;
       renderAttempt(attempt);
     } catch (error) {
-      showProblem(error.problem);
+      if (ownsView('attempt', generation)) showProblem(error.problem);
+    } finally {
+      if (ui.attemptPoll === generation) ui.attemptPoll = null;
     }
   }
 

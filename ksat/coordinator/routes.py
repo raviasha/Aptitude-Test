@@ -686,8 +686,8 @@ async def create_client_session(payload: ClientLoginRequest, request: Request) -
         credentials_valid = False
         if student is not None:
             try:
-                credentials_valid = bcrypt.checkpw(
-                    payload.password.encode(), student["password_hash"].encode()
+                credentials_valid = await run_in_threadpool(
+                    bcrypt.checkpw, payload.password.encode(), student["password_hash"].encode()
                 )
             except (AttributeError, TypeError, ValueError):
                 credentials_valid = False
@@ -695,10 +695,26 @@ async def create_client_session(payload: ClientLoginRequest, request: Request) -
             raise AuthenticationProblem(
                 "invalid_credentials", "The student credentials are invalid.", status_code=401
             )
+        # Password validation yields to other requests, including faculty account
+        # deletion and device revocation. Do not issue a session from stale rows.
+        current_student = connection.execute(
+            "SELECT student_id, name, password_hash FROM students WHERE student_id = ?", (student_id,)
+        ).fetchone()
+        if current_student is None or current_student["password_hash"] != student["password_hash"]:
+            raise AuthenticationProblem(
+                "invalid_credentials", "The student credentials are invalid.", status_code=401
+            )
+        device = connection.execute(
+            "SELECT status FROM devices WHERE device_id = ?", (verified_device_id,)
+        ).fetchone()
+        if device is None or device["status"] != "active":
+            raise AuthenticationProblem(
+                "device_inactive", "The device is not active.", status_code=403
+            )
         return ClientSession(
             access_token=issue_student_access_token(config.session_secret, student_id, verified_device_id),
             student_id=student_id,
-            student_name=student["name"],
+            student_name=current_student["name"],
             device_id=verified_device_id,
             expires_in_seconds=CLIENT_SESSION_SECONDS,
         )

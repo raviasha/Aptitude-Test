@@ -194,10 +194,38 @@ process.stdout.write(JSON.stringify({
             source.index("function showProblem")
         ]
         self.assertIn("checkAcknowledgedReview", acknowledged)
-        self.assertNotIn("loadAssessments", acknowledged)
         self.assertIn("async function checkAcknowledgedReview", source)
         self.assertIn("Could not check yet. Your result remains available", source)
-        self.assertGreaterEqual(source.count("renderAcknowledgedFailure("), 3)
+
+    def test_student_can_start_another_test_without_signing_out(self):
+        self._run_flow("result_to_next_test")
+
+    def test_slow_completed_reviews_do_not_delay_available_tests(self):
+        self._run_flow("slow_reviews_do_not_block_launches")
+
+    def test_new_launches_refresh_with_completed_reviews_and_recover_after_failure(self):
+        self._run_flow("launched_tests_refresh_with_closed_reviews")
+
+    def test_pending_list_refresh_cannot_replace_an_active_exam(self):
+        self._run_flow("late_lists_cannot_replace_exam")
+
+    def test_pending_review_check_cannot_restore_result_after_signout(self):
+        self._run_flow("late_review_cannot_replace_signin")
+
+    def test_review_and_back_navigation_ignore_pending_list_refresh(self):
+        self._run_flow("review_navigation_owns_screen")
+
+    def test_attempt_poll_is_single_flight_and_uses_embedded_result(self):
+        self._run_flow("attempt_poll_reuses_embedded_result")
+
+    def test_attempt_result_endpoint_fallback_remains_supported(self):
+        self._run_flow("result_fallback_remains_supported")
+
+    def test_pending_test_start_cannot_be_hidden_by_other_navigation(self):
+        self._run_flow("pending_start_keeps_navigation_from_hiding_the_attempt")
+
+    def test_pending_signout_cannot_be_cancelled_by_other_navigation(self):
+        self._run_flow("pending_signout_keeps_navigation_from_reviving_the_session")
 
     def test_static_contract_has_safe_local_state_machine_and_no_coordinator_secrets(self):
         source = SCRIPT.read_text(encoding="utf-8")
@@ -435,6 +463,17 @@ process.stdout.write(JSON.stringify({
         )
         self.assertEqual(0, completed.returncode, completed.stderr)
         return json.loads(completed.stdout)
+
+    def _run_flow(self, scenario):
+        node = os.environ.get("KSAT_NODE") or shutil.which("node")
+        if node is None:
+            self.skipTest("Node.js is unavailable for the JavaScript behavior contract.")
+        completed = subprocess.run(
+            [node, str(ROOT / "tests" / "client_ui_flow_harness.js"), str(SCRIPT), scenario],
+            cwd=ROOT, text=True, encoding="utf-8", capture_output=True, check=False,
+        )
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertEqual({"passed": True}, json.loads(completed.stdout))
 
 
 if __name__ == "__main__":

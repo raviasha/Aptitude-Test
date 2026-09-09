@@ -56,6 +56,22 @@ const attempt = {
   questions: [{ question_id: 7, question_text: 'Second test question', options: { A: 'One', B: 'Two' } }],
   responses: {},
 };
+const pendingReviewPath = `/api/attempts/${finished.attempt_id}/review`;
+const localReview = {
+  attempt_id: finished.attempt_id, test_name: finished.test_name,
+  local_result: { score: 1, total_questions: 1, attempted: 1, percentage: 100 },
+  upload_pending: true, result: null,
+  questions: [{
+    question: { question_id: 7, question_text: 'Review-only question', options: { A: 'One', B: 'Two' } },
+    selected_answer: 'A', correct_answer: 'A', solution_steps: ['Review-only solution step'],
+  }],
+};
+
+function failure(code, retryable = true) {
+  const error = new Error(code);
+  error.problem = { code, retryable };
+  return error;
+}
 
 async function boot(initialState = 'waiting_or_ready', routes = {}) {
   const elements = new Map();
@@ -91,6 +107,7 @@ async function boot(initialState = 'waiting_or_ready', routes = {}) {
     '/api/reviews': () => ({ reviews: [finished] }),
     '/api/assessments/second-release/start': () => attempt,
     '/api/logout': () => ({ state: 'login' }),
+    [pendingReviewPath]: () => { throw failure('review_not_released', false); },
     ...routes,
   };
   vm.runInNewContext(fs.readFileSync(process.argv[2], 'utf8'), {
@@ -132,6 +149,120 @@ async function boot(initialState = 'waiting_or_ready', routes = {}) {
 }
 
 const scenarios = {
+  async pending_review_waits_for_faculty_close() {
+    const page = await boot('sealed_pending');
+    assert.ok(page.getButton('Check review availability'));
+    await page.tick(5000);
+    assert.doesNotMatch(page.actions().textContent, /Review-only question|100%/);
+    assert.equal(page.getButton('Sign out'), undefined);
+    assert.equal(page.getButton('Back to assessments'), undefined);
+    page.handlers[pendingReviewPath] = () => localReview;
+    await page.tick(5000);
+    assert.match(page.actions().textContent, /Locally calculated score.*1 \/ 1 \(100%\)/);
+    assert.match(page.actions().textContent, /Review-only question/);
+    assert.match(page.actions().textContent, /Review-only solution step/);
+    assert.match(page.actions().textContent, /Your choice/);
+    assert.match(page.actions().textContent, /Correct choice/);
+    assert.match(page.actions().textContent, /upload.*background|Upload pending/i);
+    assert.ok(page.getButton('Back to submission'));
+    assert.equal(page.getButton('Sign out'), undefined);
+    assert.equal(page.getButton('Back to assessments'), undefined);
+  },
+  async slow_pending_review_does_not_delay_upload_receipt() {
+    const pending = deferred();
+    const page = await boot('sealed_pending', { [pendingReviewPath]: () => pending.promise });
+    await page.click('Check review availability');
+    await page.tick(5000);
+    assert.equal(page.calls.filter(call => call.path === pendingReviewPath).length, 1);
+    page.handlers[`/api/attempts/${finished.attempt_id}`] = () => ({
+      state: 'acknowledged_result', attempt_id: finished.attempt_id, result: finished,
+    });
+    await page.tick(1000);
+    assert.equal(page.elements.get('status-title').textContent, 'Result received');
+    pending.resolve(localReview);
+    await page.flush();
+    assert.equal(page.elements.get('status-title').textContent, 'Result received');
+    assert.doesNotMatch(page.actions().textContent, /Review-only question/);
+  },
+  async local_review_receipt_updates_without_replacing_questions() {
+    const page = await boot('sealed_pending', { [pendingReviewPath]: () => localReview });
+    await page.click('Check review availability');
+    const list = page.actions().children.find(child => child.className === 'review-list');
+    assert.ok(list, 'A faculty-authorized local review must open before upload completes');
+    list.scrollTop = 135;
+    await page.tick(1000);
+    assert.equal(page.actions().children.find(child => child.className === 'review-list'), list);
+    assert.match(page.actions().textContent, /Locally calculated score.*1 \/ 1/);
+    page.handlers[`/api/attempts/${finished.attempt_id}`] = () => ({
+      state: 'acknowledged_result', attempt_id: finished.attempt_id,
+      result: { ...finished, score: 0, percentage: 0 },
+    });
+    await page.tick(1000);
+    assert.equal(page.actions().children.find(child => child.className === 'review-list'), list);
+    assert.equal(list.scrollTop, 135);
+    assert.match(page.actions().textContent, /Confirmed score.*0 \/ 1 \(0%\)/);
+    assert.match(page.actions().textContent, /Upload confirmed/i);
+    assert.ok(page.getButton('Back to assessments'));
+    assert.ok(page.getButton('Sign out'));
+    assert.equal(page.getButton('Back to submission'), undefined);
+    assert.equal([...page.timers.values()].some(timer => timer.delay === 1000), false);
+  },
+  async local_review_reports_failed_upload_without_unlocking_navigation() {
+    const page = await boot('sealed_pending', { [pendingReviewPath]: () => localReview });
+    await page.click('Check review availability');
+    page.handlers[`/api/attempts/${finished.attempt_id}`] = () => ({
+      state: 'faculty_intervention_required', attempt_id: finished.attempt_id,
+      message: 'Faculty must resolve the upload.', queue: { status: 'faculty_intervention_required' },
+    });
+    await page.tick(1000);
+    assert.match(page.actions().textContent, /Faculty.*(?:attention|assistance|resolve)/i);
+    assert.match(page.actions().textContent, /Review-only question/);
+    assert.equal(page.getButton('Sign out'), undefined);
+    assert.equal(page.getButton('Back to assessments'), undefined);
+    await page.click('Back to submission');
+    assert.equal(page.elements.get('status-title').textContent, 'Faculty assistance required');
+    assert.equal(page.calls.some(call => call.path === '/api/logout'), false);
+  },
+  async pending_review_back_ignores_late_receipt_and_does_not_reopen_itself() {
+    const page = await boot('sealed_pending', { [pendingReviewPath]: () => localReview });
+    await page.click('Check review availability');
+    const receipt = deferred();
+    page.handlers[`/api/attempts/${finished.attempt_id}`] = () => receipt.promise;
+    await page.tick(1000);
+    await page.click('Back to submission');
+    receipt.resolve({ state: 'acknowledged_result', attempt_id: finished.attempt_id, result: finished });
+    await page.flush();
+    assert.equal(page.elements.get('status-title').textContent, 'Assessment submitted');
+    await page.tick(5000);
+    assert.equal(page.elements.get('status-title').textContent, 'Assessment submitted');
+    assert.ok(page.getButton('Review answers'));
+    assert.equal(page.getButton('Sign out'), undefined);
+  },
+  async new_signin_cannot_reuse_previous_session_review_grant() {
+    const page = await boot('sealed_pending', { [pendingReviewPath]: () => localReview });
+    await page.click('Check review availability');
+    page.handlers[`/api/attempts/${finished.attempt_id}`] = () => ({
+      state: 'acknowledged_result', attempt_id: finished.attempt_id, result: finished,
+    });
+    await page.tick(1000);
+    await page.click('Sign out');
+    page.handlers['/api/login'] = () => ({ state: 'waiting_or_ready' });
+    const form = page.actions().children.find(child => child.tagName === 'form');
+    const inputs = form.querySelectorAll('*').filter(child => child.tagName === 'input');
+    inputs[0].value = 'S200';
+    inputs[1].value = 'student-password';
+    await form.listeners.get('submit')({ preventDefault() {} });
+    // Reusing a local identifier must never carry authorization across a new login.
+    page.handlers['/api/assessments/second-release/start'] = () => ({
+      state: 'sealed_pending', attempt_id: finished.attempt_id,
+    });
+    page.handlers[pendingReviewPath] = () => { throw failure('review_not_released', false); };
+    await page.click('Start');
+    assert.equal(page.getButton('Review answers'), undefined);
+    assert.ok(page.getButton('Check review availability'));
+    await page.click('Check review availability');
+    assert.doesNotMatch(page.actions().textContent, /Review-only question|Review-only solution/);
+  },
   async result_to_next_test() {
     const page = await boot('acknowledged_result');
     const pendingReview = deferred();

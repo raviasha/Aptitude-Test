@@ -31,12 +31,14 @@ from ksat.protocol import (
     PublicQuestion,
     PublicReleaseDescriptor,
     ReviewContent,
+    ReviewResponseEntry,
     ReviewedQuestion,
     ReleaseManifest,
     ReleaseSummary,
     ResponseBundle,
     ResponseEntry,
     SignedResponseBundle,
+    SealedAssessmentReviewGrant,
     canonical_json,
     deterministic_question_order,
 )
@@ -709,7 +711,7 @@ class AssessmentRuntime:
         grant: AssessmentReviewGrant,
         *,
         student_id: str,
-        test_name: str,
+        test_name: str | None = None,
     ) -> AssessmentReview:
         """Decrypt a close-authorized review and join it by immutable question ID."""
         if grant.student_id != student_id or not student_id.strip():
@@ -760,13 +762,94 @@ class AssessmentRuntime:
         result = AssessmentReview(
             attempt_id=grant.attempt_id,
             release_id=grant.release_id,
-            test_name=test_name,
+            test_name=manifest.test_name if test_name is None else test_name,
             questions=reviewed,
         )
         with self._lock:
             self._review_assets[grant.attempt_id] = dict(assets)
             self._review_asset_owners[grant.attempt_id] = grant.student_id
         return result
+
+    def _sealed_review_record(
+        self, attempt_id: str, *, student_id: str
+    ) -> tuple[LocalAttemptRecord, SignedResponseBundle]:
+        record = self.store.load_attempt(attempt_id)
+        if record.state not in {"sealed_pending", "acknowledged"}:
+            raise ValueError("The assessment attempt has not been sealed.")
+        ticket = record.ticket.ticket
+        if (
+            not student_id.strip()
+            or ticket.student_id != student_id
+            or ticket.device_id != self.identity.device_id
+        ):
+            raise ValueError("Assessment review does not belong to this student and device.")
+        bundle = self.store.sealed_bundle(attempt_id)
+        if bundle.bundle.ticket != record.ticket:
+            raise ValueError("Assessment review does not match the sealed ticket.")
+        verify_json(
+            self.identity.coordinator_public_key_b64,
+            ticket,
+            record.ticket.signature_b64,
+        )
+        verify_json(self.identity.public_key_b64, bundle.bundle, bundle.device_signature_b64)
+        return record, bundle
+
+    def sealed_review_bundle_hash(self, attempt_id: str, *, student_id: str) -> str:
+        """Commit only the exact immutable signed upload before requesting keys."""
+        _record, bundle = self._sealed_review_record(attempt_id, student_id=student_id)
+        return sha256_hex(canonical_json(bundle))
+
+    def open_sealed_review(
+        self, grant: SealedAssessmentReviewGrant, *, student_id: str
+    ) -> dict[str, Any]:
+        """Score close-authorized local choices without acknowledging their upload."""
+        record, bundle = self._sealed_review_record(grant.attempt_id, student_id=student_id)
+        ticket = record.ticket.ticket
+        if (
+            grant.student_id != student_id
+            or grant.release_id != ticket.release_id
+            or grant.content_hash != ticket.content_hash
+            or grant.content_key_b64 != ticket.content_key_b64
+            or grant.bundle_hash != sha256_hex(canonical_json(bundle))
+        ):
+            raise ValueError("Assessment review does not match the sealed attempt.")
+        responses = [
+            ReviewResponseEntry(
+                question_id=question_id,
+                question_order=order,
+                selected_answer=record.responses[question_id],
+            )
+            for order, question_id in enumerate(record.question_order)
+        ]
+        review = self.open_review(
+            self._verified_attempt_pack(record),
+            AssessmentReviewGrant(
+                attempt_id=record.attempt_id,
+                student_id=student_id,
+                release_id=ticket.release_id,
+                content_hash=ticket.content_hash,
+                content_key_b64=grant.content_key_b64,
+                review_key_b64=grant.review_key_b64,
+                responses=responses,
+            ),
+            student_id=student_id,
+        )
+        total = len(review.questions)
+        score = sum(item.selected_answer == item.correct_answer for item in review.questions)
+        attempted = sum(item.selected_answer is not None for item in review.questions)
+        # The outbox may have received its authoritative receipt while decrypting.
+        latest = self.store.load_attempt(record.attempt_id)
+        return {
+            **review.model_dump(mode="json"),
+            "local_result": {
+                "score": score,
+                "total_questions": total,
+                "attempted": attempted,
+                "percentage": round(score / total * 100, 1) if total else 0.0,
+            },
+            "upload_pending": latest.state == "sealed_pending",
+            "result": latest.receipt.model_dump(mode="json") if latest.receipt is not None else None,
+        }
 
     def review_asset(self, attempt_id: str, reference: str, *, student_id: str) -> PublicAsset:
         with self._lock:

@@ -361,6 +361,12 @@ def validate_and_score(
     ):
         raise _problem("attempt_identity_mismatch", "The submitted attempt identity is invalid.")
 
+    bundle_json = canonical_json(signed_bundle).decode("utf-8")
+    bundle_hash = sha256_hex(bundle_json.encode("utf-8"))
+    if attempt["review_seal_hash"] is not None and attempt["review_seal_hash"] != bundle_hash:
+        raise SubmissionProblem(
+            "review_seal_conflict", "The submission does not match the answers committed for review.", status_code=409
+        )
     existing = _stored_receipt(connection, ticket.attempt_id)
     if existing is not None:
         return existing
@@ -445,7 +451,6 @@ def validate_and_score(
 
     total = len(scored_rows)
     percentage = round(score / total * 100, 1) if total else 0.0
-    bundle_json = canonical_json(signed_bundle).decode("utf-8")
     return ScoredSubmission(
         attempt_id=ticket.attempt_id,
         student_id=ticket.student_id,
@@ -454,7 +459,7 @@ def validate_and_score(
         # conservatively round its remaining time down, making this trusted seal
         # instant slightly ahead of the coordinator's wall clock.
         sealed_at=sealed_at.isoformat(),
-        bundle_hash=sha256_hex(bundle_json.encode("utf-8")),
+        bundle_hash=bundle_hash,
         bundle_json=bundle_json,
         responses=tuple(scored_rows),
         score=score,
@@ -707,13 +712,17 @@ class SubmissionWriter:
     @staticmethod
     def _commit(connection: sqlite3.Connection, scored: ScoredSubmission) -> SubmissionReceipt:
         connection.execute("BEGIN IMMEDIATE")
+        attempt = connection.execute(
+            "SELECT status,review_seal_hash FROM attempts WHERE attempt_id=?", (scored.attempt_id,)
+        ).fetchone()
+        if attempt is not None and attempt["review_seal_hash"] is not None and attempt["review_seal_hash"] != scored.bundle_hash:
+            raise SubmissionProblem(
+                "review_seal_conflict", "The submission does not match the answers committed for review.", status_code=409
+            )
         existing = _stored_receipt(connection, scored.attempt_id)
         if existing is not None:
             connection.commit()
             return existing
-        attempt = connection.execute(
-            "SELECT status FROM attempts WHERE attempt_id=?", (scored.attempt_id,)
-        ).fetchone()
         if attempt is None or attempt["status"] != "in_progress":
             raise _problem("attempt_not_submittable", "The attempt cannot be submitted.")
         connection.executemany(

@@ -14,6 +14,8 @@ from ksat.protocol import (
     AssessmentReviewGrant,
     CompletedAssessmentSummary,
     ReviewResponseEntry,
+    SealedAssessmentReviewGrant,
+    SealedReviewRequest,
 )
 
 
@@ -142,8 +144,84 @@ def issue_review_grant(
         ) from error
 
 
+def issue_sealed_review_grant(
+    connection: sqlite3.Connection,
+    *,
+    attempt_id: str,
+    student_id: str,
+    device_id: str,
+    bundle_hash: str,
+    pack_master_key: bytes,
+) -> SealedAssessmentReviewGrant:
+    """Commit immutable answers before releasing keys for an upload-pending review."""
+    SealedReviewRequest(bundle_hash=bundle_hash)
+    if connection.in_transaction:
+        raise ValueError("A sealed review grant requires its own transaction.")
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        row = connection.execute(
+            """SELECT a.attempt_id,a.student_id,a.release_id,a.status,a.review_seal_hash,
+                      d.status AS device_status,t.launched,t.review_released_at,
+                      ar.content_hash,ar.wrapped_content_key_b64,ar.wrapped_review_key_b64,
+                      s.bundle_hash AS accepted_bundle_hash
+               FROM attempts a
+               JOIN students student ON student.student_id=a.student_id
+               JOIN devices d ON d.device_id=a.device_id
+               JOIN tests t ON t.test_id=a.test_id
+               JOIN assessment_releases ar ON ar.release_id=a.release_id AND ar.test_id=a.test_id
+               LEFT JOIN submissions s ON s.attempt_id=a.attempt_id
+               WHERE a.attempt_id=? AND a.student_id=? AND a.device_id=?
+                 AND a.status IN ('in_progress','submitted')""",
+            (attempt_id, student_id, device_id),
+        ).fetchone()
+        if row is None or (row["status"] == "submitted" and row["accepted_bundle_hash"] is None):
+            raise ReviewProblem("review_not_found", "The assessment review was not found.", status_code=404)
+        if row["device_status"] != "active":
+            raise ReviewProblem("device_inactive", "The device is not active.", status_code=403)
+        if bool(row["launched"]) or not row["review_released_at"]:
+            raise ReviewProblem(
+                "review_not_released", "Review will be available after Faculty closes the assessment."
+            )
+        if not row["wrapped_review_key_b64"]:
+            raise ReviewProblem("review_unavailable", "Detailed review is unavailable for this older assessment.")
+        for committed in (row["review_seal_hash"], row["accepted_bundle_hash"]):
+            if committed is not None and committed != bundle_hash:
+                raise ReviewProblem(
+                    "review_seal_conflict", "The sealed answers do not match the assessment's committed submission."
+                )
+        try:
+            content_key = unwrap_release_content_key(
+                pack_master_key, row["release_id"], row["wrapped_content_key_b64"]
+            )
+            review_key = unwrap_release_review_key(
+                pack_master_key, row["release_id"], row["wrapped_review_key_b64"]
+            )
+            grant = SealedAssessmentReviewGrant(
+                attempt_id=row["attempt_id"], student_id=row["student_id"],
+                release_id=row["release_id"], content_hash=row["content_hash"],
+                content_key_b64=base64.b64encode(content_key).decode("ascii"),
+                review_key_b64=base64.b64encode(review_key).decode("ascii"), bundle_hash=bundle_hash,
+            )
+        except (ValueError, TypeError) as error:
+            raise ReviewProblem(
+                "review_unavailable", "Detailed review requires faculty intervention.", status_code=503
+            ) from error
+        connection.execute(
+            "UPDATE attempts SET review_seal_hash=? WHERE attempt_id=?",
+            (bundle_hash, attempt_id),
+        )
+        # The submission writer checks this same commitment in its own write
+        # transaction, even for bundles validated before these keys were released.
+        connection.commit()
+        return grant
+    except BaseException:
+        connection.rollback()
+        raise
+
+
 __all__ = [
     "ReviewProblem",
     "issue_review_grant",
+    "issue_sealed_review_grant",
     "list_completed_assessments",
 ]

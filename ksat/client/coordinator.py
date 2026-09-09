@@ -38,6 +38,8 @@ from ksat.protocol import (
     PublicReleaseDescriptor,
     SignedResponseBundle,
     SignedAttemptDeadlineUpdate,
+    SealedAssessmentReviewGrant,
+    SealedReviewRequest,
     SubmissionReceipt,
     StudentRegistrationReceipt,
     canonical_json,
@@ -646,6 +648,36 @@ class CoordinatorClient:
         )
         if (
             grant.attempt_id != attempt_id
+            or self._session is None
+            or grant.student_id != self._session.student_id
+        ):
+            raise CoordinatorProblem(
+                "invalid_coordinator_response", "The coordinator returned an invalid response.", False
+            )
+        return grant
+
+    def sealed_review(self, attempt_id: str, bundle_hash: str) -> SealedAssessmentReviewGrant:
+        try:
+            parsed = uuid.UUID(attempt_id)
+        except (AttributeError, ValueError) as error:
+            raise ValueError("Attempt identifier is invalid.") from error
+        if str(parsed) != attempt_id:
+            raise ValueError("Attempt identifier is invalid.")
+        request = SealedReviewRequest(bundle_hash=bundle_hash)
+        grant = self._typed(
+            SealedAssessmentReviewGrant,
+            self._request_bytes(
+                "POST", f"{_API_PREFIX}/reviews/{attempt_id}/sealed",
+                body=canonical_json(request), bearer=True,
+            ),
+            exact_keys={
+                "attempt_id", "student_id", "release_id", "content_hash",
+                "content_key_b64", "review_key_b64", "bundle_hash",
+            },
+        )
+        if (
+            grant.attempt_id != attempt_id
+            or grant.bundle_hash != bundle_hash
             or self._session is None
             or grant.student_id != self._session.student_id
         ):

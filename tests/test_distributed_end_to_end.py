@@ -9,6 +9,115 @@ from unittest.mock import patch
 
 
 class DistributedEndToEndTests(unittest.TestCase):
+    def test_closed_review_scores_locally_before_upload_then_matches_server_over_https(self):
+        import app
+        from ksat.coordinator.releases import prepare_release
+        from ksat.protocol import FrozenReviewQuestion
+        from scripts import load_distributed_assessment as load
+
+        # Give the owned load fixture the same separately encrypted review
+        # compartment that faculty-created releases use in production.
+        def prepare_review_release(connection, **kwargs):
+            rows = connection.execute(
+                "SELECT question_id,correct_answer FROM questions ORDER BY question_id"
+            ).fetchall()
+            kwargs["review_questions"] = [
+                FrozenReviewQuestion(
+                    question_id=row["question_id"],
+                    correct_answer=row["correct_answer"],
+                    solution_steps=["Compare the selected choice with the frozen answer."],
+                )
+                for row in rows
+            ]
+            return prepare_release(connection, **kwargs)
+
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            os.environ, {"KSAT_LOAD_TEST": "1"}, clear=False
+        ), patch.object(load, "prepare_release", side_effect=prepare_review_release), load._Fixture(
+            Path(directory), 1, 3, real_https=True
+        ) as fixture:
+            machine = fixture.make_machine(0)
+            try:
+                question_order = list(machine.runtime.snapshot().question_order)
+                # One correct answer, one wrong answer, and one unanswered.
+                machine.runtime.answer(fixture.question_ids[0], "A")
+                machine.runtime.answer(fixture.question_ids[1], "D")
+                machine.runtime.submit()
+                route = f"/api/attempts/{machine.attempt_id}/review"
+                denied = machine.local_client.get(route)
+                self.assertEqual(409, denied.status_code, denied.text)
+                self.assertEqual("review_not_released", denied.json()["problem"]["code"])
+
+                with app.db() as connection:
+                    connection.execute(
+                        "INSERT INTO admins VALUES (?,?,?)",
+                        ("review-admin", "Review Faculty", app.hash_password("faculty-password")),
+                    )
+                login = fixture.test_client.post(
+                    "/api/login",
+                    json={"identifier": "review-admin", "password": "faculty-password", "role": "admin"},
+                )
+                self.assertEqual(200, login.status_code, login.text)
+                closed = fixture.test_client.post(
+                    f"/api/admin/tests/{fixture.test_id}/close",
+                    headers={"X-KSAT-CSRF": login.json()["csrf_token"]},
+                )
+                self.assertEqual(200, closed.status_code, closed.text)
+
+                response = machine.local_client.get(route)
+                self.assertEqual(200, response.status_code, response.text)
+                review = response.json()
+                self.assertTrue(review["upload_pending"])
+                self.assertIsNone(review["result"])
+                self.assertEqual(
+                    {"score": 1, "total_questions": 3, "attempted": 2, "percentage": 33.3},
+                    review["local_result"],
+                )
+                self.assertEqual(question_order, [item["question"]["question_id"] for item in review["questions"]])
+                self.assertEqual(
+                    {fixture.question_ids[0]: "A", fixture.question_ids[1]: "D", fixture.question_ids[2]: None},
+                    {item["question"]["question_id"]: item["selected_answer"] for item in review["questions"]},
+                )
+                self.assertTrue(all(item["solution_steps"] for item in review["questions"]))
+                with app.db() as connection:
+                    self.assertEqual(0, connection.execute("SELECT COUNT(*) FROM submissions").fetchone()[0])
+                    committed_hash = connection.execute(
+                        "SELECT review_seal_hash FROM attempts WHERE attempt_id=?", (machine.attempt_id,)
+                    ).fetchone()[0]
+                self.assertEqual(64, len(committed_hash))
+                self.assertEqual("sealed_pending", machine.store.load_attempt(machine.attempt_id).state)
+
+                # Both services restart without losing the commitment or the
+                # exact queued answers. No submission has reached the server.
+                machine.restart(fixture.transport)
+                fixture.stop_coordinator()
+                fixture.restart_coordinator()
+                machine.coordinator.login(machine.student_id, fixture.password)
+                recovered_review = machine.local_client.get(route)
+                self.assertEqual(200, recovered_review.status_code, recovered_review.text)
+                self.assertEqual(review["local_result"], recovered_review.json()["local_result"])
+                self.assertTrue(recovered_review.json()["upload_pending"])
+
+                # Let the unchanged durable outbox finish its normal upload.
+                machine.clock.advance(31)
+                self.assertEqual(1, machine.outbox.process_due_once())
+                confirmed = machine.local_client.get(route)
+                self.assertEqual(200, confirmed.status_code, confirmed.text)
+                self.assertFalse(confirmed.json()["upload_pending"])
+                receipt = confirmed.json()["result"]
+                for field, expected in review["local_result"].items():
+                    self.assertEqual(expected, receipt[field])
+                self.assertEqual("acknowledged", machine.store.load_attempt(machine.attempt_id).state)
+                with app.db() as connection:
+                    persisted = connection.execute(
+                        "SELECT bundle_hash FROM submissions WHERE attempt_id=?", (machine.attempt_id,)
+                    ).fetchone()[0]
+                self.assertEqual(committed_hash, persisted)
+            finally:
+                machine.close()
+                cleanup = fixture.cleanup()
+                self.assertEqual(0, cleanup["residual_rows"])
+
     def test_external_fixture_is_namespaced_owned_and_cleanup_rejects_wrong_owner(self):
         import app
         from scripts.load_distributed_assessment import _Fixture

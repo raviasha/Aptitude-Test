@@ -244,6 +244,8 @@ if (typeof document !== 'undefined') {
     viewRequests: new Set(),
     acknowledgedCheck: null,
     attemptPoll: null,
+    pendingReview: null,
+    localReview: null,
   };
 
   async function request(path, options = {}) {
@@ -320,6 +322,8 @@ if (typeof document !== 'undefined') {
         if (!ownsView('signing_out', generation)) return;
         ui.state = 'login';
         ui.attempt = null;
+        ui.pendingReview = null;
+        ui.localReview = null;
         ui.questionIndex = 0;
         setSafeText(elements.timer, '--:--');
         if (document.fullscreenElement && typeof document.exitFullscreen === 'function') {
@@ -401,6 +405,8 @@ if (typeof document !== 'undefined') {
   function renderLogin() {
     beginView('login');
     ui.state = 'login';
+    ui.pendingReview = null;
+    ui.localReview = null;
     showStatus('Student sign in', 'Sign in while connected to the assessment network.');
     const form = document.createElement('form');
     const student = input('Student ID', 'text', 'username');
@@ -626,8 +632,20 @@ if (typeof document !== 'undefined') {
   }
 
   function renderReview(review) {
-    beginView('review');
+    const generation = beginView(review.local_result ? 'local_review' : 'review');
     showStatus(review.test_name, 'Review of your submitted answers.');
+    let uploadView;
+    if (review.local_result) {
+      uploadView = {
+        generation, review, confirmed: null,
+        score: document.createElement('p'),
+        status: document.createElement('p'),
+        actions: document.createElement('div'),
+      };
+      uploadView.score.className = 'result-score';
+      ui.localReview = uploadView;
+      elements.actionArea.append(uploadView.score, uploadView.status);
+    }
     const list = document.createElement('div');
     list.className = 'review-list';
     review.questions.forEach((item, index) => {
@@ -688,11 +706,46 @@ if (typeof document !== 'undefined') {
       card.append(solutionHeading, steps);
       list.append(card);
     });
-    elements.actionArea.append(
-      list,
-      button('Back to assessments', loadAssessments),
-      signOutButton(),
-    );
+    if (uploadView) {
+      elements.actionArea.append(list, uploadView.actions);
+      updateLocalReviewUpload(uploadView, review.result
+        ? { ...ui.attempt, state: 'acknowledged_result', result: review.result }
+        : ui.attempt);
+    } else {
+      elements.actionArea.append(
+        list,
+        button('Back to assessments', loadAssessments),
+        signOutButton(),
+      );
+    }
+  }
+
+  function updateLocalReviewUpload(view, attempt) {
+    if (!ownsView('local_review', view.generation)) return;
+    ui.attempt = attempt;
+    ui.state = attempt.state;
+    const receipt = attempt.state === 'acknowledged_result' && attempt.result;
+    const score = receipt || view.review.local_result;
+    setSafeText(view.score,
+      `${receipt ? 'Confirmed score' : 'Locally calculated score'}: ${score.score} / ${score.total_questions} (${score.percentage}%)`);
+    setSafeText(view.status, receipt
+      ? 'Upload confirmed. The coordinator accepted your submission.'
+      : attempt.state === 'faculty_intervention_required'
+        ? 'Upload needs Faculty attention. Your answers remain saved on this computer.'
+        : 'Upload pending. Your answers are saved and will upload in the background.');
+    if (view.confirmed !== Boolean(receipt)) {
+      view.confirmed = Boolean(receipt);
+      clear(view.actions);
+      if (receipt) {
+        view.actions.append(button('Back to assessments', loadAssessments), signOutButton());
+      } else {
+        view.actions.append(button('Back to submission', () => {
+          if (ownsView('local_review', view.generation)) renderAttempt(ui.attempt);
+        }));
+      }
+    }
+    if (receipt) stopPolling();
+    else startPolling();
   }
 
   function formatTime(seconds) {
@@ -837,11 +890,12 @@ if (typeof document !== 'undefined') {
   }
 
   function renderSealed(attempt) {
-    showStatus('Assessment submitted', sealedMessage);
+    showStatus('Assessment submitted', `${sealedMessage} Uploading continues in the background.`);
     const queue = attempt.queue || {};
     const retry = document.createElement('p');
     setSafeText(retry, `Upload retries: ${queue.retry_count || 0}. Next attempt: ${queue.next_attempt_at || 'automatically'}. ${queue.last_error || ''}`);
     elements.actionArea.append(retry);
+    renderPendingReviewControls(attempt);
     startPolling();
   }
 
@@ -850,7 +904,61 @@ if (typeof document !== 'undefined') {
     const detail = document.createElement('p');
     setSafeText(detail, attempt.message || problemMessages.faculty_intervention_required);
     elements.actionArea.append(detail);
+    renderPendingReviewControls(attempt);
     stopPolling();
+  }
+
+  function renderPendingReviewControls(attempt) {
+    if (!ui.pendingReview || ui.pendingReview.generation !== ui.viewGeneration
+        || ui.pendingReview.attemptId !== attempt.attempt_id) {
+      const previous = ui.pendingReview;
+      ui.pendingReview = {
+        generation: ui.viewGeneration, attemptId: attempt.attempt_id,
+        busy: false, stopped: false,
+        message: 'Answers, solutions, and a locally calculated score are available after Faculty closes the assessment.',
+        review: previous && previous.attemptId === attempt.attempt_id ? previous.review : null,
+      };
+    }
+    const pending = ui.pendingReview;
+    const message = document.createElement('p');
+    setSafeText(message, pending.review
+      ? 'Faculty has closed the assessment. You can review your saved answers.'
+      : pending.message);
+    const action = button(pending.review ? 'Review answers' : 'Check review availability', () => {
+      if (!ownsView('attempt', pending.generation)) return;
+      if (pending.review) renderReview(pending.review);
+      else checkPendingReview(pending);
+    });
+    action.disabled = pending.busy;
+    elements.actionArea.append(message, action);
+    if (!pending.review && !pending.busy && !pending.stopped && ui.reviewPollHandle === null) {
+      ui.reviewPollHandle = window.setTimeout(() => checkPendingReview(pending), reviewPollDelay);
+    }
+  }
+
+  async function checkPendingReview(pending) {
+    if (!ownsView('attempt', pending.generation) || pending.busy) return;
+    pending.busy = true;
+    if (ui.reviewPollHandle !== null) window.clearTimeout(ui.reviewPollHandle);
+    ui.reviewPollHandle = null;
+    renderAttempt(ui.attempt);
+    try {
+      const review = await viewRequest(`/api/attempts/${encodeURIComponent(pending.attemptId)}/review`);
+      if (!ownsView('attempt', pending.generation)) return;
+      pending.review = review;
+      renderReview(review);
+    } catch (error) {
+      if (!ownsView('attempt', pending.generation)) return;
+      const problem = error.problem || {};
+      pending.stopped = problem.code !== 'review_not_released'
+        && reviewFailureAction(problem) !== 'retry';
+      pending.message = problem.code === 'review_not_released'
+        ? problemMessages.review_not_released
+        : `${problemMessage(problem.code, problem.diagnostic_reference)} Your upload status is checked separately.`;
+    } finally {
+      pending.busy = false;
+      if (ownsView('attempt', pending.generation)) renderAttempt(ui.attempt);
+    }
   }
 
   function scheduleAcknowledgedReview(result) {
@@ -936,7 +1044,8 @@ if (typeof document !== 'undefined') {
   }
 
   async function pollAttempt() {
-    if (ui.view !== 'attempt' || !ui.attempt || ui.saving || ui.positionSaving) return;
+    const view = ui.view;
+    if (!['attempt', 'local_review'].includes(view) || !ui.attempt || ui.saving || ui.positionSaving) return;
     const generation = ui.viewGeneration;
     if (ui.attemptPoll === generation) return;
     ui.attemptPoll = generation;
@@ -944,16 +1053,21 @@ if (typeof document !== 'undefined') {
     const state = ui.state;
     try {
       const attempt = await viewRequest(`/api/attempts/${encodeURIComponent(attemptId)}`);
-      if (!ownsView('attempt', generation)) return;
+      if (!ownsView(view, generation)) return;
       if (attempt.state === 'acknowledged_result' && !attempt.result) {
         const result = await viewRequest(`/api/attempts/${encodeURIComponent(attemptId)}/result`);
         attempt.result = result.result;
       }
-      if (!ownsView('attempt', generation)
+      if (!ownsView(view, generation)
           || ui.state !== state || ui.saving || ui.positionSaving) return;
-      renderAttempt(attempt);
+      if (view === 'local_review') updateLocalReviewUpload(ui.localReview, attempt);
+      else renderAttempt(attempt);
     } catch (error) {
-      if (ownsView('attempt', generation)) showProblem(error.problem);
+      if (ownsView(view, generation)) {
+        if (view === 'local_review') {
+          setSafeText(ui.localReview.status, 'Could not check upload status. Your answers remain saved; checking again.');
+        } else showProblem(error.problem);
+      }
     } finally {
       if (ui.attemptPoll === generation) ui.attemptPoll = null;
     }

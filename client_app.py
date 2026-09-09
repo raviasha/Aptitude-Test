@@ -89,6 +89,7 @@ _KNOWN_PUBLIC_MESSAGES = {
     "faculty_intervention_required": _INTERVENTION_MESSAGE,
     "review_not_released": "Review will be available after Faculty closes the assessment.",
     "review_unavailable": "Detailed review is unavailable for this older assessment.",
+    "review_seal_conflict": "The saved submission could not be matched to this review. Ask Faculty for help.",
     "client_configuration_rollback_failed": (
         "The saved assessment server configuration could not be verified. "
         "Ask IT for help before starting an assessment."
@@ -2235,6 +2236,46 @@ def create_client_app(services: ClientServices | None = None) -> FastAPI:
             )
         )
         return _attempt_payload(context, snapshot, include_questions=True)
+
+    @app.get("/api/attempts/{attempt_id}/review")
+    @coordinator_operation
+    async def sealed_attempt_review(attempt_id: str):
+        attempt_id = _strict_uuid(attempt_id, "Attempt identifier")
+        require_configuration_integrity()
+        current = require_services()
+        session = current.coordinator.session
+        if session is None:
+            raise ClientApiProblem("client_session_required", "Student login is required.", 401)
+        if current.runtime is None:
+            raise ClientApiProblem("device_inactive", _KNOWN_PUBLIC_MESSAGES["device_inactive"], 403)
+        try:
+            record = current.store.load_attempt(attempt_id)
+            if (
+                record.ticket.ticket.student_id != session.student_id
+                or record.ticket.ticket.device_id != context.identity.device_id
+            ):
+                raise ClientApiProblem("review_not_owned", "This assessment review belongs to another student or device.", 403)
+            if record.state not in {"sealed_pending", "acknowledged"}:
+                raise ClientApiProblem("review_not_sealed", "Finish the assessment before reviewing its answers.", 409)
+            bundle_hash = current.runtime.sealed_review_bundle_hash(
+                attempt_id, student_id=session.student_id
+            )
+        except KeyError as error:
+            raise ClientApiProblem("attempt_not_found", "The local attempt was not found.", 404) from error
+        except (ValueError, TypeError, OSError, sqlite3.Error) as error:
+            raise ClientApiProblem("corrupt_local_attempt", _KNOWN_PUBLIC_MESSAGES["corrupt_local_attempt"], 409) from error
+        try:
+            grant = await run_in_threadpool(current.coordinator.sealed_review, attempt_id, bundle_hash)
+            return await run_in_threadpool(
+                current.runtime.open_sealed_review, grant, student_id=session.student_id
+            )
+        except CoordinatorProblem as error:
+            raise _map_coordinator_problem(error) from error
+        except (ValueError, KeyError, TypeError, OSError, sqlite3.Error) as error:
+            raise ClientApiProblem(
+                "review_unavailable", "The saved assessment review could not be verified. Ask Faculty for help.", 409,
+                diagnostic_reference=_diagnostic_reference(),
+            ) from error
 
     @app.get("/api/attempts/active")
     async def active_attempt():

@@ -12,6 +12,24 @@ INDEX = ROOT / "static" / "client" / "index.html"
 
 
 class ClientUiContractTests(unittest.TestCase):
+    def test_pending_upload_reveals_local_score_and_review_only_after_faculty_close(self):
+        self._run_flow("pending_review_waits_for_faculty_close")
+
+    def test_slow_pending_review_check_does_not_block_receipt_or_replace_result(self):
+        self._run_flow("slow_pending_review_does_not_delay_upload_receipt")
+
+    def test_local_review_updates_upload_receipt_without_replacing_questions(self):
+        self._run_flow("local_review_receipt_updates_without_replacing_questions")
+
+    def test_local_review_upload_failure_keeps_pending_attempt_protected(self):
+        self._run_flow("local_review_reports_failed_upload_without_unlocking_navigation")
+
+    def test_back_to_pending_submission_ignores_late_review_receipt(self):
+        self._run_flow("pending_review_back_ignores_late_receipt_and_does_not_reopen_itself")
+
+    def test_new_signin_cannot_reuse_previous_students_cached_review_grant(self):
+        self._run_flow("new_signin_cannot_reuse_previous_session_review_grant")
+
     def test_browser_session_marker_distinguishes_reopen_from_same_tab_refresh(self):
         result = self._run_node(
             """

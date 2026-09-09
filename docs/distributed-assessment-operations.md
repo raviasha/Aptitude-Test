@@ -4,7 +4,8 @@ This runbook is for institution-managed Windows lab computers. The supported
 release is one **KSAT Faculty Coordinator** and at most 100 installed **KSAT Lab
 Clients** on the private institutional network. Students answer locally; the
 coordinator receives one sealed response bundle and returns the authoritative
-score.
+score. After Faculty explicitly closes a test, the client can calculate and
+show its local score and question review while that bundle is still uploading.
 
 ## Change control and prerequisites
 
@@ -121,7 +122,7 @@ single HMAC-valid migration tail whose state digest and version-2 stamp match.
 ## Prepare and launch an assessment
 
 1. Import and validate the question bank. Correct answers and solutions remain
-   coordinator-side.
+   inaccessible to students until the close-authorized review key is released.
 2. Create the faculty assessment. Review question count, duration (one minute
    per question), and immutable release status.
 3. Allow clients to prefetch the single shared encrypted pack before students
@@ -145,12 +146,20 @@ Answer selection, navigation, autosave, integrity events, and timer updates are
 local and must remain responsive during a coordinator outage. A student can
 resume only on the same computer and keeps the original deadline.
 
-After Faculty closes an assessment, only students with an accepted submission
-can review it. A submitting student may sign in again on another enrolled lab
-client; the coordinator reauthorizes access and releases the frozen review keys
-over the authenticated TLS connection. The client shows questions in that
-student's saved randomized order, their selected or unanswered state, the
-correct choice, and frozen solution steps. It does not store decrypted reviews
+After Faculty closes an assessment, a student with durably sealed answers can
+review it on the original client without waiting for the full upload. Before
+releasing the keys, the coordinator stores a small immutable SHA-256 commitment
+to the exact signed response bundle. Later uploads must match that commitment,
+including submissions already waiting in the writer queue. The client uses its
+protected, locked choices to calculate the local score and display questions in
+the student's saved randomized order, their selected or unanswered state, the
+correct choice, and frozen solution steps. Review never changes the outbox or
+marks an upload as accepted. The UI distinguishes the local score from the
+server-confirmed result and updates confirmation without replacing the review.
+
+Once the submission is accepted, the student may also sign in on another
+enrolled lab client for review; the coordinator reauthorizes access and releases
+the frozen review keys over authenticated TLS. Decrypted reviews are not stored
 in the client database. Releases created before the review compartment was
 introduced remain usable for scores but show “Detailed review unavailable.”
 
@@ -159,7 +168,11 @@ introduced remain usable for scores but show “Detailed review unavailable.”
 After submit or expiry, the client must show `sealed_pending` and “answers are
 safe.” The sealed attempt is no longer editable. The outbox retries with the
 same idempotency identity until the coordinator acknowledges it; a lost HTTP
-acknowledgment is safe because replay returns the same receipt.
+acknowledgment is safe because replay returns the same receipt. Uploading runs
+in the background while the student waits for Faculty to close the test or
+reviews it. A successful authenticated close check is still required before
+the first local score/review; a disconnected client cannot infer that Faculty
+has closed a test. Keep the client PC/service running until upload is confirmed.
 
 If the coordinator fails:
 
@@ -170,8 +183,9 @@ If the coordinator fails:
    and hostname certificate.
 4. Leave clients running or restart them normally. Outboxes drain
    automatically.
-5. Confirm the faculty queue returns to zero and each client displays the score
-   only after acknowledgment.
+5. Confirm the faculty queue returns to zero and each client shows its
+   server-confirmed result. A local score shown during post-close review is not
+   proof that the server has received the result.
 6. If a client shows Faculty intervention, collect the diagnostic reference and
    logs; do not edit SQLite by hand.
 

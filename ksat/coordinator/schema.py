@@ -122,6 +122,7 @@ def migrate_distributed_schema(connection: sqlite3.Connection) -> None:
     _ensure_column(connection, "attempts", "ticket_json TEXT")
     _ensure_column(connection, "attempts", "sealed_at TEXT")
     _ensure_column(connection, "attempts", "submission_hash TEXT")
+    _ensure_column(connection, "attempts", "review_seal_hash TEXT")
     _ensure_column(connection, "attempts", "retake_authorized INTEGER NOT NULL DEFAULT 0")
     _ensure_column(connection, "attempts", "deadline_revision INTEGER NOT NULL DEFAULT 0")
     _ensure_column(connection, "attempts", "deadline_update_json TEXT")

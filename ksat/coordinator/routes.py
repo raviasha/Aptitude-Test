@@ -40,6 +40,7 @@ from ksat.coordinator.releases import load_release_manifest
 from ksat.coordinator.reviews import (
     ReviewProblem,
     issue_review_grant,
+    issue_sealed_review_grant,
     list_completed_assessments,
 )
 from ksat.coordinator.submissions import SubmissionProblem, validate_and_score
@@ -54,6 +55,8 @@ from ksat.protocol import (
     DeviceEnrollmentReceipt,
     DeviceEnrollmentRequest,
     SignedResponseBundle,
+    SealedAssessmentReviewGrant,
+    SealedReviewRequest,
     SignedAttemptDeadlineUpdate,
     SignedAttemptTicket,
     StudentRegistrationReceipt,
@@ -850,6 +853,28 @@ async def assessment_review(attempt_id: str, request: Request) -> AssessmentRevi
             attempt_id=attempt_id,
             student_id=student_id,
             pack_master_key=config.pack_master_key,
+        )
+    except AuthenticationProblem as error:
+        _raise_http(error)
+    except ReviewProblem as error:
+        _raise_review_http(error)
+    finally:
+        connection.close()
+
+
+@router.post("/reviews/{attempt_id}/sealed", response_model=SealedAssessmentReviewGrant)
+async def sealed_assessment_review(
+    attempt_id: str, payload: SealedReviewRequest, request: Request
+) -> SealedAssessmentReviewGrant:
+    config = _config(request)
+    connection = connect_sqlite(config.db_path)
+    try:
+        device_id = await _verified_device(request, connection)
+        student_id = _verified_student(request, config, device_id)
+        return await run_in_threadpool(
+            issue_sealed_review_grant, connection,
+            attempt_id=attempt_id, student_id=student_id, device_id=device_id,
+            bundle_hash=payload.bundle_hash, pack_master_key=config.pack_master_key,
         )
     except AuthenticationProblem as error:
         _raise_http(error)

@@ -518,6 +518,43 @@ class CompletedAssessmentSummary(ProtocolModel):
         return value
 
 
+class SealedReviewRequest(ProtocolModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    bundle_hash: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
+
+
+class SealedAssessmentReviewGrant(SealedReviewRequest):
+    attempt_id: str
+    student_id: str = Field(min_length=1, max_length=100)
+    release_id: str
+    content_hash: str
+    content_key_b64: str
+    review_key_b64: str
+
+    @field_validator("attempt_id", "release_id")
+    @classmethod
+    def valid_identifier(cls, value: str) -> str:
+        return _canonical_uuid(value, "Review identifier")
+
+    @field_validator("student_id")
+    @classmethod
+    def nonblank_student(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Student identifier must not be blank.")
+        return value
+
+    @field_validator("content_hash")
+    @classmethod
+    def valid_content_hash(cls, value: str) -> str:
+        return _sha256_hex(value)
+
+    @field_validator("content_key_b64", "review_key_b64")
+    @classmethod
+    def valid_keys(cls, value: str) -> str:
+        return _base64_key(value)
+
+
 class AssessmentReviewGrant(ProtocolModel):
     attempt_id: str
     student_id: str = Field(min_length=1, max_length=100)

@@ -1562,6 +1562,16 @@ class ClientStore:
             )
         return snapshot.record
 
+    def sealed_bundle(self, attempt_id: str) -> SignedResponseBundle:
+        """Read the original protected bundle, including after acknowledgement."""
+        with self._read_transaction() as connection:
+            snapshot = self._validated_attempt_snapshot(
+                connection, attempt_id, "Stored attempt data is invalid."
+            )
+        if snapshot.sealed_bundle is None:
+            raise ValueError("The assessment attempt has not been sealed.")
+        return snapshot.sealed_bundle
+
     def active_attempt(
         self, *, student_id: str | None = None, release_id: str | None = None
     ) -> LocalAttemptRecord | None:

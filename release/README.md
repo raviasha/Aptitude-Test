@@ -12,7 +12,7 @@ are still required before production rollout.
 ## Downloads
 
 [Download the complete test package](https://github.com/raviasha/Aptitude-Test/releases/tag/v2.0.0-test-20260910-faculty-timer)
-for both installers, both standalone executables, the installation guide, and
+for both installers, both standalone executables, the installation and user guides, and
 checksums. Question banks are distributed separately.
 
 | Product | Installer | Standalone executable |
@@ -24,6 +24,10 @@ Two-page quick installation guide: [PDF](KSAT_Quick_Installation_Guide.pdf)
 or [Word](KSAT_Quick_Installation_Guide.docx). It covers server selection, checks
 from two student PCs, installation, question banks, and a short pilot. It assumes
 departments receive the correct files through the supplied Google Drive folder.
+
+Two-page user guide: [PDF](KSAT_Quick_User_Guide.pdf) or
+[Word](KSAT_Quick_User_Guide.docx). One page covers faculty operations, including
+extensions and results; the other covers students taking and submitting a test.
 
 [Checksums](SHA256SUMS.txt) remain available for maintainers. Compatibility
 metadata remains 2.0.0; the date and checksums identify this update. Apply updates between

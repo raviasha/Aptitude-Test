@@ -16,6 +16,62 @@ const pct = value => `${Number(value || 0).toFixed(1).replace('.0','')}%`;
 const optionEntries = question => Object.entries(question.options || {});
 const compositionTotal = test => (test.selection_rules || []).reduce((sum, rule) => sum + Number(rule.quantity || 0), 0);
 
+function facultyTimeRange(first, last) {
+  return first === last ? formatTime(last) : `${formatTime(first)}–${formatTime(last)}`;
+}
+
+function facultyTimingMarkup(test, nowMs = Date.now()) {
+  const timing = test.exam_timing;
+  let exam = '<small>Exam timer unavailable</small>';
+  if (timing) {
+    const first = timing.earliest_remaining_seconds, last = timing.latest_remaining_seconds;
+    exam = timing.active_count > 0
+      ? `<small>Exam time left</small>${first != null && last != null
+        ? `<strong data-faculty-exam-timer data-first-deadline="${nowMs + first * 1000}" data-last-deadline="${nowMs + last * 1000}">${facultyTimeRange(first, last)}</strong>`
+        : '<strong>Unavailable</strong>'}<small>${timing.active_count} active student${timing.active_count === 1 ? '' : 's'}</small>`
+      : '<small>No active attempts</small>';
+    exam += `<small>Duration ${formatTime(timing.duration_seconds)}${timing.extension_seconds > 0 ? ` · ${timing.extension_seconds / 60} min added` : ''}</small>`;
+  }
+  const start = test.launched && test.remaining_seconds > 0
+    ? `<span data-faculty-timer data-deadline="${nowMs + test.remaining_seconds * 1000}">${formatTime(test.remaining_seconds)}</span>`
+    : (test.launched ? 'Closed' : '—');
+  return `${exam}<small>Start window ${start}</small>`;
+}
+
+function tickFacultyTimers(root = document, nowMs = Date.now()) {
+  const remaining = value => Math.max(0, Math.ceil((Number(value) - nowMs) / 1000));
+  root.querySelectorAll('[data-faculty-exam-timer]').forEach(node => {
+    node.textContent = facultyTimeRange(remaining(node.dataset.firstDeadline), remaining(node.dataset.lastDeadline));
+  });
+  root.querySelectorAll('[data-faculty-timer]').forEach(node => {
+    const seconds = remaining(node.dataset.deadline);
+    node.textContent = seconds > 0 ? formatTime(seconds) : 'Closed';
+  });
+}
+
+function syncFacultyTimers(tests, root = document, nowMs = Date.now()) {
+  tests.forEach(test => {
+    const cell = root.querySelector(`[data-faculty-timing="${test.test_id}"]`);
+    if (cell) cell.innerHTML = facultyTimingMarkup(test, nowMs);
+  });
+}
+
+function createFacultyTimerSync(root, fetchTests = () => api('/api/admin/tests')) {
+  let pending = false;
+  return async () => {
+    if (pending || !root.isConnected) return;
+    pending = true;
+    try {
+      const latest = await fetchTests();
+      if (root.isConnected) syncFacultyTimers(latest.tests, root);
+    } catch (_) {
+      // Keep counting down locally until the next successful server refresh.
+    } finally {
+      pending = false;
+    }
+  };
+}
+
 const facultyLaunchAction = test => test.launched
   ? `<button class="secondary small" data-close-test="${test.test_id}">Close</button>`
   : test.release_used
@@ -432,7 +488,7 @@ async function tests() {
   const releaseStatus = test => ['prepared', 'launched'].includes(test.release_state)
     ? `<span class="ok">Ready</span><small><code>${esc(test.content_hash_prefix || '')}</code></small>`
     : test.release_state === 'failed' ? '<span class="warn">Preparation failed</span>' : '<span class="muted">Preparing</span>';
-  layout('Create a <em>test.</em>', 'Choose a difficulty and quantities from the selected bank’s categories and chapters.', `<section class="grid two"><article class="card"><p class="eyebrow">New assessment</p><h2>Question composition</h2><form id="test-form"><label>Test name<input name="test_name" required placeholder="Placement Readiness · Set 02" /></label><label>Question bank<select id="test-bank" name="bank_id" required><option value="">Choose a bank…</option>${data.banks.map(bank => `<option value="${bank.bank_id}">${esc(bank.bank_name)} · ${bank.question_count} active questions</option>`).join('')}</select></label><label>Difficulty<select id="test-difficulty"><option value="all">All difficulty levels</option>${difficulties.map(level => `<option value="${level}">${level}</option>`).join('')}</select></label><div id="test-composition" class="taxonomy"><p class="muted">Choose a question bank to see its categories and chapters.</p></div><p class="composition-total">Selected: <strong id="test-total">0</strong> / 500</p><button class="primary">Create test →</button></form></article><article class="card"><p class="eyebrow">Current and past tests · submission queue ${Number(data.submission_queue_pending || 0)}</p><h2>Test library</h2><div class="table-scroll"><table><thead><tr><th>Name</th><th>Bank</th><th>Difficulty</th><th>Questions</th><th>Content</th><th>Status</th><th>Start window</th><th>Action</th></tr></thead><tbody>${data.tests.map(test => `<tr><td>${esc(test.test_name)}<small>${test.attempt_count} attempt${test.attempt_count===1?'':'s'}</small></td><td>${esc(test.bank_name || '—')}</td><td>${esc(difficultyLabel(test.difficulty_levels))}</td><td>${compositionTotal(test)}</td><td>${releaseStatus(test)}</td><td>${Number(test.distributed_status?.started||0)} started · ${Number(test.distributed_status?.submitted||0)} submitted · ${Number(test.distributed_status?.voided||0)} voided</td><td>${test.launched ? `<strong data-faculty-timer data-test-id="${test.test_id}" data-deadline="${test.remaining_seconds != null ? Date.now()+test.remaining_seconds*1000 : 0}">${test.remaining_seconds != null ? formatTime(test.remaining_seconds) : 'Closed'}</strong>` : '—'}</td><td><div class="row-actions">${facultyLaunchAction(test)}<button class="secondary small" data-duplicate-test="${test.test_id}">Duplicate</button><button class="secondary small" data-extend-test="${test.test_id}">Extend</button><button class="danger small" data-delete-test="${test.test_id}" data-test-name="${esc(test.test_name)}" data-attempt-count="${test.attempt_count}">Delete</button></div></td></tr>`).join('')}</tbody></table></div></article></section><section class="card"><div class="heading"><div><p class="eyebrow">Managed lab computers</p><h2>${deviceData.devices.length} registered devices</h2></div></div><div class="table-scroll"><table><thead><tr><th>Label</th><th>Device</th><th>Fingerprint</th><th>Registered</th><th>State</th></tr></thead><tbody>${deviceData.devices.map(device => `<tr><td>${esc(device.label)}</td><td><code>${esc(device.device_id)}</code></td><td><code>${esc(device.public_key_fingerprint)}</code></td><td>${date(device.enrolled_at)}</td><td><button class="secondary small" data-device-state="${device.active?'revoke':'reactivate'}" data-device-id="${esc(device.device_id)}">${device.active?'Revoke':'Reactivate'}</button></td></tr>`).join('')}</tbody></table></div></section>`, adminNav('tests'));
+  layout('Create a <em>test.</em>', 'Choose a difficulty and quantities from the selected bank’s categories and chapters.', `<section class="grid two"><article class="card"><p class="eyebrow">New assessment</p><h2>Question composition</h2><form id="test-form"><label>Test name<input name="test_name" required placeholder="Placement Readiness · Set 02" /></label><label>Question bank<select id="test-bank" name="bank_id" required><option value="">Choose a bank…</option>${data.banks.map(bank => `<option value="${bank.bank_id}">${esc(bank.bank_name)} · ${bank.question_count} active questions</option>`).join('')}</select></label><label>Difficulty<select id="test-difficulty"><option value="all">All difficulty levels</option>${difficulties.map(level => `<option value="${level}">${level}</option>`).join('')}</select></label><div id="test-composition" class="taxonomy"><p class="muted">Choose a question bank to see its categories and chapters.</p></div><p class="composition-total">Selected: <strong id="test-total">0</strong> / 500</p><button class="primary">Create test →</button></form></article><article class="card"><p class="eyebrow">Current and past tests · submission queue ${Number(data.submission_queue_pending || 0)}</p><h2>Test library</h2><div class="table-scroll" id="faculty-test-library"><table><thead><tr><th>Name</th><th>Bank</th><th>Difficulty</th><th>Questions</th><th>Content</th><th>Status</th><th>Timing</th><th>Action</th></tr></thead><tbody>${data.tests.map(test => `<tr><td>${esc(test.test_name)}<small>${test.attempt_count} attempt${test.attempt_count===1?'':'s'}</small></td><td>${esc(test.bank_name || '—')}</td><td>${esc(difficultyLabel(test.difficulty_levels))}</td><td>${compositionTotal(test)}</td><td>${releaseStatus(test)}</td><td>${Number(test.distributed_status?.started||0)} started · ${Number(test.distributed_status?.submitted||0)} submitted · ${Number(test.distributed_status?.voided||0)} voided</td><td data-faculty-timing="${test.test_id}">${facultyTimingMarkup(test)}</td><td><div class="row-actions">${facultyLaunchAction(test)}<button class="secondary small" data-duplicate-test="${test.test_id}">Duplicate</button><button class="secondary small" data-extend-test="${test.test_id}">Extend</button><button class="danger small" data-delete-test="${test.test_id}" data-test-name="${esc(test.test_name)}" data-attempt-count="${test.attempt_count}">Delete</button></div></td></tr>`).join('')}</tbody></table></div></article></section><section class="card"><div class="heading"><div><p class="eyebrow">Managed lab computers</p><h2>${deviceData.devices.length} registered devices</h2></div></div><div class="table-scroll"><table><thead><tr><th>Label</th><th>Device</th><th>Fingerprint</th><th>Registered</th><th>State</th></tr></thead><tbody>${deviceData.devices.map(device => `<tr><td>${esc(device.label)}</td><td><code>${esc(device.device_id)}</code></td><td><code>${esc(device.public_key_fingerprint)}</code></td><td>${date(device.enrolled_at)}</td><td><button class="secondary small" data-device-state="${device.active?'revoke':'reactivate'}" data-device-id="${esc(device.device_id)}">${device.active?'Revoke':'Reactivate'}</button></td></tr>`).join('')}</tbody></table></div></section>`, adminNav('tests'));
   const manageAttempts = document.createElement('button');
   manageAttempts.className = 'secondary'; manageAttempts.textContent = 'Inspect / manage attempts';
   document.querySelector('main>.heading')?.append(manageAttempts);
@@ -455,8 +511,9 @@ async function tests() {
   });
   const bankSelect = document.querySelector('#test-bank'), difficultySelect = document.querySelector('#test-difficulty'), composition = document.querySelector('#test-composition'), total = document.querySelector('#test-total');
   await attachTaxonomySelector(bankSelect, composition, total, 500, 'test', difficultySelect);
-  facultyTimerId = setInterval(() => document.querySelectorAll('[data-faculty-timer]').forEach(node => { const deadline = Number(node.dataset.deadline); if (deadline > 0) node.textContent = formatTime(Math.max(0, Math.ceil((deadline - Date.now()) / 1000))); }), 1000);
-  facultySyncTimerId = setInterval(async () => { try { const latest = await api('/api/admin/tests'); latest.tests.forEach(test => { const node = document.querySelector(`[data-faculty-timer][data-test-id="${test.test_id}"]`); if (!node) return; if (test.remaining_seconds == null) { node.dataset.deadline = '0'; node.textContent = 'Closed'; } else { node.dataset.deadline = String(Date.now() + test.remaining_seconds * 1000); } }); } catch (_) {} }, 5000);
+  const timingRoot = document.querySelector('#faculty-test-library');
+  facultyTimerId = setInterval(() => { if (timingRoot.isConnected) tickFacultyTimers(timingRoot); }, 1000);
+  facultySyncTimerId = setInterval(createFacultyTimerSync(timingRoot), 5000);
   document.querySelector('#test-form').addEventListener('submit', async event => { event.preventDefault(); const values = Object.fromEntries(new FormData(event.currentTarget)); try { await api('/api/admin/tests',{method:'POST',body:{test_name:values.test_name,bank_id:Number(bankSelect.value),selection_rules:selectedRules(composition),difficulties:selectedDifficulties(difficultySelect)}}); notify('Test created.'); tests(); } catch(error) { notify(error.message,true); } });
   document.querySelectorAll('[data-launch-test]').forEach(button => button.addEventListener('click', async () => { try { await api(`/api/admin/tests/${button.dataset.launchTest}/launch`, {method:'POST'}); notify('Test launched.'); tests(); } catch(error) { notify(error.message,true); } }));
   document.querySelectorAll('[data-close-test]').forEach(button => button.addEventListener('click', async () => { await api(`/api/admin/tests/${button.dataset.closeTest}/close`, {method:'POST'}); notify('Test closed. Students can choose available tests.'); tests(); }));
@@ -483,5 +540,5 @@ async function students() {
 }
 
 async function boot() { try { const result=await api('/api/me'); state.user=result.user; state.csrfToken=result.csrf_token || null; state.user ? home() : loginScreen(); } catch { loginScreen(); } }
-if (typeof module !== 'undefined' && module.exports) module.exports = {facultyLaunchAction};
+if (typeof module !== 'undefined' && module.exports) module.exports = {facultyLaunchAction, facultyTimingMarkup, tickFacultyTimers, syncFacultyTimers, createFacultyTimerSync};
 if (typeof document !== 'undefined') boot();

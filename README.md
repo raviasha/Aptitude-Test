@@ -1,7 +1,7 @@
 # Aptitude Lab / KSAT 2.0
 
 **Current Windows downloads are TEST-SIGNED — NOT FOR PRODUCTION.**
-The 10 September 2026 client-server integrity update is available in
+The 10 September 2026 client-server integrity and faculty timer update is available in
 [`release/`](release/README.md), with installers for both products and SHA-256
 checksums. These builds are for isolated testing and lab acceptance only.
 

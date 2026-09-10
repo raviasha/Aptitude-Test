@@ -3039,6 +3039,8 @@ def list_tests(request: Request) -> Dict[str, Any]:
         tests = rows(connection.execute(
             """SELECT t.*, b.bank_name, r.state AS release_state,
                       r.content_hash AS content_hash, r.content_pack_filename AS release_pack_filename,
+                      r.duration_seconds AS release_duration_seconds,
+                      r.duration_extension_seconds AS release_extension_seconds,
                       EXISTS(SELECT 1 FROM attempts submitted
                              WHERE submitted.test_id = t.test_id AND submitted.status = 'submitted')
                         AS has_submitted_attempt,
@@ -3053,6 +3055,7 @@ def list_tests(request: Request) -> Dict[str, Any]:
         ).fetchall())
         config = app.state.coordinator_config
         eligible_count = connection.execute("SELECT COUNT(*) FROM students").fetchone()[0]
+        observed_at = datetime.now(timezone.utc)
         for test in tests:
             has_submitted_attempt = bool(test.pop("has_submitted_attempt"))
             test["release_used"] = bool(test["release_used"])
@@ -3082,7 +3085,9 @@ def list_tests(request: Request) -> Dict[str, Any]:
                 """SELECT
                      SUM(CASE WHEN status='in_progress' THEN 1 ELSE 0 END) AS started,
                      SUM(CASE WHEN status='submitted' THEN 1 ELSE 0 END) AS submitted,
-                     SUM(CASE WHEN status='voided' THEN 1 ELSE 0 END) AS voided
+                     SUM(CASE WHEN status='voided' THEN 1 ELSE 0 END) AS voided,
+                     MIN(CASE WHEN status='in_progress' THEN expires_at END) AS earliest_deadline,
+                     MAX(CASE WHEN status='in_progress' THEN expires_at END) AS latest_deadline
                    FROM attempts WHERE test_id=?""",
                 (test["test_id"],),
             ).fetchone()
@@ -3092,12 +3097,28 @@ def list_tests(request: Request) -> Dict[str, Any]:
                 "submitted": int(counts["submitted"] or 0),
                 "voided": int(counts["voided"] or 0),
             }
+            # The launch window is separate from each student's signed exam deadline.
+            # Report active deadline bounds so staggered starts and individual extensions
+            # remain accurate without presenting one student's timer as everybody's.
+            earliest = parse_timestamp(counts["earliest_deadline"])
+            latest = parse_timestamp(counts["latest_deadline"])
+            extension = int(test.pop("release_extension_seconds") or 0)
+            duration = test.pop("release_duration_seconds")
+            if duration is None:
+                duration = sum(rule["quantity"] for rule in test["selection_rules"]) * SECONDS_PER_FACULTY_QUESTION
+            test["exam_timing"] = {
+                "duration_seconds": int(duration) + extension,
+                "extension_seconds": extension,
+                "active_count": int(counts["started"] or 0),
+                "earliest_remaining_seconds": max(0, math.ceil((earliest - observed_at).total_seconds())) if earliest else None,
+                "latest_remaining_seconds": max(0, math.ceil((latest - observed_at).total_seconds())) if latest else None,
+            }
             deadline = parse_timestamp(test.get("launch_closes_at") or test.get("launch_expires_at"))
             if test["launched"] and not deadline:
                 total_questions = sum(rule["quantity"] for rule in test["selection_rules"])
-                deadline = datetime.now(timezone.utc) + timedelta(seconds=total_questions * SECONDS_PER_FACULTY_QUESTION)
+                deadline = observed_at + timedelta(seconds=total_questions * SECONDS_PER_FACULTY_QUESTION)
                 connection.execute("UPDATE tests SET launch_expires_at = ? WHERE test_id = ?", (deadline.isoformat(timespec="seconds"), test["test_id"]))
-            test["remaining_seconds"] = max(0, math.ceil((deadline - datetime.now(timezone.utc)).total_seconds())) if deadline else None
+            test["remaining_seconds"] = max(0, math.ceil((deadline - observed_at).total_seconds())) if deadline else None
         banks = rows(connection.execute(
             """SELECT b.bank_id, b.bank_name, COUNT(q.question_id) AS question_count
                FROM question_banks b LEFT JOIN questions q ON q.bank_id = b.bank_id AND q.active = 1

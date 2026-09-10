@@ -146,6 +146,28 @@ Answer selection, navigation, autosave, integrity events, and timer updates are
 local and must remain responsive during a coordinator outage. A student can
 resume only on the same computer and keeps the original deadline.
 
+### Check timing and extensions
+
+In **Tests → Test library → Timing**, **Exam time left** counts down from the
+active students' exam deadlines. When students have different deadlines because
+of staggered starts or individual extensions, it shows the shortest and longest
+remaining times as a range. **Duration** includes whole-assessment extensions,
+with the total extra minutes shown as **min added**. An individual extension
+changes that student's deadline, not the duration offered to the whole class.
+
+After a successful **Extend** action, the faculty page reloads these values
+immediately. It also refreshes them from the coordinator every five seconds,
+including extensions granted from another faculty session. Reloading the page
+preserves the extension because the displayed times come from server records.
+**No active attempts** means there is no student countdown to display.
+
+The separately labelled **Start window** is the time remaining for students to
+begin. An exam extension does not reopen or extend that window. For a pilot,
+start two student attempts, grant a whole-assessment extension, and confirm both
+student countdowns and the faculty exam range increase. Then extend one attempt
+and confirm the range reflects the different deadlines; reload the faculty page
+and verify the added time remains visible.
+
 After Faculty closes an assessment, a student with durably sealed answers can
 review it on the original client without waiting for the full upload. Before
 releasing the keys, the coordinator stores a small immutable SHA-256 commitment

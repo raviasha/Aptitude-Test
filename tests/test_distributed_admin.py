@@ -286,6 +286,80 @@ class DistributedAdminTests(unittest.TestCase):
             self.assertEqual(deadline, (NOW + timedelta(minutes=40)).isoformat(timespec="seconds"))
             self.assertEqual(extension, 5 * 60)
 
+    def test_faculty_exam_countdown_reflects_extensions_after_refresh(self):
+        def listed():
+            response = self.admin_get('/api/admin/tests')
+            self.assertEqual(200, response.status_code, response.text)
+            return next(t for t in response.json()['tests'] if t['test_id'] == self.test_id)
+
+        with patch('app.datetime', wraps=datetime) as clock:
+            clock.now.return_value = NOW
+            before = listed()
+            self.assertIsInstance(before.get('exam_timing'), dict)
+            self.assertEqual(1800, before['exam_timing']['latest_remaining_seconds'])
+            extended = self.admin_post(f'/api/admin/tests/{self.test_id}/extend',
+                                       {'minutes': 5, 'reason': 'Lab interruption'})
+            self.assertEqual(200, extended.status_code, extended.text)
+            after = listed()
+            self.assertEqual({
+                'duration_seconds': 480, 'extension_seconds': 300, 'active_count': 1,
+                'earliest_remaining_seconds': 2100, 'latest_remaining_seconds': 2100,
+            }, after['exam_timing'])
+            self.assertEqual(before['remaining_seconds'], after['remaining_seconds'])
+            self.assertEqual(after['exam_timing'], listed()['exam_timing'])
+
+            individual = self.admin_post(f'/api/admin/attempts/{self.attempt_id}/extend',
+                                         {'minutes': 2, 'reason': 'Seat interruption'})
+            self.assertEqual(200, individual.status_code, individual.text)
+            self.assertEqual(2220, listed()['exam_timing']['latest_remaining_seconds'])
+
+    def test_faculty_countdown_uses_active_deadline_range_and_handles_completion(self):
+        with app.db() as connection:
+            content_hash = connection.execute(
+                'SELECT content_hash FROM assessment_releases WHERE release_id=?',
+                (self.release_id,),
+            ).fetchone()[0]
+            second = issue_attempt_ticket(
+                connection, release_id=self.release_id, student_id='S1', device_id=self.device_id,
+                confirmed_content_hash=content_hash,
+                signing_private_key_b64=app.app.state.coordinator_config.signing_private_key_b64,
+                pack_master_key=app.app.state.coordinator_config.pack_master_key, now_utc=NOW,
+            ).ticket.ticket.attempt_id
+
+        def timing():
+            return next(t for t in self.admin_get('/api/admin/tests').json()['tests']
+                        if t['test_id'] == self.test_id).get('exam_timing')
+
+        with patch('app.datetime', wraps=datetime) as clock:
+            clock.now.return_value = NOW
+            value = timing()
+            self.assertIsInstance(value, dict)
+            self.assertEqual((2, 180, 1800), (value['active_count'],
+                             value['earliest_remaining_seconds'], value['latest_remaining_seconds']))
+            with app.db() as connection:
+                connection.execute("UPDATE attempts SET status='voided' WHERE attempt_id=?",
+                                   (self.attempt_id,))
+            clock.now.return_value = NOW + timedelta(minutes=4)
+            value = timing()
+            self.assertEqual((1, 0, 0), (value['active_count'],
+                             value['earliest_remaining_seconds'], value['latest_remaining_seconds']))
+            with app.db() as connection:
+                connection.execute("UPDATE attempts SET status='submitted' WHERE attempt_id=?", (second,))
+            value = timing()
+            self.assertEqual((0, None, None), (value['active_count'],
+                             value['earliest_remaining_seconds'], value['latest_remaining_seconds']))
+
+    def test_faculty_shows_extended_duration_before_students_start(self):
+        duplicate = self.admin_post(f'/api/admin/tests/{self.test_id}/duplicate').json()['test_id']
+        result = self.admin_post(f'/api/admin/tests/{duplicate}/extend',
+                                 {'minutes': 5, 'reason': 'Longer assessment'})
+        self.assertEqual(200, result.status_code, result.text)
+        test = next(t for t in self.admin_get('/api/admin/tests').json()['tests'] if t['test_id'] == duplicate)
+        self.assertEqual({
+            'duration_seconds': 480, 'extension_seconds': 300, 'active_count': 0,
+            'earliest_remaining_seconds': None, 'latest_remaining_seconds': None,
+        }, test.get('exam_timing'))
+
     def test_concurrent_start_and_test_extension_produce_one_consistent_duration(self):
         barrier = threading.Barrier(2)
         result = {}

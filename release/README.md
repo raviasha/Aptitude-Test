@@ -20,12 +20,13 @@ checksums. Question banks are distributed separately.
 | Lab Client | [KSATClientSetup-2.0.0.exe](KSATClientSetup-2.0.0.exe) | [KSATClient-2.0.0.exe](KSATClient-2.0.0.exe) |
 | Faculty Coordinator | [KSATCoordinatorSetup-2.0.0.exe](KSATCoordinatorSetup-2.0.0.exe) | [KSATCoordinator-2.0.0.exe](KSATCoordinator-2.0.0.exe) |
 
-Installation guide: [PDF](KSAT_Department_Installation_Guide_2026-09-10_Timer_Fix.pdf)
-or [Word](KSAT_Department_Installation_Guide_2026-09-10_Timer_Fix.docx). Use this
-revised guide with the timer-fix builds; its checksum page identifies these files.
+Two-page quick installation guide: [PDF](KSAT_Quick_Installation_Guide.pdf)
+or [Word](KSAT_Quick_Installation_Guide.docx). It covers server selection, checks
+from two student PCs, installation, question banks, and a short pilot. It assumes
+departments receive the correct files through the supplied Google Drive folder.
 
-Verify downloads against [SHA256SUMS.txt](SHA256SUMS.txt). Compatibility metadata
-remains 2.0.0; the date and checksums identify this update. Apply updates between
+[Checksums](SHA256SUMS.txt) remain available for maintainers. Compatibility
+metadata remains 2.0.0; the date and checksums identify this update. Apply updates between
 assessments. The faculty timer correction requires only the Coordinator update
 if clients already have the 10 September integrity update. The Client was
 rebuilt for a complete distribution; its behavior is unchanged by the timer fix.

@@ -515,6 +515,17 @@ class ClientStore:
         self.connection.commit()
 
     def _migrate(self) -> None:
+        # Verify the old digest before adding columns, then authenticate the new
+        # schema/data atomically. An additive upgrade must not invalidate anchors.
+        event_columns = {row["name"] for row in self.connection.execute("PRAGMA table_info(local_integrity_events)")}
+        has_journal = self.connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='authenticated_state_journal'"
+        ).fetchone()
+        if (self._integrity_key is not None and has_journal
+                and self._latest_journal(self.connection) is not None and "client_event_id" not in event_columns):
+            with self._transaction():
+                self._apply_schema_migrations()
+            return
         with self._lock:
             self.connection.execute("BEGIN IMMEDIATE")
             try:
@@ -613,6 +624,16 @@ class ClientStore:
             self.connection.execute(
                 "ALTER TABLE local_attempts ADD COLUMN deadline_update_json TEXT"
             )
+        event_columns = {
+            row["name"] for row in self.connection.execute("PRAGMA table_info(local_integrity_events)")
+        }
+        if "client_event_id" not in event_columns:
+            self.connection.execute("ALTER TABLE local_integrity_events ADD COLUMN client_event_id TEXT")
+        self.connection.execute(
+            """CREATE UNIQUE INDEX IF NOT EXISTS unique_client_integrity_event
+               ON local_integrity_events(attempt_id, client_event_id)
+               WHERE client_event_id IS NOT NULL"""
+        )
 
     def _validate_legacy_state(self) -> None:
         try:
@@ -1691,16 +1712,31 @@ class ClientStore:
             )
 
     def record_integrity_event(
-        self, attempt_id: str, event_type: str, *, occurred_at: datetime
+        self, attempt_id: str, event_type: str, *, occurred_at: datetime,
+        client_event_id: str | None = None,
     ) -> int:
         if not isinstance(event_type, str) or not event_type.strip() or len(event_type) > 200:
             raise ValueError("Integrity event type is invalid.")
         occurred_iso = _iso(occurred_at, "Integrity event time")
+        if client_event_id is not None and (
+            not isinstance(client_event_id, str)
+            or re.fullmatch(r"[a-zA-Z0-9-]{16,64}", client_event_id) is None
+        ):
+            raise ValueError("Client integrity event identifier is invalid.")
         with self._transaction() as connection:
+            if client_event_id is not None:
+                existing = connection.execute(
+                    "SELECT event_id, event_type FROM local_integrity_events WHERE attempt_id=? AND client_event_id=?",
+                    (attempt_id, client_event_id),
+                ).fetchone()
+                if existing is not None:
+                    if existing["event_type"] != event_type:
+                        raise ValueError("Client integrity event identifier was reused.")
+                    return int(existing["event_id"])
             self._editable(connection, attempt_id)
             cursor = connection.execute(
-                "INSERT INTO local_integrity_events (attempt_id, event_type, occurred_at) VALUES (?, ?, ?)",
-                (attempt_id, event_type, occurred_iso),
+                "INSERT INTO local_integrity_events (attempt_id, event_type, occurred_at, client_event_id) VALUES (?, ?, ?, ?)",
+                (attempt_id, event_type, occurred_iso, client_event_id),
             )
             return int(cursor.lastrowid)
 

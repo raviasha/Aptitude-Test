@@ -113,7 +113,15 @@ SECONDS_PER_FACULTY_QUESTION = 60
 STUDENT_SESSION_TIMEOUT_SECONDS = 120
 EXAM_VIOLATION_LABELS = {
     "fullscreen_exit": "Exited full-screen mode",
+    "fullscreen_exited": "Exited full-screen mode",
+    "visibility_hidden": "Exam tab hidden or browser minimized",
     "focus_lost": "Changed tab, window, or minimized the exam",
+    "browser_page_hidden": "Left or closed the exam page",
+    "browser_page_reloaded": "Reloaded or reopened the exam page",
+    "browser_frozen": "Exam page was suspended by the browser",
+    "browser_monitor_gap": "Browser monitoring interrupted (cause unverified)",
+    "browser_monitor_restarted": "Client monitoring restarted during the exam",
+    "browser_storage_unavailable": "Browser integrity storage unavailable or invalid",
     "copy": "Attempted to copy exam content",
     "cut": "Attempted to cut exam content",
     "paste": "Attempted to paste into the exam",

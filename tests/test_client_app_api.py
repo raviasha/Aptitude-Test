@@ -171,7 +171,14 @@ class FakeRuntime:
         self.store.snapshot.responses[question_id] = selected_answer
         return self.store.snapshot
 
-    def record_violation(self, event_type):
+    def tick(self):
+        return self.snapshot()
+
+    def browser_heartbeat(self):
+        self.event_log.append("browser-heartbeat")
+        return self.snapshot()
+
+    def record_violation(self, event_type, *, client_event_id=None):
         self.violation_calls.append(event_type)
         self.store.snapshot.violations += 1
         return self.store.snapshot
@@ -502,6 +509,57 @@ class ClientAppApiTests(unittest.TestCase):
         self.assertEqual(200, violation.status_code)
         self.assertEqual(1, violation.json()["violations"])
         self.assertEqual([], self.coordinator.calls)
+
+    def test_browser_heartbeat_requires_attempt_and_csrf_and_stays_local(self):
+        self.coordinator.calls.clear()
+        path = f"/api/attempts/{ATTEMPT_ID}/browser-heartbeat"
+        denied = self.client.post(path, json={}, headers={"Host": "127.0.0.1:8010"})
+        self.assertEqual(403, denied.status_code)
+        wrong = self.client.post(
+            f"/api/attempts/{OTHER_ATTEMPT_ID}/browser-heartbeat", json={}, headers=self.mutation_headers
+        )
+        self.assertEqual(409, wrong.status_code)
+        self.assertNotIn("browser-heartbeat", self.events)
+        accepted = self.client.post(path, json={}, headers=self.mutation_headers)
+        self.assertEqual(200, accepted.status_code, accepted.text)
+        self.assertIn("browser-heartbeat", self.events)
+        self.assertEqual([], self.coordinator.calls)
+        self.snapshot.state = "sealed_pending"
+        sealed = self.client.post(path, json={}, headers=self.mutation_headers)
+        self.assertEqual(409, sealed.status_code)
+
+    def test_service_records_monitor_gap_without_any_browser_requests(self):
+        from tests import test_client_runtime as runtime_fixtures
+        from client_app import ClientServices, create_client_app
+
+        fixture = runtime_fixtures.ClientRuntimeTests()
+        fixture.setUp()
+        try:
+            started = fixture._prepare_and_start()
+            identity_store = FakeIdentityStore()
+            identity_store.identity = fixture.identity
+            services = ClientServices(
+                identity_store, fixture.store, fixture.runtime, self.coordinator,
+                FakeOutbox([]), cache_dir=fixture.root / "packs",
+            )
+            ticked = threading.Event()
+            real_tick = fixture.runtime.tick
+
+            def observed_tick():
+                snapshot = real_tick()
+                ticked.set()
+                return snapshot
+
+            with patch.object(fixture.runtime, "tick", observed_tick):
+                with TestClient(create_client_app(services), base_url="http://127.0.0.1:8010"):
+                    fixture.clock.advance(16)
+                    self.assertTrue(ticked.wait(3), "Local watchdog must run independently of HTTP traffic")
+                    self.assertEqual(
+                        ["browser_monitor_gap"],
+                        [event.event_type for event in fixture.store.integrity_events(started.attempt_id)],
+                    )
+        finally:
+            fixture.tearDown()
 
     def test_hostile_origin_host_and_cross_attempt_have_zero_side_effects(self):
         before = dict(self.snapshot.responses)

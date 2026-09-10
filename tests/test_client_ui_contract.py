@@ -12,6 +12,17 @@ INDEX = ROOT / "static" / "client" / "index.html"
 
 
 class ClientUiContractTests(unittest.TestCase):
+    def test_exam_integrity_behaviors(self):
+        for scenario in (
+            'two_tabs_cannot_overwrite_pending_integrity_events',
+            'focus_loss_blocks_immediately_while_still_fullscreen',
+            'polling_catches_missing_browser_events_and_fullscreen_exit',
+            'failed_violation_survives_reload_and_is_retried_with_same_id',
+            'submit_waits_for_violation_acknowledgment',
+        ):
+            with self.subTest(scenario=scenario):
+                self._run_flow(scenario)
+
     def test_login_shows_supported_departments_and_rights_notice(self):
         self._run_flow("login_shows_supported_departments")
         index = INDEX.read_text(encoding="utf-8")

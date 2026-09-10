@@ -166,6 +166,8 @@ class AssessmentRuntime:
         self._anchor_trusted_wall: datetime | None = None
         self._last_checkpoint_monotonic: float | None = None
         self._last_observed_monotonic: float | None = None
+        self._browser_deadline: float | None = None
+        self._browser_gap_recorded = False
 
     def prepare(
         self,
@@ -397,7 +399,7 @@ class AssessmentRuntime:
             self.store.save_position(record.attempt_id, question_id)
             return self._snapshot_record(self.store.load_attempt(record.attempt_id))
 
-    def record_violation(self, event_type: str) -> AttemptSnapshot:
+    def record_violation(self, event_type: str, *, client_event_id: str | None = None) -> AttemptSnapshot:
         with self._lock:
             record = self._current_record()
             if record.state != "in_progress":
@@ -414,11 +416,31 @@ class AssessmentRuntime:
             matching = next(
                 (event for event in reversed(prior) if event.event_type == event_type), None
             )
-            if matching is None or (occurred_at - matching.occurred_at).total_seconds() >= 2:
+            if client_event_id is not None or matching is None or (occurred_at - matching.occurred_at).total_seconds() >= 2:
                 self.store.record_integrity_event(
-                    record.attempt_id, event_type, occurred_at=occurred_at
+                    record.attempt_id, event_type, occurred_at=occurred_at,
+                    client_event_id=client_event_id,
                 )
             return self._snapshot_record(self.store.load_attempt(record.attempt_id))
+
+    def _check_browser_monitor(self, record: LocalAttemptRecord) -> None:
+        if (record.state == "in_progress" and self._browser_deadline is not None
+                and not self._browser_gap_recorded and self._monotonic() > self._browser_deadline):
+            self.store.record_integrity_event(
+                record.attempt_id, "browser_monitor_gap", occurred_at=self._trusted_now(record)
+            )
+            self._browser_gap_recorded = True
+
+    def browser_heartbeat(self) -> AttemptSnapshot:
+        """A late report must first record the gap it cannot retroactively cover."""
+        with self._lock:
+            record = self._current_record()
+            if record.state != "in_progress":
+                raise AttemptSealedError("The attempt is sealed and cannot be changed.")
+            self._check_browser_monitor(record)
+            self._browser_deadline = self._monotonic() + 10
+            self._browser_gap_recorded = False
+            return self.snapshot()
 
     def question(self, question_id: int) -> PublicQuestion:
         try:
@@ -445,6 +467,7 @@ class AssessmentRuntime:
         with self._lock:
             record = self._current_record()
             if record.state == "in_progress":
+                self._check_browser_monitor(record)
                 remaining = self._remaining()
                 if remaining == 0:
                     return self._seal(record)
@@ -537,7 +560,12 @@ class AssessmentRuntime:
                 )
                 record = self.store.load_attempt(record.attempt_id)
             trusted_wall = record.deadline - timedelta(seconds=safe_remaining)
+            first_recovery = self._attempt_id != record.attempt_id
             self._activate(record, questions, assets, trusted_wall=trusted_wall)
+            if first_recovery:
+                self.store.record_integrity_event(
+                    record.attempt_id, "browser_monitor_restarted", occurred_at=self._trusted_now(record)
+                )
             if safe_remaining == 0:
                 return self._seal(record)
             return self._snapshot_record(record, remaining=safe_remaining)
@@ -879,6 +907,9 @@ class AssessmentRuntime:
     ) -> None:
         self._validate_record_content(record, questions)
         now_mono = self._monotonic() if anchor_monotonic is None else anchor_monotonic
+        if self._attempt_id != record.attempt_id or self._browser_deadline is None:
+            self._browser_deadline = now_mono + 15
+            self._browser_gap_recorded = False
         self._attempt_id = record.attempt_id
         self._questions = dict(questions)
         self._assets = dict(assets)
@@ -903,6 +934,8 @@ class AssessmentRuntime:
                 raise ValueError("Saved response does not match the assessment content.")
 
     def _clear_active(self) -> None:
+        self._browser_deadline = None
+        self._browser_gap_recorded = False
         self._attempt_id = None
         self._questions = {}
         self._assets = {}
@@ -974,6 +1007,7 @@ class AssessmentRuntime:
         latest = self.store.load_attempt(record.attempt_id)
         if latest.state != "in_progress":
             return self._snapshot_record(latest)
+        self._check_browser_monitor(latest)
         remaining = self._remaining()
         now = self._trusted_now(latest)
         if remaining < latest.remaining_seconds:

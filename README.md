@@ -1,5 +1,10 @@
 # Aptitude Lab / KSAT 2.0
 
+**Current Windows downloads are TEST-SIGNED — NOT FOR PRODUCTION.**
+The 10 September 2026 client-server integrity update is available in
+[`release/`](release/README.md), with installers for both products and SHA-256
+checksums. These builds are for isolated testing and lab acceptance only.
+
 KSAT 2.0 ships separate Windows installers for the HTTPS faculty coordinator and
 the loopback-only lab client. See the
 [distributed-assessment operations runbook](docs/distributed-assessment-operations.md)
@@ -81,6 +86,10 @@ records copy, cut, paste, context-menu, full-screen exit, and tab/window focus
 loss events, then displays them with the student result and Faculty dashboard.
 These controls are browser-enforced; a web application cannot physically stop
 operating-system shortcuts or another application from minimizing a window.
+The installed client also retries integrity records durably and independently
+records interruptions in browser monitoring. See the
+[client-server integrity coverage and acceptance guide](docs/exam-integrity-hardening.md)
+for desktop-switch limits, upgrade behavior, and the native/kiosk option.
 
 Only one active browser login is allowed for a student USN. Signing out releases
 the login. Faculty can delete a student account (including its records and login

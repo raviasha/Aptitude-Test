@@ -27,6 +27,24 @@ from ksat.protocol import (
 
 
 class ClientStoreTests(unittest.TestCase):
+    def test_authenticated_event_id_upgrade_preserves_records_and_retry_identity(self):
+        key, anchor = self._authenticated_store()
+        self._cache_and_create()
+        self.store.record_integrity_event(self.attempt_id, "copy", occurred_at=self.now)
+        # Recreate the previous release's schema with a valid authenticated anchor.
+        with self.store._transaction() as connection:
+            connection.execute("DROP INDEX unique_client_integrity_event")
+            connection.execute("ALTER TABLE local_integrity_events DROP COLUMN client_event_id")
+        self.store.close()
+        self.store = ClientStore(self.database_path, integrity_key=key, integrity_anchor_path=anchor)
+        event_id = str(uuid.uuid4())
+        first = self.store.record_integrity_event(self.attempt_id, "focus_lost", occurred_at=self.now, client_event_id=event_id)
+        self.store.close()
+        self.store = ClientStore(self.database_path, integrity_key=key, integrity_anchor_path=anchor)
+        retry = self.store.record_integrity_event(self.attempt_id, "focus_lost", occurred_at=self.now + timedelta(seconds=30), client_event_id=event_id)
+        self.assertEqual(first, retry)
+        self.assertEqual(["copy", "focus_lost"], [e.event_type for e in self.store.integrity_events(self.attempt_id)])
+
     def setUp(self):
         self.temporary_directory = tempfile.TemporaryDirectory()
         self.database_path = Path(self.temporary_directory.name) / "client.db"

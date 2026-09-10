@@ -128,6 +128,7 @@ class AnswerBody(_StrictBody):
 
 class ViolationBody(_StrictBody):
     event_type: str = Field(min_length=1, max_length=200)
+    client_event_id: str | None = Field(default=None, pattern=r"^[a-zA-Z0-9-]{16,64}$")
 
 
 class PositionBody(_StrictBody):
@@ -1581,9 +1582,28 @@ def create_client_app(services: ClientServices | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         context.initialize()
+        async def monitor_attempt():
+            while True:
+                await asyncio.sleep(1)
+                current = context.services
+                if current is None or current.runtime is None:
+                    continue
+                try:
+                    active = current.store.active_attempt()
+                    if active is not None and active.state == "in_progress":
+                        context.observe_snapshot(current.runtime.tick())
+                except (ValueError, KeyError, RuntimeError, OSError, sqlite3.Error):
+                    context.startup_problem = context.problem("corrupt_local_attempt", status=409)
+
+        monitor = asyncio.create_task(monitor_attempt())
         try:
             yield
         finally:
+            monitor.cancel()
+            try:
+                await monitor
+            except asyncio.CancelledError:
+                pass
             async with coordinator_operation_lock:
                 context.shutdown()
 
@@ -2331,16 +2351,28 @@ def create_client_app(services: ClientServices | None = None) -> FastAPI:
         current = require_services()
         try:
             snapshot = context.observe_snapshot(
-                current.runtime.record_violation(body.event_type.strip())
+                current.runtime.record_violation(body.event_type.strip(), client_event_id=body.client_event_id)
             )
         except AttemptSealedError as error:
             raise ClientApiProblem("attempt_sealed", _SEALED_MESSAGE, 409) from error
+        except ValueError as error:
+            raise ClientApiProblem("invalid_request", "Integrity event is invalid.", 422) from error
         return {
             "attempt_id": snapshot.attempt_id,
             "state": snapshot.state,
             "violations": snapshot.violations,
             "remaining_seconds": snapshot.remaining_seconds,
         }
+
+    @app.post("/api/attempts/{attempt_id}/browser-heartbeat")
+    async def browser_heartbeat(attempt_id: str):
+        require_attempt(attempt_id, editable=True)
+        current = require_services()
+        try:
+            snapshot = context.observe_snapshot(current.runtime.browser_heartbeat())
+        except AttemptSealedError as error:
+            raise ClientApiProblem("attempt_sealed", _SEALED_MESSAGE, 409) from error
+        return {"state": snapshot.state, "violations": snapshot.violations}
 
     @app.post("/api/attempts/{attempt_id}/submit", status_code=202)
     async def submit(attempt_id: str, body: ConfirmBody):

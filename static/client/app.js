@@ -248,6 +248,15 @@ if (typeof document !== 'undefined') {
     attemptPoll: null,
     pendingReview: null,
     localReview: null,
+    integrityAttemptId: null,
+    integrityArmed: false,
+    integrityFaults: new Set(),
+    integrityQueue: [],
+    integrityFlush: null,
+    integrityHeartbeat: false,
+    integrityStorageFailed: false,
+    integrityTimer: null,
+    submitting: false,
   };
 
   async function request(path, options = {}) {
@@ -786,8 +795,12 @@ if (typeof document !== 'undefined') {
     if (ui.view !== 'attempt') beginView('attempt');
     ui.state = attempt.state;
     ui.attempt = attempt;
+    if (canEdit(attempt.state)) initializeIntegrity(attempt.attempt_id);
     setSafeText(elements.timer, formatTime(attempt.remaining_seconds));
     if (!canEdit(attempt.state)) {
+      ui.integrityArmed = false;
+      if (ui.integrityTimer !== null) window.clearInterval(ui.integrityTimer);
+      ui.integrityTimer = null;
       disableExamControls();
       if (attempt.state === 'acknowledged_result') {
         renderAcknowledged(attempt.result);
@@ -798,12 +811,17 @@ if (typeof document !== 'undefined') {
       }
       return;
     }
-    if (!ui.fullscreenReady || !document.fullscreenElement) {
+    if (ui.submitting) {
+      disableExamControls();
+      return;
+    }
+    if (!ui.fullscreenReady || !document.fullscreenElement || document.hidden || !document.hasFocus()) {
       elements.gate.hidden = false;
       elements.assessmentPanel.hidden = true;
       return;
     }
     elements.gate.hidden = true;
+    ui.integrityArmed = true;
     elements.statusPanel.hidden = true;
     elements.assessmentPanel.hidden = false;
     const storedIndex = attempt.questions.findIndex(
@@ -853,7 +871,7 @@ if (typeof document !== 'undefined') {
   }
 
   async function saveAnswer(questionId, selected) {
-    if (!canEdit(ui.state) || ui.saving) return;
+    if (!canEdit(ui.state) || ui.saving || ui.submitting) return;
     ui.saving = true;
     try {
       await persistOptimisticAnswer(
@@ -883,6 +901,7 @@ if (typeof document !== 'undefined') {
       !ui.attempt
       || !canEdit(ui.state)
       || ui.positionSaving
+      || ui.submitting
       || index < 0
       || index >= ui.attempt.questions.length
     ) return;
@@ -1067,7 +1086,7 @@ if (typeof document !== 'undefined') {
 
   async function pollAttempt() {
     const view = ui.view;
-    if (!['attempt', 'local_review'].includes(view) || !ui.attempt || ui.saving || ui.positionSaving) return;
+    if (!['attempt', 'local_review'].includes(view) || !ui.attempt || ui.saving || ui.positionSaving || ui.submitting) return;
     const generation = ui.viewGeneration;
     if (ui.attemptPoll === generation) return;
     ui.attemptPoll = generation;
@@ -1081,7 +1100,7 @@ if (typeof document !== 'undefined') {
         attempt.result = result.result;
       }
       if (!ownsView(view, generation)
-          || ui.state !== state || ui.saving || ui.positionSaving) return;
+          || ui.state !== state || ui.saving || ui.positionSaving || ui.submitting) return;
       if (view === 'local_review') updateLocalReviewUpload(ui.localReview, attempt);
       else renderAttempt(attempt);
     } catch (error) {
@@ -1107,7 +1126,11 @@ if (typeof document !== 'undefined') {
 
   async function enterFullscreen() {
     try {
-      await document.documentElement.requestFullscreen();
+      if (!document.fullscreenElement) await document.documentElement.requestFullscreen();
+      if (!document.fullscreenElement || document.hidden || !document.hasFocus()) {
+        throw new Error('Exam is not foreground');
+      }
+      if (!await flushIntegrityQueue()) throw new Error('Integrity events pending');
       ui.fullscreenReady = true;
       elements.gate.hidden = true;
     } catch (_error) {
@@ -1145,18 +1168,157 @@ if (typeof document !== 'undefined') {
     }
   }
 
-  async function recordViolation(eventType) {
-    if (!ui.attempt || !canEdit(ui.state)) return;
+  function integrityStorageKey() {
+    return `ksat-integrity-${ui.integrityAttemptId}`;
+  }
+
+  function persistIntegrityQueue() {
     try {
-      await request(`/api/attempts/${encodeURIComponent(ui.attempt.attempt_id)}/violations`, {
-        method: 'POST', body: JSON.stringify({ event_type: eventType }),
-      });
+      window.localStorage.setItem(integrityStorageKey(), 'active');
+      // Independent keys prevent a second exam tab from replacing this tab's
+      // unacknowledged records with its own stale copy of a shared array.
+      ui.integrityQueue.forEach(event => window.localStorage.setItem(
+        `${integrityStorageKey()}:${event.client_event_id}`, JSON.stringify(event),
+      ));
+      ui.integrityStorageFailed = false;
+      return true;
     } catch (_error) {
-      announce('The integrity event remains subject to local retry.', true);
+      ui.integrityStorageFailed = true;
+      blockExamView();
+      announce('Integrity records could not be saved in this browser. Keep this page open and ask Faculty for help.', true);
+      return false;
+    }
+  }
+
+  function restoreIntegrityQueue() {
+    const prefix = `${integrityStorageKey()}:`;
+    for (let index = 0; index < window.localStorage.length; index += 1) {
+      const key = window.localStorage.key(index);
+      if (!key || !key.startsWith(prefix)) continue;
+      const raw = window.localStorage.getItem(key);
+      if (raw === null) continue; // Another tab may have acknowledged it.
+      const event = JSON.parse(raw);
+      if (!event || typeof event.event_type !== 'string' || !event.event_type.length || event.event_type.length > 200 ||
+          !/^[a-zA-Z0-9-]{16,64}$/.test(event.client_event_id) || key !== `${prefix}${event.client_event_id}`) {
+        throw new Error('Invalid integrity record');
+      }
+      if (!ui.integrityQueue.some(item => item.client_event_id === event.client_event_id)) {
+        ui.integrityQueue.push(event);
+      }
+    }
+  }
+
+  function initializeIntegrity(attemptId) {
+    if (ui.integrityAttemptId === attemptId) return;
+    if (ui.integrityTimer !== null) window.clearInterval(ui.integrityTimer);
+    ui.integrityTimer = window.setInterval(monitorIntegrity, 1000);
+    ui.integrityAttemptId = attemptId;
+    ui.integrityArmed = false;
+    ui.integrityFaults.clear();
+    ui.integrityQueue = [];
+    try {
+      const saved = window.localStorage.getItem(integrityStorageKey());
+      restoreIntegrityQueue();
+      if (saved !== null) {
+        recordViolation('browser_page_reloaded');
+      } else persistIntegrityQueue();
+    } catch (_error) {
+      recordViolation('browser_storage_unavailable');
+    }
+    flushIntegrityQueue();
+  }
+
+  function blockExamView() {
+    if (!ui.attempt || !canEdit(ui.state)) return;
+    ui.fullscreenReady = false;
+    elements.gate.hidden = false;
+    elements.assessmentPanel.hidden = true;
+  }
+
+  async function integrityRequest(path, body) {
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 4000);
+    try {
+      return await request(path, {
+        method: 'POST', body: JSON.stringify(body), keepalive: true, signal: controller.signal,
+      });
+    } finally {
+      window.clearTimeout(timeout);
+    }
+  }
+
+  async function flushIntegrityQueue() {
+    if (!ui.integrityAttemptId) return true;
+    if (ui.integrityFlush) return ui.integrityFlush;
+    const attemptId = ui.integrityAttemptId;
+    const operation = (async () => {
+      try {
+        restoreIntegrityQueue();
+        while (ui.integrityQueue.length) {
+          const event = ui.integrityQueue[0];
+          await integrityRequest(`/api/attempts/${encodeURIComponent(attemptId)}/violations`, event);
+          if (ui.integrityAttemptId !== attemptId) return false;
+          window.localStorage.removeItem(`${integrityStorageKey()}:${event.client_event_id}`);
+          ui.integrityQueue.shift();
+          persistIntegrityQueue();
+        }
+        return persistIntegrityQueue();
+      } catch (_error) {
+        announce('Integrity event pending. It will retry automatically; keep this page open.', true);
+        return false;
+      }
+    })();
+    ui.integrityFlush = operation;
+    try { return await operation; }
+    finally { if (ui.integrityFlush === operation) ui.integrityFlush = null; }
+  }
+
+  function recordViolation(eventType) {
+    if (!ui.attempt || !canEdit(ui.state)) return;
+    ui.integrityQueue.push({ event_type: eventType, client_event_id: window.crypto.randomUUID() });
+    persistIntegrityQueue();
+    return flushIntegrityQueue();
+  }
+
+  function observeIntegrityLoss(eventType) {
+    if (!ui.integrityArmed || !ui.attempt || !canEdit(ui.state)) return;
+    blockExamView();
+    if (!ui.integrityFaults.has(eventType)) {
+      ui.integrityFaults.add(eventType);
+      recordViolation(eventType);
+    }
+  }
+
+  function checkIntegrityState() {
+    if (!ui.integrityArmed) return;
+    const faults = {
+      visibility_hidden: document.hidden,
+      focus_lost: !document.hasFocus(),
+      fullscreen_exited: !document.fullscreenElement,
+    };
+    Object.entries(faults).forEach(([type, lost]) => {
+      if (lost) observeIntegrityLoss(type);
+      else ui.integrityFaults.delete(type);
+    });
+  }
+
+  async function monitorIntegrity() {
+    if (!ui.attempt || !canEdit(ui.state) || ui.submitting) return;
+    checkIntegrityState();
+    if (ui.integrityHeartbeat) return;
+    ui.integrityHeartbeat = true;
+    try {
+      if (!await flushIntegrityQueue() || !ui.integrityArmed) return;
+      await integrityRequest(`/api/attempts/${encodeURIComponent(ui.attempt.attempt_id)}/browser-heartbeat`, {});
+    } catch (_error) {
+      announce('Exam monitoring connection interrupted. Reconnecting automatically.', true);
+    } finally {
+      ui.integrityHeartbeat = false;
     }
   }
 
   function blockAndRecord(event, eventType) {
+    if (!ui.attempt || !canEdit(ui.state)) return;
     event.preventDefault();
     recordViolation(eventType);
   }
@@ -1172,10 +1334,17 @@ if (typeof document !== 'undefined') {
     }
   });
   elements.submit.addEventListener('click', async () => {
-    if (!ui.attempt || !canEdit(ui.state)) return;
+    if (!ui.attempt || !canEdit(ui.state) || ui.submitting || ui.saving || ui.positionSaving) return;
+    ui.submitting = true;
     disableExamControls();
-    ui.state = 'sealed_pending';
     try {
+      checkIntegrityState();
+      if (!await flushIntegrityQueue()) {
+        announce('Waiting to save integrity records before submission. Check the local client connection and try again.', true);
+        renderAttempt(ui.attempt);
+        return;
+      }
+      ui.state = 'sealed_pending';
       const sealed = await request(`/api/attempts/${encodeURIComponent(ui.attempt.attempt_id)}/submit`, {
         method: 'POST', body: JSON.stringify({ confirmed: true }),
       });
@@ -1183,6 +1352,9 @@ if (typeof document !== 'undefined') {
     } catch (error) {
       showProblem(error.problem);
       startPolling();
+    } finally {
+      ui.submitting = false;
+      if (canEdit(ui.state)) renderAttempt(ui.attempt);
     }
   });
   elements.enterFullscreen.addEventListener('click', async () => {
@@ -1191,9 +1363,17 @@ if (typeof document !== 'undefined') {
   });
 
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden) recordViolation('visibility_hidden');
+    if (document.hidden) observeIntegrityLoss('visibility_hidden');
+    checkIntegrityState();
+    monitorIntegrity();
   });
-  window.addEventListener('blur', () => recordViolation('focus_lost'));
+  window.addEventListener('blur', () => observeIntegrityLoss('focus_lost'));
+  window.addEventListener('focus', () => { checkIntegrityState(); monitorIntegrity(); });
+  window.addEventListener('pagehide', () => observeIntegrityLoss('browser_page_hidden'));
+  window.addEventListener('pageshow', () => { ui.integrityFaults.delete('browser_page_hidden'); monitorIntegrity(); });
+  document.addEventListener('freeze', () => observeIntegrityLoss('browser_frozen'));
+  document.addEventListener('resume', () => { ui.integrityFaults.delete('browser_frozen'); monitorIntegrity(); });
+  window.addEventListener('online', monitorIntegrity);
   ['copy', 'cut', 'paste', 'contextmenu', 'dragstart', 'drop'].forEach((name) => {
     document.addEventListener(name, (event) => blockAndRecord(event, name));
   });
@@ -1204,9 +1384,8 @@ if (typeof document !== 'undefined') {
     }
   });
   document.addEventListener('fullscreenchange', () => {
-    if (!document.fullscreenElement && ui.attempt && canEdit(ui.state)) {
-      recordViolation('fullscreen_exited');
-    }
+    if (!document.fullscreenElement) observeIntegrityLoss('fullscreen_exited');
+    else ui.integrityFaults.delete('fullscreen_exited');
   });
 
   refreshState();

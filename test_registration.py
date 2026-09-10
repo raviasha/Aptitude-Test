@@ -798,6 +798,8 @@ class StudentRegistrationTests(unittest.TestCase):
                 [
                     ("focus_lost", "2026-08-23T10:01:00+00:00"),
                     ("copy", "2026-08-23T10:02:00+00:00"),
+                    ("fullscreen_exited", "2026-08-23T10:03:00+00:00"),
+                    ("browser_monitor_gap", "2026-08-23T10:04:00+00:00"),
                 ],
             )
 
@@ -812,9 +814,11 @@ class StudentRegistrationTests(unittest.TestCase):
 
         exported = list(csv.DictReader(io.StringIO(asyncio.run(read_body()).decode("utf-8"))))
         self.assertEqual(len(exported), 1)
-        self.assertEqual(exported[0]["Violation Count"], "2")
+        self.assertEqual(exported[0]["Violation Count"], "4")
         self.assertIn("Changed tab, window, or minimized the exam (2026-08-23T10:01:00+00:00)", exported[0]["Violations"])
         self.assertIn("Attempted to copy exam content (2026-08-23T10:02:00+00:00)", exported[0]["Violations"])
+        self.assertIn("Exited full-screen mode (2026-08-23T10:03:00+00:00)", exported[0]["Violations"])
+        self.assertIn("Browser monitoring interrupted (cause unverified)", exported[0]["Violations"])
 
     def test_legacy_live_faculty_attempt_gets_a_timer_when_serialized(self):
         app.register_student("LEGACY1", "Legacy Student", "AI & DS", "A", "secret123")

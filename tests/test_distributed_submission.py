@@ -554,12 +554,13 @@ class DistributedSubmissionTests(unittest.TestCase):
             ).fetchone()[0]
 
     def test_integrity_events_and_unanswered_rows_are_persisted_atomically(self):
-        event = IntegrityEvent(event_type="focus_lost", occurred_at=self.started_at + timedelta(seconds=10))
-        response = self.submit(self.bundle(events=(event,)))
+        events = tuple(IntegrityEvent(event_type=kind, occurred_at=self.started_at + timedelta(seconds=10))
+                       for kind in ("focus_lost", "fullscreen_exited", "browser_monitor_gap"))
+        response = self.submit(self.bundle(events=events))
         self.assertEqual(200, response.status_code, response.text)
-        self.assertEqual(1, response.json()["violations"])
+        self.assertEqual(3, response.json()["violations"])
         self.assertEqual(2, self.count("responses"))
-        self.assertEqual(1, self.count("exam_violations"))
+        self.assertEqual(3, self.count("exam_violations"))
 
     def test_submission_requires_active_matching_device_request_proof(self):
         signed = self.bundle()

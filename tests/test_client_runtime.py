@@ -924,6 +924,58 @@ class ClientRuntimeTests(unittest.TestCase):
         snapshot = self.runtime.record_violation("focus_lost")
         self.assertEqual(snapshot.violations, 3)
 
+    def test_distinct_browser_departures_are_not_time_debounced_and_retries_survive_restart(self):
+        self._prepare_and_start()
+        first_id, second_id = str(uuid.uuid4()), str(uuid.uuid4())
+        self.runtime.record_violation("focus_lost", client_event_id=first_id)
+        self.clock.advance(0.1)
+        self.runtime.record_violation("focus_lost", client_event_id=second_id)
+        self.assertEqual(2, self.runtime.snapshot().violations)
+        recovered = AssessmentRuntime(self.store, self.identity, self.clock)
+        recovered.recover()
+        before_retry = recovered.snapshot().violations
+        self.clock.advance(3)
+        recovered.record_violation("focus_lost", client_event_id=first_id)
+        self.assertEqual(before_retry, recovered.snapshot().violations)
+        with self.assertRaises(ValueError):
+            recovered.record_violation("fullscreen_exited", client_event_id=first_id)
+
+    def test_missing_browser_heartbeat_is_recorded_once_per_gap_without_browser_requests(self):
+        started = self._prepare_and_start()
+        self.clock.advance(16)
+        self.runtime.tick()
+        events = self.store.integrity_events(started.attempt_id)
+        self.assertEqual(["browser_monitor_gap"], [e.event_type for e in events])
+        self.clock.advance(20)
+        self.runtime.tick()
+        self.assertEqual(1, self.runtime.snapshot().violations)
+        self.runtime.browser_heartbeat()
+        self.clock.advance(2)
+        self.runtime.browser_heartbeat()
+        self.clock.advance(11)
+        self.runtime.tick()
+        self.assertEqual(2, self.runtime.snapshot().violations)
+
+    def test_heartbeat_cannot_erase_an_overdue_gap_and_sealing_includes_it(self):
+        started = self._prepare_and_start()
+        self.runtime.browser_heartbeat()
+        self.clock.advance(11)
+        self.runtime.browser_heartbeat()
+        self.assertEqual(1, self.runtime.snapshot().violations)
+        self.clock.advance(1800)
+        self.runtime.submit()
+        events = self.store.pending_submissions()[0].bundle.bundle.integrity_events
+        self.assertEqual(["browser_monitor_gap", "browser_monitor_gap"], [e.event_type for e in events])
+        self.assertLessEqual(events[-1].occurred_at, self.store.load_attempt(started.attempt_id).deadline)
+
+    def test_monitor_restart_during_active_exam_is_recorded_but_repeated_recover_is_not(self):
+        self._prepare_and_start()
+        recovered = AssessmentRuntime(self.store, self.identity, self.clock)
+        recovered.recover()
+        recovered.recover()
+        self.assertEqual(1, recovered.snapshot().violations)
+        self.assertEqual("browser_monitor_restarted", self.store.integrity_events(recovered.snapshot().attempt_id)[0].event_type)
+
     def test_expiry_seals_once_with_verifiable_all_question_bundle(self):
         self._prepare_and_start()
         self.runtime.answer(7, "B")

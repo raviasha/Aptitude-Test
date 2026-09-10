@@ -73,11 +73,13 @@ function failure(code, retryable = true) {
   return error;
 }
 
-async function boot(initialState = 'waiting_or_ready', routes = {}) {
+async function boot(initialState = 'waiting_or_ready', routes = {}, savedStorage = new Map()) {
   const elements = new Map();
   const timers = new Map();
   const calls = [];
   let timerId = 0;
+  const documentListeners = new Map();
+  const windowListeners = new Map();
   const document = {
     getElementById(id) {
       if (!elements.has(id)) elements.set(id, new Element(id));
@@ -85,7 +87,10 @@ async function boot(initialState = 'waiting_or_ready', routes = {}) {
     },
     querySelector: () => ({ content: 'csrf' }),
     createElement: name => new Element(name),
-    addEventListener() {},
+    addEventListener(name, callback) { documentListeners.set(name, callback); },
+    hidden: false,
+    focused: true,
+    hasFocus() { return this.focused; },
     fullscreenElement: null,
     documentElement: {
       async requestFullscreen() { document.fullscreenElement = this; },
@@ -94,7 +99,15 @@ async function boot(initialState = 'waiting_or_ready', routes = {}) {
   };
   const window = {
     sessionStorage: { getItem: () => 'true', setItem() {} },
-    addEventListener() {},
+    localStorage: {
+      get length() { return savedStorage.size; },
+      key: index => [...savedStorage.keys()][index] ?? null,
+      getItem: key => savedStorage.get(key) || null,
+      setItem: (key, value) => savedStorage.set(key, value),
+      removeItem: key => savedStorage.delete(key),
+    },
+    crypto: require('node:crypto').webcrypto,
+    addEventListener(name, callback) { windowListeners.set(name, callback); },
     setTimeout(callback, delay) { timers.set(++timerId, { callback, delay }); return timerId; },
     clearTimeout(id) { timers.delete(id); },
     setInterval(callback, delay) { timers.set(++timerId, { callback, delay, interval: true }); return timerId; },
@@ -106,6 +119,9 @@ async function boot(initialState = 'waiting_or_ready', routes = {}) {
     '/api/assessments': () => ({ assessments: [launch] }),
     '/api/reviews': () => ({ reviews: [finished] }),
     '/api/assessments/second-release/start': () => attempt,
+    [`/api/attempts/${attempt.attempt_id}`]: () => attempt,
+    [`/api/attempts/${attempt.attempt_id}/violations`]: () => ({ violations: 1 }),
+    [`/api/attempts/${attempt.attempt_id}/browser-heartbeat`]: () => ({ state: 'in_progress' }),
     '/api/logout': () => ({ state: 'login' }),
     [pendingReviewPath]: () => { throw failure('review_not_released', false); },
     ...routes,
@@ -145,10 +161,103 @@ async function boot(initialState = 'waiting_or_ready', routes = {}) {
     await flush();
   };
   await flush();
-  return { elements, actions, getButton, click, tick, flush, calls, handlers, timers };
+  const emit = async (target, name) => {
+    (target === 'document' ? documentListeners : windowListeners).get(name)?.({ preventDefault() {} });
+    await flush();
+  };
+  return { elements, actions, getButton, click, tick, flush, calls, handlers, timers, document, window, emit, savedStorage };
 }
 
 const scenarios = {
+  async two_tabs_cannot_overwrite_pending_integrity_events() {
+    const path = `/api/attempts/${attempt.attempt_id}/violations`;
+    const routes = { [path]: () => { throw failure('temporarily_unavailable'); } };
+    const first = await boot('waiting_or_ready', routes);
+    await first.click('Start');
+    const second = await boot('in_progress', {
+      ...routes, '/api/state': () => ({ state: 'in_progress', attempt }),
+    }, first.savedStorage);
+    await first.emit('document', 'copy');
+    await second.emit('document', 'paste');
+    const restored = await boot('in_progress', {
+      '/api/state': () => ({ state: 'in_progress', attempt }),
+    }, first.savedStorage);
+    await restored.tick(1000);
+    const types = restored.calls.filter(c => c.path === path).map(c => JSON.parse(c.options.body).event_type);
+    assert.ok(types.includes('copy'), 'first tab event must survive the second tab write');
+    assert.ok(types.includes('paste'), 'second tab event must also survive');
+  },
+  async focus_loss_blocks_immediately_while_still_fullscreen() {
+    const page = await boot();
+    await page.click('Start');
+    assert.equal(page.elements.get('assessment-panel').hidden, false);
+    page.document.focused = false;
+    await page.emit('window', 'blur');
+    assert.ok(page.document.fullscreenElement);
+    assert.equal(page.elements.get('fullscreen-gate').hidden, false);
+    assert.equal(page.elements.get('assessment-panel').hidden, true);
+    const events = () => page.calls.filter(c => c.path.endsWith('/violations'));
+    assert.equal(events().length, 1);
+    await page.tick(1000);
+    assert.equal(events().length, 1, 'watchdog must not repeat the same departure');
+    page.document.focused = true;
+    await page.emit('window', 'focus');
+    page.document.focused = false;
+    await page.emit('window', 'blur');
+    assert.equal(events().length, 2, 'a second rapid switch must count');
+    assert.notEqual(JSON.parse(events()[0].options.body).client_event_id, JSON.parse(events()[1].options.body).client_event_id);
+  },
+  async polling_catches_missing_browser_events_and_fullscreen_exit() {
+    const page = await boot();
+    await page.click('Start');
+    page.document.hidden = true;
+    page.document.focused = false;
+    await page.tick(1000);
+    assert.equal(page.elements.get('assessment-panel').hidden, true);
+    const types = page.calls.filter(c => c.path.endsWith('/violations')).map(c => JSON.parse(c.options.body).event_type);
+    assert.ok(types.includes('visibility_hidden'));
+    page.document.fullscreenElement = null;
+    await page.emit('document', 'fullscreenchange');
+    assert.ok(page.calls.some(c => c.path.endsWith('/violations') && JSON.parse(c.options.body).event_type === 'fullscreen_exited'));
+  },
+  async failed_violation_survives_reload_and_is_retried_with_same_id() {
+    const path = `/api/attempts/${attempt.attempt_id}/violations`;
+    const page = await boot('waiting_or_ready', { [path]: () => { throw failure('temporarily_unavailable'); } });
+    await page.click('Start');
+    await page.emit('window', 'blur');
+    const first = JSON.parse(page.calls.find(c => c.path === path).options.body);
+    const restored = await boot('in_progress', {
+      '/api/state': () => ({ state: 'in_progress', attempt }),
+      [path]: () => ({ violations: 1 }),
+    }, page.savedStorage);
+    await restored.tick(1000);
+    const retry = restored.calls.find(c => c.path === path);
+    assert.ok(retry, 'pending event must be replayed after reload');
+    assert.equal(JSON.parse(retry.options.body).client_event_id, first.client_event_id);
+    assert.equal(retry.options.keepalive, true);
+  },
+  async submit_waits_for_violation_acknowledgment() {
+    const pending = deferred();
+    const poll = deferred();
+    const path = `/api/attempts/${attempt.attempt_id}/violations`;
+    const page = await boot('waiting_or_ready', {
+      [path]: () => pending.promise,
+      [`/api/attempts/${attempt.attempt_id}/submit`]: () => ({ ...attempt, state: 'sealed_pending' }),
+    });
+    await page.click('Start');
+    page.handlers[`/api/attempts/${attempt.attempt_id}`] = () => poll.promise;
+    await page.tick(1000);
+    await page.emit('document', 'copy');
+    const submitted = page.elements.get('submit-attempt').listeners.get('click')();
+    await page.flush();
+    assert.equal(page.calls.filter(c => c.path.endsWith('/submit')).length, 0);
+    poll.resolve(attempt);
+    await page.flush();
+    assert.equal(page.elements.get('submit-attempt').disabled, true, 'late poll must not reopen controls during submission');
+    pending.resolve({ violations: 1 });
+    await submitted;
+    assert.equal(page.calls.filter(c => c.path.endsWith('/submit')).length, 1);
+  },
   async login_shows_supported_departments() {
     const page = await boot('login');
     const form = page.actions().children.find(child => child.tagName === 'form');

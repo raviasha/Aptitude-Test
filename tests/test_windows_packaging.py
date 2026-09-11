@@ -221,6 +221,14 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertNotIn("[Run]\nFilename: \"{sys}\\netsh.exe\"", coordinator)
         self.assertNotIn("if not ExistingConfiguration() then\n    begin\n      Parameters := '--install-config", client)
 
+    def test_coordinator_installer_can_adopt_compatible_legacy_firewall_rule(self):
+        root = Path(__file__).resolve().parents[1]
+        coordinator = (root / "installer" / "KSATCoordinator.iss").read_text("utf-8")
+        self.assertIn("ExistingFirewallRuleState(PortValue", coordinator)
+        self.assertIn("FirewallRuleStateCompatible", coordinator)
+        self.assertIn("if FirewallState = FirewallRuleStateCompatible then", coordinator)
+        self.assertIn("FirewallRuleStateConflict", coordinator)
+
     def test_mutable_client_url_is_outside_lab_user_writable_state(self):
         root = Path(__file__).resolve().parents[1]
         client_source = (root / "client_app.py").read_text("utf-8")

@@ -45,6 +45,11 @@ Name: "{autodesktop}\KSAT Faculty Coordinator"; Filename: "{app}\{#AppExeName}";
 Filename: "{app}\{#AppExeName}"; Description: "Launch KSAT Faculty Coordinator"; Flags: nowait postinstall skipifsilent
 
 [Code]
+const
+  FirewallRuleStateAbsent = 0;
+  FirewallRuleStateCompatible = 1;
+  FirewallRuleStateConflict = 2;
+
 var
   HostPage: TInputQueryWizardPage;
   PortPage: TInputQueryWizardPage;
@@ -207,6 +212,32 @@ begin
     RaiseException('The live firewall rule no longer matches the installer ownership record.');
 end;
 
+function ExistingFirewallRuleState(PortValue: String): Integer;
+var Script, Parameters: String; ResultCode: Integer;
+begin
+  Result := FirewallRuleStateConflict;
+  Script := '$ErrorActionPreference=''Stop'';try{' +
+    '$name=''{#FirewallRule}'';$program=''' +
+    ExpandConstant('{app}\{#AppExeName}') + ''';$port=''' + PortValue + ''';' +
+    '$rules=@(Get-NetFirewallRule -DisplayName $name -ErrorAction SilentlyContinue);' +
+    'if($rules.Count -eq 0){exit 0};if($rules.Count -ne 1){exit 2};' +
+    '$rule=$rules[0];$apps=@($rule|Get-NetFirewallApplicationFilter -ErrorAction Stop);' +
+    '$ports=@($rule|Get-NetFirewallPortFilter -ErrorAction Stop);' +
+    'if(($apps.Count-ne 1)-or($ports.Count-ne 1)){exit 2};' +
+    'if(($apps[0].Program-eq ''Any'')-or(-not [StringComparer]::OrdinalIgnoreCase.Equals(' +
+    '[IO.Path]::GetFullPath($apps[0].Program),[IO.Path]::GetFullPath($program)))){exit 2};' +
+    'if(($rule.DisplayName-cne $name)-or($rule.Direction.ToString()-cne ''Inbound'')-or' +
+    '($rule.Action.ToString()-cne ''Allow'')-or($rule.Profile.ToString()-cne ''Private'')-or' +
+    '($rule.Enabled.ToString()-cne ''True'')-or($ports[0].Protocol.ToString()-cne ''TCP'')-or' +
+    '(@($ports[0].LocalPort).Count-ne 1)-or($ports[0].LocalPort.ToString()-cne $port)){exit 2};' +
+    'exit 1}catch{exit 3}';
+  Parameters := '-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "' + Script + '"';
+  if not Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'), Parameters,
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then exit;
+  if ResultCode = 0 then Result := FirewallRuleStateAbsent
+  else if ResultCode = 1 then Result := FirewallRuleStateCompatible;
+end;
+
 procedure VerifyFirewallAbsent();
 var Script, Parameters: String; ResultCode: Integer;
 begin
@@ -251,7 +282,7 @@ end;
 
 procedure ConfigureOwnedFirewall(PortValue: String);
 var Parameters, PreviousMetadata, PreviousPort: String; Raw: AnsiString;
-    ResultCode, RestoreCode: Integer; HadMarker: Boolean;
+    ResultCode, RestoreCode, FirewallState: Integer; HadMarker: Boolean;
 begin
   HadMarker := FileExists(FirewallOwnerPath()); PreviousMetadata := '';
   if HadMarker then begin
@@ -269,7 +300,12 @@ begin
       RaiseException('The installer-owned coordinator firewall rule could not be updated.');
     VerifyOwnedFirewall(PortValue);
   end else begin
-    VerifyFirewallAbsent();
+    FirewallState := ExistingFirewallRuleState(PortValue);
+    if FirewallState = FirewallRuleStateConflict then
+      RaiseException('A firewall rule with the KSAT name exists but is not compatible with this Coordinator.');
+    if FirewallState = FirewallRuleStateCompatible then begin
+      VerifyOwnedFirewall(PortValue);
+    end else begin
     Parameters := 'advfirewall firewall add rule name="{#FirewallRule}" dir=in action=allow ' +
       'protocol=TCP localport=' + PortValue + ' profile=private program="' +
       ExpandConstant('{app}\{#AppExeName}') + '" enable=yes';
@@ -277,6 +313,7 @@ begin
       ewWaitUntilTerminated, ResultCode)) or (ResultCode <> 0) then
       RaiseException('The private-profile coordinator firewall rule could not be created.');
     VerifyOwnedFirewall(PortValue);
+    end;
   end;
   try
     SaveFirewallMetadataAtomically(OwnedFirewallMetadata(PortValue));
@@ -290,7 +327,7 @@ begin
         ewWaitUntilTerminated, RestoreCode)) or (RestoreCode <> 0) then
         RaiseException('The firewall ownership record and rollback both failed.');
       VerifyOwnedFirewall(PreviousPort);
-    end else begin
+    end else if FirewallState = FirewallRuleStateAbsent then begin
       Parameters := 'advfirewall firewall delete rule name="{#FirewallRule}" program="' +
         ExpandConstant('{app}\{#AppExeName}') + '"';
       if (not Exec(ExpandConstant('{sys}\netsh.exe'), Parameters, '', SW_HIDE,

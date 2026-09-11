@@ -1,9 +1,10 @@
-# KSAT client-server test builds — 10 September 2026
+# KSAT client-server test builds — 11 September 2026
 
 **TEST-SIGNED — NOT FOR PRODUCTION**
 
 These Lab Client and Faculty Coordinator builds include the exam-integrity
-hardening update and the faculty exam-timer correction. They are intended for isolated testing and supervised lab
+hardening update, the faculty exam-timer correction, and the refreshed faculty
+workspace. They are intended for isolated testing and supervised lab
 acceptance. Their ephemeral signing certificate is explicitly marked
 `KSAT TEST SIGNING IDENTITY - NOT FOR PRODUCTION`; Windows does not trust it as
 a production publisher. Institution signing and physical Windows acceptance
@@ -47,6 +48,8 @@ Install both products for a new lab or when upgrading from an older client.
   Extensions appear immediately after the action and survive page refresh.
 - Timer synchronization ignores responses for replaced pages and prevents
   overlapping background requests from restoring an older timer value.
+- Refreshed the faculty workspace with clearer navigation, responsive layout,
+  searchable question-bank management, and ZIP-only question-bank importing.
 - 545 distributed tests passed before the final polling adjustment; 97 focused
   and legacy checks passed on the final source, including its polling regression.
 - Both products passed executable smoke checks, test-signature verification,
@@ -54,7 +57,7 @@ Install both products for a new lab or when upgrading from an older client.
   confirmed coordinator TLS, a loopback-only client, and equivalent application
   payloads between the elevated Coordinator and its automated smoke probe.
 
-Built from source revision `d6509f72c93dfa024c09e6d7419e648e8d5a8f1f`.
+Built from source revision `2731145ede337fcdb90dbfcd30d2dbc9e0153276`.
 
 Browser-only checks cannot guarantee every Windows virtual-desktop switch.
 See [coverage, remaining gaps, and physical acceptance steps](../docs/exam-integrity-hardening.md)

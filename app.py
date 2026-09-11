@@ -3512,7 +3512,6 @@ def launch_test(test_id: int, request: Request) -> Dict[str, bool]:
                 else timedelta(minutes=10)
             )
             deadline = launch_closes_at.isoformat(timespec="seconds")
-            connection.execute("UPDATE tests SET launched = 0, launch_expires_at = NULL WHERE mode = 'faculty'")
             if legacy_timer_only:
                 connection.execute(
                     """UPDATE tests

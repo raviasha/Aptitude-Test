@@ -1404,6 +1404,85 @@ class DistributedAttemptStartTests(unittest.TestCase):
         self.assertEqual("2026-08-31T09:10:00+00:00", test["launch_closes_at"])
         self.assertEqual(0, attempts)
 
+    def test_faculty_can_launch_multiple_assessments_and_close_them_independently(self):
+        self.set_launch_state(False)
+        second_question = PublicQuestion(
+            question_id=1001,
+            source_key="q-1001",
+            category="Quantitative Aptitude",
+            chapter="Arithmetic",
+            difficulty="Easy",
+            question_text="Second assessment question?",
+            question_html="<p>Second assessment question?</p>",
+            options={"A": "1", "B": "2", "C": "3", "D": "4"},
+        )
+        with app.db() as connection:
+            second_test_id = connection.execute(
+                """INSERT INTO tests
+                   (test_name, composition, created_at, active, launched, mode)
+                   VALUES ('Second Distributed Set', '{}', ?, 1, 0, 'faculty')""",
+                (app.now(),),
+            ).lastrowid
+            second_release = prepare_release(
+                connection,
+                test_id=second_test_id,
+                selected_questions=[second_question],
+                review_questions=[FrozenReviewQuestion(
+                    question_id=second_question.question_id,
+                    correct_answer="A",
+                    solution_steps=["Second solution."],
+                )],
+                assets={},
+                pack_dir=app.assessment_packs_dir(),
+                signing_private_key_b64=self.config.signing_private_key_b64,
+                pack_master_key=self.config.pack_master_key,
+                now_iso="2026-08-31T08:31:00+00:00",
+            )
+            connection.execute(
+                """UPDATE release_questions
+                   SET options_json='["A","B","C","D"]', correct_answer='A',
+                       category='Quantitative Aptitude', chapter='Arithmetic'
+                   WHERE release_id=?""",
+                (second_release.release_id,),
+            )
+
+        with (
+            patch("app.require_admin_mutation", return_value={"id": "faculty", "role": "admin"}),
+            patch("app.require_user", return_value={"role": "admin"}),
+            patch("app.datetime", FrozenDateTime),
+        ):
+            first_launch = self.client.post(f"/api/admin/tests/{self.test_id}/launch")
+            second_launch = self.client.post(f"/api/admin/tests/{second_test_id}/launch")
+        self.assertEqual(200, first_launch.status_code, first_launch.text)
+        self.assertEqual(200, second_launch.status_code, second_launch.text)
+
+        listed = self.device_get(
+            "/api/client/v1/assessments",
+            student_id="S100",
+            at="2026-08-31T09:05:00+00:00",
+        )
+        self.assertEqual(200, listed.status_code, listed.text)
+        self.assertEqual(
+            {self.release_id, second_release.release_id},
+            {item["release_id"] for item in listed.json()["assessments"]},
+        )
+
+        with (
+            patch("app.require_admin_mutation", return_value={"id": "faculty", "role": "admin"}),
+            patch("app.require_user", return_value={"role": "admin"}),
+        ):
+            closed = self.client.post(f"/api/admin/tests/{self.test_id}/close")
+        self.assertEqual(200, closed.status_code, closed.text)
+        remaining = self.device_get(
+            "/api/client/v1/assessments",
+            student_id="S100",
+            at="2026-08-31T09:05:00+00:00",
+        )
+        self.assertEqual(
+            [second_release.release_id],
+            [item["release_id"] for item in remaining.json()["assessments"]],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

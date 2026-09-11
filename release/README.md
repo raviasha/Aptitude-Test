@@ -50,6 +50,8 @@ Install both products for a new lab or when upgrading from an older client.
   overlapping background requests from restoring an older timer value.
 - Refreshed the faculty workspace with clearer navigation, responsive layout,
   searchable question-bank management, and ZIP-only question-bank importing.
+- Coordinator upgrades safely adopt a matching legacy KSAT firewall rule when
+  its ownership marker is missing, while still rejecting unrelated rules.
 - 545 distributed tests passed before the final polling adjustment; 97 focused
   and legacy checks passed on the final source, including its polling regression.
 - Both products passed executable smoke checks, test-signature verification,
@@ -57,7 +59,7 @@ Install both products for a new lab or when upgrading from an older client.
   confirmed coordinator TLS, a loopback-only client, and equivalent application
   payloads between the elevated Coordinator and its automated smoke probe.
 
-Built from source revision `2731145ede337fcdb90dbfcd30d2dbc9e0153276`.
+Built from source revision `200faec6f2dcceae91a4e90c765d6f4682d048e8`.
 
 Browser-only checks cannot guarantee every Windows virtual-desktop switch.
 See [coverage, remaining gaps, and physical acceptance steps](../docs/exam-integrity-hardening.md)

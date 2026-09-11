@@ -937,6 +937,7 @@ if (typeof document !== 'undefined') {
     setSafeText(retry, `Upload retries: ${queue.retry_count || 0}. Next attempt: ${queue.next_attempt_at || 'automatically'}. ${queue.last_error || ''}`);
     elements.actionArea.append(retry);
     renderPendingReviewControls(attempt);
+    elements.actionArea.append(signOutButton());
     startPolling();
   }
 
@@ -946,6 +947,7 @@ if (typeof document !== 'undefined') {
     setSafeText(detail, attempt.message || problemMessages.faculty_intervention_required);
     elements.actionArea.append(detail);
     renderPendingReviewControls(attempt);
+    elements.actionArea.append(signOutButton());
     stopPolling();
   }
 

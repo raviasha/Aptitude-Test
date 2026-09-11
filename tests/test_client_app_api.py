@@ -773,6 +773,19 @@ class ClientAppApiTests(unittest.TestCase):
             "Your answers are safe and will upload automatically.", state["attempt"]["message"]
         )
 
+    def test_sealed_attempt_without_student_session_returns_login(self):
+        self.snapshot.state = "sealed_pending"
+        self.coordinator._session = None
+
+        state = self.client.get(
+            "/api/state", headers={"Host": "127.0.0.1:8010"}
+        )
+
+        self.assertEqual(200, state.status_code)
+        self.assertEqual("login", state.json()["state"])
+        self.assertIsNone(state.json()["student"])
+        self.assertIsNone(state.json()["attempt"])
+
     def test_acknowledged_result_contains_only_authoritative_receipt(self):
         self.snapshot.state = "acknowledged"
         self.store.receipt = SimpleNamespace(

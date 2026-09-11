@@ -273,9 +273,9 @@ const scenarios = {
   async pending_review_waits_for_faculty_close() {
     const page = await boot('sealed_pending');
     assert.ok(page.getButton('Check review availability'));
+    assert.ok(page.getButton('Sign out'));
     await page.tick(5000);
     assert.doesNotMatch(page.actions().textContent, /Review-only question|100%/);
-    assert.equal(page.getButton('Sign out'), undefined);
     assert.equal(page.getButton('Back to assessments'), undefined);
     page.handlers[pendingReviewPath] = () => localReview;
     await page.tick(5000);
@@ -288,6 +288,11 @@ const scenarios = {
     assert.ok(page.getButton('Back to submission'));
     assert.equal(page.getButton('Sign out'), undefined);
     assert.equal(page.getButton('Back to assessments'), undefined);
+  },
+  async sealed_submission_can_sign_out() {
+    const page = await boot('sealed_pending');
+    await page.click('Sign out');
+    assert.equal(page.elements.get('status-title').textContent, 'Student sign in');
   },
   async slow_pending_review_does_not_delay_upload_receipt() {
     const pending = deferred();
@@ -357,7 +362,7 @@ const scenarios = {
     await page.tick(5000);
     assert.equal(page.elements.get('status-title').textContent, 'Assessment submitted');
     assert.ok(page.getButton('Review answers'));
-    assert.equal(page.getButton('Sign out'), undefined);
+    assert.ok(page.getButton('Sign out'));
   },
   async new_signin_cannot_reuse_previous_session_review_grant() {
     const page = await boot('sealed_pending', { [pendingReviewPath]: () => localReview });

@@ -31,6 +31,9 @@ class ClientUiContractTests(unittest.TestCase):
     def test_pending_upload_reveals_local_score_and_review_only_after_faculty_close(self):
         self._run_flow("pending_review_waits_for_faculty_close")
 
+    def test_sealed_submission_can_sign_out(self):
+        self._run_flow("sealed_submission_can_sign_out")
+
     def test_slow_pending_review_check_does_not_block_receipt_or_replace_result(self):
         self._run_flow("slow_pending_review_does_not_delay_upload_receipt")
 

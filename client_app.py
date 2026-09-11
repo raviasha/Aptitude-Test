@@ -1796,18 +1796,18 @@ def create_client_app(services: ClientServices | None = None) -> FastAPI:
                 "problem": _public_problem(context.startup_problem),
             }
         current = require_services()
+        session = current.coordinator.session
         snapshot = current_snapshot()
-        if snapshot is not None:
+        if snapshot is not None and session is not None:
             attempt = _attempt_payload(context, snapshot, include_questions=False)
             return {
                 "state": attempt["state"],
                 "enrolled": True,
-                "student": _student_payload(current.coordinator.session),
+                "student": _student_payload(session),
                 "attempt": attempt,
                 "problem": None,
             }
         enrolled = bool(getattr(context.identity, "device_id", None))
-        session = current.coordinator.session
         return {
             "state": "waiting_or_ready" if session else ("login" if enrolled else "device_setup"),
             "enrolled": enrolled,

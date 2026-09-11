@@ -138,7 +138,12 @@ class FeedbackUiTests(unittest.TestCase):
     def test_packaged_assets_use_the_current_cache_version(self):
         index = INDEX_HTML.read_text(encoding="utf-8")
 
-        self.assertEqual(index.count("?v=2.0.0"), 4)
+        for filename in ("styles.css", "branding.css", "math.css"):
+            self.assertIn(f'/static/{filename}?v=2.0.0', index)
+        for filename in ("app.js", "faculty.css"):
+            self.assertIn(f'/static/{filename}?v=20260911', index)
+            self.assertTrue((INDEX_HTML.parent / filename).is_file())
+        self.assertNotIn('/static/app.js?v=2.0.0', index)
         self.assertNotIn("?v=1.3.1", index)
 
     def test_institution_logos_and_assessment_use_separate_grid_columns(self):

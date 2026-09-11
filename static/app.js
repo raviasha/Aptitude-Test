@@ -298,7 +298,19 @@ function layout(title, subtitle, content, nav = '') {
   if (facultyTimerId) clearInterval(facultyTimerId);
   if (facultySyncTimerId) clearInterval(facultySyncTimerId);
   facultyTimerId = facultySyncTimerId = null;
-  app.innerHTML = `<header class="top"><a class="brand" href="#" data-home><span>K</span>KSAT</a><nav>${nav}</nav>${logoutButton()}</header><main><div class="heading"><div><p class="eyebrow">College LAN assessment server</p><h1>${title}</h1><p>${subtitle || ''}</p></div></div>${content}</main>`;
+  const faculty = state.user?.role === 'admin';
+  app.innerHTML = faculty ? `<div class="faculty-shell">
+    <a class="skip-link" href="#faculty-main">Skip to content</a>
+    <aside class="faculty-sidebar">
+      <a class="brand" href="#" data-home><span>K</span><div>KSAT<small>Faculty workspace</small></div></a>
+      <p class="nav-label">Workspace</p><nav aria-label="Faculty navigation">${nav}</nav>
+      <div class="sidebar-footer"><div class="institution-mark">KSIT<small>Aptitude & assessment</small></div><button class="server-stop" data-stop-server>${facultyIcon('power')}Stop server</button></div>
+    </aside>
+    <div class="faculty-body">
+      <header class="faculty-topbar"><span>Faculty portal <span class="breadcrumb-divider">/</span> <strong>${({overview:'Overview',banks:'Question banks',tests:'Tests',students:'Students'})[nav.match(/aria-current="page" data-nav="(\w+)"/)?.[1]] || 'Workspace'}</strong></span><div class="faculty-account"><span class="avatar" aria-hidden="true">${esc((state.user.name || 'F').slice(0,1).toUpperCase())}</span><span>${esc(state.user.name || 'Faculty')}<small>Administrator</small></span><button class="secondary small" data-logout>Sign out</button></div></header>
+      <main id="faculty-main" tabindex="-1"><div class="heading"><div><p class="eyebrow">Your assessment workspace</p><h1>${title}</h1><p>${subtitle || ''}</p></div></div>${content}<footer class="faculty-footer"><span>KSAT · Faculty workspace</span><span>AIML Department, KSIT</span></footer></main>
+    </div>
+  </div>` : `<header class="top"><a class="brand" href="#" data-home><span>K</span>KSAT</a><nav>${nav}</nav>${logoutButton()}</header><main><div class="heading"><div><p class="eyebrow">College LAN assessment server</p><h1>${title}</h1><p>${subtitle || ''}</p></div></div>${content}</main>`;
   document.querySelector('[data-logout]')?.addEventListener('click', async () => { await api('/api/logout', {method:'POST'}); if (sessionHeartbeatId) clearInterval(sessionHeartbeatId); sessionHeartbeatId = null; state = {user:null,attempt:null,questionIndex:0}; loginScreen(); });
   document.querySelector('[data-stop-server]')?.addEventListener('click', async () => { if (!confirm('Stop the KSAT server? All connected users will be disconnected.')) return; await api('/api/admin/shutdown', {method:'POST'}); app.innerHTML = '<div class="login-card"><h2>Server stopped</h2><p>You can close this browser window.</p></div>'; });
   document.querySelector('[data-home]')?.addEventListener('click', event => { event.preventDefault(); home(); });
@@ -448,25 +460,116 @@ async function resultScreen(id, confirmSubmit = false) {
   document.querySelector('[data-retry]')?.addEventListener('click', async () => { try { const result = await api(`/api/student/practice/${id}/retry-incorrect`, {method:'POST'}); loadAttempt(result.attempt_id); } catch(error) { notify(error.message,true); } });
 }
 
-function adminNav(active) { return `<button class="${active==='overview'?'active':''}" data-nav="overview">Overview</button><button class="${active==='banks'?'active':''}" data-nav="banks">Question banks</button><button class="${active==='tests'?'active':''}" data-nav="tests">Tests</button><button class="${active==='students'?'active':''}" data-nav="students">Students</button>`; }
+function facultyIcon(name) {
+  const paths = {
+    overview: '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
+    banks: '<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20M6.5 3H20v19H6.5A2.5 2.5 0 0 1 4 19.5v-14A2.5 2.5 0 0 1 6.5 3Z"/><path d="M8 7h8M8 11h5"/>',
+    tests: '<rect x="5" y="5" width="14" height="16" rx="2"/><rect x="9" y="2" width="6" height="5" rx="1"/><path d="m9 14 2 2 4-4"/>',
+    students: '<circle cx="9" cy="8" r="3"/><path d="M3 21v-3a6 6 0 0 1 12 0v3M16 5a3 3 0 0 1 0 6M18 15a5 5 0 0 1 3 5"/>',
+    upload: '<path d="M12 16V3m-5 5 5-5 5 5M4 16v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4"/>',
+    search: '<circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/>',
+    power: '<path d="M12 2v10M6 5a9 9 0 1 0 12 0"/>',
+    arrow: '<path d="M4 12h16m-6-6 6 6-6 6"/>',
+  };
+  return `<svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[name] || paths.banks}</svg>`;
+}
+function adminNav(active) {
+  return [['overview','Overview'],['banks','Question banks'],['tests','Tests'],['students','Students']].map(([key,label]) =>
+    `<button class="${active === key ? 'active' : ''}" ${active === key ? 'aria-current="page"' : ''} data-nav="${key}">${facultyIcon(key)}<span>${label}</span></button>`).join('');
+}
 async function admin(view) {
   if (view === 'banks') return questionBanks();
   if (view === 'tests') return tests();
   if (view === 'students') return students();
   const data = await api('/api/admin/dashboard');
   const results = data.recent_attempts.length ? `<div class="table-scroll"><table><thead><tr><th>Student</th><th>Assessment</th><th>Submitted</th><th>Score</th><th>Exam integrity</th></tr></thead><tbody>${data.recent_attempts.map(item => `<tr><td><strong>${esc(item.name)}</strong><small>${esc(item.student_id)}</small></td><td>${esc(item.test_name)}</td><td>${date(item.submitted_at)}</td><td><strong>${item.score}/${item.total_questions}</strong><small>${pct(item.percentage)}</small></td><td>${item.violation_count ? `<span class="violation-badge">⚠ ${item.violation_count} violation${item.violation_count===1?'':'s'}</span><small>${item.violations.map(esc).join(' · ')}</small>` : '<span class="clean-badge">✓ Clear</span>'}</td></tr>`).join('')}</tbody></table></div>` : '<p class="muted">Faculty assessment results will appear here after students submit.</p>';
-  layout('Class performance, <em>at a glance.</em>', 'Live summary of submitted Faculty assessments across the lab.', `<section class="metrics"><article><span>Enrolled students</span><b>${data.totals.students}</b></article><article><span>Tests completed</span><b>${data.totals.completed}</b></article><article class="dark"><span>Class average</span><b>${pct(data.totals.average)}</b></article></section><section class="grid two"><article class="card"><p class="eyebrow">Class analytics</p><h2>Category performance</h2>${data.category_performance.length ? data.category_performance.map(item => `<div class="bar"><div><span>${esc(item.category)}</span><b>${pct(item.percentage)}</b></div><i><em style="width:${item.percentage}%"></em></i></div>`).join('') : '<p class="muted">Data will appear once students complete tests.</p>'}</article><article class="card"><p class="eyebrow">Exports and backup</p><h2>Keep records safe</h2><p class="muted">Results are shown below and remain available as CSV. Download a full SQLite backup for safe storage.</p><p><a class="secondary link" href="/api/admin/export">Download results CSV</a> <a class="secondary link" href="/api/admin/backup">Download database backup</a></p></article></section><section class="card faculty-results"><p class="eyebrow">Faculty assessment results</p><h2>Submitted results</h2>${results}</section>`, adminNav('overview'));
+  layout('Overview', 'A clear view of your students, assessments and progress.', `<section class="faculty-welcome"><div><p class="eyebrow">A little preparation. A lot of possibility.</p><h2>Make room for<br/>what comes next.</h2><p>Bring your question banks, launch an assessment and help your students move forward.</p><div class="welcome-actions"><button class="primary" data-nav="tests">Create an assessment ${facultyIcon('arrow')}</button><button class="welcome-link" data-nav="banks">Explore question banks</button></div></div><div class="welcome-art" aria-hidden="true"><span class="art-orbit"></span><div class="art-sheet"><span></span><span></span><i>✓</i><span></span><span></span><i>✓</i></div><div class="art-caption">PREPARE. PRACTISE. PROGRESS.</div></div></section><section class="metrics"><article><span>Enrolled students</span><b>${data.totals.students}</b></article><article><span>Tests completed</span><b>${data.totals.completed}</b></article><article class="dark"><span>Class average</span><b>${pct(data.totals.average)}</b></article></section><section class="grid two"><article class="card"><p class="eyebrow">Class analytics</p><h2>Category performance</h2>${data.category_performance.length ? data.category_performance.map(item => `<div class="bar"><div><span>${esc(item.category)}</span><b>${pct(item.percentage)}</b></div><i><em style="width:${item.percentage}%"></em></i></div>`).join('') : '<p class="muted">Data will appear once students complete tests.</p>'}</article><article class="card"><p class="eyebrow">Exports and backup</p><h2>Keep records safe</h2><p class="muted">Results are shown below and remain available as CSV. Download a full SQLite backup for safe storage.</p><p><a class="secondary link" href="/api/admin/export">Download results CSV</a> <a class="secondary link" href="/api/admin/backup">Download database backup</a></p></article></section><section class="card faculty-results"><p class="eyebrow">Faculty assessment results</p><h2>Submitted results</h2>${results}</section>`, adminNav('overview'));
 }
 
 async function questionBanks() {
-  const [library, staged, folder] = await Promise.all([api('/api/admin/question-banks'),api('/api/admin/question-banks/staged'),api('/api/admin/question-banks/folder')]);
-  layout('Question <em>banks.</em>', 'Every bank is an HTML visual file plus a private answer-key JSON file.', `<section class="folder-card"><div><p class="eyebrow">Manual copy-paste folder</p><h2>Drop pairs here, then import</h2><code>${esc(folder.path)}</code><p>Files must share a base name, for example <code>placement-set-02.html</code> and <code>placement-set-02.json</code>.</p></div><button class="secondary" data-refresh>Refresh folder</button></section><section class="grid two"><article class="card"><p class="eyebrow">Files detected in folder</p><h2>Ready to import</h2>${staged.pairs.length ? `<table><thead><tr><th>Pair</th><th>Status</th><th></th></tr></thead><tbody>${staged.pairs.map(item => `<tr><td><strong>${esc(item.stem)}</strong><small>${esc(item.html_filename || 'HTML missing')}<br/>${esc(item.answer_key_filename || 'JSON missing')}</small></td><td>${item.ready ? '<span class="ok">Ready</span>' : '<span class="warn">Incomplete</span>'}</td><td>${item.ready ? `<button class="primary small" data-import-folder data-html="${esc(item.html_filename)}" data-json="${esc(item.answer_key_filename)}">Import</button>` : ''}</td></tr>`).join('')}</tbody></table>` : '<p class="muted">No HTML/JSON pairs found in the folder yet.</p>'}</article><article class="card"><p class="eyebrow">Alternative</p><h2>Upload a pair</h2><p class="muted">Use this from any faculty computer if the files are not already on the server.</p><form id="upload-bank"><label>Questions and visuals (HTML)<input name="html_file" type="file" accept=".html,.htm" required /></label><label>Choices and answer key (JSON)<input name="answer_key_file" type="file" accept=".json" required /></label><button class="primary">Upload & import →</button></form></article></section><section class="card"><p class="eyebrow">Imported library</p><h2>Available question banks</h2><table><thead><tr><th>Bank</th><th>Questions</th><th>Format</th><th>Stimuli</th><th>Imported</th><th></th></tr></thead><tbody>${library.banks.map(item => `<tr><td><strong>${esc(item.bank_name)}</strong><small>${esc(item.source_html_filename)} + ${esc(item.answer_key_filename)}</small></td><td>${item.question_count}</td><td>v${item.format_version || 1}</td><td>${item.stimulus_count || 0}</td><td>${date(item.imported_at)}</td><td>${item.test_count ? `<small>Used by ${item.test_count} test(s)</small>` : ''}<button class="secondary small" data-delete-bank="${item.bank_id}" data-bank-name="${esc(item.bank_name)}" data-test-count="${item.test_count || 0}">Delete</button></td></tr>`).join('')}</tbody></table></section>`, adminNav('banks'));
-  document.querySelector('.heading>div>p:last-child').textContent = 'Import a legacy HTML/JSON pair or a v2 ZIP with chapter data and reusable graph assets.';
-  document.querySelector('#upload-bank').insertAdjacentHTML('afterend', `<hr/><p class="eyebrow">Recommended v2 format</p><h2>Upload a package</h2><p class="muted">One ZIP can contain chapter-based JSONL question files and reusable graph assets.</p><form id="upload-package"><label>Question-bank package<input name="package_file" type="file" accept=".zip" required /></label><button class="primary">Upload v2 package →</button></form>`);
-  document.querySelector('[data-refresh]').addEventListener('click', questionBanks);
-  document.querySelectorAll('[data-import-folder]').forEach(button => button.addEventListener('click', async () => { try { const result = await api('/api/admin/question-banks/import-from-folder',{method:'POST',body:{html_filename:button.dataset.html,answer_key_filename:button.dataset.json}}); notify(`${result.bank_name}: ${result.question_count} question(s) imported.`); questionBanks(); } catch(error) { notify(error.message,true); } }));
-  document.querySelector('#upload-bank').addEventListener('submit', async event => { event.preventDefault(); try { const result = await api('/api/admin/question-banks/import',{method:'POST',body:new FormData(event.currentTarget)}); notify(`${result.bank_name}: ${result.question_count} question(s) imported.`); questionBanks(); } catch(error) { notify(error.message,true); } });
-  document.querySelector('#upload-package').addEventListener('submit', async event => { event.preventDefault(); try { const result = await api('/api/admin/question-banks/import-package',{method:'POST',body:new FormData(event.currentTarget)}); notify(`${result.bank_name}: ${result.question_count} question(s), ${result.stimulus_count} stimulus item(s) imported.`); questionBanks(); } catch(error) { notify(error.message,true); } });
+  const library = await api('/api/admin/question-banks');
+  const questionCount = library.banks.reduce((total, bank) => total + Number(bank.question_count || 0), 0);
+  layout('Question banks', 'Everything you need to build a great assessment, organised in one place.', `
+    <section class="bank-upload card">
+      <div class="upload-intro"><p class="eyebrow">Grow your library</p><h2>One ZIP. Ready to teach.</h2><p>Upload a question-bank ZIP to add its questions, answers and solutions to your library.</p><div class="upload-note">${facultyIcon('banks')}<span>Keep the package zipped.<br/>We’ll check its contents when you import.</span></div></div>
+      <form id="upload-package">
+        <label class="zip-dropzone" id="zip-dropzone">
+          <span class="upload-icon">${facultyIcon('upload')}</span>
+          <strong id="zip-filename">Choose a ZIP or drop it here</strong>
+          <span id="zip-file-detail">Question-bank packages · .zip only</span>
+          <span class="browse-file">Browse files</span>
+          <input name="package_file" type="file" accept=".zip,application/zip" aria-label="Question-bank ZIP" aria-describedby="zip-file-detail upload-status" required />
+        </label>
+        <div class="upload-submit"><span id="upload-status" role="status" aria-live="polite">Select a package to get started.</span><button class="primary" disabled>Import question bank ${facultyIcon('arrow')}</button></div>
+      </form>
+    </section>
+    <section class="card bank-library">
+      <div class="library-heading"><div><p class="eyebrow">Your library</p><h2>Available question banks <span class="count-pill">${library.banks.length}</span></h2><p class="muted">${questionCount.toLocaleString()} questions across your imported banks</p></div><label class="bank-search">${facultyIcon('search')}<span class="sr-only">Search question banks</span><input id="bank-search" type="search" placeholder="Search question banks…" /></label></div>
+      <div class="table-scroll"><table><thead><tr><th>Question bank</th><th>Questions</th><th>Used in</th><th>Imported</th><th><span class="sr-only">Actions</span></th></tr></thead><tbody>${library.banks.map(item => `<tr data-bank-row data-bank-search="${esc(item.bank_name.toLocaleLowerCase())}"><td><div class="bank-name"><span class="bank-icon">${facultyIcon('banks')}</span><strong>${esc(item.bank_name)}</strong></div></td><td><span class="question-count">${Number(item.question_count).toLocaleString()}</span></td><td>${item.test_count ? `<span class="usage-badge">${item.test_count} test${item.test_count === 1 ? '' : 's'}</span>` : '<span class="muted">Not used yet</span>'}</td><td>${date(item.imported_at)}</td><td><button class="danger small" data-delete-bank="${item.bank_id}" data-bank-name="${esc(item.bank_name)}" data-test-count="${item.test_count || 0}" aria-label="Delete ${esc(item.bank_name)}">Delete</button></td></tr>`).join('')}</tbody></table></div>
+      <div id="bank-empty" class="empty-state" ${library.banks.length ? 'hidden' : ''}>${facultyIcon('banks')}<h3>${library.banks.length ? 'No matching question banks' : 'Your library starts here'}</h3><p>${library.banks.length ? 'Try a different bank name.' : 'Import your first ZIP above, then create an assessment from its questions.'}</p></div>
+      <p id="bank-search-count" class="library-footnote" role="status">${library.banks.length} bank${library.banks.length === 1 ? '' : 's'} in your library</p>
+    </section>`, adminNav('banks'));
+  const search = document.querySelector('#bank-search');
+  search.addEventListener('input', () => {
+    const query = search.value.trim().toLocaleLowerCase();
+    const rows = [...document.querySelectorAll('[data-bank-row]')];
+    rows.forEach(row => { row.hidden = !row.dataset.bankSearch.includes(query); });
+    const visible = rows.filter(row => !row.hidden).length;
+    document.querySelector('#bank-empty').hidden = visible > 0;
+    document.querySelector('#bank-search-count').textContent = `${visible} of ${rows.length} banks shown`;
+  });
+  const form = document.querySelector('#upload-package');
+  const input = form.elements.package_file;
+  const submit = form.querySelector('button');
+  const status = document.querySelector('#upload-status');
+  const dropzone = document.querySelector('#zip-dropzone');
+  let uploading = false;
+  const selectFile = () => {
+    const file = input.files[0];
+    const valid = !!file && /\.zip$/i.test(file.name);
+    submit.disabled = !valid || uploading;
+    document.querySelector('#zip-filename').textContent = file?.name || 'Choose a ZIP or drop it here';
+    document.querySelector('#zip-file-detail').textContent = file ? `${(file.size / 1024 / 1024).toFixed(2)} MB · ${valid ? 'ZIP package selected' : 'Unsupported file type'}` : 'Question-bank packages · .zip only';
+    status.textContent = file ? (valid ? 'Ready to import.' : 'Please choose a .zip question-bank package.') : 'Select a package to get started.';
+    status.classList.toggle('upload-error', !!file && !valid);
+    dropzone.classList.toggle('has-file', valid);
+  };
+  input.addEventListener('change', selectFile);
+  dropzone.addEventListener('dragover', event => { event.preventDefault(); if (!uploading) dropzone.classList.add('dragging'); });
+  dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragging'));
+  dropzone.addEventListener('drop', event => {
+    event.preventDefault(); dropzone.classList.remove('dragging');
+    if (uploading) return;
+    if (event.dataTransfer.files.length !== 1) { status.textContent = 'Choose one ZIP package at a time.'; return; }
+    input.files = event.dataTransfer.files;
+    selectFile();
+  });
+  form.addEventListener('submit', async event => {
+    event.preventDefault();
+    if (uploading) return;
+    selectFile();
+    if (submit.disabled) return;
+    const payload = new FormData(form);
+    uploading = true; input.disabled = true; submit.disabled = true;
+    form.setAttribute('aria-busy', 'true');
+    submit.textContent = 'Importing…';
+    status.textContent = 'Uploading and checking your package. Please keep this page open.';
+    let result;
+    try {
+      result = await api('/api/admin/question-banks/import-package', {method:'POST', body:payload});
+    } catch (error) {
+      uploading = false; input.disabled = false; submit.disabled = false;
+      form.setAttribute('aria-busy', 'false');
+      submit.innerHTML = `Try import again ${facultyIcon('arrow')}`;
+      status.textContent = error.message; status.classList.add('upload-error');
+      return;
+    }
+    notify(`${result.bank_name}: ${result.question_count} questions imported.`);
+    if (!form.isConnected) return;
+    status.textContent = 'Imported successfully. Refreshing your library…';
+    try { await questionBanks(); }
+    catch (_) { status.textContent = 'Your bank was imported. Reopen Question banks to refresh the library.'; }
+  });
   document.querySelectorAll('[data-delete-bank]').forEach(button => button.addEventListener('click', async () => {
     const testCount = Number(button.dataset.testCount || 0);
     const dependentWarning = testCount ? ` This will also permanently delete ${testCount} dependent test(s), every attempt and response, and all result history.` : '';
@@ -488,7 +591,7 @@ async function tests() {
   const releaseStatus = test => ['prepared', 'launched'].includes(test.release_state)
     ? `<span class="ok">Ready</span><small><code>${esc(test.content_hash_prefix || '')}</code></small>`
     : test.release_state === 'failed' ? '<span class="warn">Preparation failed</span>' : '<span class="muted">Preparing</span>';
-  layout('Create a <em>test.</em>', 'Choose a difficulty and quantities from the selected bank’s categories and chapters.', `<section class="grid two"><article class="card"><p class="eyebrow">New assessment</p><h2>Question composition</h2><form id="test-form"><label>Test name<input name="test_name" required placeholder="Placement Readiness · Set 02" /></label><label>Question bank<select id="test-bank" name="bank_id" required><option value="">Choose a bank…</option>${data.banks.map(bank => `<option value="${bank.bank_id}">${esc(bank.bank_name)} · ${bank.question_count} active questions</option>`).join('')}</select></label><label>Difficulty<select id="test-difficulty"><option value="all">All difficulty levels</option>${difficulties.map(level => `<option value="${level}">${level}</option>`).join('')}</select></label><div id="test-composition" class="taxonomy"><p class="muted">Choose a question bank to see its categories and chapters.</p></div><p class="composition-total">Selected: <strong id="test-total">0</strong> / 500</p><button class="primary">Create test →</button></form></article><article class="card"><p class="eyebrow">Current and past tests · submission queue ${Number(data.submission_queue_pending || 0)}</p><h2>Test library</h2><div class="table-scroll" id="faculty-test-library"><table><thead><tr><th>Name</th><th>Bank</th><th>Difficulty</th><th>Questions</th><th>Content</th><th>Status</th><th>Timing</th><th>Action</th></tr></thead><tbody>${data.tests.map(test => `<tr><td>${esc(test.test_name)}<small>${test.attempt_count} attempt${test.attempt_count===1?'':'s'}</small></td><td>${esc(test.bank_name || '—')}</td><td>${esc(difficultyLabel(test.difficulty_levels))}</td><td>${compositionTotal(test)}</td><td>${releaseStatus(test)}</td><td>${Number(test.distributed_status?.started||0)} started · ${Number(test.distributed_status?.submitted||0)} submitted · ${Number(test.distributed_status?.voided||0)} voided</td><td data-faculty-timing="${test.test_id}">${facultyTimingMarkup(test)}</td><td><div class="row-actions">${facultyLaunchAction(test)}<button class="secondary small" data-duplicate-test="${test.test_id}">Duplicate</button><button class="secondary small" data-extend-test="${test.test_id}">Extend</button><button class="danger small" data-delete-test="${test.test_id}" data-test-name="${esc(test.test_name)}" data-attempt-count="${test.attempt_count}">Delete</button></div></td></tr>`).join('')}</tbody></table></div></article></section><section class="card"><div class="heading"><div><p class="eyebrow">Managed lab computers</p><h2>${deviceData.devices.length} registered devices</h2></div></div><div class="table-scroll"><table><thead><tr><th>Label</th><th>Device</th><th>Fingerprint</th><th>Registered</th><th>State</th></tr></thead><tbody>${deviceData.devices.map(device => `<tr><td>${esc(device.label)}</td><td><code>${esc(device.device_id)}</code></td><td><code>${esc(device.public_key_fingerprint)}</code></td><td>${date(device.enrolled_at)}</td><td><button class="secondary small" data-device-state="${device.active?'revoke':'reactivate'}" data-device-id="${esc(device.device_id)}">${device.active?'Revoke':'Reactivate'}</button></td></tr>`).join('')}</tbody></table></div></section>`, adminNav('tests'));
+  layout('Tests', 'Launch multiple assessments and let students choose. Close each test to release its answer review.', `<section class="test-workspace"><details class="card test-builder" ${data.tests.length ? '' : 'open'}><summary><span><span class="eyebrow">Build something new</span><strong>Create an assessment</strong></span><span class="details-hint">Choose bank & questions</span></summary><form id="test-form"><label>Test name<input name="test_name" required placeholder="Placement Readiness · Set 02" /></label><label>Question bank<select id="test-bank" name="bank_id" required><option value="">Choose a bank…</option>${data.banks.map(bank => `<option value="${bank.bank_id}">${esc(bank.bank_name)} · ${bank.question_count} active questions</option>`).join('')}</select></label><label>Difficulty<select id="test-difficulty"><option value="all">All difficulty levels</option>${difficulties.map(level => `<option value="${level}">${level}</option>`).join('')}</select></label><div id="test-composition" class="taxonomy"><p class="muted">Choose a question bank to see its categories and chapters.</p></div><p class="composition-total">Selected: <strong id="test-total">0</strong> / 500</p><button class="primary">Create test →</button></form></details><article class="card"><p class="eyebrow">Current and past tests · submission queue ${Number(data.submission_queue_pending || 0)}</p><h2>Test library</h2><div class="table-scroll" id="faculty-test-library"><table><thead><tr><th>Name</th><th>Bank</th><th>Difficulty</th><th>Questions</th><th>Readiness</th><th>Status</th><th>Timing</th><th>Action</th></tr></thead><tbody>${data.tests.map(test => `<tr><td>${esc(test.test_name)}<small>${test.attempt_count} attempt${test.attempt_count===1?'':'s'}</small></td><td>${esc(test.bank_name || '—')}</td><td>${esc(difficultyLabel(test.difficulty_levels))}</td><td>${compositionTotal(test)}</td><td>${releaseStatus(test)}</td><td>${Number(test.distributed_status?.started||0)} started · ${Number(test.distributed_status?.submitted||0)} submitted · ${Number(test.distributed_status?.voided||0)} voided</td><td data-faculty-timing="${test.test_id}">${facultyTimingMarkup(test)}</td><td><div class="row-actions">${facultyLaunchAction(test)}<button class="secondary small" data-duplicate-test="${test.test_id}">Duplicate</button><button class="secondary small" data-extend-test="${test.test_id}">Extend</button><button class="danger small" data-delete-test="${test.test_id}" data-test-name="${esc(test.test_name)}" data-attempt-count="${test.attempt_count}">Delete</button></div></td></tr>`).join('')}</tbody></table></div></article></section><details class="card device-library"><summary><span>Lab computers</span><span class="count-pill">${deviceData.devices.length} registered</span></summary><div class="heading"><div><p class="eyebrow">Managed lab computers</p><h2>${deviceData.devices.length} registered devices</h2></div></div><div class="table-scroll"><table><thead><tr><th>Label</th><th>Device</th><th>Fingerprint</th><th>Registered</th><th>State</th></tr></thead><tbody>${deviceData.devices.map(device => `<tr><td>${esc(device.label)}</td><td><code>${esc(device.device_id)}</code></td><td><code>${esc(device.public_key_fingerprint)}</code></td><td>${date(device.enrolled_at)}</td><td><button class="secondary small" data-device-state="${device.active?'revoke':'reactivate'}" data-device-id="${esc(device.device_id)}">${device.active?'Revoke':'Reactivate'}</button></td></tr>`).join('')}</tbody></table></div></details>`, adminNav('tests'));
   const manageAttempts = document.createElement('button');
   manageAttempts.className = 'secondary'; manageAttempts.textContent = 'Inspect / manage attempts';
   document.querySelector('main>.heading')?.append(manageAttempts);
@@ -533,8 +636,19 @@ async function studentsLegacy() { const data = await api('/api/admin/students');
 
 async function students() {
   const data = await api('/api/admin/students');
-  layout('Manage <em>students.</em>', 'Inactive login locks expire after two minutes. Faculty can also release a login immediately.', `<section class="card"><div class="heading"><div><p class="eyebrow">Enrolled students</p><h2>${data.students.length} students</h2></div><button class="primary" id="delete-selected">Delete selected</button></div><table><thead><tr><th><input type="checkbox" id="select-all-students" /></th><th>Name</th><th>USN</th><th>Class</th><th>Login</th></tr></thead><tbody>${data.students.map(student => `<tr><td><input type="checkbox" class="student-choice" value="${esc(student.student_id)}" /></td><td>${esc(student.name)}</td><td><code>${esc(student.student_id)}</code></td><td>${esc(student.class)}-${esc(student.section)}</td><td>${student.signed_in ? `<button class="secondary small" data-release-login="${esc(student.student_id)}">Release login</button><small>Active</small>` : '<span class="muted">Inactive</span>'}</td></tr>`).join('')}</tbody></table></section>`, adminNav('students'));
-  document.querySelector('#select-all-students').addEventListener('change', event => document.querySelectorAll('.student-choice').forEach(choice => { choice.checked = event.target.checked; }));
+  layout('Students', 'Manage your student directory and help students get back into their assessments.', `<section class="card"><div class="heading"><div><p class="eyebrow">Enrolled students</p><h2>${data.students.length} students</h2></div><button class="danger" id="delete-selected" disabled>Delete selected</button></div><div class="table-scroll"><table><thead><tr><th><input type="checkbox" id="select-all-students" aria-label="Select all students" /></th><th>Name</th><th>USN</th><th>Class</th><th>Login</th></tr></thead><tbody>${data.students.map(student => `<tr><td><input type="checkbox" class="student-choice" aria-label="Select ${esc(student.name)}" value="${esc(student.student_id)}" /></td><td>${esc(student.name)}</td><td><code>${esc(student.student_id)}</code></td><td>${esc(student.class)}-${esc(student.section)}</td><td>${student.signed_in ? `<button class="secondary small" data-release-login="${esc(student.student_id)}">Release login</button><small>Active</small>` : '<span class="muted">Inactive</span>'}</td></tr>`).join('')}</tbody></table></div><p class="library-footnote">Inactive login locks expire after two minutes. Use Release login to allow a student to sign in again immediately.</p></section>`, adminNav('students'));
+  const selectAll = document.querySelector('#select-all-students');
+  const choices = [...document.querySelectorAll('.student-choice')];
+  const updateSelection = () => {
+    const count = choices.filter(choice => choice.checked).length;
+    const button = document.querySelector('#delete-selected');
+    button.disabled = count === 0;
+    button.textContent = count ? `Delete selected (${count})` : 'Delete selected';
+    selectAll.checked = choices.length > 0 && count === choices.length;
+    selectAll.indeterminate = count > 0 && count < choices.length;
+  };
+  selectAll.addEventListener('change', () => { choices.forEach(choice => { choice.checked = selectAll.checked; }); updateSelection(); });
+  choices.forEach(choice => choice.addEventListener('change', updateSelection));
   document.querySelectorAll('[data-release-login]').forEach(button => button.addEventListener('click', async () => { try { await api(`/api/admin/students/${encodeURIComponent(button.dataset.releaseLogin)}/session`, {method:'DELETE'}); notify(`${button.dataset.releaseLogin} can sign in again.`); students(); } catch(error) { notify(error.message,true); } }));
   document.querySelector('#delete-selected').addEventListener('click', async () => { const selected = [...document.querySelectorAll('.student-choice:checked')].map(choice => choice.value); if (!selected.length) { notify('Select at least one student.', true); return; } if (!confirm(`Delete ${selected.length} selected student(s) and all practice and faculty assessment history, including submissions and results? This cannot be undone.`)) return; try { for (const studentId of selected) await api(`/api/admin/students/${encodeURIComponent(studentId)}`, {method:'DELETE'}); notify('Selected students deleted.'); students(); } catch(error) { notify(error.message,true); } });
 }

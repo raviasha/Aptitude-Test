@@ -82,8 +82,8 @@ class FeedbackUiTests(unittest.TestCase):
     def test_faculty_header_uses_professor_name_for_account_and_role(self):
         source = APP_JS.read_text(encoding="utf-8")
 
-        self.assertIn("<small>Prof R Ravi Shankar</small>", source)
-        self.assertNotIn("<small>Administrator</small>", source)
+        self.assertIn("<small>Faculty</small>", source)
+        self.assertNotIn("<small>Prof R Ravi Shankar</small>", source)
 
     def test_login_brand_uses_spaced_matching_aiml_ksat_text(self):
         source = APP_JS.read_text(encoding="utf-8")
@@ -159,7 +159,7 @@ class FeedbackUiTests(unittest.TestCase):
         for filename in ("styles.css", "branding.css", "math.css"):
             self.assertIn(f'/static/{filename}?v=2.0.0', index)
         for filename in ("app.js", "faculty.css"):
-            version = "20260911-2" if filename == "app.js" else "20260911"
+            version = "20260911-3" if filename == "app.js" else "20260911"
             self.assertIn(f'/static/{filename}?v={version}', index)
             self.assertTrue((INDEX_HTML.parent / filename).is_file())
         self.assertNotIn('/static/app.js?v=2.0.0', index)

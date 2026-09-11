@@ -93,6 +93,7 @@ STATIC_DIR = BUNDLE_DIR / "static"
 TEMPLATE_DIR = BUNDLE_DIR / "templates"
 SERVER_URL = "http://127.0.0.1:8000"
 APP_VERSION = "2.0.0"
+DEFAULT_FACULTY_NAME = "Prof R Ravi Shankar"
 
 CATEGORIES = [
     "Quantitative Aptitude",
@@ -1157,7 +1158,12 @@ def ensure_schema() -> None:
 def seed_data() -> None:
     with db() as connection:
         if not connection.execute("SELECT 1 FROM admins LIMIT 1").fetchone():
-            connection.execute("INSERT INTO admins VALUES (?, ?, ?)", ("faculty", "Dr. Meera Rao", hash_password("faculty123")))
+            connection.execute("INSERT INTO admins VALUES (?, ?, ?)", ("faculty", DEFAULT_FACULTY_NAME, hash_password("faculty123")))
+        else:
+            connection.execute(
+                "UPDATE admins SET name = ? WHERE username = ? AND name = ?",
+                (DEFAULT_FACULTY_NAME, "faculty", "Dr. Meera Rao"),
+            )
         if not connection.execute("SELECT 1 FROM students LIMIT 1").fetchone():
             connection.execute(
                 "INSERT INTO students VALUES (?, ?, ?, ?, ?, ?)",

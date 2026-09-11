@@ -79,6 +79,24 @@ setImmediate(() => process.stdout.write(appNode.innerHTML));
 
 
 class FeedbackUiTests(unittest.TestCase):
+    def test_faculty_header_uses_professor_name_for_account_and_role(self):
+        source = APP_JS.read_text(encoding="utf-8")
+
+        self.assertIn("<small>Prof R Ravi Shankar</small>", source)
+        self.assertNotIn("<small>Administrator</small>", source)
+
+    def test_login_brand_uses_spaced_matching_aiml_ksat_text(self):
+        source = APP_JS.read_text(encoding="utf-8")
+
+        self.assertIn("AIML - KSAT", source)
+        self.assertNotIn("AIML-<i>KSAT</i>", source)
+
+    def test_login_card_stays_below_institutional_header(self):
+        styles = BRANDING_CSS.read_text(encoding="utf-8")
+
+        self.assertIn("place-items: start end", styles)
+        self.assertIn("margin-top: clamp(180px, 22vh, 240px)", styles)
+
     def test_login_defaults_to_student_and_aiml_without_faculty_credentials(self):
         source = APP_JS.read_text(encoding="utf-8")
         login = render_login_markup()
@@ -141,7 +159,8 @@ class FeedbackUiTests(unittest.TestCase):
         for filename in ("styles.css", "branding.css", "math.css"):
             self.assertIn(f'/static/{filename}?v=2.0.0', index)
         for filename in ("app.js", "faculty.css"):
-            self.assertIn(f'/static/{filename}?v=20260911', index)
+            version = "20260911-2" if filename == "app.js" else "20260911"
+            self.assertIn(f'/static/{filename}?v={version}', index)
             self.assertTrue((INDEX_HTML.parent / filename).is_file())
         self.assertNotIn('/static/app.js?v=2.0.0', index)
         self.assertNotIn("?v=1.3.1", index)

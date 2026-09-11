@@ -4,9 +4,9 @@
   isolation: isolate;
   display: grid;
   grid-template-columns: 1fr;
-  place-items: center end;
+  place-items: start end;
   min-height: 100svh;
-  padding: clamp(110px, 18vh, 150px) clamp(24px, 6vw, 96px) 20px;
+  padding: 24px clamp(24px, 6vw, 96px) 20px;
   background-color: #eef2f5;
   background-image: url('/static/branding/campus-login.jpg');
   background-position: center;
@@ -27,9 +27,9 @@
 }
 
 .campus-login-card {
-  align-self: center;
+  align-self: start;
   width: min(430px, 100%);
-  margin: 0;
+  margin-top: clamp(180px, 22vh, 240px);
   padding: 24px 30px;
   border: 1px solid rgba(255, 255, 255, .72);
   border-radius: 18px;
@@ -224,7 +224,7 @@ main.institutional-assessment {
 
   .campus-login {
     place-items: end center;
-    padding: 150px 16px 20px;
+    padding: 190px 16px 20px;
     background-image: url('/static/branding/campus-login.jpg');
     background-position: 42% center;
     background-size: cover;
@@ -235,6 +235,8 @@ main.institutional-assessment {
   }
 
   .campus-login-card {
+    align-self: end;
+    margin-top: 0;
     padding: 24px 22px;
     border-radius: 14px;
   }

@@ -68,6 +68,29 @@ class CoordinatorSchemaTests(unittest.TestCase):
                 app.BACKUP_DIR = original_backup_dir
                 app.QUESTION_BANKS_DIR = original_question_banks_dir
 
+    def test_seed_data_migrates_legacy_default_faculty_name(self):
+        with tempfile.TemporaryDirectory() as directory:
+            originals = (app.DATA_DIR, app.DB_PATH, app.BACKUP_DIR, app.QUESTION_BANKS_DIR)
+            try:
+                app.DATA_DIR = Path(directory)
+                app.DB_PATH = app.DATA_DIR / "aptitude.db"
+                app.BACKUP_DIR = app.DATA_DIR / "backups"
+                app.QUESTION_BANKS_DIR = app.DATA_DIR / "Question Banks"
+                app.ensure_schema()
+                with app.db() as connection:
+                    connection.execute(
+                        "INSERT INTO admins (username, name, password_hash) VALUES (?, ?, ?)",
+                        ("faculty", "Dr. Meera Rao", "legacy-hash"),
+                    )
+                app.seed_data()
+                with app.db() as connection:
+                    account = connection.execute(
+                        "SELECT name FROM admins WHERE username = ?", ("faculty",)
+                    ).fetchone()
+                self.assertEqual(account["name"], "Prof R Ravi Shankar")
+            finally:
+                app.DATA_DIR, app.DB_PATH, app.BACKUP_DIR, app.QUESTION_BANKS_DIR = originals
+
     def test_migration_preserves_responses_while_detaching_mutable_question_rows(self):
         connection = sqlite3.connect(":memory:")
         connection.row_factory = sqlite3.Row

@@ -61,7 +61,7 @@ Install both products for a new lab or when upgrading from an older client.
   confirmed coordinator TLS, a loopback-only client, and equivalent application
   payloads between the elevated Coordinator and its automated smoke probe.
 
-Built from source revision `f0a659aa4e5020cfc1ed8e42b3e28f9d122898de`.
+Built from source revision `a3220fa0bd3542c5484fef5fdc6827d4215af945`.
 
 Browser-only checks cannot guarantee every Windows virtual-desktop switch.
 See [coverage, remaining gaps, and physical acceptance steps](../docs/exam-integrity-hardening.md)

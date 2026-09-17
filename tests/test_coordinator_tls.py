@@ -221,7 +221,18 @@ class CoordinatorTlsTests(unittest.TestCase):
         self.assertEqual(before, self._snapshot())
         target.write_bytes(original)
 
-    def test_expiry_hostname_and_lan_changes_require_explicit_renewal(self):
+    def test_lan_changes_preserve_valid_hostname_certificate_and_identity(self):
+        security = self._load()
+        before = self._snapshot()
+        for addresses in (["192.168.10.99"], [], ["10.4.0.12", "172.20.0.1"], ["fd00::99"]):
+            with self.subTest(addresses=addresses):
+                loaded = self._load(lan_ip_addresses=addresses)
+                self.assertEqual(security.ca_certificate_pem, loaded.ca_certificate_pem)
+                self.assertEqual(security.server_certificate_pem, loaded.server_certificate_pem)
+                self.assertEqual(security.signing_public_key_b64, loaded.signing_public_key_b64)
+                self.assertEqual(before, self._snapshot())
+
+    def test_expiry_and_hostname_changes_require_explicit_renewal(self):
         security = self._load()
         before = self._snapshot()
         with self.assertRaises(ValueError):
@@ -229,9 +240,6 @@ class CoordinatorTlsTests(unittest.TestCase):
         self.assertEqual(before, self._snapshot())
         with self.assertRaises(ValueError):
             self._load(hostname="changed.example.edu")
-        self.assertEqual(before, self._snapshot())
-        with self.assertRaises(ValueError):
-            self._load(lan_ip_addresses=["192.168.10.99"])
         self.assertEqual(before, self._snapshot())
 
         renewed = renew_coordinator_server_certificate(

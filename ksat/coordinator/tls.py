@@ -470,9 +470,12 @@ def _validate_server(
         raise ValueError("Coordinator server certificate is invalid.")
     if names.get_values_for_type(x509.DNSName) != [hostname]:
         raise ValueError("Coordinator server certificate does not match its hostname.")
-    expected_addresses = {*addresses, ipaddress.ip_address("127.0.0.1")}
-    if set(names.get_values_for_type(x509.IPAddress)) != expected_addresses:
-        raise ValueError("Coordinator server certificate does not match current LAN addresses.")
+    # LAN addresses are issuance-time conveniences, not the server identity.
+    # DHCP and adapter changes must not invalidate a trusted, unexpired hostname
+    # certificate. TLS peers still verify the hostname/IP they actually use.
+    # Keep loopback coverage, required by the coordinator's local HTTPS access.
+    if ipaddress.ip_address("127.0.0.1") not in names.get_values_for_type(x509.IPAddress):
+        raise ValueError("Coordinator server certificate does not cover loopback access.")
 
 
 def _validate_browser_secret(path: Path) -> tuple[bytes, str]:

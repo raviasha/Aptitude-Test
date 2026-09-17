@@ -1,0 +1,8 @@
+{
+  "test_signed": true,
+  "hostname_https_with_old_lan_certificate": "passed twice each in console and GUI subsystems",
+  "security_files_preserved": true,
+  "uac_smoke_payload_match": true,
+  "installer_payload_verified": true,
+  "client_binaries_rebuilt": false
+}

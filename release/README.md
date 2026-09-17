@@ -1,4 +1,30 @@
-# KSAT client-server test builds — 11 September 2026
+# KSAT client-server test builds — Coordinator update 17 September 2026
+
+## Coordinator DHCP startup fix — 17 September 2026
+
+The Coordinator installer and standalone executable in this folder now allow
+DHCP/adapter IP changes when the configured hostname and existing certificate
+remain valid. They no longer require the certificate's issuance-time LAN IPs
+to exactly equal the current adapter addresses. Hostname, signature, expiry,
+private-key matching, and loopback certificate checks remain enabled.
+
+**Update only the server:** close the Coordinator and run
+[KSATCoordinatorSetup-2.0.0.exe](KSATCoordinatorSetup-2.0.0.exe) over the existing
+installation. Do not uninstall or delete ProgramData. Windows and Ubuntu client
+binaries are unchanged. Clients should use the stable hostname, which must
+resolve to the server's current IP. Literal-IP connections are not automatically
+updated or newly covered by the certificate.
+
+If ProgramData was already deleted, stop the server, preserve its newly created
+data folder separately, and restore the complete original `KSAT Coordinator`
+backup before starting this updated version. Do not merge old and new security
+files. The executable update cannot reconstruct deleted accounts or keys.
+
+See [DHCP update verification and recovery](coordinator-dhcp-update.md) and
+[coordinator-only checksums](COORDINATOR-DHCP-SHA256SUMS.txt). These remain
+**test-signed pilot binaries**, not institution-signed production releases.
+The older complete-package ZIP linked below does not include this DHCP fix;
+use the Coordinator installer directly from this folder.
 
 **TEST-SIGNED — NOT FOR PRODUCTION**
 
@@ -61,7 +87,9 @@ Install both products for a new lab or when upgrading from an older client.
   confirmed coordinator TLS, a loopback-only client, and equivalent application
   payloads between the elevated Coordinator and its automated smoke probe.
 
-Built from source revision `a3220fa0bd3542c5484fef5fdc6827d4215af945`.
+The unchanged Windows client was built from source revision
+`a3220fa0bd3542c5484fef5fdc6827d4215af945`. The Coordinator now includes the
+17 September DHCP fix described above; see its separate verification notes.
 
 Browser-only checks cannot guarantee every Windows virtual-desktop switch.
 See [coverage, remaining gaps, and physical acceptance steps](../docs/exam-integrity-hardening.md)

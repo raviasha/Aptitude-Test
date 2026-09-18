@@ -1,0 +1,30 @@
+{
+  "book_profile": "new_reasoning",
+  "book": "A New Approach to Reasoning: Reasoning for Competitions",
+  "source_pdf": "623413991-A-New-Approach-to-Reasoning-Book-for-Competitive-Exams-From-the-House-of-RS-Aggarwal-English-Medium.pdf",
+  "source_pdf_sha256": "d3e1119e1958dd751e988331b03a8c0059f883b73f97cc332807a9d4f40d9abe",
+  "packages": [
+    {
+      "file": "logical_reasoning_new_ch01_coding_decoding_all_vision.zip",
+      "section": "Reasoning for Competitions",
+      "chapter": 1,
+      "chapter_title": "Coding-Decoding",
+      "pdf_pages": [
+        5,
+        38
+      ],
+      "page_count": 34
+    },
+    {
+      "file": "logical_reasoning_new_ch02_alphabet_test_all_vision.zip",
+      "section": "Reasoning for Competitions",
+      "chapter": 2,
+      "chapter_title": "Alphabet Test",
+      "pdf_pages": [
+        39,
+        58
+      ],
+      "page_count": 20
+    }
+  ]
+}

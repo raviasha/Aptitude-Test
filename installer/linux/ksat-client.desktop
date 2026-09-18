@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=KSAT Lab Client
+Comment=Open the local KSAT assessment client
+Exec=xdg-open http://127.0.0.1:8010/
+Icon=applications-education
+Terminal=false
+Categories=Education;

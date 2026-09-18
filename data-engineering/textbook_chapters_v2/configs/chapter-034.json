@@ -1,0 +1,751 @@
+{
+  "chapter": 34,
+  "chapter_name": "Heights and Distances",
+  "bank_name": "R. S. Aggarwal - Chapter 34: Heights and Distances (all-vision text-only)",
+  "printed_question_count": 18,
+  "question_numbers": [
+    1,
+    18
+  ],
+  "question_pages": [
+    882,
+    883
+  ],
+  "answer_pages": [
+    883,
+    883
+  ],
+  "solution_pages": [
+    883,
+    885
+  ],
+  "intentional_exclusions": [],
+  "shared_contexts": {},
+  "marker_overrides": {
+    "question": {
+      "1": {
+        "segments": [
+          {
+            "page": 882,
+            "left": 95,
+            "top": 322,
+            "right": 760,
+            "bottom": 501
+          }
+        ]
+      },
+      "2": {
+        "segments": [
+          {
+            "page": 882,
+            "left": 95,
+            "top": 501,
+            "right": 760,
+            "bottom": 704
+          }
+        ]
+      },
+      "3": {
+        "segments": [
+          {
+            "page": 882,
+            "left": 95,
+            "top": 704,
+            "right": 760,
+            "bottom": 873
+          }
+        ]
+      },
+      "4": {
+        "segments": [
+          {
+            "page": 882,
+            "left": 95,
+            "top": 873,
+            "right": 760,
+            "bottom": 1060
+          }
+        ]
+      },
+      "5": {
+        "segments": [
+          {
+            "page": 882,
+            "left": 95,
+            "top": 1060,
+            "right": 760,
+            "bottom": 1295
+          }
+        ]
+      },
+      "6": {
+        "segments": [
+          {
+            "page": 882,
+            "left": 95,
+            "top": 1295,
+            "right": 760,
+            "bottom": 1621
+          }
+        ]
+      },
+      "7": {
+        "segments": [
+          {
+            "page": 882,
+            "left": 95,
+            "top": 1621,
+            "right": 760,
+            "bottom": 1900
+          }
+        ]
+      },
+      "8": {
+        "segments": [
+          {
+            "page": 882,
+            "left": 775,
+            "top": 285,
+            "right": 1435,
+            "bottom": 628
+          }
+        ]
+      },
+      "9": {
+        "segments": [
+          {
+            "page": 882,
+            "left": 775,
+            "top": 628,
+            "right": 1435,
+            "bottom": 839
+          }
+        ]
+      },
+      "10": {
+        "segments": [
+          {
+            "page": 882,
+            "left": 775,
+            "top": 839,
+            "right": 1435,
+            "bottom": 1112
+          }
+        ]
+      },
+      "11": {
+        "segments": [
+          {
+            "page": 882,
+            "left": 775,
+            "top": 1112,
+            "right": 1435,
+            "bottom": 1391
+          }
+        ]
+      },
+      "12": {
+        "segments": [
+          {
+            "page": 882,
+            "left": 775,
+            "top": 1391,
+            "right": 1435,
+            "bottom": 1605
+          }
+        ]
+      },
+      "13": {
+        "segments": [
+          {
+            "page": 882,
+            "left": 775,
+            "top": 1605,
+            "right": 1435,
+            "bottom": 1900
+          }
+        ]
+      },
+      "14": {
+        "segments": [
+          {
+            "page": 883,
+            "left": 95,
+            "top": 172,
+            "right": 760,
+            "bottom": 470
+          }
+        ]
+      },
+      "15": {
+        "segments": [
+          {
+            "page": 883,
+            "left": 95,
+            "top": 470,
+            "right": 760,
+            "bottom": 692
+          }
+        ]
+      },
+      "16": {
+        "segments": [
+          {
+            "page": 883,
+            "left": 95,
+            "top": 692,
+            "right": 760,
+            "bottom": 770
+          },
+          {
+            "page": 883,
+            "left": 775,
+            "top": 170,
+            "right": 1435,
+            "bottom": 309
+          }
+        ]
+      },
+      "17": {
+        "segments": [
+          {
+            "page": 883,
+            "left": 775,
+            "top": 309,
+            "right": 1435,
+            "bottom": 561
+          }
+        ]
+      },
+      "18": {
+        "segments": [
+          {
+            "page": 883,
+            "left": 775,
+            "top": 561,
+            "right": 1435,
+            "bottom": 770
+          }
+        ]
+      }
+    },
+    "answer_key": {
+      "1": {
+        "segments": [
+          {
+            "page": 883,
+            "left": 95,
+            "top": 886,
+            "right": 1435,
+            "bottom": 919
+          }
+        ]
+      },
+      "2": {
+        "segments": [
+          {
+            "page": 883,
+            "left": 95,
+            "top": 886,
+            "right": 1435,
+            "bottom": 919
+          }
+        ]
+      },
+      "3": {
+        "segments": [
+          {
+            "page": 883,
+            "left": 95,
+            "top": 886,
+            "right": 1435,
+            "bottom": 919
+          }
+        ]
+      },
+      "4": {
+        "segments": [
+          {
+            "page": 883,
+            "left": 95,
+            "top": 886,
+            "right": 1435,
+            "bottom": 919
+          }
+        ]
+      },
+      "5": {
+        "segments": [
+          {
+            "page": 883,
+            "left": 95,
+            "top": 886,
+            "right": 1435,
+            "bottom": 919
+          }
+        ]
+      },
+      "6": {
+        "segments": [
+          {
+            "page": 883,
+            "left": 95,
+            "top": 886,
+            "right": 1435,
+            "bottom": 919
+          }
+        ]
+      },
+      "7": {
+        "segments": [
+          {
+            "page": 883,
+            "left": 95,
+            "top": 886,
+            "right": 1435,
+            "bottom": 919
+          }
+        ]
+      },
+      "8": {
+        "segments": [
+          {
+            "page": 883,
+            "left": 95,
+            "top": 886,
+            "right": 1435,
+            "bottom": 919
+          }
+        ]
+      },
+      "9": {
+        "segments": [
+          {
+            "page": 883,
+            "left": 95,
+            "top": 886,
+            "right": 1435,
+            "bottom": 919
+          }
+        ]
+      },
+      "10": {
+        "segments": [
+          {
+            "page": 883,
+            "left": 95,
+            "top": 886,
+            "right": 1435,
+            "bottom": 919
+          }
+        ]
+      },
+      "11": {
+        "segments": [
+          {
+            "page": 883,
+            "left": 95,
+            "top": 930,
+            "right": 1435,
+            "bottom": 963
+          }
+        ]
+      },
+      "12": {
+        "segments": [
+          {
+            "page": 883,
+            "left": 95,
+            "top": 930,
+            "right": 1435,
+            "bottom": 963
+          }
+        ]
+      },
+      "13": {
+        "segments": [
+          {
+            "page": 883,
+            "left": 95,
+            "top": 930,
+            "right": 1435,
+            "bottom": 963
+          }
+        ]
+      },
+      "14": {
+        "segments": [
+          {
+            "page": 883,
+            "left": 95,
+            "top": 930,
+            "right": 1435,
+            "bottom": 963
+          }
+        ]
+      },
+      "15": {
+        "segments": [
+          {
+            "page": 883,
+            "left": 95,
+            "top": 930,
+            "right": 1435,
+            "bottom": 963
+          }
+        ]
+      },
+      "16": {
+        "segments": [
+          {
+            "page": 883,
+            "left": 95,
+            "top": 930,
+            "right": 1435,
+            "bottom": 963
+          }
+        ]
+      },
+      "17": {
+        "segments": [
+          {
+            "page": 883,
+            "left": 95,
+            "top": 930,
+            "right": 1435,
+            "bottom": 963
+          }
+        ]
+      },
+      "18": {
+        "segments": [
+          {
+            "page": 883,
+            "left": 95,
+            "top": 930,
+            "right": 1435,
+            "bottom": 963
+          }
+        ]
+      }
+    },
+    "solution": {
+      "1": {
+        "segments": [
+          {
+            "page": 883,
+            "left": 95,
+            "top": 1081,
+            "right": 760,
+            "bottom": 1113
+          },
+          {
+            "page": 883,
+            "left": 95,
+            "top": 1113,
+            "right": 520,
+            "bottom": 1263
+          },
+          {
+            "page": 883,
+            "left": 520,
+            "top": 1113,
+            "right": 760,
+            "bottom": 1325
+          }
+        ]
+      },
+      "2": {
+        "segments": [
+          {
+            "page": 883,
+            "left": 95,
+            "top": 1263,
+            "right": 520,
+            "bottom": 1536
+          },
+          {
+            "page": 883,
+            "left": 520,
+            "top": 1325,
+            "right": 760,
+            "bottom": 1550
+          }
+        ]
+      },
+      "3": {
+        "segments": [
+          {
+            "page": 883,
+            "left": 95,
+            "top": 1536,
+            "right": 550,
+            "bottom": 1800
+          },
+          {
+            "page": 883,
+            "left": 550,
+            "top": 1555,
+            "right": 760,
+            "bottom": 1800
+          }
+        ]
+      },
+      "4": {
+        "segments": [
+          {
+            "page": 883,
+            "left": 775,
+            "top": 1070,
+            "right": 1435,
+            "bottom": 1391
+          }
+        ]
+      },
+      "5": {
+        "segments": [
+          {
+            "page": 883,
+            "left": 775,
+            "top": 1391,
+            "right": 1435,
+            "bottom": 1900
+          }
+        ]
+      },
+      "6": {
+        "segments": [
+          {
+            "page": 884,
+            "left": 95,
+            "top": 172,
+            "right": 520,
+            "bottom": 256
+          },
+          {
+            "page": 884,
+            "left": 510,
+            "top": 172,
+            "right": 760,
+            "bottom": 392
+          }
+        ]
+      },
+      "7": {
+        "segments": [
+          {
+            "page": 884,
+            "left": 95,
+            "top": 256,
+            "right": 515,
+            "bottom": 405
+          },
+          {
+            "page": 884,
+            "left": 95,
+            "top": 405,
+            "right": 760,
+            "bottom": 814
+          }
+        ]
+      },
+      "8": {
+        "segments": [
+          {
+            "page": 884,
+            "left": 95,
+            "top": 814,
+            "right": 760,
+            "bottom": 1399
+          }
+        ]
+      },
+      "9": {
+        "segments": [
+          {
+            "page": 884,
+            "left": 95,
+            "top": 1399,
+            "right": 760,
+            "bottom": 1900
+          }
+        ]
+      },
+      "10": {
+        "segments": [
+          {
+            "page": 884,
+            "left": 775,
+            "top": 172,
+            "right": 1435,
+            "bottom": 842
+          }
+        ]
+      },
+      "11": {
+        "segments": [
+          {
+            "page": 884,
+            "left": 775,
+            "top": 842,
+            "right": 1435,
+            "bottom": 1508
+          }
+        ]
+      },
+      "12": {
+        "segments": [
+          {
+            "page": 884,
+            "left": 775,
+            "top": 1508,
+            "right": 1435,
+            "bottom": 1900
+          }
+        ]
+      },
+      "13": {
+        "segments": [
+          {
+            "page": 885,
+            "left": 95,
+            "top": 192,
+            "right": 760,
+            "bottom": 642
+          }
+        ]
+      },
+      "14": {
+        "segments": [
+          {
+            "page": 885,
+            "left": 95,
+            "top": 642,
+            "right": 760,
+            "bottom": 1021
+          }
+        ]
+      },
+      "15": {
+        "segments": [
+          {
+            "page": 885,
+            "left": 95,
+            "top": 1030,
+            "right": 430,
+            "bottom": 1443
+          },
+          {
+            "page": 885,
+            "left": 400,
+            "top": 1015,
+            "right": 760,
+            "bottom": 1230
+          },
+          {
+            "page": 885,
+            "left": 430,
+            "top": 1230,
+            "right": 760,
+            "bottom": 1400
+          }
+        ]
+      },
+      "16": {
+        "segments": [
+          {
+            "page": 885,
+            "left": 95,
+            "top": 1443,
+            "right": 760,
+            "bottom": 1860
+          }
+        ]
+      },
+      "17": {
+        "segments": [
+          {
+            "page": 885,
+            "left": 775,
+            "top": 176,
+            "right": 1435,
+            "bottom": 1192
+          }
+        ]
+      },
+      "18": {
+        "segments": [
+          {
+            "page": 885,
+            "left": 775,
+            "top": 1192,
+            "right": 1435,
+            "bottom": 1750
+          }
+        ]
+      }
+    }
+  },
+  "layout_boundaries": {},
+  "source_scope": {
+    "section": "Objective Type Questions",
+    "printed_question_numbers": [
+      1,
+      18
+    ],
+    "physical_chapter_pages": [
+      879,
+      885
+    ],
+    "notes": "All 18 objective questions are in scope. Visually checked all seven chapter pages; no separate Data Sufficiency exercise is present. Every geometry diagram and all printed labels must be retained in source evidence and faithfully represented in text. Printed mathematical, diagram and answer-key inconsistencies are preserved, not silently corrected."
+  },
+  "excluded_sections": [],
+  "source_pdf": "data-engineering/dokumen.pub_quantitative-aptitude-for-competitive-examinations-by-rs-aggarwal-reprint-2017nbsped-9352534026-9789352534029.pdf",
+  "source_pdf_sha256": "0723862418cd7b088341bcfc78a10745fd434b3f4db695986b1ff4f40a7223bf",
+  "source_dpi": 180,
+  "work_root": "tmp/textbook-v2",
+  "candidate_path": "question-banks/ch34_heights_distances_all_vision_text_only.zip",
+  "published_path": "question-banks/ch34_heights_distances_all_vision_text_only.zip",
+  "validation_viewports": [
+    [
+      1024,
+      768
+    ],
+    [
+      1600,
+      900
+    ]
+  ],
+  "render_workers": 2,
+  "field_media": {},
+  "boundary_reviews": {
+    "question:3": "Bottom set immediately after complete options, before the following radical ascender.",
+    "question:4": "First-line radical rises above the generic marker boundary; top moved upward to preserve its complete vinculum and glyph.",
+    "question:7": "Complete question and options are bottom left on page882. Removed generated top-right continuation containing only the exercise heading.",
+    "question:13": "Complete question and options are bottom right on page882. Removed the blank generated two-pixel segment on page883.",
+    "question:16": "Stem continues from bottom left to top right on page883; both segments and all four choices retained.",
+    "solution:1": "Three disjoint text/diagram regions retain the full tall ABC tree/shadow triangle without importing the next solution's prose. Geometry extends beneath the S2 marker height.",
+    "solution:2": "Complete prose and every fraction in one left text region; dedicated complete PAB/100m/30degree diagram in a second right region. No first-line numerator is split and S1's lower triangle labels are excluded.",
+    "solution:3": "Complete prose and fractions in one text region plus the complete CBA ladder/4.6m/60degree diagram. Excludes S2's A-label tail and the false right-column question/key continuation.",
+    "solution:5": "Complete lighthouse triangle and final273m calculation are on page883. Removed empty next-page segment.",
+    "solution:6": "Text and dedicated complete diagram are split because the CABD/h/30degree/60degree triangle extends below the S7 marker height.",
+    "solution:7": "Top prose excludes S6's tall triangle. Complete lower S7 triangle and algebra remain; printed diagram/text inconsistencies are preserved.",
+    "solution:9": "Complete last calculation fits page884. Removed blank right-column continuation.",
+    "solution:12": "Complete depression-angle diagram,70metre baseline and conclusion fit page884. Removed blank next-page continuation.",
+    "solution:13": "Top moved upward to preserve the first-line2/5 numerator. Entire diagram with repeated A label,80m and200m arrows is retained.",
+    "solution:14": "Bottom stops after theta1=theta2 and before S15's tall T label and triangle.",
+    "solution:15": "All algebra, including the complete H/m-squared times H/n-squared product, is retained in one widened text region. Two contiguous diagram regions preserve T and H above the product's height, then the full lower triangle, theta/90-minus-theta,P,Q,m-squared/n-squared arrows below it without importing neighboring algebra or S14.",
+    "solution:16": "Entire cloud/lake/reflection diagram and R label retained; stops above the final page rule. Removed false top-right continuation.",
+    "solution:17": "Top moved upward to retain T and the complete horizontal arrow. Bottom ends before S18's A label. Every printed derivation and300m conclusion remains.",
+    "solution:18": "Top moved upward to retain the complete A label. Entire triangle and30degree conclusion retained; final bottom excludes blank footer."
+  },
+  "source_inconsistencies": {
+    "solution:7": "Prose binds C to30degrees and D to45degrees with CD20m, but diagram labels D at30degrees,C at45degrees and CA60m. Preserve both.",
+    "solution:8": "The diagram prints60m beside the arc at C, while prose gives angle C45degrees. Preserve the literal diagram label and placement.",
+    "solution:13": "The top vertex and far-right ground point are both labeled A in the source diagram, although prose uses TF. Do not invent a T label.",
+    "solution:14": "Prose refers to AD but the dashed upper horizontal ray has no printed D label. Describe the actual unlabeled ray.",
+    "solution:15": "The source line H squared = m superscript n times n squared has a raised n, not2, on the first m. Preserve the printed glyph pending original-resolution verification.",
+    "question:17": "Question separation is(3-sqrt3)m; solution uses100(3-sqrt3). Preserve both source expressions.",
+    "question:18": "Printed answer key is(a), matching option45degrees; solution ends theta30degrees. Preserve the printed key and the contradictory derivation without recalculating."
+  }
+}

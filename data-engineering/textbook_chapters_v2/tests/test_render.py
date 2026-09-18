@@ -81,7 +81,7 @@ class AppDataDirectoryTests(unittest.TestCase):
                     frozen=True,
                     program_data=program_data,
                 ),
-                program_data / "Aptitude Lab",
+                program_data / "KSAT Coordinator",
             )
 
 

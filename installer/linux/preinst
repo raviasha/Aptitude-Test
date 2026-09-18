@@ -1,0 +1,6 @@
+#!/bin/sh
+set -eu
+# systemctl stop waits for STOPPED. Refuse upgrade if stopping fails.
+if [ -d /run/systemd/system ] && systemctl cat ksat-client.service >/dev/null 2>&1; then
+    systemctl stop ksat-client.service
+fi

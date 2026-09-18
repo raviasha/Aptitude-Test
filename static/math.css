@@ -6,3 +6,7 @@
 .feedback li {
   white-space: pre-wrap;
 }
+
+.question > h1 {
+  white-space: pre-wrap;
+}

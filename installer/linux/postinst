@@ -1,0 +1,19 @@
+#!/bin/sh
+set -eu
+if ! getent passwd ksat-client >/dev/null; then
+    adduser --system --group --home /nonexistent --no-create-home --shell /usr/sbin/nologin ksat-client
+fi
+install -d -o root -g ksat-client -m 0750 /var/lib/ksat /etc/ksat-client
+install -d -o ksat-client -g ksat-client -m 0750 '/var/lib/ksat/KSAT Client'
+for name in identity state packs; do
+    install -d -o ksat-client -g ksat-client -m 0700 "/var/lib/ksat/KSAT Client/$name"
+done
+if [ -d /run/systemd/system ]; then
+    systemctl daemon-reload
+    systemctl enable ksat-client.service
+    if [ -f '/var/lib/ksat/KSAT Client/client-config.json' ]; then
+        runuser -u ksat-client -- /opt/ksat-client/KSATClient --validate-config
+        systemctl start ksat-client.service
+    fi
+fi
+echo 'KSAT installed. For first setup, run sudo /opt/ksat-client/KSATClient --configure --base-url HTTPS_URL --ca CA_FILE --metadata METADATA_FILE'

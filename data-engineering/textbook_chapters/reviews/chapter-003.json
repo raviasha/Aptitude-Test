@@ -4,6 +4,8 @@
   "chapter": 3,
   "chapter_name": "Decimal Fractions",
   "section": "Arithmetical Ability",
+  "output_file": "ch03_decimal_fractions_complete.zip",
+  "vision_audit_file": "audits/chapter-003.json",
   "printed_question_count": 206,
   "question_pages": [83, 93],
   "answer_pages": [94],

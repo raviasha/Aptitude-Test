@@ -1,0 +1,23 @@
+[Unit]
+Description=KSAT Lab Client Authority
+After=network.target
+ConditionPathExists=/var/lib/ksat/KSAT Client/client-config.json
+
+[Service]
+Type=simple
+User=ksat-client
+Group=ksat-client
+ExecStart=/opt/ksat-client/KSATClient --service
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=60
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/ksat
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

@@ -122,6 +122,21 @@
         "first_visible_content": "Directions (Questions 54-57): For a 5-digit number, without repetition of digits",
         "last_visible_content": "the first digit is also the largest",
         "crop_sha256s": ["04335ee9d3794b50511ad75e960b29742b4d077ba0f928c023dce317b1634cbb"]
+      },
+      "questions-154-155": {
+        "question_numbers": [154, 155],
+        "segments": [
+          {
+            "page": 29,
+            "left": 775,
+            "top": 1750,
+            "right": 1435,
+            "bottom": 1870
+          }
+        ],
+        "first_visible_content": "Directions (Questions 154-155): These questions are based on the following information",
+        "last_visible_content": "CBA + CCA = ACD, where A, B, C and D stand for distinct digits and D = 0",
+        "crop_sha256s": ["0ac4826a2f300e8f967328c0b94fb74424e5e7a04a959db69580c2f097b32918"]
       }
     },
     "solution": {
@@ -152,6 +167,7 @@
     "question:138": {"first_visible_content": "854 x 854 x 854 - 276 x 276 x 276", "last_visible_content": "(e) None of these", "crop_sha256s": ["daf5795c20725d5d7fa08b25025b4cbf11694c8c10708713ee8a1b077eb064b9"]},
     "question:139": {"first_visible_content": "753 x 753 + 247 x 247 - 753 x 247", "last_visible_content": "(d) None of these", "crop_sha256s": ["4d9826bf171ac6c54a60d95e0bb1d8e72eecb4399e63ac68d065d3994bd7d0fe"]},
     "question:140": {"first_visible_content": "(256 x 256 - 144 x 144) / 112", "last_visible_content": "(d) 320", "crop_sha256s": ["8b88388625803ed6eb8ae4e9704727d64d64804945bb4c406d1ac50e290a005a"]},
+    "question:153": {"first_visible_content": "153. In the following sum, '?' stands for which digit", "last_visible_content": "(e) None of these", "crop_sha256s": ["f6727efce800698e38306fd7013414ddce83f959bd73bb9bc6296a550d04c1cc"]},
     "question:165": {"first_visible_content": "165. What number multiplied by 48", "last_visible_content": "(d) 865", "crop_sha256s": ["34109ebfdaf4c144172d69297c41ca73953d57d3a973961a769d04b197a4af49", "ae3caec4854973129e5d1ed83fc70495e9e675d41cae3d527b59ab818dd82b0a"]},
     "question:219": {"first_visible_content": "219. An integer is divisible by 16", "last_visible_content": "(d) 6", "crop_sha256s": ["b2fbc1a96a7fd513834b08f5b96797be2d6b63b5d8de620b9015ca0fd3f4fbbd", "e81dbd5c6da2e44ec971f7d4981f66c7f17dc50b2b0cf724efb07b31d3cdd555"]},
     "question:278": {"first_visible_content": "278. The smallest number by which 66", "last_visible_content": "(d) 18", "crop_sha256s": ["844bc38627b02c4ca2a62370b37901132a9e068a4afb519094a83bcfcccb01e7", "8a4845e4608f7f3be3265cca0a77eefcc2a96e348778eb9bffd3ebb86a00bf2a"]},
@@ -1889,7 +1905,7 @@
             "left": 775,
             "top": 1579,
             "right": 1435,
-            "bottom": 1870
+            "bottom": 1750
           }
         ]
       },

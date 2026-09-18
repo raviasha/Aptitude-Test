@@ -18,7 +18,8 @@ from .models import RawBaselineRecord
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 LEGACY_ROOT = PROJECT_ROOT / "data-engineering" / "textbook_chapters"
-RAW_EXTRACTOR_VERSION = "source-region-python-raw-v3"
+RAW_EXTRACTOR_VERSION = "source-region-python-raw-v4"
+_SOURCE_MARKER_COLOR = (0.0, 1.0, 1.0, 0.2)
 
 _CANDIDATE_FIELDS = (
     "key",
@@ -283,7 +284,7 @@ def _source_marker_candidates_from_words(
     numbers are accepted only in a conventional band; this covers PDF glyph
     loss such as Chapter 1 solution 197 without admitting formula operands.
     """
-    parsed: list[tuple[int, float, float, float, bool]] = []
+    parsed: list[tuple[int, float, float, float, bool, bool]] = []
     for word in words:
         text = str(word.get("text", ""))
         match = re.fullmatch(r"(\d+)(\.)?", text)
@@ -297,24 +298,78 @@ def _source_marker_candidates_from_words(
             continue
         if not (minimum_size <= size <= maximum_size):
             continue
-        parsed.append((int(match.group(1)), x0, top, size, match.group(2) == "."))
+        color = word.get("non_stroking_color")
+        marker_style = (
+            isinstance(color, (list, tuple))
+            and len(color) == len(_SOURCE_MARKER_COLOR)
+            and all(
+                isinstance(value, (int, float))
+                and not isinstance(value, bool)
+                and abs(float(value) - expected) <= 0.01
+                for value, expected in zip(color, _SOURCE_MARKER_COLOR, strict=True)
+            )
+        )
+        parsed.append((int(match.group(1)), x0, top, size, match.group(2) == ".", marker_style))
 
     conventional = lambda x0: 35 <= x0 <= 75 or 300 <= x0 <= 340
+    same_column = lambda first_x0, second_x0: (first_x0 < 200) == (second_x0 < 200)
+
+    def precedes(first_x0: float, first_top: float, second_x0: float, second_top: float) -> bool:
+        if same_column(first_x0, second_x0):
+            return abs(first_x0 - second_x0) <= 4.5 and 0 < second_top - first_top <= 180.0
+        return first_x0 < 200 <= second_x0
+
     selected: list[tuple[int, int, float, float]] = []
-    for number, x0, top, _size, dotted in parsed:
-        if conventional(x0):
+    for number, x0, top, size, dotted, marker_style in parsed:
+        if not marker_style:
+            continue
+        if conventional(x0) and dotted:
             selected.append((number, page_number, x0, top))
+            continue
+        if conventional(x0) and not dotted:
+            previous = [
+                candidate
+                for candidate in parsed
+                if candidate[0] == number - 1
+                and candidate[4]
+                and candidate[5]
+                and conventional(candidate[1])
+                and abs(candidate[3] - size) <= 0.1
+                and precedes(candidate[1], candidate[2], x0, top)
+            ]
+            following = [
+                candidate
+                for candidate in parsed
+                if candidate[0] == number + 1
+                and candidate[4]
+                and candidate[5]
+                and conventional(candidate[1])
+                and abs(candidate[3] - size) <= 0.1
+                and precedes(x0, top, candidate[1], candidate[2])
+            ]
+            if len(previous) == 1 and len(following) == 1:
+                selected.append((number, page_number, x0, top))
             continue
         if not dotted or not (35 <= x0 < 300):
             continue
-        same_row = [
+        same_row = sorted([
             candidate
             for candidate in parsed
             if candidate[4]
+            and candidate[5]
             and candidate[1] < 300
             and abs(candidate[2] - top) <= 1.0
-        ]
-        if any(conventional(candidate[1]) for candidate in same_row) and len(same_row) >= 2:
+            and abs(candidate[3] - size) <= 0.1
+        ], key=lambda candidate: candidate[1])
+        consecutive = all(
+            following[0] == previous[0] + 1
+            for previous, following in zip(same_row, same_row[1:])
+        )
+        if (
+            len(same_row) >= 2
+            and conventional(same_row[0][1])
+            and consecutive
+        ):
             selected.append((number, page_number, x0, top))
 
     unique = {(number, page, round(x0, 6), round(top, 6)) for number, page, x0, top in selected}
@@ -376,7 +431,9 @@ def _source_marker_candidates(
     bare_coordinates: set[tuple[int, float, float]] = set()
     with pdfplumber.open(source_pdf) as document:
         for page_number in pages:
-            words = document.pages[page_number - 1].extract_words(extra_attrs=["size"])
+            words = document.pages[page_number - 1].extract_words(
+                extra_attrs=["size", "non_stroking_color"]
+            )
             page_words = _source_marker_page_words(words, stop_at_answers=stop_at_answers)
             bare_coordinates.update(
                 (page_number, round(float(word["x0"]), 6), round(float(word["top"]), 6))

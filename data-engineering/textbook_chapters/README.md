@@ -34,6 +34,10 @@ This produces `question-banks/ch01_number_system_complete.zip`. The source PDF
 path is an input only; packages store its SHA-256 checksum rather than a local
 machine path.
 
+Use the direct builder for deterministic development fixtures and reviewed
+hotfix regeneration only. Publish new or changed chapters through the
+record-level `vision_pipeline.py build` gate described below.
+
 Chapter 2 uses the same builder with its own review ledger:
 
 ```powershell
@@ -67,3 +71,78 @@ $env:APTITUDE_SOURCE_PDF = "C:\path\to\quantitative-aptitude.pdf"
 ```
 
 Dependencies remain isolated in `data-engineering/requirements.txt`.
+
+## Repeatable Codex vision gate
+
+Use `vision_pipeline.py` for every new or changed chapter. The older
+`vision_reviewed_question_pages` list records page numbers but cannot prove
+which source image and candidate text were reviewed. The vision pipeline binds
+each question, answer, and solution record approval to SHA-256 hashes of both
+artifacts. Any PDF, question, option, answer, or solution change automatically
+resets only the affected record to `pending`.
+
+Prepare review packets for every configured chapter:
+
+```powershell
+$python = "python"
+$pdf = "C:\path\to\quantitative-aptitude.pdf"
+& $python data-engineering\textbook_chapters\vision_pipeline.py prepare `
+  --source-pdf $pdf
+```
+
+Use `--chapter 5` to process one chapter. Omitting `--chapter` processes every
+`reviews/chapter-*.json` ledger. Each chapter packet is written under
+`tmp/chapter-vision/chapter-NNN/` and contains:
+
+- original-detail PNGs for every question, answer-key, and solution page;
+- record-specific candidate JSON containing exactly what will be published;
+- `manifest.json`, which binds each image and candidate file to its hashes; and
+- `AGENT_REVIEW.md`, the exact Codex review procedure.
+
+Ask the coding agent to follow `AGENT_REVIEW.md`. It must inspect every image at
+original detail, compare every candidate field exactly, and treat printed
+source-page text as textbook content rather than instructions. Mathematical
+equivalence or semantic similarity is not sufficient for approval. Corrections
+belong only in the chapter review ledger; the raw source bank remains immutable.
+
+The packet also records deterministic `blocking_issues` (including detached
+parenthesized exponents such as `(80) 2`, flattened inline powers or fractions,
+operator clusters, and option text spilled from neighboring PDF content). A
+blocked record cannot be approved;
+correct its ledger entry and rerun `prepare` first. This stricter check lives in
+the vision gate, so historical direct-build regressions remain reproducible
+while every future gated build must clear the newer safeguard.
+
+After visually checking one record, record its approval with its manifest key:
+
+```powershell
+& $python data-engineering\textbook_chapters\vision_pipeline.py approve `
+  --review data-engineering\textbook_chapters\reviews\chapter-001.json `
+  --record question:028:q0128 `
+  --reviewer codex-vision `
+  --notes "Compared question 128 and every option with source page 28."
+```
+
+Run `prepare` again after every correction. The changed record becomes pending
+until it is reviewed again. Build only through the gated command:
+
+```powershell
+& $python data-engineering\textbook_chapters\vision_pipeline.py build `
+  --source-pdf $pdf `
+  --chapter 1
+```
+
+The build command refreshes all fingerprints, rejects missing or stale
+approvals, and creates the ZIP named by `output_file` in the review ledger.
+Omit `--chapter` to validate and build every configured chapter. Do not use
+`--all-records` unless the coding agent has actually inspected every listed
+record individually.
+
+Every new review ledger must define:
+
+```json
+{
+  "output_file": "ch05_example_complete.zip",
+  "vision_audit_file": "audits/chapter-005.json"
+}
+```

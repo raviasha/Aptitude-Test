@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
 from textbook_chapters_v2.models import (
     CandidateRecord,
@@ -21,6 +22,7 @@ from textbook_chapters_v2.vision import (
     ingest_extraction_result,
     ingest_verification_result,
 )
+import textbook_chapters_v2.vision as vision
 
 
 class VisionProtocolTests(unittest.TestCase):
@@ -118,6 +120,39 @@ class VisionProtocolTests(unittest.TestCase):
         self.assertEqual(persisted["job_id"], "extract-ch01-q0334")
         self.assertEqual(persisted["sources"][2]["sha256"], "8270f2824111e04d9278c01a92b388147d9d02e0b50d946d25d00db375ff1282")
         self.assertEqual(persisted["job_fingerprint"], self.extraction_job.fingerprint)
+        self.assertEqual(persisted["schema_bindings"], dict(self.extraction_job.schema_bindings))
+
+    def test_extraction_prompt_bytes_are_bound_and_stale_results_are_rejected(self) -> None:
+        stale_result = self._write_result("stale-prompt-result.json", self._extraction_result())
+
+        with patch.object(
+            vision,
+            "EXTRACTION_FIDELITY_POLICY",
+            vision.EXTRACTION_FIDELITY_POLICY + " A newly reviewed fidelity rule.",
+        ):
+            changed = create_extraction_job(self.evidence, self.root / "changed-prompt-job.json")
+
+        self.assertNotEqual(changed.fingerprint, self.extraction_job.fingerprint)
+        with self.assertRaisesRegex(ValueError, "fingerprint"):
+            ingest_extraction_result(changed, stale_result)
+
+    def test_extraction_schema_bytes_are_bound_and_stale_results_are_rejected(self) -> None:
+        schema_directory = self.root / "schemas"
+        schema_directory.mkdir()
+        for path in vision._SCHEMA_DIRECTORY.iterdir():
+            if path.suffix == ".json":
+                (schema_directory / path.name).write_bytes(path.read_bytes())
+        stale_result = self._write_result("stale-schema-result.json", self._extraction_result())
+        runner_schema = schema_directory / "codex-extraction-result.schema.json"
+        runner_schema.write_bytes(runner_schema.read_bytes() + b"\n")
+
+        with patch.object(vision, "_SCHEMA_DIRECTORY", schema_directory):
+            changed = create_extraction_job(self.evidence, self.root / "changed-schema-job.json")
+
+        self.assertNotEqual(changed.fingerprint, self.extraction_job.fingerprint)
+        self.assertIn("codex-extraction-result.schema.json", changed.schema_bindings)
+        with self.assertRaisesRegex(ValueError, "fingerprint"):
+            ingest_extraction_result(changed, stale_result)
 
     def test_source_issue_is_fingerprinted_and_instructs_both_vision_stages(self) -> None:
         source_issue = replace(
@@ -266,6 +301,62 @@ class VisionProtocolTests(unittest.TestCase):
         self.assertIn("fcaf086ea987fd910379ba7328165301472478bf315bcbfc6c4013b2ac662642", [source["sha256"] for source in job.sources])
         self.assertIn("64608a80ab78845a8c2043e0aba1c150bab1bea8c4289654e9cdc7a140d98799", [source["sha256"] for source in job.sources])
         self.assertEqual(job.output_schema, "verification-result.schema.json")
+
+    def test_verification_prompt_bytes_are_bound_and_stale_results_are_rejected(self) -> None:
+        candidate = CandidateRecord(chapter=1, question_number=334, options={"A": "0", "B": "1", "C": "49", "D": "341"})
+        original = create_verification_job(candidate, (self.question_crop,), self._renders())
+        stale_result = {
+            "job_id": original.job_id,
+            "job_fingerprint": original.fingerprint,
+            "verdicts": {
+                "question": "pass", "options.A": "pass", "options.B": "pass", "options.C": "pass",
+                "options.D": "pass", "answer_mapping": "pass", "solution": "pass", "readability": "pass", "clipping": "pass",
+            },
+            "differences": {},
+            "reviewer": "independent-codex-verifier",
+        }
+        result_path = self._write_result("stale-verification-prompt.json", stale_result)
+
+        with patch.object(
+            vision,
+            "VERIFICATION_FIDELITY_POLICY",
+            vision.VERIFICATION_FIDELITY_POLICY + " A newly reviewed rendering rule.",
+        ):
+            changed = create_verification_job(candidate, (self.question_crop,), self._renders())
+
+        self.assertNotEqual(changed.fingerprint, original.fingerprint)
+        with self.assertRaisesRegex(ValueError, "fingerprint"):
+            ingest_verification_result(changed, result_path)
+
+    def test_verification_schema_bytes_are_bound_and_stale_results_are_rejected(self) -> None:
+        candidate = CandidateRecord(chapter=1, question_number=334, options={"A": "0", "B": "1", "C": "49", "D": "341"})
+        original = create_verification_job(candidate, (self.question_crop,), self._renders())
+        stale_result = {
+            "job_id": original.job_id,
+            "job_fingerprint": original.fingerprint,
+            "verdicts": {
+                "question": "pass", "options.A": "pass", "options.B": "pass", "options.C": "pass",
+                "options.D": "pass", "answer_mapping": "pass", "solution": "pass", "readability": "pass", "clipping": "pass",
+            },
+            "differences": {},
+            "reviewer": "independent-codex-verifier",
+        }
+        result_path = self._write_result("stale-verification-schema.json", stale_result)
+        schema_directory = self.root / "verification-schemas"
+        schema_directory.mkdir()
+        for path in vision._SCHEMA_DIRECTORY.iterdir():
+            if path.suffix == ".json":
+                (schema_directory / path.name).write_bytes(path.read_bytes())
+        runner_schema = schema_directory / "codex-verification-result.schema.json"
+        runner_schema.write_bytes(runner_schema.read_bytes() + b"\n")
+
+        with patch.object(vision, "_SCHEMA_DIRECTORY", schema_directory):
+            changed = create_verification_job(candidate, (self.question_crop,), self._renders())
+
+        self.assertNotEqual(changed.fingerprint, original.fingerprint)
+        self.assertIn("codex-verification-result.schema.json", changed.schema_bindings)
+        with self.assertRaisesRegex(ValueError, "fingerprint"):
+            ingest_verification_result(changed, result_path)
 
     def test_verification_ingestion_requires_concrete_field_level_verdicts(self) -> None:
         candidate = CandidateRecord(chapter=1, question_number=334, options={"A": "0", "B": "1", "C": "49", "D": "341"})

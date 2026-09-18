@@ -10,6 +10,7 @@ import os
 import shutil
 import sys
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
@@ -58,17 +59,12 @@ EXTRACTOR_SCHEMA_VERSION = 1
 VERIFIER_SCHEMA_VERSION = 1
 DEFAULT_VIEWPORTS = ((1024, 768), (1600, 900))
 APPLICATION_ROOT = Path(__file__).resolve().parents[2]
-RENDER_CONTRACT_VERSION = "ksat-v2-real-frontend-contract-2"
+RENDER_CONTRACT_VERSION = "ksat-v2-real-frontend-contract-3"
 _RENDERER_CONTRACT_FILES = (
-    "data-engineering/textbook_chapters_v2/cli.py",
+    # Only code that can change browser pixels belongs here. Pipeline
+    # orchestration, extraction prompts, verification policy, and packaging do
+    # not invalidate otherwise identical screenshots.
     "data-engineering/textbook_chapters_v2/render.py",
-    "data-engineering/textbook_chapters_v2/models.py",
-    "data-engineering/textbook_chapters_v2/candidates.py",
-    "data-engineering/textbook_chapters_v2/package.py",
-    "data-engineering/textbook_chapters_v2/vision.py",
-    "data-engineering/textbook_chapters_v2/rules.py",
-    "data-engineering/textbook_chapters_v2/schemas/extraction-result.schema.json",
-    "data-engineering/textbook_chapters_v2/schemas/verification-result.schema.json",
 )
 
 
@@ -473,6 +469,7 @@ def _job_payload(job: VisionJob) -> dict[str, Any]:
         "job_id": job.job_id, "stage": job.stage, "prompt": job.prompt,
         "sources": [dict(source) for source in job.sources], "output_schema": job.output_schema,
         "output_path": str(job.output_path) if job.output_path else None, "job_fingerprint": job.fingerprint,
+        "schema_bindings": dict(job.schema_bindings),
     }
 
 
@@ -480,7 +477,7 @@ def _job_from_payload(raw: Mapping[str, Any]) -> VisionJob:
     return VisionJob(
         job_id=str(raw["job_id"]), stage=str(raw["stage"]), prompt=str(raw["prompt"]), sources=tuple(raw["sources"]),
         output_schema=str(raw["output_schema"]), output_path=Path(raw["output_path"]) if raw.get("output_path") else None,
-        fingerprint=str(raw["job_fingerprint"]),
+        fingerprint=str(raw["job_fingerprint"]), schema_bindings=raw.get("schema_bindings", {}),
     )
 
 
@@ -492,8 +489,13 @@ def _result_is_current(path: Path, job: VisionJob) -> bool:
     return isinstance(payload, dict) and payload.get("job_id") == job.job_id and payload.get("job_fingerprint") == job.fingerprint
 
 
-def _render_payload(rendered: RenderArtifacts, manifest_fingerprint: str) -> dict[str, Any]:
+def _render_payload(
+    rendered: RenderArtifacts,
+    manifest_fingerprint: str,
+    candidate_sha256: str,
+) -> dict[str, Any]:
     return {
+        "candidate_sha256": candidate_sha256,
         "question_screenshots": {key: str(value) for key, value in rendered.question_screenshots.items()},
         "solution_screenshots": {key: str(value) for key, value in rendered.solution_screenshots.items()},
         "field_screenshots": {
@@ -636,18 +638,12 @@ def _render_cache_is_current(config: ChapterConfig) -> bool:
         return False
     if set(renders) != {candidate.question_number for candidate in candidates}:
         return False
-    for rendered in renders.values():
-        declared_paths = {
-            **{f"question.{key}": value for key, value in rendered.question_screenshots.items()},
-            **{f"solution.{key}": value for key, value in rendered.solution_screenshots.items()},
-            **{f"field.{key}": value for key, value in getattr(rendered, "field_screenshots", {}).items()},
-        }
-        if set(declared_paths) != set(rendered.screenshot_hashes):
+    state_by_number = {int(item["question_number"]): item for item in state["records"]}
+    candidates_by_number = {candidate.question_number: candidate for candidate in candidates}
+    for number, rendered in renders.items():
+        if state_by_number[number]["artifacts"].get("candidate_sha256") != candidates_by_number[number].sha256:
             return False
-        if any(
-            not path.is_file() or _sha256_path(path) != rendered.screenshot_hashes[key]
-            for key, path in declared_paths.items()
-        ):
+        if not _render_files_are_current(rendered):
             return False
     return True
 
@@ -667,6 +663,55 @@ def _render_asset_hashes(rendered: RenderArtifacts) -> tuple[str, ...]:
         ]
         + [hashes[key] for key in sorted(hashes) if key.startswith("field.")]
     )
+
+
+def _render_files_are_current(rendered: RenderArtifacts) -> bool:
+    declared_paths = {
+        **{f"question.{key}": value for key, value in rendered.question_screenshots.items()},
+        **{f"solution.{key}": value for key, value in rendered.solution_screenshots.items()},
+        **{f"field.{key}": value for key, value in getattr(rendered, "field_screenshots", {}).items()},
+    }
+    if set(declared_paths) != set(rendered.screenshot_hashes):
+        return False
+    return not any(
+        not path.is_file() or _sha256_path(path) != rendered.screenshot_hashes[key]
+        for key, path in declared_paths.items()
+    )
+
+
+def _reusable_renders(
+    config: ChapterConfig,
+    candidates: Iterable[CandidateRecord],
+) -> dict[int, BrowserRenderArtifacts]:
+    """Return only render records cryptographically bound to unchanged candidates."""
+    try:
+        state = _render_state(config)
+        records = state["records"]
+        browser_identities = tuple(
+            str(item["artifacts"].get("browser_runtime", "")) for item in records
+        )
+        manifest = state["application_renderer_manifest"]
+        if manifest != _application_renderer_manifest(config, browser_identities):
+            return {}
+        expected_manifest = str(manifest["manifest_fingerprint"])
+    except (OSError, ValueError, TypeError, KeyError, PipelineBlocked):
+        return {}
+    by_number = {candidate.question_number: candidate for candidate in candidates}
+    reusable: dict[int, BrowserRenderArtifacts] = {}
+    for item in records:
+        try:
+            number = int(item["question_number"])
+            artifacts = item["artifacts"]
+            candidate = by_number[number]
+            if artifacts.get("candidate_sha256") != candidate.sha256:
+                continue
+            rendered = _render_from_payload(artifacts)
+            if rendered.renderer_version != expected_manifest or not _render_files_are_current(rendered):
+                continue
+        except (OSError, ValueError, TypeError, KeyError):
+            continue
+        reusable[number] = rendered
+    return reusable
 
 
 def _verification_job(
@@ -981,6 +1026,57 @@ def _viewports(config: ChapterConfig) -> tuple[tuple[int, int], ...]:
         raise PipelineBlocked("validation_viewports must contain width/height pairs.") from error
 
 
+def _render_workers(config: ChapterConfig) -> int:
+    workers = config.extras.get("render_workers", 3)
+    if isinstance(workers, bool) or not isinstance(workers, int) or workers <= 0:
+        raise PipelineBlocked("render_workers must be a positive integer.")
+    return workers
+
+
+def _approval_matches_reused_render(
+    config: ChapterConfig,
+    current: AuditRecord,
+    candidate: CandidateRecord,
+    evidence: RecordEvidence,
+    rendered: BrowserRenderArtifacts,
+    manifest: Mapping[str, Any],
+) -> bool:
+    """Keep an approval only when its exact independent verification is still current."""
+    if current.status != APPROVED_FOR_PUBLISH or rendered.findings:
+        return False
+    source_hashes = tuple(
+        crop.sha256
+        for crop in evidence.question_crops + evidence.answer_key_crops + evidence.solution_crops
+    )
+    if (
+        current.source_crop_hashes != source_hashes
+        or current.candidate_sha256 != candidate.sha256
+        or current.asset_hashes != _render_asset_hashes(rendered)
+        or current.policy_version != POLICY_VERSION
+        or current.extractor_schema_version != EXTRACTOR_SCHEMA_VERSION
+        or current.verifier_schema_version != VERIFIER_SCHEMA_VERSION
+        or current.renderer_version != str(manifest["renderer_fingerprint"])
+        or current.application_asset_version != str(manifest["application_fingerprint"])
+        or current.findings
+        or current.dependency_fingerprint != approval_dependency_fingerprint(current)
+    ):
+        return False
+    try:
+        job = _verification_job(candidate, evidence, rendered)
+        result_path = _chapter_root(config) / "verification-results" / f"{job.job_id}.json"
+        if not _result_is_current(result_path, job):
+            return False
+        result = ingest_verification_result(job, result_path)
+    except (OSError, ValueError, TypeError, KeyError, PipelineBlocked):
+        return False
+    return (
+        bool(result.verdicts)
+        and all(verdict == "pass" for verdict in result.verdicts.values())
+        and dict(result.verdicts) == dict(current.field_verdicts)
+        and result.reviewer == current.reviewer
+    )
+
+
 def _render(config: ChapterConfig) -> int:
     if not _candidate_cache_is_current(config):
         resumed = _ingest_extraction(config, _chapter_root(config) / "extraction-results")
@@ -989,20 +1085,75 @@ def _render(config: ChapterConfig) -> int:
     ledger = AuditLedger(_work_root(config), config.chapter)
     candidates = _candidates(config)
     completed_renders: list[tuple[CandidateRecord, BrowserRenderArtifacts]] = []
-    for candidate in candidates:
-        rendered = render_candidate(candidate, {}, _viewports(config), _chapter_root(config) / "renders" / f"q{candidate.question_number:04d}")
-        completed_renders.append((candidate, rendered))
+    if candidates:
+        viewports = _viewports(config)
+        renders_root = _chapter_root(config) / "renders"
+        rendered_by_number = _reusable_renders(config, candidates)
+        reused_numbers = frozenset(rendered_by_number)
+        pending_candidates = [
+            candidate for candidate in candidates
+            if candidate.question_number not in rendered_by_number
+        ]
+        worker_count = min(_render_workers(config), len(pending_candidates)) if pending_candidates else 0
+        transient_failures: list[CandidateRecord] = []
+        if pending_candidates:
+            with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="ksat-render") as executor:
+                futures = [
+                    (candidate, executor.submit(
+                        render_candidate,
+                        candidate,
+                        {},
+                        viewports,
+                        renders_root / f"q{candidate.question_number:04d}",
+                    ))
+                    for candidate in pending_candidates
+                ]
+                for candidate, future in futures:
+                    try:
+                        rendered_by_number[candidate.question_number] = future.result()
+                    except Exception:
+                        transient_failures.append(candidate)
+        # Browser startups occasionally time out under concurrent load. Retry
+        # only those records once, serially, before failing the stage. State is
+        # still written atomically only after every record succeeds.
+        for candidate in transient_failures:
+            rendered_by_number[candidate.question_number] = render_candidate(
+                candidate,
+                {},
+                viewports,
+                renders_root / f"q{candidate.question_number:04d}",
+            )
+        completed_renders = [
+            (candidate, rendered_by_number[candidate.question_number])
+            for candidate in candidates
+        ]
     manifest = _application_renderer_manifest(
         config, (rendered.browser_runtime for _, rendered in completed_renders)
     )
+    evidence_by_number: dict[int, RecordEvidence] | None = None
     rendered_records: list[dict[str, Any]] = []
     for candidate, rendered in completed_renders:
         rendered_records.append({
             "question_number": candidate.question_number,
-            "artifacts": _render_payload(rendered, str(manifest["manifest_fingerprint"])),
+            "artifacts": _render_payload(
+                rendered,
+                str(manifest["manifest_fingerprint"]),
+                candidate.sha256,
+            ),
         })
         state_hashes = _render_asset_hashes(rendered)
         current = ledger.record(candidate.question_number)
+        if candidate.question_number in reused_numbers and current.status == APPROVED_FOR_PUBLISH:
+            if evidence_by_number is None:
+                try:
+                    evidence_by_number = {item.question_number: item for item in _evidence(config)}
+                except (OSError, ValueError, TypeError, KeyError, PipelineBlocked):
+                    evidence_by_number = {}
+            evidence = evidence_by_number.get(candidate.question_number)
+            if evidence is not None and _approval_matches_reused_render(
+                config, current, candidate, evidence, rendered, manifest
+            ):
+                continue
         ledger.merge_record(replace(
             current, status=BLOCKED if rendered.findings else PENDING_VISION, asset_hashes=state_hashes,
             renderer_version=str(manifest["renderer_fingerprint"]),

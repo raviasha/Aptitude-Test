@@ -1,0 +1,4102 @@
+{
+  "source_pdf": "data-engineering/dokumen.pub_quantitative-aptitude-for-competitive-examinations-by-rs-aggarwal-reprint-2017nbsped-9352534026-9789352534029.pdf",
+  "source_pdf_sha256": "0723862418cd7b088341bcfc78a10745fd434b3f4db695986b1ff4f40a7223bf",
+  "source_dpi": 180,
+  "work_root": "tmp/textbook-v2",
+  "validation_viewports": [
+    [
+      1024,
+      768
+    ],
+    [
+      1600,
+      900
+    ]
+  ],
+  "render_workers": 2,
+  "field_media": {},
+  "chapter": 38,
+  "chapter_name": "Pie Chart",
+  "bank_name": "R. S. Aggarwal - Chapter 38: Pie Chart (all-vision text-only)",
+  "printed_question_count": 76,
+  "question_numbers": [
+    1,
+    76
+  ],
+  "question_pages": [
+    932,
+    943
+  ],
+  "answer_pages": [
+    935,
+    944
+  ],
+  "solution_pages": [
+    935,
+    945
+  ],
+  "intentional_exclusions": [],
+  "layout_boundaries": {},
+  "marker_overrides": {
+    "question": {
+      "1": {
+        "segments": [
+          {
+            "page": 932,
+            "left": 125,
+            "top": 611,
+            "right": 480,
+            "bottom": 936
+          }
+        ]
+      },
+      "2": {
+        "segments": [
+          {
+            "page": 932,
+            "left": 105,
+            "top": 934,
+            "right": 755,
+            "bottom": 1036
+          },
+          {
+            "page": 932,
+            "left": 785,
+            "top": 447,
+            "right": 1435,
+            "bottom": 653
+          }
+        ]
+      },
+      "3": {
+        "segments": [
+          {
+            "page": 932,
+            "left": 785,
+            "top": 653,
+            "right": 1435,
+            "bottom": 832
+          }
+        ]
+      },
+      "4": {
+        "segments": [
+          {
+            "page": 932,
+            "left": 785,
+            "top": 832,
+            "right": 1435,
+            "bottom": 1043
+          }
+        ]
+      },
+      "5": {
+        "segments": [
+          {
+            "page": 932,
+            "left": 105,
+            "top": 1601,
+            "right": 755,
+            "bottom": 1820
+          }
+        ]
+      },
+      "6": {
+        "segments": [
+          {
+            "page": 932,
+            "left": 785,
+            "top": 1601,
+            "right": 1435,
+            "bottom": 1841
+          }
+        ]
+      },
+      "7": {
+        "segments": [
+          {
+            "page": 933,
+            "left": 105,
+            "top": 173,
+            "right": 755,
+            "bottom": 390
+          }
+        ]
+      },
+      "8": {
+        "segments": [
+          {
+            "page": 933,
+            "left": 105,
+            "top": 390,
+            "right": 755,
+            "bottom": 514
+          },
+          {
+            "page": 933,
+            "left": 785,
+            "top": 173,
+            "right": 1435,
+            "bottom": 289
+          }
+        ]
+      },
+      "9": {
+        "segments": [
+          {
+            "page": 933,
+            "left": 785,
+            "top": 289,
+            "right": 1435,
+            "bottom": 503
+          }
+        ]
+      },
+      "10": {
+        "segments": [
+          {
+            "page": 933,
+            "left": 105,
+            "top": 993,
+            "right": 755,
+            "bottom": 1224
+          }
+        ]
+      },
+      "11": {
+        "segments": [
+          {
+            "page": 933,
+            "left": 105,
+            "top": 1224,
+            "right": 755,
+            "bottom": 1456
+          }
+        ]
+      },
+      "12": {
+        "segments": [
+          {
+            "page": 933,
+            "left": 105,
+            "top": 1456,
+            "right": 755,
+            "bottom": 1657
+          }
+        ]
+      },
+      "13": {
+        "segments": [
+          {
+            "page": 933,
+            "left": 105,
+            "top": 1657,
+            "right": 755,
+            "bottom": 1835
+          }
+        ]
+      },
+      "14": {
+        "segments": [
+          {
+            "page": 933,
+            "left": 785,
+            "top": 993,
+            "right": 1435,
+            "bottom": 1194
+          }
+        ]
+      },
+      "15": {
+        "segments": [
+          {
+            "page": 933,
+            "left": 785,
+            "top": 1715,
+            "right": 1435,
+            "bottom": 1860
+          },
+          {
+            "page": 934,
+            "left": 105,
+            "top": 172,
+            "right": 755,
+            "bottom": 239
+          }
+        ]
+      },
+      "16": {
+        "segments": [
+          {
+            "page": 934,
+            "left": 105,
+            "top": 239,
+            "right": 755,
+            "bottom": 370
+          }
+        ]
+      },
+      "17": {
+        "segments": [
+          {
+            "page": 934,
+            "left": 105,
+            "top": 370,
+            "right": 755,
+            "bottom": 538
+          }
+        ]
+      },
+      "18": {
+        "segments": [
+          {
+            "page": 934,
+            "left": 785,
+            "top": 172,
+            "right": 1435,
+            "bottom": 382
+          }
+        ]
+      },
+      "19": {
+        "segments": [
+          {
+            "page": 934,
+            "left": 785,
+            "top": 382,
+            "right": 1435,
+            "bottom": 560
+          }
+        ]
+      },
+      "20": {
+        "segments": [
+          {
+            "page": 934,
+            "left": 105,
+            "top": 1135,
+            "right": 755,
+            "bottom": 1271
+          }
+        ]
+      },
+      "21": {
+        "segments": [
+          {
+            "page": 934,
+            "left": 105,
+            "top": 1271,
+            "right": 755,
+            "bottom": 1408
+          }
+        ]
+      },
+      "22": {
+        "segments": [
+          {
+            "page": 934,
+            "left": 105,
+            "top": 1408,
+            "right": 755,
+            "bottom": 1544
+          }
+        ]
+      },
+      "23": {
+        "segments": [
+          {
+            "page": 934,
+            "left": 105,
+            "top": 1544,
+            "right": 755,
+            "bottom": 1710
+          }
+        ]
+      },
+      "24": {
+        "segments": [
+          {
+            "page": 934,
+            "left": 105,
+            "top": 1710,
+            "right": 755,
+            "bottom": 1840
+          },
+          {
+            "page": 934,
+            "left": 785,
+            "top": 1135,
+            "right": 1435,
+            "bottom": 1207
+          }
+        ]
+      },
+      "25": {
+        "segments": [
+          {
+            "page": 934,
+            "left": 785,
+            "top": 1595,
+            "right": 1435,
+            "bottom": 1820
+          }
+        ]
+      },
+      "26": {
+        "segments": [
+          {
+            "page": 935,
+            "left": 105,
+            "top": 184,
+            "right": 755,
+            "bottom": 351
+          }
+        ]
+      },
+      "27": {
+        "segments": [
+          {
+            "page": 935,
+            "left": 105,
+            "top": 351,
+            "right": 755,
+            "bottom": 495
+          }
+        ]
+      },
+      "28": {
+        "segments": [
+          {
+            "page": 935,
+            "left": 785,
+            "top": 172,
+            "right": 1435,
+            "bottom": 338
+          }
+        ]
+      },
+      "29": {
+        "segments": [
+          {
+            "page": 935,
+            "left": 785,
+            "top": 338,
+            "right": 1435,
+            "bottom": 505
+          }
+        ]
+      },
+      "30": {
+        "segments": [
+          {
+            "page": 937,
+            "left": 125,
+            "top": 1044,
+            "right": 480,
+            "bottom": 1325
+          }
+        ]
+      },
+      "31": {
+        "segments": [
+          {
+            "page": 937,
+            "left": 105,
+            "top": 1325,
+            "right": 755,
+            "bottom": 1505
+          }
+        ]
+      },
+      "32": {
+        "segments": [
+          {
+            "page": 937,
+            "left": 105,
+            "top": 1505,
+            "right": 755,
+            "bottom": 1676
+          }
+        ]
+      },
+      "33": {
+        "segments": [
+          {
+            "page": 937,
+            "left": 105,
+            "top": 1676,
+            "right": 755,
+            "bottom": 1870
+          }
+        ]
+      },
+      "34": {
+        "segments": [
+          {
+            "page": 937,
+            "left": 785,
+            "top": 871,
+            "right": 1435,
+            "bottom": 1070
+          }
+        ]
+      },
+      "35": {
+        "segments": [
+          {
+            "page": 937,
+            "left": 785,
+            "top": 1192,
+            "right": 1435,
+            "bottom": 1255
+          },
+          {
+            "page": 937,
+            "left": 790,
+            "top": 1255,
+            "right": 1115,
+            "bottom": 1468
+          }
+        ]
+      },
+      "36": {
+        "segments": [
+          {
+            "page": 937,
+            "left": 785,
+            "top": 1468,
+            "right": 1435,
+            "bottom": 1635
+          }
+        ]
+      },
+      "37": {
+        "segments": [
+          {
+            "page": 937,
+            "left": 785,
+            "top": 1635,
+            "right": 1435,
+            "bottom": 1840
+          }
+        ]
+      },
+      "38": {
+        "segments": [
+          {
+            "page": 938,
+            "left": 105,
+            "top": 172,
+            "right": 755,
+            "bottom": 365
+          }
+        ]
+      },
+      "39": {
+        "segments": [
+          {
+            "page": 938,
+            "left": 105,
+            "top": 365,
+            "right": 755,
+            "bottom": 550
+          }
+        ]
+      },
+      "40": {
+        "segments": [
+          {
+            "page": 938,
+            "left": 785,
+            "top": 172,
+            "right": 1435,
+            "bottom": 354
+          }
+        ]
+      },
+      "41": {
+        "segments": [
+          {
+            "page": 938,
+            "left": 785,
+            "top": 354,
+            "right": 1435,
+            "bottom": 507
+          }
+        ]
+      },
+      "42": {
+        "segments": [
+          {
+            "page": 938,
+            "left": 785,
+            "top": 507,
+            "right": 1435,
+            "bottom": 689
+          }
+        ]
+      },
+      "43": {
+        "segments": [
+          {
+            "page": 938,
+            "left": 785,
+            "top": 689,
+            "right": 1435,
+            "bottom": 841
+          }
+        ]
+      },
+      "44": {
+        "segments": [
+          {
+            "page": 938,
+            "left": 785,
+            "top": 841,
+            "right": 1435,
+            "bottom": 1018
+          }
+        ]
+      },
+      "45": {
+        "segments": [
+          {
+            "page": 938,
+            "left": 105,
+            "top": 1516,
+            "right": 755,
+            "bottom": 1692
+          }
+        ]
+      },
+      "46": {
+        "segments": [
+          {
+            "page": 938,
+            "left": 105,
+            "top": 1692,
+            "right": 755,
+            "bottom": 1870
+          }
+        ]
+      },
+      "47": {
+        "segments": [
+          {
+            "page": 938,
+            "left": 785,
+            "top": 1513,
+            "right": 1435,
+            "bottom": 1676
+          }
+        ]
+      },
+      "48": {
+        "segments": [
+          {
+            "page": 938,
+            "left": 785,
+            "top": 1676,
+            "right": 1435,
+            "bottom": 1870
+          }
+        ]
+      },
+      "49": {
+        "segments": [
+          {
+            "page": 939,
+            "left": 105,
+            "top": 174,
+            "right": 755,
+            "bottom": 399
+          }
+        ]
+      },
+      "50": {
+        "segments": [
+          {
+            "page": 939,
+            "left": 105,
+            "top": 878,
+            "right": 755,
+            "bottom": 960
+          },
+          {
+            "page": 939,
+            "left": 785,
+            "top": 172,
+            "right": 1435,
+            "bottom": 289
+          }
+        ]
+      },
+      "51": {
+        "segments": [
+          {
+            "page": 939,
+            "left": 785,
+            "top": 289,
+            "right": 1435,
+            "bottom": 482
+          }
+        ]
+      },
+      "52": {
+        "segments": [
+          {
+            "page": 939,
+            "left": 785,
+            "top": 482,
+            "right": 1435,
+            "bottom": 702
+          }
+        ]
+      },
+      "53": {
+        "segments": [
+          {
+            "page": 939,
+            "left": 785,
+            "top": 702,
+            "right": 1435,
+            "bottom": 961
+          }
+        ]
+      },
+      "54": {
+        "segments": [
+          {
+            "page": 941,
+            "left": 785,
+            "top": 1664,
+            "right": 1435,
+            "bottom": 1830
+          }
+        ]
+      },
+      "55": {
+        "segments": [
+          {
+            "page": 942,
+            "left": 105,
+            "top": 172,
+            "right": 755,
+            "bottom": 328
+          }
+        ]
+      },
+      "56": {
+        "segments": [
+          {
+            "page": 942,
+            "left": 105,
+            "top": 328,
+            "right": 755,
+            "bottom": 545
+          }
+        ]
+      },
+      "57": {
+        "segments": [
+          {
+            "page": 942,
+            "left": 105,
+            "top": 545,
+            "right": 755,
+            "bottom": 762
+          }
+        ]
+      },
+      "58": {
+        "segments": [
+          {
+            "page": 942,
+            "left": 105,
+            "top": 762,
+            "right": 755,
+            "bottom": 947
+          }
+        ]
+      },
+      "59": {
+        "segments": [
+          {
+            "page": 942,
+            "left": 105,
+            "top": 1573,
+            "right": 755,
+            "bottom": 1704
+          }
+        ]
+      },
+      "60": {
+        "segments": [
+          {
+            "page": 942,
+            "left": 105,
+            "top": 1704,
+            "right": 755,
+            "bottom": 1838
+          }
+        ]
+      },
+      "61": {
+        "segments": [
+          {
+            "page": 942,
+            "left": 785,
+            "top": 172,
+            "right": 1435,
+            "bottom": 302
+          }
+        ]
+      },
+      "62": {
+        "segments": [
+          {
+            "page": 942,
+            "left": 785,
+            "top": 302,
+            "right": 1435,
+            "bottom": 464
+          }
+        ]
+      },
+      "63": {
+        "segments": [
+          {
+            "page": 942,
+            "left": 785,
+            "top": 1471,
+            "right": 1435,
+            "bottom": 1631
+          }
+        ]
+      },
+      "64": {
+        "segments": [
+          {
+            "page": 942,
+            "left": 785,
+            "top": 1631,
+            "right": 1435,
+            "bottom": 1791
+          }
+        ]
+      },
+      "65": {
+        "segments": [
+          {
+            "page": 942,
+            "left": 785,
+            "top": 1791,
+            "right": 1435,
+            "bottom": 1855
+          },
+          {
+            "page": 943,
+            "left": 105,
+            "top": 172,
+            "right": 755,
+            "bottom": 308
+          }
+        ]
+      },
+      "66": {
+        "segments": [
+          {
+            "page": 943,
+            "left": 105,
+            "top": 308,
+            "right": 755,
+            "bottom": 468
+          }
+        ]
+      },
+      "67": {
+        "segments": [
+          {
+            "page": 943,
+            "left": 105,
+            "top": 468,
+            "right": 755,
+            "bottom": 686
+          }
+        ]
+      },
+      "68": {
+        "segments": [
+          {
+            "page": 943,
+            "left": 105,
+            "top": 1471,
+            "right": 755,
+            "bottom": 1626
+          }
+        ]
+      },
+      "69": {
+        "segments": [
+          {
+            "page": 943,
+            "left": 105,
+            "top": 1626,
+            "right": 755,
+            "bottom": 1880
+          }
+        ]
+      },
+      "70": {
+        "segments": [
+          {
+            "page": 943,
+            "left": 785,
+            "top": 172,
+            "right": 1435,
+            "bottom": 373
+          }
+        ]
+      },
+      "71": {
+        "segments": [
+          {
+            "page": 943,
+            "left": 785,
+            "top": 373,
+            "right": 1435,
+            "bottom": 577
+          }
+        ]
+      },
+      "72": {
+        "segments": [
+          {
+            "page": 943,
+            "left": 785,
+            "top": 577,
+            "right": 1435,
+            "bottom": 861
+          }
+        ]
+      },
+      "73": {
+        "segments": [
+          {
+            "page": 943,
+            "left": 785,
+            "top": 1351,
+            "right": 1435,
+            "bottom": 1471
+          }
+        ]
+      },
+      "74": {
+        "segments": [
+          {
+            "page": 943,
+            "left": 785,
+            "top": 1471,
+            "right": 1435,
+            "bottom": 1591
+          }
+        ]
+      },
+      "75": {
+        "segments": [
+          {
+            "page": 943,
+            "left": 785,
+            "top": 1591,
+            "right": 1435,
+            "bottom": 1735
+          }
+        ]
+      },
+      "76": {
+        "segments": [
+          {
+            "page": 943,
+            "left": 785,
+            "top": 1735,
+            "right": 1435,
+            "bottom": 1865
+          }
+        ]
+      }
+    },
+    "answer_key": {
+      "1": {
+        "segments": [
+          {
+            "page": 935,
+            "left": 105,
+            "top": 588,
+            "right": 1435,
+            "bottom": 626
+          }
+        ]
+      },
+      "2": {
+        "segments": [
+          {
+            "page": 935,
+            "left": 105,
+            "top": 588,
+            "right": 1435,
+            "bottom": 626
+          }
+        ]
+      },
+      "3": {
+        "segments": [
+          {
+            "page": 935,
+            "left": 105,
+            "top": 588,
+            "right": 1435,
+            "bottom": 626
+          }
+        ]
+      },
+      "4": {
+        "segments": [
+          {
+            "page": 935,
+            "left": 105,
+            "top": 588,
+            "right": 1435,
+            "bottom": 626
+          }
+        ]
+      },
+      "5": {
+        "segments": [
+          {
+            "page": 935,
+            "left": 105,
+            "top": 588,
+            "right": 1435,
+            "bottom": 626
+          }
+        ]
+      },
+      "6": {
+        "segments": [
+          {
+            "page": 935,
+            "left": 105,
+            "top": 588,
+            "right": 1435,
+            "bottom": 626
+          }
+        ]
+      },
+      "7": {
+        "segments": [
+          {
+            "page": 935,
+            "left": 105,
+            "top": 588,
+            "right": 1435,
+            "bottom": 626
+          }
+        ]
+      },
+      "8": {
+        "segments": [
+          {
+            "page": 935,
+            "left": 105,
+            "top": 588,
+            "right": 1435,
+            "bottom": 626
+          }
+        ]
+      },
+      "9": {
+        "segments": [
+          {
+            "page": 935,
+            "left": 105,
+            "top": 588,
+            "right": 1435,
+            "bottom": 626
+          }
+        ]
+      },
+      "10": {
+        "segments": [
+          {
+            "page": 935,
+            "left": 105,
+            "top": 588,
+            "right": 1435,
+            "bottom": 626
+          }
+        ]
+      },
+      "11": {
+        "segments": [
+          {
+            "page": 935,
+            "left": 105,
+            "top": 632,
+            "right": 1435,
+            "bottom": 670
+          }
+        ]
+      },
+      "12": {
+        "segments": [
+          {
+            "page": 935,
+            "left": 105,
+            "top": 632,
+            "right": 1435,
+            "bottom": 670
+          }
+        ]
+      },
+      "13": {
+        "segments": [
+          {
+            "page": 935,
+            "left": 105,
+            "top": 632,
+            "right": 1435,
+            "bottom": 670
+          }
+        ]
+      },
+      "14": {
+        "segments": [
+          {
+            "page": 935,
+            "left": 105,
+            "top": 632,
+            "right": 1435,
+            "bottom": 670
+          }
+        ]
+      },
+      "15": {
+        "segments": [
+          {
+            "page": 935,
+            "left": 105,
+            "top": 632,
+            "right": 1435,
+            "bottom": 670
+          }
+        ]
+      },
+      "16": {
+        "segments": [
+          {
+            "page": 935,
+            "left": 105,
+            "top": 632,
+            "right": 1435,
+            "bottom": 670
+          }
+        ]
+      },
+      "17": {
+        "segments": [
+          {
+            "page": 935,
+            "left": 105,
+            "top": 632,
+            "right": 1435,
+            "bottom": 670
+          }
+        ]
+      },
+      "18": {
+        "segments": [
+          {
+            "page": 935,
+            "left": 105,
+            "top": 632,
+            "right": 1435,
+            "bottom": 670
+          }
+        ]
+      },
+      "19": {
+        "segments": [
+          {
+            "page": 935,
+            "left": 105,
+            "top": 632,
+            "right": 1435,
+            "bottom": 670
+          }
+        ]
+      },
+      "20": {
+        "segments": [
+          {
+            "page": 935,
+            "left": 105,
+            "top": 632,
+            "right": 1435,
+            "bottom": 670
+          }
+        ]
+      },
+      "21": {
+        "segments": [
+          {
+            "page": 935,
+            "left": 105,
+            "top": 675,
+            "right": 1435,
+            "bottom": 713
+          }
+        ]
+      },
+      "22": {
+        "segments": [
+          {
+            "page": 935,
+            "left": 105,
+            "top": 675,
+            "right": 1435,
+            "bottom": 713
+          }
+        ]
+      },
+      "23": {
+        "segments": [
+          {
+            "page": 935,
+            "left": 105,
+            "top": 675,
+            "right": 1435,
+            "bottom": 713
+          }
+        ]
+      },
+      "24": {
+        "segments": [
+          {
+            "page": 935,
+            "left": 105,
+            "top": 675,
+            "right": 1435,
+            "bottom": 713
+          }
+        ]
+      },
+      "25": {
+        "segments": [
+          {
+            "page": 935,
+            "left": 105,
+            "top": 675,
+            "right": 1435,
+            "bottom": 713
+          }
+        ]
+      },
+      "26": {
+        "segments": [
+          {
+            "page": 935,
+            "left": 105,
+            "top": 675,
+            "right": 1435,
+            "bottom": 713
+          }
+        ]
+      },
+      "27": {
+        "segments": [
+          {
+            "page": 935,
+            "left": 105,
+            "top": 675,
+            "right": 1435,
+            "bottom": 713
+          }
+        ]
+      },
+      "28": {
+        "segments": [
+          {
+            "page": 935,
+            "left": 105,
+            "top": 675,
+            "right": 1435,
+            "bottom": 713
+          }
+        ]
+      },
+      "29": {
+        "segments": [
+          {
+            "page": 935,
+            "left": 105,
+            "top": 675,
+            "right": 1435,
+            "bottom": 713
+          }
+        ]
+      },
+      "30": {
+        "segments": [
+          {
+            "page": 939,
+            "left": 105,
+            "top": 1063,
+            "right": 1435,
+            "bottom": 1101
+          }
+        ]
+      },
+      "31": {
+        "segments": [
+          {
+            "page": 939,
+            "left": 105,
+            "top": 1063,
+            "right": 1435,
+            "bottom": 1101
+          }
+        ]
+      },
+      "32": {
+        "segments": [
+          {
+            "page": 939,
+            "left": 105,
+            "top": 1063,
+            "right": 1435,
+            "bottom": 1101
+          }
+        ]
+      },
+      "33": {
+        "segments": [
+          {
+            "page": 939,
+            "left": 105,
+            "top": 1063,
+            "right": 1435,
+            "bottom": 1101
+          }
+        ]
+      },
+      "34": {
+        "segments": [
+          {
+            "page": 939,
+            "left": 105,
+            "top": 1063,
+            "right": 1435,
+            "bottom": 1101
+          }
+        ]
+      },
+      "35": {
+        "segments": [
+          {
+            "page": 939,
+            "left": 105,
+            "top": 1063,
+            "right": 1435,
+            "bottom": 1101
+          }
+        ]
+      },
+      "36": {
+        "segments": [
+          {
+            "page": 939,
+            "left": 105,
+            "top": 1063,
+            "right": 1435,
+            "bottom": 1101
+          }
+        ]
+      },
+      "37": {
+        "segments": [
+          {
+            "page": 939,
+            "left": 105,
+            "top": 1063,
+            "right": 1435,
+            "bottom": 1101
+          }
+        ]
+      },
+      "38": {
+        "segments": [
+          {
+            "page": 939,
+            "left": 105,
+            "top": 1063,
+            "right": 1435,
+            "bottom": 1101
+          }
+        ]
+      },
+      "39": {
+        "segments": [
+          {
+            "page": 939,
+            "left": 105,
+            "top": 1063,
+            "right": 1435,
+            "bottom": 1101
+          }
+        ]
+      },
+      "40": {
+        "segments": [
+          {
+            "page": 939,
+            "left": 105,
+            "top": 1108,
+            "right": 1435,
+            "bottom": 1146
+          }
+        ]
+      },
+      "41": {
+        "segments": [
+          {
+            "page": 939,
+            "left": 105,
+            "top": 1108,
+            "right": 1435,
+            "bottom": 1146
+          }
+        ]
+      },
+      "42": {
+        "segments": [
+          {
+            "page": 939,
+            "left": 105,
+            "top": 1108,
+            "right": 1435,
+            "bottom": 1146
+          }
+        ]
+      },
+      "43": {
+        "segments": [
+          {
+            "page": 939,
+            "left": 105,
+            "top": 1108,
+            "right": 1435,
+            "bottom": 1146
+          }
+        ]
+      },
+      "44": {
+        "segments": [
+          {
+            "page": 939,
+            "left": 105,
+            "top": 1108,
+            "right": 1435,
+            "bottom": 1146
+          }
+        ]
+      },
+      "45": {
+        "segments": [
+          {
+            "page": 939,
+            "left": 105,
+            "top": 1108,
+            "right": 1435,
+            "bottom": 1146
+          }
+        ]
+      },
+      "46": {
+        "segments": [
+          {
+            "page": 939,
+            "left": 105,
+            "top": 1108,
+            "right": 1435,
+            "bottom": 1146
+          }
+        ]
+      },
+      "47": {
+        "segments": [
+          {
+            "page": 939,
+            "left": 105,
+            "top": 1108,
+            "right": 1435,
+            "bottom": 1146
+          }
+        ]
+      },
+      "48": {
+        "segments": [
+          {
+            "page": 939,
+            "left": 105,
+            "top": 1108,
+            "right": 1435,
+            "bottom": 1146
+          }
+        ]
+      },
+      "49": {
+        "segments": [
+          {
+            "page": 939,
+            "left": 105,
+            "top": 1108,
+            "right": 1435,
+            "bottom": 1146
+          }
+        ]
+      },
+      "50": {
+        "segments": [
+          {
+            "page": 939,
+            "left": 105,
+            "top": 1152,
+            "right": 1435,
+            "bottom": 1190
+          }
+        ]
+      },
+      "51": {
+        "segments": [
+          {
+            "page": 939,
+            "left": 105,
+            "top": 1152,
+            "right": 1435,
+            "bottom": 1190
+          }
+        ]
+      },
+      "52": {
+        "segments": [
+          {
+            "page": 939,
+            "left": 105,
+            "top": 1152,
+            "right": 1435,
+            "bottom": 1190
+          }
+        ]
+      },
+      "53": {
+        "segments": [
+          {
+            "page": 939,
+            "left": 105,
+            "top": 1152,
+            "right": 1435,
+            "bottom": 1190
+          }
+        ]
+      },
+      "54": {
+        "segments": [
+          {
+            "page": 944,
+            "left": 105,
+            "top": 261,
+            "right": 1435,
+            "bottom": 299
+          }
+        ]
+      },
+      "55": {
+        "segments": [
+          {
+            "page": 944,
+            "left": 105,
+            "top": 261,
+            "right": 1435,
+            "bottom": 299
+          }
+        ]
+      },
+      "56": {
+        "segments": [
+          {
+            "page": 944,
+            "left": 105,
+            "top": 261,
+            "right": 1435,
+            "bottom": 299
+          }
+        ]
+      },
+      "57": {
+        "segments": [
+          {
+            "page": 944,
+            "left": 105,
+            "top": 261,
+            "right": 1435,
+            "bottom": 299
+          }
+        ]
+      },
+      "58": {
+        "segments": [
+          {
+            "page": 944,
+            "left": 105,
+            "top": 261,
+            "right": 1435,
+            "bottom": 299
+          }
+        ]
+      },
+      "59": {
+        "segments": [
+          {
+            "page": 944,
+            "left": 105,
+            "top": 261,
+            "right": 1435,
+            "bottom": 299
+          }
+        ]
+      },
+      "60": {
+        "segments": [
+          {
+            "page": 944,
+            "left": 105,
+            "top": 261,
+            "right": 1435,
+            "bottom": 299
+          }
+        ]
+      },
+      "61": {
+        "segments": [
+          {
+            "page": 944,
+            "left": 105,
+            "top": 261,
+            "right": 1435,
+            "bottom": 299
+          }
+        ]
+      },
+      "62": {
+        "segments": [
+          {
+            "page": 944,
+            "left": 105,
+            "top": 261,
+            "right": 1435,
+            "bottom": 299
+          }
+        ]
+      },
+      "63": {
+        "segments": [
+          {
+            "page": 944,
+            "left": 105,
+            "top": 261,
+            "right": 1435,
+            "bottom": 299
+          }
+        ]
+      },
+      "64": {
+        "segments": [
+          {
+            "page": 944,
+            "left": 105,
+            "top": 307,
+            "right": 1435,
+            "bottom": 345
+          }
+        ]
+      },
+      "65": {
+        "segments": [
+          {
+            "page": 944,
+            "left": 105,
+            "top": 307,
+            "right": 1435,
+            "bottom": 345
+          }
+        ]
+      },
+      "66": {
+        "segments": [
+          {
+            "page": 944,
+            "left": 105,
+            "top": 307,
+            "right": 1435,
+            "bottom": 345
+          }
+        ]
+      },
+      "67": {
+        "segments": [
+          {
+            "page": 944,
+            "left": 105,
+            "top": 307,
+            "right": 1435,
+            "bottom": 345
+          }
+        ]
+      },
+      "68": {
+        "segments": [
+          {
+            "page": 944,
+            "left": 105,
+            "top": 307,
+            "right": 1435,
+            "bottom": 345
+          }
+        ]
+      },
+      "69": {
+        "segments": [
+          {
+            "page": 944,
+            "left": 105,
+            "top": 307,
+            "right": 1435,
+            "bottom": 345
+          }
+        ]
+      },
+      "70": {
+        "segments": [
+          {
+            "page": 944,
+            "left": 105,
+            "top": 307,
+            "right": 1435,
+            "bottom": 345
+          }
+        ]
+      },
+      "71": {
+        "segments": [
+          {
+            "page": 944,
+            "left": 105,
+            "top": 307,
+            "right": 1435,
+            "bottom": 345
+          }
+        ]
+      },
+      "72": {
+        "segments": [
+          {
+            "page": 944,
+            "left": 105,
+            "top": 307,
+            "right": 1435,
+            "bottom": 345
+          }
+        ]
+      },
+      "73": {
+        "segments": [
+          {
+            "page": 944,
+            "left": 105,
+            "top": 307,
+            "right": 1435,
+            "bottom": 345
+          }
+        ]
+      },
+      "74": {
+        "segments": [
+          {
+            "page": 944,
+            "left": 105,
+            "top": 350,
+            "right": 1435,
+            "bottom": 388
+          }
+        ]
+      },
+      "75": {
+        "segments": [
+          {
+            "page": 944,
+            "left": 105,
+            "top": 350,
+            "right": 1435,
+            "bottom": 388
+          }
+        ]
+      },
+      "76": {
+        "segments": [
+          {
+            "page": 944,
+            "left": 105,
+            "top": 350,
+            "right": 1435,
+            "bottom": 388
+          }
+        ]
+      }
+    },
+    "solution": {
+      "1": {
+        "segments": [
+          {
+            "page": 935,
+            "left": 105,
+            "top": 809,
+            "right": 755,
+            "bottom": 951
+          }
+        ]
+      },
+      "2": {
+        "segments": [
+          {
+            "page": 935,
+            "left": 105,
+            "top": 951,
+            "right": 755,
+            "bottom": 1342
+          }
+        ]
+      },
+      "3": {
+        "segments": [
+          {
+            "page": 935,
+            "left": 105,
+            "top": 1342,
+            "right": 755,
+            "bottom": 1483
+          }
+        ]
+      },
+      "4": {
+        "segments": [
+          {
+            "page": 935,
+            "left": 105,
+            "top": 1483,
+            "right": 755,
+            "bottom": 1590
+          }
+        ]
+      },
+      "5": {
+        "segments": [
+          {
+            "page": 935,
+            "left": 105,
+            "top": 1590,
+            "right": 755,
+            "bottom": 1865
+          }
+        ]
+      },
+      "6": {
+        "segments": [
+          {
+            "page": 935,
+            "left": 785,
+            "top": 812,
+            "right": 1435,
+            "bottom": 1041
+          }
+        ]
+      },
+      "7": {
+        "segments": [
+          {
+            "page": 935,
+            "left": 785,
+            "top": 1041,
+            "right": 1435,
+            "bottom": 1178
+          }
+        ]
+      },
+      "8": {
+        "segments": [
+          {
+            "page": 935,
+            "left": 785,
+            "top": 1178,
+            "right": 1435,
+            "bottom": 1569
+          }
+        ]
+      },
+      "9": {
+        "segments": [
+          {
+            "page": 935,
+            "left": 785,
+            "top": 1569,
+            "right": 1435,
+            "bottom": 1838
+          }
+        ]
+      },
+      "10": {
+        "segments": [
+          {
+            "page": 936,
+            "left": 105,
+            "top": 1236,
+            "right": 755,
+            "bottom": 1379
+          }
+        ]
+      },
+      "11": {
+        "segments": [
+          {
+            "page": 936,
+            "left": 105,
+            "top": 1379,
+            "right": 755,
+            "bottom": 1451
+          }
+        ]
+      },
+      "12": {
+        "segments": [
+          {
+            "page": 936,
+            "left": 105,
+            "top": 1451,
+            "right": 755,
+            "bottom": 1487
+          }
+        ]
+      },
+      "13": {
+        "segments": [
+          {
+            "page": 936,
+            "left": 105,
+            "top": 1487,
+            "right": 755,
+            "bottom": 1559
+          }
+        ]
+      },
+      "14": {
+        "segments": [
+          {
+            "page": 936,
+            "left": 105,
+            "top": 1559,
+            "right": 755,
+            "bottom": 1591
+          }
+        ]
+      },
+      "15": {
+        "segments": [
+          {
+            "page": 936,
+            "left": 105,
+            "top": 1591,
+            "right": 755,
+            "bottom": 1865
+          },
+          {
+            "page": 936,
+            "left": 785,
+            "top": 172,
+            "right": 1435,
+            "bottom": 244
+          }
+        ]
+      },
+      "16": {
+        "segments": [
+          {
+            "page": 936,
+            "left": 785,
+            "top": 244,
+            "right": 1435,
+            "bottom": 631
+          }
+        ]
+      },
+      "17": {
+        "segments": [
+          {
+            "page": 936,
+            "left": 785,
+            "top": 631,
+            "right": 1435,
+            "bottom": 1015
+          }
+        ]
+      },
+      "18": {
+        "segments": [
+          {
+            "page": 936,
+            "left": 785,
+            "top": 1015,
+            "right": 1435,
+            "bottom": 1377
+          }
+        ]
+      },
+      "19": {
+        "segments": [
+          {
+            "page": 936,
+            "left": 785,
+            "top": 1377,
+            "right": 1435,
+            "bottom": 1858
+          }
+        ]
+      },
+      "20": {
+        "segments": [
+          {
+            "page": 937,
+            "left": 105,
+            "top": 172,
+            "right": 755,
+            "bottom": 361
+          }
+        ]
+      },
+      "21": {
+        "segments": [
+          {
+            "page": 937,
+            "left": 105,
+            "top": 361,
+            "right": 755,
+            "bottom": 426
+          }
+        ]
+      },
+      "22": {
+        "segments": [
+          {
+            "page": 937,
+            "left": 105,
+            "top": 426,
+            "right": 755,
+            "bottom": 480
+          }
+        ]
+      },
+      "23": {
+        "segments": [
+          {
+            "page": 937,
+            "left": 105,
+            "top": 480,
+            "right": 755,
+            "bottom": 579
+          }
+        ]
+      },
+      "24": {
+        "segments": [
+          {
+            "page": 937,
+            "left": 105,
+            "top": 579,
+            "right": 755,
+            "bottom": 679
+          }
+        ]
+      },
+      "25": {
+        "segments": [
+          {
+            "page": 937,
+            "left": 105,
+            "top": 679,
+            "right": 755,
+            "bottom": 800
+          }
+        ]
+      },
+      "26": {
+        "segments": [
+          {
+            "page": 937,
+            "left": 785,
+            "top": 184,
+            "right": 1435,
+            "bottom": 298
+          }
+        ]
+      },
+      "27": {
+        "segments": [
+          {
+            "page": 937,
+            "left": 785,
+            "top": 298,
+            "right": 1435,
+            "bottom": 353
+          }
+        ]
+      },
+      "28": {
+        "segments": [
+          {
+            "page": 937,
+            "left": 785,
+            "top": 353,
+            "right": 1435,
+            "bottom": 651
+          }
+        ]
+      },
+      "29": {
+        "segments": [
+          {
+            "page": 937,
+            "left": 785,
+            "top": 651,
+            "right": 1435,
+            "bottom": 788
+          }
+        ]
+      },
+      "30": {
+        "segments": [
+          {
+            "page": 939,
+            "left": 105,
+            "top": 1607,
+            "right": 755,
+            "bottom": 1667
+          }
+        ]
+      },
+      "31": {
+        "segments": [
+          {
+            "page": 939,
+            "left": 105,
+            "top": 1667,
+            "right": 755,
+            "bottom": 1774
+          }
+        ]
+      },
+      "32": {
+        "segments": [
+          {
+            "page": 939,
+            "left": 105,
+            "top": 1774,
+            "right": 755,
+            "bottom": 1806
+          }
+        ]
+      },
+      "33": {
+        "segments": [
+          {
+            "page": 939,
+            "left": 105,
+            "top": 1806,
+            "right": 755,
+            "bottom": 1870
+          }
+        ]
+      },
+      "34": {
+        "segments": [
+          {
+            "page": 939,
+            "left": 785,
+            "top": 1285,
+            "right": 1435,
+            "bottom": 1390
+          }
+        ]
+      },
+      "35": {
+        "segments": [
+          {
+            "page": 940,
+            "left": 105,
+            "top": 250,
+            "right": 755,
+            "bottom": 315
+          }
+        ]
+      },
+      "36": {
+        "segments": [
+          {
+            "page": 940,
+            "left": 105,
+            "top": 315,
+            "right": 755,
+            "bottom": 507
+          }
+        ]
+      },
+      "37": {
+        "segments": [
+          {
+            "page": 940,
+            "left": 105,
+            "top": 507,
+            "right": 755,
+            "bottom": 733
+          }
+        ]
+      },
+      "38": {
+        "segments": [
+          {
+            "page": 940,
+            "left": 105,
+            "top": 733,
+            "right": 755,
+            "bottom": 908
+          }
+        ]
+      },
+      "39": {
+        "segments": [
+          {
+            "page": 940,
+            "left": 105,
+            "top": 908,
+            "right": 755,
+            "bottom": 1047
+          }
+        ]
+      },
+      "40": {
+        "segments": [
+          {
+            "page": 940,
+            "left": 785,
+            "top": 184,
+            "right": 1435,
+            "bottom": 251
+          }
+        ]
+      },
+      "41": {
+        "segments": [
+          {
+            "page": 940,
+            "left": 785,
+            "top": 251,
+            "right": 1435,
+            "bottom": 315
+          }
+        ]
+      },
+      "42": {
+        "segments": [
+          {
+            "page": 940,
+            "left": 785,
+            "top": 315,
+            "right": 1435,
+            "bottom": 497
+          }
+        ]
+      },
+      "43": {
+        "segments": [
+          {
+            "page": 940,
+            "left": 785,
+            "top": 497,
+            "right": 1435,
+            "bottom": 1041
+          }
+        ]
+      },
+      "44": {
+        "segments": [
+          {
+            "page": 940,
+            "left": 785,
+            "top": 1041,
+            "right": 1435,
+            "bottom": 1160
+          }
+        ]
+      },
+      "45": {
+        "segments": [
+          {
+            "page": 941,
+            "left": 105,
+            "top": 248,
+            "right": 755,
+            "bottom": 372
+          }
+        ]
+      },
+      "46": {
+        "segments": [
+          {
+            "page": 941,
+            "left": 105,
+            "top": 372,
+            "right": 755,
+            "bottom": 531
+          }
+        ]
+      },
+      "47": {
+        "segments": [
+          {
+            "page": 941,
+            "left": 105,
+            "top": 531,
+            "right": 755,
+            "bottom": 622
+          }
+        ]
+      },
+      "48": {
+        "segments": [
+          {
+            "page": 941,
+            "left": 105,
+            "top": 622,
+            "right": 755,
+            "bottom": 760
+          }
+        ]
+      },
+      "49": {
+        "segments": [
+          {
+            "page": 941,
+            "left": 105,
+            "top": 760,
+            "right": 755,
+            "bottom": 890
+          }
+        ]
+      },
+      "50": {
+        "segments": [
+          {
+            "page": 941,
+            "left": 785,
+            "top": 456,
+            "right": 1435,
+            "bottom": 552
+          }
+        ]
+      },
+      "51": {
+        "segments": [
+          {
+            "page": 941,
+            "left": 785,
+            "top": 552,
+            "right": 1435,
+            "bottom": 650
+          }
+        ]
+      },
+      "52": {
+        "segments": [
+          {
+            "page": 941,
+            "left": 785,
+            "top": 650,
+            "right": 1435,
+            "bottom": 788
+          }
+        ]
+      },
+      "53": {
+        "segments": [
+          {
+            "page": 941,
+            "left": 785,
+            "top": 788,
+            "right": 1435,
+            "bottom": 1117
+          }
+        ]
+      },
+      "54": {
+        "segments": [
+          {
+            "page": 944,
+            "left": 105,
+            "top": 473,
+            "right": 755,
+            "bottom": 688
+          }
+        ]
+      },
+      "55": {
+        "segments": [
+          {
+            "page": 944,
+            "left": 105,
+            "top": 688,
+            "right": 755,
+            "bottom": 841
+          }
+        ]
+      },
+      "56": {
+        "segments": [
+          {
+            "page": 944,
+            "left": 105,
+            "top": 841,
+            "right": 755,
+            "bottom": 1206
+          }
+        ]
+      },
+      "57": {
+        "segments": [
+          {
+            "page": 944,
+            "left": 105,
+            "top": 1206,
+            "right": 755,
+            "bottom": 1785
+          }
+        ]
+      },
+      "58": {
+        "segments": [
+          {
+            "page": 944,
+            "left": 785,
+            "top": 473,
+            "right": 1435,
+            "bottom": 699
+          }
+        ]
+      },
+      "59": {
+        "segments": [
+          {
+            "page": 944,
+            "left": 785,
+            "top": 699,
+            "right": 1435,
+            "bottom": 861
+          }
+        ]
+      },
+      "60": {
+        "segments": [
+          {
+            "page": 944,
+            "left": 785,
+            "top": 861,
+            "right": 1435,
+            "bottom": 990
+          }
+        ]
+      },
+      "61": {
+        "segments": [
+          {
+            "page": 944,
+            "left": 785,
+            "top": 990,
+            "right": 1435,
+            "bottom": 1152
+          }
+        ]
+      },
+      "62": {
+        "segments": [
+          {
+            "page": 944,
+            "left": 785,
+            "top": 1152,
+            "right": 1435,
+            "bottom": 1281
+          }
+        ]
+      },
+      "63": {
+        "segments": [
+          {
+            "page": 944,
+            "left": 785,
+            "top": 1281,
+            "right": 1435,
+            "bottom": 1465
+          }
+        ]
+      },
+      "64": {
+        "segments": [
+          {
+            "page": 944,
+            "left": 785,
+            "top": 1465,
+            "right": 1435,
+            "bottom": 1653
+          }
+        ]
+      },
+      "65": {
+        "segments": [
+          {
+            "page": 944,
+            "left": 785,
+            "top": 1653,
+            "right": 1435,
+            "bottom": 1745
+          },
+          {
+            "page": 945,
+            "left": 105,
+            "top": 172,
+            "right": 755,
+            "bottom": 350
+          }
+        ]
+      },
+      "66": {
+        "segments": [
+          {
+            "page": 945,
+            "left": 105,
+            "top": 350,
+            "right": 755,
+            "bottom": 501
+          }
+        ]
+      },
+      "67": {
+        "segments": [
+          {
+            "page": 945,
+            "left": 105,
+            "top": 501,
+            "right": 755,
+            "bottom": 975
+          }
+        ]
+      },
+      "68": {
+        "segments": [
+          {
+            "page": 945,
+            "left": 105,
+            "top": 1323,
+            "right": 755,
+            "bottom": 1452
+          }
+        ]
+      },
+      "69": {
+        "segments": [
+          {
+            "page": 945,
+            "left": 105,
+            "top": 1452,
+            "right": 755,
+            "bottom": 1685
+          }
+        ]
+      },
+      "70": {
+        "segments": [
+          {
+            "page": 945,
+            "left": 785,
+            "top": 172,
+            "right": 1435,
+            "bottom": 296
+          }
+        ]
+      },
+      "71": {
+        "segments": [
+          {
+            "page": 945,
+            "left": 785,
+            "top": 296,
+            "right": 1435,
+            "bottom": 457
+          }
+        ]
+      },
+      "72": {
+        "segments": [
+          {
+            "page": 945,
+            "left": 785,
+            "top": 457,
+            "right": 1435,
+            "bottom": 919
+          }
+        ]
+      },
+      "73": {
+        "segments": [
+          {
+            "page": 945,
+            "left": 785,
+            "top": 919,
+            "right": 1435,
+            "bottom": 1054
+          }
+        ]
+      },
+      "74": {
+        "segments": [
+          {
+            "page": 945,
+            "left": 785,
+            "top": 1054,
+            "right": 1435,
+            "bottom": 1198
+          }
+        ]
+      },
+      "75": {
+        "segments": [
+          {
+            "page": 945,
+            "left": 785,
+            "top": 1198,
+            "right": 1435,
+            "bottom": 1342
+          }
+        ]
+      },
+      "76": {
+        "segments": [
+          {
+            "page": 945,
+            "left": 785,
+            "top": 1342,
+            "right": 1435,
+            "bottom": 1672
+          }
+        ]
+      }
+    }
+  },
+  "shared_contexts": {
+    "question": {
+      "exercise-i-question-1-4": {
+        "question_numbers": [
+          1,
+          2,
+          3,
+          4
+        ],
+        "description": "Family renovation chart and complete total; chart embedded beside question 1",
+        "segments": [
+          {
+            "page": 932,
+            "left": 265,
+            "top": 375,
+            "right": 1275,
+            "bottom": 435
+          },
+          {
+            "page": 932,
+            "left": 105,
+            "top": 445,
+            "right": 755,
+            "bottom": 602
+          },
+          {
+            "page": 932,
+            "left": 480,
+            "top": 605,
+            "right": 755,
+            "bottom": 960
+          }
+        ]
+      },
+      "exercise-i-question-5-9": {
+        "question_numbers": [
+          5,
+          6,
+          7,
+          8,
+          9
+        ],
+        "description": "Six-month mobile sales pie chart and A:B ratio table",
+        "segments": [
+          {
+            "page": 932,
+            "left": 265,
+            "top": 375,
+            "right": 1275,
+            "bottom": 435
+          },
+          {
+            "page": 932,
+            "left": 105,
+            "top": 1070,
+            "right": 1435,
+            "bottom": 1574
+          }
+        ]
+      },
+      "exercise-i-question-10-14": {
+        "question_numbers": [
+          10,
+          11,
+          12,
+          13,
+          14
+        ],
+        "description": "Lecturer subject distribution and male:female ratio table",
+        "segments": [
+          {
+            "page": 932,
+            "left": 265,
+            "top": 375,
+            "right": 1275,
+            "bottom": 435
+          },
+          {
+            "page": 933,
+            "left": 105,
+            "top": 526,
+            "right": 1435,
+            "bottom": 972
+          }
+        ]
+      },
+      "exercise-i-question-15-19": {
+        "question_numbers": [
+          15,
+          16,
+          17,
+          18,
+          19
+        ],
+        "description": "Land-area food-crop angle chart",
+        "segments": [
+          {
+            "page": 932,
+            "left": 265,
+            "top": 375,
+            "right": 1275,
+            "bottom": 435
+          },
+          {
+            "page": 933,
+            "left": 775,
+            "top": 1196,
+            "right": 1435,
+            "bottom": 1713
+          }
+        ]
+      },
+      "exercise-i-question-20-24": {
+        "question_numbers": [
+          20,
+          21,
+          22,
+          23,
+          24
+        ],
+        "description": "Two graduate/post-graduate institute distributions and both totals",
+        "segments": [
+          {
+            "page": 932,
+            "left": 265,
+            "top": 375,
+            "right": 1275,
+            "bottom": 435
+          },
+          {
+            "page": 934,
+            "left": 105,
+            "top": 584,
+            "right": 1435,
+            "bottom": 1115
+          }
+        ]
+      },
+      "exercise-i-question-25-29": {
+        "question_numbers": [
+          25,
+          26,
+          27,
+          28,
+          29
+        ],
+        "description": "Both human-body composition pie diagrams; hormone/enzyme sector is unlabeled numerically and must not be inferred",
+        "segments": [
+          {
+            "page": 932,
+            "left": 265,
+            "top": 375,
+            "right": 1275,
+            "bottom": 435
+          },
+          {
+            "page": 934,
+            "left": 775,
+            "top": 1208,
+            "right": 1435,
+            "bottom": 1593
+          }
+        ]
+      },
+      "exercise-ii-question-1-5": {
+        "question_numbers": [
+          30,
+          31,
+          32,
+          33,
+          34
+        ],
+        "description": "MBA specialization chart and total",
+        "segments": [
+          {
+            "page": 937,
+            "left": 265,
+            "top": 810,
+            "right": 1275,
+            "bottom": 860
+          },
+          {
+            "page": 937,
+            "left": 105,
+            "top": 869,
+            "right": 755,
+            "bottom": 1043
+          },
+          {
+            "page": 937,
+            "left": 480,
+            "top": 1050,
+            "right": 755,
+            "bottom": 1330
+          }
+        ]
+      },
+      "exercise-ii-question-6-10": {
+        "question_numbers": [
+          35,
+          36,
+          37,
+          38,
+          39
+        ],
+        "description": "Sports spending instructions and complete angular chart",
+        "segments": [
+          {
+            "page": 937,
+            "left": 265,
+            "top": 810,
+            "right": 1275,
+            "bottom": 860
+          },
+          {
+            "page": 937,
+            "left": 775,
+            "top": 1077,
+            "right": 1435,
+            "bottom": 1191
+          },
+          {
+            "page": 937,
+            "left": 1115,
+            "top": 1233,
+            "right": 1435,
+            "bottom": 1520
+          }
+        ]
+      },
+      "exercise-ii-question-11-15": {
+        "question_numbers": [
+          40,
+          41,
+          42,
+          43,
+          44
+        ],
+        "description": "Both entrance-exam enrolled/passed institute charts and totals",
+        "segments": [
+          {
+            "page": 937,
+            "left": 265,
+            "top": 810,
+            "right": 1275,
+            "bottom": 860
+          },
+          {
+            "page": 938,
+            "left": 105,
+            "top": 555,
+            "right": 755,
+            "bottom": 1058
+          }
+        ]
+      },
+      "exercise-ii-question-16-20": {
+        "question_numbers": [
+          45,
+          46,
+          47,
+          48,
+          49
+        ],
+        "description": "Both college-stream charts and totals",
+        "segments": [
+          {
+            "page": 937,
+            "left": 265,
+            "top": 810,
+            "right": 1275,
+            "bottom": 860
+          },
+          {
+            "page": 938,
+            "left": 105,
+            "top": 1080,
+            "right": 1435,
+            "bottom": 1513
+          }
+        ]
+      },
+      "exercise-ii-question-21-24": {
+        "question_numbers": [
+          50,
+          51,
+          52,
+          53
+        ],
+        "description": "Family monthly expense angles and total",
+        "segments": [
+          {
+            "page": 937,
+            "left": 265,
+            "top": 810,
+            "right": 1275,
+            "bottom": 860
+          },
+          {
+            "page": 939,
+            "left": 105,
+            "top": 402,
+            "right": 755,
+            "bottom": 876
+          }
+        ]
+      },
+      "exercise-iii-question-1-5": {
+        "question_numbers": [
+          54,
+          55,
+          56,
+          57,
+          58
+        ],
+        "description": "Both laptop sales charts and totals; preserve duplicate P and S119% visibly printed in the combined chart",
+        "segments": [
+          {
+            "page": 941,
+            "left": 265,
+            "top": 1155,
+            "right": 1275,
+            "bottom": 1215
+          },
+          {
+            "page": 941,
+            "left": 105,
+            "top": 1219,
+            "right": 755,
+            "bottom": 1740
+          },
+          {
+            "page": 941,
+            "left": 775,
+            "top": 1219,
+            "right": 1435,
+            "bottom": 1661
+          }
+        ]
+      },
+      "exercise-iii-question-6-9": {
+        "question_numbers": [
+          59,
+          60,
+          61,
+          62
+        ],
+        "description": "All four company expense labels, amount and chart; preserve printed superscript-like angle suffix",
+        "segments": [
+          {
+            "page": 941,
+            "left": 265,
+            "top": 1155,
+            "right": 1275,
+            "bottom": 1215
+          },
+          {
+            "page": 942,
+            "left": 105,
+            "top": 951,
+            "right": 755,
+            "bottom": 1566
+          }
+        ]
+      },
+      "exercise-iii-question-10-14": {
+        "question_numbers": [
+          63,
+          64,
+          65,
+          66,
+          67
+        ],
+        "description": "Both health-club total and male membership charts and totals",
+        "segments": [
+          {
+            "page": 941,
+            "left": 265,
+            "top": 1155,
+            "right": 1275,
+            "bottom": 1215
+          },
+          {
+            "page": 942,
+            "left": 775,
+            "top": 472,
+            "right": 1435,
+            "bottom": 1467
+          }
+        ]
+      },
+      "exercise-iii-question-15-19": {
+        "question_numbers": [
+          68,
+          69,
+          70,
+          71,
+          72
+        ],
+        "description": "Cellular-phone store distribution, total and Nokia:Samsung ratio table",
+        "segments": [
+          {
+            "page": 941,
+            "left": 265,
+            "top": 1155,
+            "right": 1275,
+            "bottom": 1215
+          },
+          {
+            "page": 943,
+            "left": 105,
+            "top": 692,
+            "right": 755,
+            "bottom": 1473
+          }
+        ]
+      },
+      "exercise-iii-question-20-23": {
+        "question_numbers": [
+          73,
+          74,
+          75,
+          76
+        ],
+        "description": "College club distribution including non-members40 and all sector percentages",
+        "segments": [
+          {
+            "page": 941,
+            "left": 265,
+            "top": 1155,
+            "right": 1275,
+            "bottom": 1215
+          },
+          {
+            "page": 943,
+            "left": 775,
+            "top": 868,
+            "right": 1435,
+            "bottom": 1348
+          }
+        ]
+      }
+    },
+    "solution": {
+      "exercise-i-solution-10-14": {
+        "question_numbers": [
+          10,
+          11,
+          12,
+          13,
+          14
+        ],
+        "description": "Complete printed lecturer working and male/female table; heading says Questions10–29 as printed",
+        "segments": [
+          {
+            "page": 936,
+            "left": 105,
+            "top": 172,
+            "right": 755,
+            "bottom": 1242
+          }
+        ]
+      },
+      "exercise-ii-solution-1-5": {
+        "question_numbers": [
+          30,
+          31,
+          32,
+          33,
+          34
+        ],
+        "description": "Complete MBA specialization working",
+        "segments": [
+          {
+            "page": 939,
+            "left": 105,
+            "top": 1276,
+            "right": 755,
+            "bottom": 1607
+          }
+        ]
+      },
+      "exercise-ii-solution-6-10": {
+        "question_numbers": [
+          35,
+          36,
+          37,
+          38,
+          39
+        ],
+        "description": "Complete sports percentage working including Others continuation",
+        "segments": [
+          {
+            "page": 939,
+            "left": 775,
+            "top": 1393,
+            "right": 1435,
+            "bottom": 1870
+          },
+          {
+            "page": 940,
+            "left": 105,
+            "top": 173,
+            "right": 755,
+            "bottom": 250
+          }
+        ]
+      },
+      "exercise-ii-solution-11-15": {
+        "question_numbers": [
+          40,
+          41,
+          42,
+          43,
+          44
+        ],
+        "description": "Complete enrolled/passed institute working",
+        "segments": [
+          {
+            "page": 940,
+            "left": 105,
+            "top": 1050,
+            "right": 755,
+            "bottom": 1863
+          }
+        ]
+      },
+      "exercise-ii-solution-16-20": {
+        "question_numbers": [
+          45,
+          46,
+          47,
+          48,
+          49
+        ],
+        "description": "Complete enrolled and girls stream working including Management continuation",
+        "segments": [
+          {
+            "page": 940,
+            "left": 775,
+            "top": 1164,
+            "right": 1435,
+            "bottom": 1870
+          },
+          {
+            "page": 941,
+            "left": 105,
+            "top": 174,
+            "right": 755,
+            "bottom": 244
+          }
+        ]
+      },
+      "exercise-ii-solution-21-24": {
+        "question_numbers": [
+          50,
+          51,
+          52,
+          53
+        ],
+        "description": "Complete six-category expense percentage working",
+        "segments": [
+          {
+            "page": 941,
+            "left": 105,
+            "top": 894,
+            "right": 755,
+            "bottom": 1085
+          },
+          {
+            "page": 941,
+            "left": 775,
+            "top": 176,
+            "right": 1435,
+            "bottom": 456
+          }
+        ]
+      },
+      "exercise-iii-solution-15-19": {
+        "question_numbers": [
+          68,
+          69,
+          70,
+          71,
+          72
+        ],
+        "description": "Complete cellular phone table headed Solution15to23 as printed",
+        "segments": [
+          {
+            "page": 945,
+            "left": 105,
+            "top": 983,
+            "right": 755,
+            "bottom": 1310
+          }
+        ]
+      }
+    }
+  },
+  "boundary_reviews": {
+    "reviewer": "Codex chapter-038 visual source reviewer",
+    "all_individual_question_and_solution_segment_tops_and_bottoms_reviewed": true,
+    "all_23_shared_chart_and_working_groups_reviewed": true,
+    "review_sheets": "tmp/textbook-v2/chapter-038/boundary-sheets",
+    "source_notes": "tmp/textbook-v2/chapter-038/boundary-notes.md",
+    "changes": "tmp/textbook-v2/chapter-038/source-boundary-refinements.json"
+  },
+  "candidate_path": "question-banks/ch38_pie_chart_all_vision_text_only.zip",
+  "published_path": "question-banks/ch38_pie_chart_all_vision_text_only.zip",
+  "source_scope": {
+    "physical_chapter_pages": [
+      932,
+      945
+    ],
+    "printed_chapter_pages": [
+      923,
+      936
+    ],
+    "section": "All three objective Pie Chart exercises; no Data Sufficiency section",
+    "record_identity": {
+      "1": {
+        "exercise": "I",
+        "exercise_ordinal": 1,
+        "printed_question_number": 1,
+        "answer_key_number": 1,
+        "solution_number": 1,
+        "internal_record_id": 1,
+        "display_prefix": "Exercise I — 1.",
+        "shared_context_id": "exercise-i-question-1-4"
+      },
+      "2": {
+        "exercise": "I",
+        "exercise_ordinal": 2,
+        "printed_question_number": 2,
+        "answer_key_number": 2,
+        "solution_number": 2,
+        "internal_record_id": 2,
+        "display_prefix": "Exercise I — 2.",
+        "shared_context_id": "exercise-i-question-1-4"
+      },
+      "3": {
+        "exercise": "I",
+        "exercise_ordinal": 3,
+        "printed_question_number": 3,
+        "answer_key_number": 3,
+        "solution_number": 3,
+        "internal_record_id": 3,
+        "display_prefix": "Exercise I — 3.",
+        "shared_context_id": "exercise-i-question-1-4"
+      },
+      "4": {
+        "exercise": "I",
+        "exercise_ordinal": 4,
+        "printed_question_number": 4,
+        "answer_key_number": 4,
+        "solution_number": 4,
+        "internal_record_id": 4,
+        "display_prefix": "Exercise I — 4.",
+        "shared_context_id": "exercise-i-question-1-4"
+      },
+      "5": {
+        "exercise": "I",
+        "exercise_ordinal": 5,
+        "printed_question_number": 5,
+        "answer_key_number": 5,
+        "solution_number": 5,
+        "internal_record_id": 5,
+        "display_prefix": "Exercise I — 5.",
+        "shared_context_id": "exercise-i-question-5-9"
+      },
+      "6": {
+        "exercise": "I",
+        "exercise_ordinal": 6,
+        "printed_question_number": 6,
+        "answer_key_number": 6,
+        "solution_number": 6,
+        "internal_record_id": 6,
+        "display_prefix": "Exercise I — 6.",
+        "shared_context_id": "exercise-i-question-5-9"
+      },
+      "7": {
+        "exercise": "I",
+        "exercise_ordinal": 7,
+        "printed_question_number": 7,
+        "answer_key_number": 7,
+        "solution_number": 7,
+        "internal_record_id": 7,
+        "display_prefix": "Exercise I — 7.",
+        "shared_context_id": "exercise-i-question-5-9"
+      },
+      "8": {
+        "exercise": "I",
+        "exercise_ordinal": 8,
+        "printed_question_number": 8,
+        "answer_key_number": 8,
+        "solution_number": 8,
+        "internal_record_id": 8,
+        "display_prefix": "Exercise I — 8.",
+        "shared_context_id": "exercise-i-question-5-9"
+      },
+      "9": {
+        "exercise": "I",
+        "exercise_ordinal": 9,
+        "printed_question_number": 9,
+        "answer_key_number": 9,
+        "solution_number": 9,
+        "internal_record_id": 9,
+        "display_prefix": "Exercise I — 9.",
+        "shared_context_id": "exercise-i-question-5-9"
+      },
+      "10": {
+        "exercise": "I",
+        "exercise_ordinal": 10,
+        "printed_question_number": 10,
+        "answer_key_number": 10,
+        "solution_number": 10,
+        "internal_record_id": 10,
+        "display_prefix": "Exercise I — 10.",
+        "shared_context_id": "exercise-i-question-10-14"
+      },
+      "11": {
+        "exercise": "I",
+        "exercise_ordinal": 11,
+        "printed_question_number": 11,
+        "answer_key_number": 11,
+        "solution_number": 11,
+        "internal_record_id": 11,
+        "display_prefix": "Exercise I — 11.",
+        "shared_context_id": "exercise-i-question-10-14"
+      },
+      "12": {
+        "exercise": "I",
+        "exercise_ordinal": 12,
+        "printed_question_number": 12,
+        "answer_key_number": 12,
+        "solution_number": 12,
+        "internal_record_id": 12,
+        "display_prefix": "Exercise I — 12.",
+        "shared_context_id": "exercise-i-question-10-14"
+      },
+      "13": {
+        "exercise": "I",
+        "exercise_ordinal": 13,
+        "printed_question_number": 13,
+        "answer_key_number": 13,
+        "solution_number": 13,
+        "internal_record_id": 13,
+        "display_prefix": "Exercise I — 13.",
+        "shared_context_id": "exercise-i-question-10-14"
+      },
+      "14": {
+        "exercise": "I",
+        "exercise_ordinal": 14,
+        "printed_question_number": 14,
+        "answer_key_number": 14,
+        "solution_number": 14,
+        "internal_record_id": 14,
+        "display_prefix": "Exercise I — 14.",
+        "shared_context_id": "exercise-i-question-10-14"
+      },
+      "15": {
+        "exercise": "I",
+        "exercise_ordinal": 15,
+        "printed_question_number": 15,
+        "answer_key_number": 15,
+        "solution_number": 15,
+        "internal_record_id": 15,
+        "display_prefix": "Exercise I — 15.",
+        "shared_context_id": "exercise-i-question-15-19"
+      },
+      "16": {
+        "exercise": "I",
+        "exercise_ordinal": 16,
+        "printed_question_number": 16,
+        "answer_key_number": 16,
+        "solution_number": 16,
+        "internal_record_id": 16,
+        "display_prefix": "Exercise I — 16.",
+        "shared_context_id": "exercise-i-question-15-19"
+      },
+      "17": {
+        "exercise": "I",
+        "exercise_ordinal": 17,
+        "printed_question_number": 17,
+        "answer_key_number": 17,
+        "solution_number": 17,
+        "internal_record_id": 17,
+        "display_prefix": "Exercise I — 17.",
+        "shared_context_id": "exercise-i-question-15-19"
+      },
+      "18": {
+        "exercise": "I",
+        "exercise_ordinal": 18,
+        "printed_question_number": 18,
+        "answer_key_number": 18,
+        "solution_number": 18,
+        "internal_record_id": 18,
+        "display_prefix": "Exercise I — 18.",
+        "shared_context_id": "exercise-i-question-15-19"
+      },
+      "19": {
+        "exercise": "I",
+        "exercise_ordinal": 19,
+        "printed_question_number": 19,
+        "answer_key_number": 19,
+        "solution_number": 19,
+        "internal_record_id": 19,
+        "display_prefix": "Exercise I — 19.",
+        "shared_context_id": "exercise-i-question-15-19"
+      },
+      "20": {
+        "exercise": "I",
+        "exercise_ordinal": 20,
+        "printed_question_number": 20,
+        "answer_key_number": 20,
+        "solution_number": 20,
+        "internal_record_id": 20,
+        "display_prefix": "Exercise I — 20.",
+        "shared_context_id": "exercise-i-question-20-24"
+      },
+      "21": {
+        "exercise": "I",
+        "exercise_ordinal": 21,
+        "printed_question_number": 21,
+        "answer_key_number": 21,
+        "solution_number": 21,
+        "internal_record_id": 21,
+        "display_prefix": "Exercise I — 21.",
+        "shared_context_id": "exercise-i-question-20-24"
+      },
+      "22": {
+        "exercise": "I",
+        "exercise_ordinal": 22,
+        "printed_question_number": 22,
+        "answer_key_number": 22,
+        "solution_number": 22,
+        "internal_record_id": 22,
+        "display_prefix": "Exercise I — 22.",
+        "shared_context_id": "exercise-i-question-20-24"
+      },
+      "23": {
+        "exercise": "I",
+        "exercise_ordinal": 23,
+        "printed_question_number": 24,
+        "answer_key_number": 23,
+        "solution_number": 23,
+        "internal_record_id": 23,
+        "display_prefix": "Exercise I — 24.",
+        "source_numbering_note": "First printed 24; ordinal 23; matched to printed key and solution 23 by the S post-graduate-to-graduate ratio wording.",
+        "shared_context_id": "exercise-i-question-20-24"
+      },
+      "24": {
+        "exercise": "I",
+        "exercise_ordinal": 24,
+        "printed_question_number": 24,
+        "answer_key_number": 24,
+        "solution_number": 24,
+        "internal_record_id": 24,
+        "display_prefix": "Exercise I — 24.",
+        "shared_context_id": "exercise-i-question-20-24"
+      },
+      "25": {
+        "exercise": "I",
+        "exercise_ordinal": 25,
+        "printed_question_number": 25,
+        "answer_key_number": 25,
+        "solution_number": 25,
+        "internal_record_id": 25,
+        "display_prefix": "Exercise I — 25.",
+        "shared_context_id": "exercise-i-question-25-29"
+      },
+      "26": {
+        "exercise": "I",
+        "exercise_ordinal": 26,
+        "printed_question_number": 26,
+        "answer_key_number": 26,
+        "solution_number": 26,
+        "internal_record_id": 26,
+        "display_prefix": "Exercise I — 26.",
+        "shared_context_id": "exercise-i-question-25-29"
+      },
+      "27": {
+        "exercise": "I",
+        "exercise_ordinal": 27,
+        "printed_question_number": 27,
+        "answer_key_number": 27,
+        "solution_number": 27,
+        "internal_record_id": 27,
+        "display_prefix": "Exercise I — 27.",
+        "shared_context_id": "exercise-i-question-25-29"
+      },
+      "28": {
+        "exercise": "I",
+        "exercise_ordinal": 28,
+        "printed_question_number": 28,
+        "answer_key_number": 28,
+        "solution_number": 28,
+        "internal_record_id": 28,
+        "display_prefix": "Exercise I — 28.",
+        "shared_context_id": "exercise-i-question-25-29"
+      },
+      "29": {
+        "exercise": "I",
+        "exercise_ordinal": 29,
+        "printed_question_number": 29,
+        "answer_key_number": 29,
+        "solution_number": 29,
+        "internal_record_id": 29,
+        "display_prefix": "Exercise I — 29.",
+        "shared_context_id": "exercise-i-question-25-29"
+      },
+      "30": {
+        "exercise": "II",
+        "exercise_ordinal": 1,
+        "printed_question_number": 1,
+        "answer_key_number": 1,
+        "solution_number": 1,
+        "internal_record_id": 30,
+        "display_prefix": "Exercise II — 1.",
+        "shared_context_id": "exercise-ii-question-1-5"
+      },
+      "31": {
+        "exercise": "II",
+        "exercise_ordinal": 2,
+        "printed_question_number": 2,
+        "answer_key_number": 2,
+        "solution_number": 2,
+        "internal_record_id": 31,
+        "display_prefix": "Exercise II — 2.",
+        "shared_context_id": "exercise-ii-question-1-5"
+      },
+      "32": {
+        "exercise": "II",
+        "exercise_ordinal": 3,
+        "printed_question_number": 3,
+        "answer_key_number": 3,
+        "solution_number": 3,
+        "internal_record_id": 32,
+        "display_prefix": "Exercise II — 3.",
+        "shared_context_id": "exercise-ii-question-1-5"
+      },
+      "33": {
+        "exercise": "II",
+        "exercise_ordinal": 4,
+        "printed_question_number": 4,
+        "answer_key_number": 4,
+        "solution_number": 4,
+        "internal_record_id": 33,
+        "display_prefix": "Exercise II — 4.",
+        "shared_context_id": "exercise-ii-question-1-5"
+      },
+      "34": {
+        "exercise": "II",
+        "exercise_ordinal": 5,
+        "printed_question_number": 5,
+        "answer_key_number": 5,
+        "solution_number": 5,
+        "internal_record_id": 34,
+        "display_prefix": "Exercise II — 5.",
+        "shared_context_id": "exercise-ii-question-1-5"
+      },
+      "35": {
+        "exercise": "II",
+        "exercise_ordinal": 6,
+        "printed_question_number": 6,
+        "answer_key_number": 6,
+        "solution_number": 6,
+        "internal_record_id": 35,
+        "display_prefix": "Exercise II — 6.",
+        "shared_context_id": "exercise-ii-question-6-10"
+      },
+      "36": {
+        "exercise": "II",
+        "exercise_ordinal": 7,
+        "printed_question_number": 7,
+        "answer_key_number": 7,
+        "solution_number": 7,
+        "internal_record_id": 36,
+        "display_prefix": "Exercise II — 7.",
+        "shared_context_id": "exercise-ii-question-6-10"
+      },
+      "37": {
+        "exercise": "II",
+        "exercise_ordinal": 8,
+        "printed_question_number": 8,
+        "answer_key_number": 8,
+        "solution_number": 8,
+        "internal_record_id": 37,
+        "display_prefix": "Exercise II — 8.",
+        "shared_context_id": "exercise-ii-question-6-10"
+      },
+      "38": {
+        "exercise": "II",
+        "exercise_ordinal": 9,
+        "printed_question_number": 9,
+        "answer_key_number": 9,
+        "solution_number": 9,
+        "internal_record_id": 38,
+        "display_prefix": "Exercise II — 9.",
+        "shared_context_id": "exercise-ii-question-6-10"
+      },
+      "39": {
+        "exercise": "II",
+        "exercise_ordinal": 10,
+        "printed_question_number": 10,
+        "answer_key_number": 10,
+        "solution_number": 10,
+        "internal_record_id": 39,
+        "display_prefix": "Exercise II — 10.",
+        "shared_context_id": "exercise-ii-question-6-10"
+      },
+      "40": {
+        "exercise": "II",
+        "exercise_ordinal": 11,
+        "printed_question_number": 11,
+        "answer_key_number": 11,
+        "solution_number": 11,
+        "internal_record_id": 40,
+        "display_prefix": "Exercise II — 11.",
+        "shared_context_id": "exercise-ii-question-11-15"
+      },
+      "41": {
+        "exercise": "II",
+        "exercise_ordinal": 12,
+        "printed_question_number": 12,
+        "answer_key_number": 12,
+        "solution_number": 12,
+        "internal_record_id": 41,
+        "display_prefix": "Exercise II — 12.",
+        "shared_context_id": "exercise-ii-question-11-15"
+      },
+      "42": {
+        "exercise": "II",
+        "exercise_ordinal": 13,
+        "printed_question_number": 13,
+        "answer_key_number": 13,
+        "solution_number": 13,
+        "internal_record_id": 42,
+        "display_prefix": "Exercise II — 13.",
+        "shared_context_id": "exercise-ii-question-11-15"
+      },
+      "43": {
+        "exercise": "II",
+        "exercise_ordinal": 14,
+        "printed_question_number": 14,
+        "answer_key_number": 14,
+        "solution_number": 14,
+        "internal_record_id": 43,
+        "display_prefix": "Exercise II — 14.",
+        "shared_context_id": "exercise-ii-question-11-15"
+      },
+      "44": {
+        "exercise": "II",
+        "exercise_ordinal": 15,
+        "printed_question_number": 15,
+        "answer_key_number": 15,
+        "solution_number": 15,
+        "internal_record_id": 44,
+        "display_prefix": "Exercise II — 15.",
+        "shared_context_id": "exercise-ii-question-11-15"
+      },
+      "45": {
+        "exercise": "II",
+        "exercise_ordinal": 16,
+        "printed_question_number": 16,
+        "answer_key_number": 16,
+        "solution_number": 16,
+        "internal_record_id": 45,
+        "display_prefix": "Exercise II — 16.",
+        "shared_context_id": "exercise-ii-question-16-20"
+      },
+      "46": {
+        "exercise": "II",
+        "exercise_ordinal": 17,
+        "printed_question_number": 17,
+        "answer_key_number": 17,
+        "solution_number": 17,
+        "internal_record_id": 46,
+        "display_prefix": "Exercise II — 17.",
+        "shared_context_id": "exercise-ii-question-16-20"
+      },
+      "47": {
+        "exercise": "II",
+        "exercise_ordinal": 18,
+        "printed_question_number": 18,
+        "answer_key_number": 18,
+        "solution_number": 18,
+        "internal_record_id": 47,
+        "display_prefix": "Exercise II — 18.",
+        "shared_context_id": "exercise-ii-question-16-20"
+      },
+      "48": {
+        "exercise": "II",
+        "exercise_ordinal": 19,
+        "printed_question_number": 19,
+        "answer_key_number": 19,
+        "solution_number": 19,
+        "internal_record_id": 48,
+        "display_prefix": "Exercise II — 19.",
+        "shared_context_id": "exercise-ii-question-16-20"
+      },
+      "49": {
+        "exercise": "II",
+        "exercise_ordinal": 20,
+        "printed_question_number": 20,
+        "answer_key_number": 20,
+        "solution_number": 20,
+        "internal_record_id": 49,
+        "display_prefix": "Exercise II — 20.",
+        "shared_context_id": "exercise-ii-question-16-20"
+      },
+      "50": {
+        "exercise": "II",
+        "exercise_ordinal": 21,
+        "printed_question_number": 21,
+        "answer_key_number": 21,
+        "solution_number": 21,
+        "internal_record_id": 50,
+        "display_prefix": "Exercise II — 21.",
+        "shared_context_id": "exercise-ii-question-21-24"
+      },
+      "51": {
+        "exercise": "II",
+        "exercise_ordinal": 22,
+        "printed_question_number": 22,
+        "answer_key_number": 22,
+        "solution_number": 22,
+        "internal_record_id": 51,
+        "display_prefix": "Exercise II — 22.",
+        "shared_context_id": "exercise-ii-question-21-24"
+      },
+      "52": {
+        "exercise": "II",
+        "exercise_ordinal": 23,
+        "printed_question_number": 23,
+        "answer_key_number": 23,
+        "solution_number": 23,
+        "internal_record_id": 52,
+        "display_prefix": "Exercise II — 23.",
+        "shared_context_id": "exercise-ii-question-21-24"
+      },
+      "53": {
+        "exercise": "II",
+        "exercise_ordinal": 24,
+        "printed_question_number": 24,
+        "answer_key_number": 24,
+        "solution_number": 24,
+        "internal_record_id": 53,
+        "display_prefix": "Exercise II — 24.",
+        "shared_context_id": "exercise-ii-question-21-24"
+      },
+      "54": {
+        "exercise": "III",
+        "exercise_ordinal": 1,
+        "printed_question_number": 1,
+        "answer_key_number": 1,
+        "solution_number": 1,
+        "internal_record_id": 54,
+        "display_prefix": "Exercise III — 1.",
+        "shared_context_id": "exercise-iii-question-1-5"
+      },
+      "55": {
+        "exercise": "III",
+        "exercise_ordinal": 2,
+        "printed_question_number": 2,
+        "answer_key_number": 2,
+        "solution_number": 2,
+        "internal_record_id": 55,
+        "display_prefix": "Exercise III — 2.",
+        "shared_context_id": "exercise-iii-question-1-5"
+      },
+      "56": {
+        "exercise": "III",
+        "exercise_ordinal": 3,
+        "printed_question_number": 3,
+        "answer_key_number": 3,
+        "solution_number": 3,
+        "internal_record_id": 56,
+        "display_prefix": "Exercise III — 3.",
+        "shared_context_id": "exercise-iii-question-1-5"
+      },
+      "57": {
+        "exercise": "III",
+        "exercise_ordinal": 4,
+        "printed_question_number": 4,
+        "answer_key_number": 4,
+        "solution_number": 4,
+        "internal_record_id": 57,
+        "display_prefix": "Exercise III — 4.",
+        "shared_context_id": "exercise-iii-question-1-5"
+      },
+      "58": {
+        "exercise": "III",
+        "exercise_ordinal": 5,
+        "printed_question_number": 5,
+        "answer_key_number": 5,
+        "solution_number": 5,
+        "internal_record_id": 58,
+        "display_prefix": "Exercise III — 5.",
+        "shared_context_id": "exercise-iii-question-1-5"
+      },
+      "59": {
+        "exercise": "III",
+        "exercise_ordinal": 6,
+        "printed_question_number": 6,
+        "answer_key_number": 6,
+        "solution_number": 6,
+        "internal_record_id": 59,
+        "display_prefix": "Exercise III — 6.",
+        "shared_context_id": "exercise-iii-question-6-9"
+      },
+      "60": {
+        "exercise": "III",
+        "exercise_ordinal": 7,
+        "printed_question_number": 7,
+        "answer_key_number": 7,
+        "solution_number": 7,
+        "internal_record_id": 60,
+        "display_prefix": "Exercise III — 7.",
+        "shared_context_id": "exercise-iii-question-6-9"
+      },
+      "61": {
+        "exercise": "III",
+        "exercise_ordinal": 8,
+        "printed_question_number": 8,
+        "answer_key_number": 8,
+        "solution_number": 8,
+        "internal_record_id": 61,
+        "display_prefix": "Exercise III — 8.",
+        "shared_context_id": "exercise-iii-question-6-9"
+      },
+      "62": {
+        "exercise": "III",
+        "exercise_ordinal": 9,
+        "printed_question_number": 9,
+        "answer_key_number": 9,
+        "solution_number": 9,
+        "internal_record_id": 62,
+        "display_prefix": "Exercise III — 9.",
+        "shared_context_id": "exercise-iii-question-6-9"
+      },
+      "63": {
+        "exercise": "III",
+        "exercise_ordinal": 10,
+        "printed_question_number": 10,
+        "answer_key_number": 10,
+        "solution_number": 10,
+        "internal_record_id": 63,
+        "display_prefix": "Exercise III — 10.",
+        "shared_context_id": "exercise-iii-question-10-14"
+      },
+      "64": {
+        "exercise": "III",
+        "exercise_ordinal": 11,
+        "printed_question_number": 11,
+        "answer_key_number": 11,
+        "solution_number": 11,
+        "internal_record_id": 64,
+        "display_prefix": "Exercise III — 11.",
+        "shared_context_id": "exercise-iii-question-10-14"
+      },
+      "65": {
+        "exercise": "III",
+        "exercise_ordinal": 12,
+        "printed_question_number": 12,
+        "answer_key_number": 12,
+        "solution_number": 12,
+        "internal_record_id": 65,
+        "display_prefix": "Exercise III — 12.",
+        "shared_context_id": "exercise-iii-question-10-14"
+      },
+      "66": {
+        "exercise": "III",
+        "exercise_ordinal": 13,
+        "printed_question_number": 13,
+        "answer_key_number": 13,
+        "solution_number": 13,
+        "internal_record_id": 66,
+        "display_prefix": "Exercise III — 13.",
+        "shared_context_id": "exercise-iii-question-10-14"
+      },
+      "67": {
+        "exercise": "III",
+        "exercise_ordinal": 14,
+        "printed_question_number": 14,
+        "answer_key_number": 14,
+        "solution_number": 14,
+        "internal_record_id": 67,
+        "display_prefix": "Exercise III — 14.",
+        "shared_context_id": "exercise-iii-question-10-14"
+      },
+      "68": {
+        "exercise": "III",
+        "exercise_ordinal": 15,
+        "printed_question_number": 15,
+        "answer_key_number": 15,
+        "solution_number": 15,
+        "internal_record_id": 68,
+        "display_prefix": "Exercise III — 15.",
+        "shared_context_id": "exercise-iii-question-15-19"
+      },
+      "69": {
+        "exercise": "III",
+        "exercise_ordinal": 16,
+        "printed_question_number": 16,
+        "answer_key_number": 16,
+        "solution_number": 16,
+        "internal_record_id": 69,
+        "display_prefix": "Exercise III — 16.",
+        "shared_context_id": "exercise-iii-question-15-19"
+      },
+      "70": {
+        "exercise": "III",
+        "exercise_ordinal": 17,
+        "printed_question_number": 17,
+        "answer_key_number": 17,
+        "solution_number": 17,
+        "internal_record_id": 70,
+        "display_prefix": "Exercise III — 17.",
+        "shared_context_id": "exercise-iii-question-15-19"
+      },
+      "71": {
+        "exercise": "III",
+        "exercise_ordinal": 18,
+        "printed_question_number": 18,
+        "answer_key_number": 18,
+        "solution_number": 18,
+        "internal_record_id": 71,
+        "display_prefix": "Exercise III — 18.",
+        "shared_context_id": "exercise-iii-question-15-19"
+      },
+      "72": {
+        "exercise": "III",
+        "exercise_ordinal": 19,
+        "printed_question_number": 19,
+        "answer_key_number": 19,
+        "solution_number": 19,
+        "internal_record_id": 72,
+        "display_prefix": "Exercise III — 19.",
+        "shared_context_id": "exercise-iii-question-15-19"
+      },
+      "73": {
+        "exercise": "III",
+        "exercise_ordinal": 20,
+        "printed_question_number": 20,
+        "answer_key_number": 20,
+        "solution_number": 20,
+        "internal_record_id": 73,
+        "display_prefix": "Exercise III — 20.",
+        "shared_context_id": "exercise-iii-question-20-23"
+      },
+      "74": {
+        "exercise": "III",
+        "exercise_ordinal": 21,
+        "printed_question_number": 21,
+        "answer_key_number": 21,
+        "solution_number": 21,
+        "internal_record_id": 74,
+        "display_prefix": "Exercise III — 21.",
+        "shared_context_id": "exercise-iii-question-20-23"
+      },
+      "75": {
+        "exercise": "III",
+        "exercise_ordinal": 22,
+        "printed_question_number": 22,
+        "answer_key_number": 22,
+        "solution_number": 22,
+        "internal_record_id": 75,
+        "display_prefix": "Exercise III — 22.",
+        "shared_context_id": "exercise-iii-question-20-23"
+      },
+      "76": {
+        "exercise": "III",
+        "exercise_ordinal": 23,
+        "printed_question_number": 23,
+        "answer_key_number": 23,
+        "solution_number": 23,
+        "internal_record_id": 76,
+        "display_prefix": "Exercise III — 23.",
+        "shared_context_id": "exercise-iii-question-20-23"
+      }
+    },
+    "exercises": [
+      {
+        "exercise": "I",
+        "printed_question_numbers": [
+          1,
+          29
+        ],
+        "printed_record_count": 29,
+        "internal_ids": [
+          1,
+          29
+        ],
+        "question_pages": [
+          932,
+          935
+        ],
+        "answer_pages": [
+          935,
+          935
+        ],
+        "solution_pages": [
+          935,
+          937
+        ]
+      },
+      {
+        "exercise": "II",
+        "printed_question_numbers": [
+          1,
+          24
+        ],
+        "printed_record_count": 24,
+        "internal_ids": [
+          30,
+          53
+        ],
+        "question_pages": [
+          937,
+          939
+        ],
+        "answer_pages": [
+          939,
+          939
+        ],
+        "solution_pages": [
+          939,
+          941
+        ]
+      },
+      {
+        "exercise": "III",
+        "printed_question_numbers": [
+          1,
+          23
+        ],
+        "printed_record_count": 23,
+        "internal_ids": [
+          54,
+          76
+        ],
+        "question_pages": [
+          941,
+          943
+        ],
+        "answer_pages": [
+          944,
+          944
+        ],
+        "solution_pages": [
+          944,
+          945
+        ]
+      }
+    ],
+    "excluded_sections": [
+      {
+        "description": "Chapter 39 Line Graphs starts physical 946 and is outside Chapter 38",
+        "physical_start_page": 946
+      }
+    ],
+    "notes": [
+      "One chapter ZIP retains all three exercise identities. Internal IDs do not replace printed question numbering.",
+      "Exercise I ordinal 23 is printed 24, followed by another printed 24. Preserve the duplicated printed marker; the first is uniquely matched to key/solution 23 by its S post-graduate-to-graduate ratio wording.",
+      "Shared charts and tables must be transcribed visually as complete readable text, including titles, totals, units, legends and all printed entries. No images or OCR in the final bank.",
+      "Preserve source inconsistencies without correcting arithmetic, chart values, labels, answer keys or solution statements."
+    ]
+  },
+  "known_source_issues": {
+    "i-question-23": "Question sequence on physical 934 visibly prints 22, 24, 24, 25. First printed 24 is ordinal 23; its key and worked solution are numbered 23. Preserve printed marker and explain identity explicitly.",
+    "i-solution-context-10-14": "Physical 936 shared lecturer working heading prints Direction (Questions 10–29), but lecturer content belongs to question group 10–14; preserve heading as printed and retain explicit context mapping.",
+    "i-solution-16": "Physical 936 solution 16 contains a printed dotted blank after A=(1.5×20); do not fill it in.",
+    "iii-laptops-chart": "Physical 941 combined-laptop chart prints P 16%, P 23%, R 35%, S 119%, T 15%; do not change P to Q or 119% to 11%. Physical 944 worked solution 4 separately uses Q 23% and S 11%.",
+    "iii-expense-chart": "Physical 942 expense chart angle suffix resembles superscript 3 in 90³, 90³, 72³ and 108³. Preserve visible notation with a source note; worked solutions separately print degree symbols.",
+    "iii-solution-2": "Physical 944 final central-angle line prints 32.4% while option is 32.4 degrees; preserve both.",
+    "iii-solution-4": "Physical 944 includes inconsistent extra arithmetic 2070−850=1220 and final 1134−1034=99; preserve every printed line.",
+    "iii-solution-10": "Physical 944 prints numerator 260×32 in a central-angle computation; preserve, do not silently correct to 360.",
+    "iii-solution-14": "Physical 945 prints 2600×8/100=288 in male-members calculation; preserve.",
+    "iii-solution-context-15-19": "Physical 945 table heading prints Solution (15 to 23) but contains cellular phone data for group 15–19. Preserve heading and explicit group mapping; do not attach to unrelated college-club questions 20–23.",
+    "iii-solution-15": "Physical 945 phone total line prints 896+1120+1568=448=4032; preserve operators rather than repairing.",
+    "iii-solution-16": "Physical 945 solution final result is 17 11/17% more; printed options and key (d) differ. Preserve answer key and solution independently."
+  }
+}

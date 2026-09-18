@@ -58,7 +58,6 @@ class LayoutArtifactRuleTests(unittest.TestCase):
 
         self.assertEqual(BUILD.unresolved_layout_issues(record), [])
 
-
 @unittest.skipUnless(os.environ.get("APTITUDE_SOURCE_PDF"), "APTITUDE_SOURCE_PDF is required")
 class Chapter01BuildTests(unittest.TestCase):
     @classmethod
@@ -132,6 +131,8 @@ class Chapter01BuildTests(unittest.TestCase):
         by_number = {question["source_question_number"]: question for question in questions}
         self.assertIn("π", by_number[13]["question_text"])
         self.assertIn("√2", by_number[14]["question_text"])
+        self.assertEqual(by_number[128]["question_text"], "(80)² − (65)² + 81 = ?")
+        self.assertIn("(80)² − (65)²", by_number[128]["solution_steps"][0])
         self.assertEqual(by_number[137]["correct_answer"], "A")
         self.assertEqual(by_number[137]["solution_steps"][-1], "768 + 232 = 1000.")
         self.assertEqual(

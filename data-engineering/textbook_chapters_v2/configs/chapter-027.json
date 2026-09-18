@@ -1,0 +1,677 @@
+{
+  "chapter": 27,
+  "chapter_name": "Calendar",
+  "bank_name": "R. S. Aggarwal - Chapter 27: Calendar (all-vision text-only)",
+  "printed_question_count": 18,
+  "question_numbers": [
+    1,
+    18
+  ],
+  "question_pages": [
+    830,
+    830
+  ],
+  "answer_pages": [
+    830,
+    830
+  ],
+  "solution_pages": [
+    831,
+    831
+  ],
+  "intentional_exclusions": [],
+  "shared_contexts": {},
+  "marker_overrides": {
+    "question": {
+      "1": {
+        "segments": [
+          {
+            "page": 830,
+            "left": 95,
+            "top": 344,
+            "right": 760,
+            "bottom": 482
+          }
+        ]
+      },
+      "2": {
+        "segments": [
+          {
+            "page": 830,
+            "left": 95,
+            "top": 482,
+            "right": 760,
+            "bottom": 620
+          }
+        ]
+      },
+      "3": {
+        "segments": [
+          {
+            "page": 830,
+            "left": 95,
+            "top": 620,
+            "right": 760,
+            "bottom": 759
+          }
+        ]
+      },
+      "4": {
+        "segments": [
+          {
+            "page": 830,
+            "left": 95,
+            "top": 759,
+            "right": 760,
+            "bottom": 894
+          }
+        ]
+      },
+      "5": {
+        "segments": [
+          {
+            "page": 830,
+            "left": 95,
+            "top": 894,
+            "right": 760,
+            "bottom": 1028
+          }
+        ]
+      },
+      "6": {
+        "segments": [
+          {
+            "page": 830,
+            "left": 95,
+            "top": 1028,
+            "right": 760,
+            "bottom": 1229
+          }
+        ]
+      },
+      "7": {
+        "segments": [
+          {
+            "page": 830,
+            "left": 95,
+            "top": 1229,
+            "right": 760,
+            "bottom": 1362
+          }
+        ]
+      },
+      "8": {
+        "segments": [
+          {
+            "page": 830,
+            "left": 95,
+            "top": 1362,
+            "right": 760,
+            "bottom": 1550
+          }
+        ]
+      },
+      "9": {
+        "segments": [
+          {
+            "page": 830,
+            "left": 775,
+            "top": 277,
+            "right": 1435,
+            "bottom": 405
+          }
+        ]
+      },
+      "10": {
+        "segments": [
+          {
+            "page": 830,
+            "left": 775,
+            "top": 405,
+            "right": 1435,
+            "bottom": 503
+          }
+        ]
+      },
+      "11": {
+        "segments": [
+          {
+            "page": 830,
+            "left": 775,
+            "top": 503,
+            "right": 1435,
+            "bottom": 602
+          }
+        ]
+      },
+      "12": {
+        "segments": [
+          {
+            "page": 830,
+            "left": 775,
+            "top": 602,
+            "right": 1435,
+            "bottom": 702
+          }
+        ]
+      },
+      "13": {
+        "segments": [
+          {
+            "page": 830,
+            "left": 775,
+            "top": 702,
+            "right": 1435,
+            "bottom": 814
+          }
+        ]
+      },
+      "14": {
+        "segments": [
+          {
+            "page": 830,
+            "left": 775,
+            "top": 814,
+            "right": 1435,
+            "bottom": 957
+          }
+        ]
+      },
+      "15": {
+        "segments": [
+          {
+            "page": 830,
+            "left": 775,
+            "top": 957,
+            "right": 1435,
+            "bottom": 1096
+          }
+        ]
+      },
+      "16": {
+        "segments": [
+          {
+            "page": 830,
+            "left": 775,
+            "top": 1096,
+            "right": 1435,
+            "bottom": 1257
+          }
+        ]
+      },
+      "17": {
+        "segments": [
+          {
+            "page": 830,
+            "left": 775,
+            "top": 1257,
+            "right": 1435,
+            "bottom": 1382
+          }
+        ]
+      },
+      "18": {
+        "segments": [
+          {
+            "page": 830,
+            "left": 775,
+            "top": 1382,
+            "right": 1435,
+            "bottom": 1550
+          }
+        ]
+      }
+    },
+    "answer_key": {
+      "1": {
+        "segments": [
+          {
+            "page": 830,
+            "left": 95,
+            "top": 1686,
+            "right": 1435,
+            "bottom": 1719
+          }
+        ]
+      },
+      "2": {
+        "segments": [
+          {
+            "page": 830,
+            "left": 95,
+            "top": 1686,
+            "right": 1435,
+            "bottom": 1719
+          }
+        ]
+      },
+      "3": {
+        "segments": [
+          {
+            "page": 830,
+            "left": 95,
+            "top": 1686,
+            "right": 1435,
+            "bottom": 1719
+          }
+        ]
+      },
+      "4": {
+        "segments": [
+          {
+            "page": 830,
+            "left": 95,
+            "top": 1686,
+            "right": 1435,
+            "bottom": 1719
+          }
+        ]
+      },
+      "5": {
+        "segments": [
+          {
+            "page": 830,
+            "left": 95,
+            "top": 1686,
+            "right": 1435,
+            "bottom": 1719
+          }
+        ]
+      },
+      "6": {
+        "segments": [
+          {
+            "page": 830,
+            "left": 95,
+            "top": 1686,
+            "right": 1435,
+            "bottom": 1719
+          }
+        ]
+      },
+      "7": {
+        "segments": [
+          {
+            "page": 830,
+            "left": 95,
+            "top": 1686,
+            "right": 1435,
+            "bottom": 1719
+          }
+        ]
+      },
+      "8": {
+        "segments": [
+          {
+            "page": 830,
+            "left": 95,
+            "top": 1686,
+            "right": 1435,
+            "bottom": 1719
+          }
+        ]
+      },
+      "9": {
+        "segments": [
+          {
+            "page": 830,
+            "left": 95,
+            "top": 1686,
+            "right": 1435,
+            "bottom": 1719
+          }
+        ]
+      },
+      "10": {
+        "segments": [
+          {
+            "page": 830,
+            "left": 95,
+            "top": 1686,
+            "right": 1435,
+            "bottom": 1719
+          }
+        ]
+      },
+      "11": {
+        "segments": [
+          {
+            "page": 830,
+            "left": 95,
+            "top": 1719,
+            "right": 1435,
+            "bottom": 1752
+          }
+        ]
+      },
+      "12": {
+        "segments": [
+          {
+            "page": 830,
+            "left": 95,
+            "top": 1719,
+            "right": 1435,
+            "bottom": 1752
+          }
+        ]
+      },
+      "13": {
+        "segments": [
+          {
+            "page": 830,
+            "left": 95,
+            "top": 1719,
+            "right": 1435,
+            "bottom": 1752
+          }
+        ]
+      },
+      "14": {
+        "segments": [
+          {
+            "page": 830,
+            "left": 95,
+            "top": 1719,
+            "right": 1435,
+            "bottom": 1752
+          }
+        ]
+      },
+      "15": {
+        "segments": [
+          {
+            "page": 830,
+            "left": 95,
+            "top": 1719,
+            "right": 1435,
+            "bottom": 1752
+          }
+        ]
+      },
+      "16": {
+        "segments": [
+          {
+            "page": 830,
+            "left": 95,
+            "top": 1719,
+            "right": 1435,
+            "bottom": 1752
+          }
+        ]
+      },
+      "17": {
+        "segments": [
+          {
+            "page": 830,
+            "left": 95,
+            "top": 1719,
+            "right": 1435,
+            "bottom": 1752
+          }
+        ]
+      },
+      "18": {
+        "segments": [
+          {
+            "page": 830,
+            "left": 95,
+            "top": 1719,
+            "right": 1435,
+            "bottom": 1752
+          }
+        ]
+      }
+    },
+    "solution": {
+      "1": {
+        "segments": [
+          {
+            "page": 831,
+            "left": 95,
+            "top": 235,
+            "right": 760,
+            "bottom": 371
+          }
+        ]
+      },
+      "2": {
+        "segments": [
+          {
+            "page": 831,
+            "left": 95,
+            "top": 371,
+            "right": 760,
+            "bottom": 507
+          }
+        ]
+      },
+      "3": {
+        "segments": [
+          {
+            "page": 831,
+            "left": 95,
+            "top": 507,
+            "right": 760,
+            "bottom": 675
+          }
+        ]
+      },
+      "4": {
+        "segments": [
+          {
+            "page": 831,
+            "left": 95,
+            "top": 675,
+            "right": 760,
+            "bottom": 842
+          }
+        ]
+      },
+      "5": {
+        "segments": [
+          {
+            "page": 831,
+            "left": 95,
+            "top": 842,
+            "right": 760,
+            "bottom": 1078
+          }
+        ]
+      },
+      "6": {
+        "segments": [
+          {
+            "page": 831,
+            "left": 95,
+            "top": 1078,
+            "right": 760,
+            "bottom": 1315
+          }
+        ]
+      },
+      "16": {
+        "segments": [
+          {
+            "page": 831,
+            "left": 95,
+            "top": 1315,
+            "right": 760,
+            "bottom": 1465
+          }
+        ]
+      },
+      "17": {
+        "segments": [
+          {
+            "page": 831,
+            "left": 775,
+            "top": 235,
+            "right": 1435,
+            "bottom": 981
+          }
+        ]
+      },
+      "18": {
+        "segments": [
+          {
+            "page": 831,
+            "left": 775,
+            "top": 981,
+            "right": 1435,
+            "bottom": 1465
+          }
+        ]
+      },
+      "7": {
+        "missing": true,
+        "reason": "Worked solution 7 is absent: physical page 831 (printed 822), the only objective-solution page, visibly jumps directly from solution 6 to solution 16; its right column contains 17 and 18, and Chapter 28 begins on physical page 832."
+      },
+      "8": {
+        "missing": true,
+        "reason": "Worked solution 8 is absent: physical page 831 (printed 822), the only objective-solution page, visibly jumps directly from solution 6 to solution 16; its right column contains 17 and 18, and Chapter 28 begins on physical page 832."
+      },
+      "9": {
+        "missing": true,
+        "reason": "Worked solution 9 is absent: physical page 831 (printed 822), the only objective-solution page, visibly jumps directly from solution 6 to solution 16; its right column contains 17 and 18, and Chapter 28 begins on physical page 832."
+      },
+      "10": {
+        "missing": true,
+        "reason": "Worked solution 10 is absent: physical page 831 (printed 822), the only objective-solution page, visibly jumps directly from solution 6 to solution 16; its right column contains 17 and 18, and Chapter 28 begins on physical page 832."
+      },
+      "11": {
+        "missing": true,
+        "reason": "Worked solution 11 is absent: physical page 831 (printed 822), the only objective-solution page, visibly jumps directly from solution 6 to solution 16; its right column contains 17 and 18, and Chapter 28 begins on physical page 832."
+      },
+      "12": {
+        "missing": true,
+        "reason": "Worked solution 12 is absent: physical page 831 (printed 822), the only objective-solution page, visibly jumps directly from solution 6 to solution 16; its right column contains 17 and 18, and Chapter 28 begins on physical page 832."
+      },
+      "13": {
+        "missing": true,
+        "reason": "Worked solution 13 is absent: physical page 831 (printed 822), the only objective-solution page, visibly jumps directly from solution 6 to solution 16; its right column contains 17 and 18, and Chapter 28 begins on physical page 832."
+      },
+      "14": {
+        "missing": true,
+        "reason": "Worked solution 14 is absent: physical page 831 (printed 822), the only objective-solution page, visibly jumps directly from solution 6 to solution 16; its right column contains 17 and 18, and Chapter 28 begins on physical page 832."
+      },
+      "15": {
+        "missing": true,
+        "reason": "Worked solution 15 is absent: physical page 831 (printed 822), the only objective-solution page, visibly jumps directly from solution 6 to solution 16; its right column contains 17 and 18, and Chapter 28 begins on physical page 832."
+      }
+    }
+  },
+  "layout_boundaries": {},
+  "source_scope": {
+    "section": "Exercise (Objective Type Questions)",
+    "physical_chapter_pages": [
+      828,
+      831
+    ],
+    "printed_chapter_pages": [
+      819,
+      822
+    ],
+    "printed_question_numbers": [
+      1,
+      18
+    ],
+    "excluded_sections": [],
+    "notes": [
+      "Physical pages 828-829 contain introductory facts and solved examples, outside the objective exercise.",
+      "All 18 objective questions and answer-key entries are on physical page 830. Physical page 831 contains only worked solutions 1-6 and 16-18; the numbering visibly jumps from 6 to 16. Missing solutions 7-15 remain audit records for individual reviewed rejection, not intentional exclusions.",
+      "No separate Data Sufficiency section, question figures, or shared question contexts occur. Chapter 28 begins on physical page 832.",
+      "Solution 5 includes a year/odd-day table that must be transcribed as structured text and visually verified in the application.",
+      "Solution 6 stops after the printed January-April odd-day subtotal. Preserve only the available printed working; do not add a conclusion.",
+      "Preserve printed inconsistencies, including duplicate 2014 choices in question 18 and the stated weekdays/dates in question 4."
+    ]
+  },
+  "boundary_reviews": {
+    "question:8": "Removed the generator's spurious right-column continuation containing only the exercise heading. Question 8 and all options end in the left column.",
+    "solution:16": "Removed the generator's spurious right-column continuation containing only the solutions heading. Solution 16 ends completely in the left column; solution 17 starts at the top of the right column.",
+    "solution:5": "The complete year/odd-day table is inside the left-column solution crop. Transcribe its row/column associations as text, with no embedded image.",
+    "solution:6": "The printed working ends at the January-April subtotal (91 days, zero odd day), immediately before solution 16. Preserve exactly this partial printed working; do not add an inferred conclusion.",
+    "solution:7": "Worked solution 7 is absent: physical page 831 (printed 822), the only objective-solution page, visibly jumps directly from solution 6 to solution 16; its right column contains 17 and 18, and Chapter 28 begins on physical page 832. Question and answer key exist; do not synthesize a solution.",
+    "solution:8": "Worked solution 8 is absent: physical page 831 (printed 822), the only objective-solution page, visibly jumps directly from solution 6 to solution 16; its right column contains 17 and 18, and Chapter 28 begins on physical page 832. Question and answer key exist; do not synthesize a solution.",
+    "solution:9": "Worked solution 9 is absent: physical page 831 (printed 822), the only objective-solution page, visibly jumps directly from solution 6 to solution 16; its right column contains 17 and 18, and Chapter 28 begins on physical page 832. Question and answer key exist; do not synthesize a solution.",
+    "solution:10": "Worked solution 10 is absent: physical page 831 (printed 822), the only objective-solution page, visibly jumps directly from solution 6 to solution 16; its right column contains 17 and 18, and Chapter 28 begins on physical page 832. Question and answer key exist; do not synthesize a solution.",
+    "solution:11": "Worked solution 11 is absent: physical page 831 (printed 822), the only objective-solution page, visibly jumps directly from solution 6 to solution 16; its right column contains 17 and 18, and Chapter 28 begins on physical page 832. Question and answer key exist; do not synthesize a solution.",
+    "solution:12": "Worked solution 12 is absent: physical page 831 (printed 822), the only objective-solution page, visibly jumps directly from solution 6 to solution 16; its right column contains 17 and 18, and Chapter 28 begins on physical page 832. Question and answer key exist; do not synthesize a solution.",
+    "solution:13": "Worked solution 13 is absent: physical page 831 (printed 822), the only objective-solution page, visibly jumps directly from solution 6 to solution 16; its right column contains 17 and 18, and Chapter 28 begins on physical page 832. Question and answer key exist; do not synthesize a solution.",
+    "solution:14": "Worked solution 14 is absent: physical page 831 (printed 822), the only objective-solution page, visibly jumps directly from solution 6 to solution 16; its right column contains 17 and 18, and Chapter 28 begins on physical page 832. Question and answer key exist; do not synthesize a solution.",
+    "solution:15": "Worked solution 15 is absent: physical page 831 (printed 822), the only objective-solution page, visibly jumps directly from solution 6 to solution 16; its right column contains 17 and 18, and Chapter 28 begins on physical page 832. Question and answer key exist; do not synthesize a solution."
+  },
+  "known_source_issues": {
+    "7": {
+      "status": "missing_solution",
+      "reason": "Printed worked solution absent",
+      "detail": "Worked solution 7 is absent: physical page 831 (printed 822), the only objective-solution page, visibly jumps directly from solution 6 to solution 16; its right column contains 17 and 18, and Chapter 28 begins on physical page 832.",
+      "requires_reviewed_rejection": true
+    },
+    "8": {
+      "status": "missing_solution",
+      "reason": "Printed worked solution absent",
+      "detail": "Worked solution 8 is absent: physical page 831 (printed 822), the only objective-solution page, visibly jumps directly from solution 6 to solution 16; its right column contains 17 and 18, and Chapter 28 begins on physical page 832.",
+      "requires_reviewed_rejection": true
+    },
+    "9": {
+      "status": "missing_solution",
+      "reason": "Printed worked solution absent",
+      "detail": "Worked solution 9 is absent: physical page 831 (printed 822), the only objective-solution page, visibly jumps directly from solution 6 to solution 16; its right column contains 17 and 18, and Chapter 28 begins on physical page 832.",
+      "requires_reviewed_rejection": true
+    },
+    "10": {
+      "status": "missing_solution",
+      "reason": "Printed worked solution absent",
+      "detail": "Worked solution 10 is absent: physical page 831 (printed 822), the only objective-solution page, visibly jumps directly from solution 6 to solution 16; its right column contains 17 and 18, and Chapter 28 begins on physical page 832.",
+      "requires_reviewed_rejection": true
+    },
+    "11": {
+      "status": "missing_solution",
+      "reason": "Printed worked solution absent",
+      "detail": "Worked solution 11 is absent: physical page 831 (printed 822), the only objective-solution page, visibly jumps directly from solution 6 to solution 16; its right column contains 17 and 18, and Chapter 28 begins on physical page 832.",
+      "requires_reviewed_rejection": true
+    },
+    "12": {
+      "status": "missing_solution",
+      "reason": "Printed worked solution absent",
+      "detail": "Worked solution 12 is absent: physical page 831 (printed 822), the only objective-solution page, visibly jumps directly from solution 6 to solution 16; its right column contains 17 and 18, and Chapter 28 begins on physical page 832.",
+      "requires_reviewed_rejection": true
+    },
+    "13": {
+      "status": "missing_solution",
+      "reason": "Printed worked solution absent",
+      "detail": "Worked solution 13 is absent: physical page 831 (printed 822), the only objective-solution page, visibly jumps directly from solution 6 to solution 16; its right column contains 17 and 18, and Chapter 28 begins on physical page 832.",
+      "requires_reviewed_rejection": true
+    },
+    "14": {
+      "status": "missing_solution",
+      "reason": "Printed worked solution absent",
+      "detail": "Worked solution 14 is absent: physical page 831 (printed 822), the only objective-solution page, visibly jumps directly from solution 6 to solution 16; its right column contains 17 and 18, and Chapter 28 begins on physical page 832.",
+      "requires_reviewed_rejection": true
+    },
+    "15": {
+      "status": "missing_solution",
+      "reason": "Printed worked solution absent",
+      "detail": "Worked solution 15 is absent: physical page 831 (printed 822), the only objective-solution page, visibly jumps directly from solution 6 to solution 16; its right column contains 17 and 18, and Chapter 28 begins on physical page 832.",
+      "requires_reviewed_rejection": true
+    }
+  },
+  "source_pdf": "data-engineering/dokumen.pub_quantitative-aptitude-for-competitive-examinations-by-rs-aggarwal-reprint-2017nbsped-9352534026-9789352534029.pdf",
+  "source_pdf_sha256": "0723862418cd7b088341bcfc78a10745fd434b3f4db695986b1ff4f40a7223bf",
+  "source_dpi": 180,
+  "work_root": "tmp/textbook-v2",
+  "candidate_path": "question-banks/ch27_calendar_all_vision_text_only.zip",
+  "published_path": "question-banks/ch27_calendar_all_vision_text_only.zip",
+  "validation_viewports": [
+    [
+      1024,
+      768
+    ],
+    [
+      1600,
+      900
+    ]
+  ],
+  "render_workers": 2,
+  "field_media": {}
+}

@@ -35,6 +35,25 @@ def normalized_pipeline_result(value: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def load_generated_result(temporary: Path, stdout: str) -> dict[str, Any]:
+    """Read Codex's structured result, with a guarded stdout fallback.
+
+    The desktop Codex executable occasionally returns a schema-valid JSON result
+    on stdout but does not materialize its requested ``-o`` file.  That is an
+    output-transport failure, not a license to regenerate source content: use
+    the exact returned JSON only when it is a single object.
+    """
+
+    try:
+        raw = temporary.read_text(encoding="utf-8") if temporary.is_file() else stdout.strip()
+        value = json.loads(raw)
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError("Codex did not write a valid structured result file or JSON stdout.") from error
+    if not isinstance(value, dict):
+        raise ValueError("Codex did not write a structured JSON object.")
+    return value
+
+
 def _result_path(job: dict[str, Any]) -> Path:
     job_path = Path(job["output_path"])
     return job_path.parent.parent / "extraction-results" / f"{job['job_id']}.json"
@@ -50,7 +69,8 @@ def _prompt(job: dict[str, Any]) -> str:
         f"Attachment order and roles are {roles}. "
         f"Use job_id {job['job_id']} and job_fingerprint {job['job_fingerprint']}. "
         f"The answer_key crop_sha256 is {answer['sha256']}. "
-        "Put null in option E and representation option E when the source has only A through D. "
+        "Put null in option E and representation option E when the source has only A through D; in that case E is not a choice and correct_answer must be A, B, C, or D. "
+        "solution_steps must contain at least one non-empty source-faithful line. When the solution crop contains only a numbered answer key and no explanatory working, use exactly one line stating that the textbook answer key marks the extracted correct option; do not invent reasoning. "
         "Set differences_from_legacy to an empty array and reviewer to Codex all-vision extraction 2026-08-30. "
         "Emit only one schema-valid JSON object."
     )
@@ -144,9 +164,9 @@ def _run_one(
         completed.stdout + "\n--- STDERR ---\n" + completed.stderr,
         encoding="utf-8",
     )
-    if completed.returncode != 0 or not temporary.is_file():
+    if completed.returncode != 0:
         raise RuntimeError(f"Codex exited {completed.returncode}; see {log_dir / (job['job_id'] + '.log')}")
-    value = normalized_pipeline_result(json.loads(temporary.read_text(encoding="utf-8")))
+    value = normalized_pipeline_result(load_generated_result(temporary, completed.stdout))
     _validate_result(value, job)
     output.write_text(json.dumps(value, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     temporary.unlink(missing_ok=True)

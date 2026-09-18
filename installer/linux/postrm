@@ -1,0 +1,7 @@
+#!/bin/sh
+set -eu
+if [ -d /run/systemd/system ]; then
+    systemctl daemon-reload
+fi
+# Deliberately preserve /var/lib/ksat, /etc/ksat-client and service identity,
+# including on purge: these may contain unacknowledged exam submissions.

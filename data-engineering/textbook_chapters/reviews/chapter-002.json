@@ -5,6 +5,8 @@
   "chapter_name": "H.C.F. and L.C.M. of Numbers",
   "source_chapter_name": "HCF and LCM",
   "section": "Arithmetical Ability",
+  "output_file": "ch02_hcf_lcm_complete.zip",
+  "vision_audit_file": "audits/chapter-002.json",
   "printed_question_count": 130,
   "question_pages": [64, 70],
   "answer_pages": [71],

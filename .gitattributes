@@ -1,0 +1,2 @@
+# Debian maintainer scripts must remain executable by /bin/sh after a Windows checkout.
+installer/linux/* text eol=lf

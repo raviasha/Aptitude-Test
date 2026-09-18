@@ -8,6 +8,7 @@ be rebuilt whenever the source bank is corrected.
 from __future__ import annotations
 
 import argparse
+from difflib import SequenceMatcher
 from io import BytesIO
 import json
 from pathlib import Path
@@ -63,13 +64,60 @@ CHAPTER_RANGES = (
     (4721, 4733, "Arithmetical Ability", "Banker's Discount"),
     (4734, 4751, "Arithmetical Ability", "Heights and Distances"),
     (4752, 4847, "Arithmetical Ability", "Odd Man Out and Series"),
-    (4848, 4952, "Data Interpretation", "Tabulation"),
-    (4953, 5013, "Data Interpretation", "Bar Graphs"),
+    (4848, 4932, "Data Interpretation", "Tabulation"),
+    (4933, 5013, "Data Interpretation", "Bar Graphs"),
     (5014, 5084, "Data Interpretation", "Pie Charts"),
     (5085, 5151, "Data Interpretation", "Line Graphs"),
 )
 
+# The legacy extraction flattened the PDF's two-column reading order.  The
+# question sequence is therefore not always the same as the printed local
+# number sequence (notably in the first Pie Charts and Line Graphs exercises).
+# These source exercise records are the authoritative bridge between the
+# legacy keys and the exact "Directions (Questions x-y)" visual set.
+DI_EXERCISES = (
+    {"id": "tabulation-exercise-1", "chapter": "Tabulation", "global_start": 4848, "global_end": 4872, "page_start": 896, "page_end": 899, "first_page_top": 0.0},
+    {"id": "tabulation-exercise-2", "chapter": "Tabulation", "global_start": 4873, "global_end": 4907, "page_start": 901, "page_end": 905, "first_page_top": 0.0},
+    {"id": "tabulation-exercise-3", "chapter": "Tabulation", "global_start": 4908, "global_end": 4932, "page_start": 908, "page_end": 911, "first_page_top": 498.0},
+    {"id": "bar-graphs-exercise-1", "chapter": "Bar Graphs", "global_start": 4933, "global_end": 4963, "page_start": 914, "page_end": 917, "first_page_top": 0.0},
+    {"id": "bar-graphs-exercise-2", "chapter": "Bar Graphs", "global_start": 4964, "global_end": 4988, "page_start": 921, "page_end": 923, "first_page_top": 0.0},
+    {"id": "bar-graphs-exercise-3", "chapter": "Bar Graphs", "global_start": 4989, "global_end": 5013, "page_start": 927, "page_end": 930, "first_page_top": 0.0},
+    {
+        "id": "pie-charts-exercise-1",
+        "chapter": "Pie Charts",
+        "global_start": 5014,
+        "global_end": 5037,
+        "page_start": 932,
+        "page_end": 935,
+        "first_page_top": 0.0,
+        # Source questions 4, 8, 13, 28 and 29 were omitted by the legacy
+        # two-column extractor.  The remaining records occur in this order.
+        "local_numbers": (1, 2, 3, 5, 6, 7, 14, 15, 9, 10, 11, 12, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27),
+    },
+    {"id": "pie-charts-exercise-2", "chapter": "Pie Charts", "global_start": 5038, "global_end": 5061, "page_start": 937, "page_end": 939, "first_page_top": 0.0},
+    {"id": "pie-charts-exercise-3", "chapter": "Pie Charts", "global_start": 5062, "global_end": 5084, "page_start": 941, "page_end": 943, "first_page_top": 489.0},
+    {
+        "id": "line-graphs-exercise-1",
+        "chapter": "Line Graphs",
+        "global_start": 5085,
+        "global_end": 5111,
+        "page_start": 946,
+        "page_end": 949,
+        "first_page_top": 0.0,
+        # Source question 26 is absent from the legacy extraction; the last
+        # page's right column was emitted before its left column.
+        "local_numbers": tuple(range(1, 24)) + (27, 28, 24, 25),
+    },
+    {"id": "line-graphs-exercise-2", "chapter": "Line Graphs", "global_start": 5112, "global_end": 5126, "page_start": 952, "page_end": 954, "first_page_top": 190.0},
+    {"id": "line-graphs-exercise-3", "chapter": "Line Graphs", "global_start": 5127, "global_end": 5151, "page_start": 956, "page_end": 959, "first_page_top": 327.0},
+)
+
 SOLUTION_STEP_OVERRIDES = {
+    "qa-4693": [
+        "A tells the truth with probability 0.60, so A tells a lie with probability 0.40.",
+        "B tells the truth with probability 0.70, so B tells a lie with probability 0.30.",
+        "They say the same thing when both tell the truth or both tell a lie: (0.60 x 0.70) + (0.40 x 0.30) = 0.42 + 0.12 = 0.54. Therefore, option A is correct.",
+    ],
     "qa-5061": [
         "Groceries, Entertainment and Investments = (23% + 10% + 15%) × ₹45,800 = 48% × ₹45,800 = ₹21,984.",
         "Commuting = 22% × ₹45,800 = ₹10,076.",
@@ -109,6 +157,19 @@ SOURCE_VISUAL_CROPS = (
         ),
     },
 )
+
+# Focused source-set overrides are used only when a figure's vector paths do
+# not form a detectable component.  Coordinates are PDF points (612 x 792),
+# and each crop is still linked by exact exercise and local question range.
+DI_GROUP_CROP_OVERRIDES = {
+    ("bar-graphs-exercise-2", 1, 5): ((921, (45.0, 112.0, 567.0, 296.0)),),
+    ("bar-graphs-exercise-2", 6, 10): ((921, (310.0, 384.0, 575.0, 505.0)),),
+    ("bar-graphs-exercise-3", 6, 10): ((927, (45.0, 505.0, 567.0, 760.0)),),
+    ("bar-graphs-exercise-3", 16, 20): ((929, (145.0, 88.0, 475.0, 338.0)),),
+    ("pie-charts-exercise-3", 10, 14): ((942, (310.0, 216.0, 570.0, 590.0)),),
+    ("pie-charts-exercise-3", 15, 19): ((943, (45.0, 310.0, 300.0, 590.0)),),
+    ("line-graphs-exercise-1", 11, 18): ((947, (322.0, 66.0, 565.0, 365.0)),),
+}
 
 
 def taxonomy_for(number: int) -> tuple[str, str]:
@@ -242,6 +303,7 @@ def visual_regions(pdf_page) -> list[tuple[float, float, float, float]]:
         if x1 - x0 >= 75 and bottom - top >= 35:
             table_boxes.append((x0, top, x1, bottom))
     rules = []
+    column_dividers: list[tuple[float, float, float]] = []
     # Curves in this PDF include the outline of individual letters.  Including
     # them merges headings and question text into a page-sized region; charts
     # and tables are defined by straight rules and rectangles.
@@ -257,7 +319,8 @@ def visual_regions(pdf_page) -> list[tuple[float, float, float, float]]:
         # The two-column textbook layout uses a long central divider.  It is
         # not part of the left-hand graph and would otherwise pull question
         # text into the crop.
-        if x1 - x0 < 2 and bottom - top > 200 and x0 > pdf_page.width * 0.45:
+        if x1 - x0 < 2 and bottom - top > 150 and pdf_page.width * 0.45 < x0 < pdf_page.width * 0.55:
+            column_dividers.append(((x0 + x1) / 2, top, bottom))
             continue
         rules.append((x0, top, x1, bottom))
     components: list[list[float]] = []
@@ -287,7 +350,7 @@ def visual_regions(pdf_page) -> list[tuple[float, float, float, float]]:
                     break
             if changed:
                 break
-    regions = [
+    regions: list[tuple[float, float, float, float]] = [
         (max(18, x0 - 10), max(90, top - 10), min(pdf_page.width - 18, x1 + 10), min(pdf_page.height - 20, bottom + 10))
         for x0, top, x1, bottom in table_boxes
     ]
@@ -302,13 +365,69 @@ def visual_regions(pdf_page) -> list[tuple[float, float, float, float]]:
         ):
             continue
         regions.append((max(18, x0 - 28), max(90, top - 34), min(pdf_page.width - 18, x1 + 28), min(pdf_page.height - 20, bottom + 5)))
-    return sorted(regions, key=lambda box: (box[1], box[0]))
+
+    # Pie charts are Bezier curves in this PDF.  Most curves are letter
+    # outlines, so keep only figure-sized, roughly square curve bounds.  The
+    # largest outer curve absorbs its internal sectors during de-duplication.
+    curve_regions: list[tuple[float, float, float, float]] = []
+    for curve in pdf_page.curves:
+        x0, x1 = float(curve["x0"]), float(curve["x1"])
+        top, bottom = float(curve["top"]), float(curve["bottom"])
+        width, height = x1 - x0, bottom - top
+        if width < 80 or height < 80 or width * height < 6500:
+            continue
+        if not 0.45 <= width / height <= 2.2:
+            continue
+        curve_regions.append((max(18, x0 - 22), max(90, top - 30), min(pdf_page.width - 18, x1 + 22), min(pdf_page.height - 20, bottom + 8)))
+
+    def area(box: tuple[float, float, float, float]) -> float:
+        return max(0.0, box[2] - box[0]) * max(0.0, box[3] - box[1])
+
+    def intersection(first: tuple[float, float, float, float], second: tuple[float, float, float, float]) -> float:
+        return max(0.0, min(first[2], second[2]) - max(first[0], second[0])) * max(0.0, min(first[3], second[3]) - max(first[1], second[1]))
+
+    for curve_box in sorted(curve_regions, key=area, reverse=True):
+        if any(intersection(curve_box, box) >= min(area(curve_box), area(box)) * 0.72 for box in regions):
+            continue
+        if any(intersection(curve_box, box) >= min(area(curve_box), area(box)) * 0.72 for box in curve_regions if box in regions):
+            continue
+        regions.append(curve_box)
+
+    # A source page can contain unrelated left- and right-column charts at the
+    # same vertical position.  If detection joined them across the printed
+    # column divider, split the crop back into its original columns.
+    split_regions: list[tuple[float, float, float, float]] = []
+    for region in regions:
+        pieces = [region]
+        for divider_x, divider_top, divider_bottom in column_dividers:
+            next_pieces: list[tuple[float, float, float, float]] = []
+            for piece in pieces:
+                vertical_overlap = max(0.0, min(piece[3], divider_bottom) - max(piece[1], divider_top))
+                if piece[0] + 70 < divider_x < piece[2] - 70 and vertical_overlap >= 28:
+                    next_pieces.extend(((piece[0], piece[1], divider_x - 3, piece[3]), (divider_x + 3, piece[1], piece[2], piece[3])))
+                else:
+                    next_pieces.append(piece)
+            pieces = next_pieces
+        split_regions.extend(pieces)
+
+    # Drop nested duplicates (for example, a detected table plus the same
+    # table's line component) while retaining separate charts in one set.
+    deduplicated: list[tuple[float, float, float, float]] = []
+    for box in sorted(split_regions, key=area, reverse=True):
+        if any(intersection(box, kept) >= min(area(box), area(kept)) * 0.78 for kept in deduplicated):
+            continue
+        deduplicated.append(box)
+    return sorted(deduplicated, key=lambda box: (box[1], box[0]))
 
 
 def render_visual_crop(rendered, regions: list[tuple[float, float, float, float]], scale: float):
+    crops = [rendered.crop(tuple(round(value * scale) for value in region)) for region in regions]
+    return compose_visual_crops(crops)
+
+
+def compose_visual_crops(crops):
     from PIL import Image
 
-    crops = [rendered.crop(tuple(round(value * scale) for value in region)) for region in regions]
     if not crops:
         raise ValueError("No chart or table region could be detected on a mapped DI source page.")
     width = max(crop.width for crop in crops)
@@ -352,78 +471,267 @@ def render_source_visual_crops(document: dict, pdf) -> list[dict]:
     return stimuli
 
 
-def attach_di_pdf_stimuli(document: dict, source_pdf: Path) -> list[dict]:
-    """Render PDF pages containing each DI question and link them as shared stimuli.
+def source_order(page_number: int, x: float, top: float, page_width: float = 612.0) -> tuple[int, int, float]:
+    """Return the textbook's page/column/top reading order."""
+    return page_number, 1 if x >= page_width / 2 else 0, top
 
-    The supplied R. S. Aggarwal PDF has vector charts/tables rather than image
-    objects. Rendering the source exercise pages preserves the original visual
-    data, labels, and legends without copying answer/solution pages.
-    """
+
+def direction_group_events(pdf_page, page_number: int, minimum_top: float = 0.0) -> list[dict]:
+    """Locate exact source set headings such as Directions (Questions 6-10)."""
+    words = [
+        word for word in pdf_page.extract_words()
+        if minimum_top <= float(word["top"]) <= pdf_page.height - 30
+    ]
+    lines: list[dict] = []
+    for word in sorted(words, key=lambda item: (round(float(item["top"]), 1), float(item["x0"]))):
+        line = next(
+            (candidate for candidate in reversed(lines[-8:]) if abs(candidate["top"] - float(word["top"])) <= 1.4),
+            None,
+        )
+        if line is None:
+            line = {"top": float(word["top"]), "words": []}
+            lines.append(line)
+        line["words"].append(word)
+
+    events: list[dict] = []
+    for line in lines:
+        line_words = sorted(line["words"], key=lambda item: float(item["x0"]))
+        text = " ".join(str(word["text"]) for word in line_words)
+        match = re.search(r"Questions?\D{0,6}(\d+)\D{1,8}(\d+)", text, re.IGNORECASE)
+        if not match or not re.search(r"Direction|\bEx\.?", text[: match.start()], re.IGNORECASE):
+            continue
+        question_word_index = next(
+            (index for index, word in enumerate(line_words) if "question" in str(word["text"]).lower()),
+            len(line_words),
+        )
+        marker = next(
+            (
+                word for word in reversed(line_words[:question_word_index])
+                if re.search(r"Direction|^Ex\.?$", str(word["text"]), re.IGNORECASE)
+            ),
+            line_words[0],
+        )
+        start, end = int(match.group(1)), int(match.group(2))
+        events.append({
+            "start": start,
+            "end": end,
+            "page_number": page_number,
+            "x": float(marker["x0"]),
+            "top": float(line["top"]),
+            "order": source_order(page_number, float(marker["x0"]), float(line["top"]), float(pdf_page.width)),
+        })
+    return events
+
+
+def numbered_question_events(pdf_page, page_number: int, minimum_top: float = 0.0) -> list[dict]:
+    """Locate printed local question numbers while ignoring option labels."""
+    words = [
+        word for word in pdf_page.extract_words()
+        if minimum_top <= float(word["top"]) <= pdf_page.height - 30
+    ]
+    events: list[dict] = []
+    for index, word in enumerate(words):
+        match = re.fullmatch(r"(\d+)\.", str(word["text"]))
+        if not match:
+            continue
+        previous = words[index - 1] if index else None
+        if previous and abs(float(previous["top"]) - float(word["top"])) <= 2 and str(previous["text"]).lower().startswith("ex"):
+            continue
+        x, top = float(word["x0"]), float(word["top"])
+        events.append({
+            "number": int(match.group(1)),
+            "page_number": page_number,
+            "x": x,
+            "top": top,
+            "order": source_order(page_number, x, top, float(pdf_page.width)),
+        })
+    return events
+
+
+def source_question_stem(pdf_page, local_number: int) -> str:
+    """Extract one printed DI question stem, excluding its answer options."""
+    words = pdf_page.extract_words()
+    numbered = [
+        (index, word) for index, word in enumerate(words)
+        if str(word["text"]) == f"{local_number}."
+    ]
+    if not numbered:
+        return ""
+    _, marker = numbered[0]
+    right_column = float(marker["x0"]) >= float(pdf_page.width) / 2
+    marker_top = float(marker["top"])
+    marker_x = float(marker["x0"])
+    column_words = [
+        word for word in words
+        if (float(word["x0"]) >= float(pdf_page.width) / 2) == right_column
+        and (
+            float(word["top"]) > marker_top + 1.5
+            or (abs(float(word["top"]) - marker_top) <= 1.5 and float(word["x0"]) >= marker_x)
+        )
+    ]
+    column_words.sort(key=lambda word: (round(float(word["top"]), 1), float(word["x0"])))
+    collected: list[str] = []
+    for word in column_words:
+        token = str(word["text"])
+        if token == f"{local_number}." and not collected:
+            continue
+        if re.fullmatch(r"\(\s*a\s*\)", token, re.IGNORECASE):
+            break
+        collected.append(token)
+    return clean_math_text(" ".join(collected))
+
+
+def exercise_local_numbers(exercise: dict) -> tuple[int, ...]:
+    count = exercise["global_end"] - exercise["global_start"] + 1
+    local_numbers = tuple(exercise.get("local_numbers", range(1, count + 1)))
+    if len(local_numbers) != count:
+        raise ValueError(f"{exercise['id']} has {count} questions but {len(local_numbers)} source numbers.")
+    return local_numbers
+
+
+def attach_di_pdf_stimuli(document: dict, source_pdf: Path) -> list[dict]:
+    """Attach figures by exact source question set, never by a nearby page."""
     try:
         import pypdfium2 as pdfium
         from pypdf import PdfReader
         import pdfplumber
     except ImportError as error:
         raise RuntimeError(
-            "DI PDF rendering needs pypdf and pypdfium2. Use the bundled Codex Python runtime."
+            "DI PDF rendering needs pypdf, pdfplumber and pypdfium2. Use the bundled Codex Python runtime."
         ) from error
     if not source_pdf.is_file():
         raise FileNotFoundError(f"DI source PDF was not found: {source_pdf}")
 
-    reader = PdfReader(str(source_pdf))
-    page_text = {
-        page_number: normalize_for_pdf_match(reader.pages[page_number - 1].extract_text() or "")
-        for page_number in range(896, 962)
-    }
     questions = document["questions"]
-    page_for_question: dict[int, int] = {}
-    for position in range(4848, 5152):
-        question = questions[position - 1]
-        normalized = normalize_for_pdf_match(question["question_text"])
-        matched_page = None
-        for length in (60, 50, 40, 30, 25):
-            probe = normalized[:length]
-            if not probe:
-                continue
-            matched_page = next((page for page, text in page_text.items() if probe in text), None)
-            if matched_page:
-                break
-        if not matched_page:
-            raise ValueError(f"Could not map DI question {question['key']} to a PDF exercise page.")
-        page_for_question[position] = matched_page
-
+    reader = PdfReader(str(source_pdf))
     pdf = pdfium.PdfDocument(str(source_pdf))
     stimuli: list[dict] = []
+    scale = 1.75
+
     with pdfplumber.open(source_pdf) as visual_pdf:
-        source_pages = sorted(set(page_for_question.values()))
-        regions_for_page = {page_number: visual_regions(visual_pdf.pages[page_number - 1]) for page_number in source_pages}
-        pages_with_visuals = [page_number for page_number in source_pages if regions_for_page[page_number]]
-        if not pages_with_visuals:
-            raise ValueError("No chart or table regions were detected in the DI source pages.")
-        word_indexes = {
-            page_number: normalized_word_index(visual_pdf.pages[page_number - 1])
-            for page_number in source_pages
-        }
-        for position, page_number in page_for_question.items():
-            question = questions[position - 1]
-            question_top = question_top_from_word_index(word_indexes[page_number], question["question_text"])
-            visual_page = select_visual_page(page_number, question_top, pages_with_visuals, regions_for_page)
-            questions[position - 1]["stimulus_id"] = f"di-source-page-{visual_page}"
-        for page_number in pages_with_visuals:
-            scale = 1.6
-            rendered = pdf[page_number - 1].render(scale=scale).to_pil().convert("RGB")
-            cropped = render_visual_crop(rendered, regions_for_page[page_number], scale)
-            encoded = BytesIO()
-            cropped.save(encoded, "JPEG", quality=84, optimize=True, progressive=True)
-            stimulus_id = f"di-source-page-{page_number}"
-            stimuli.append({
-                "id": stimulus_id,
-                "type": "image",
-                "title": "Data Interpretation chart or table",
-                "alt_text": "Chart or table required for this Data Interpretation question set.",
-                "file": f"assets/{stimulus_id}.jpg",
-                "asset_bytes": encoded.getvalue(),
-            })
+        rendered_pages: dict[int, object] = {}
+        for exercise in DI_EXERCISES:
+            pages = range(exercise["page_start"], exercise["page_end"] + 1)
+            page_text = {
+                page_number: normalize_for_pdf_match(reader.pages[page_number - 1].extract_text() or "")
+                for page_number in pages
+            }
+            events: list[dict] = []
+            for page_number in pages:
+                minimum_top = exercise["first_page_top"] if page_number == exercise["page_start"] else 0.0
+                events.extend(direction_group_events(visual_pdf.pages[page_number - 1], page_number, minimum_top))
+            events.sort(key=lambda event: event["order"])
+            event_ranges = {(event["start"], event["end"]): event for event in events}
+            if len(event_ranges) != len(events):
+                raise ValueError(f"Duplicate source set headings were detected in {exercise['id']}.")
+
+            local_numbers = exercise_local_numbers(exercise)
+            questions_for_group: dict[tuple[int, int], list[int]] = {key: [] for key in event_ranges}
+            last_source_page = exercise["page_start"]
+            for offset, local_number in enumerate(local_numbers):
+                position = exercise["global_start"] + offset
+                question = questions[position - 1]
+                group_key = next(
+                    (key for key in event_ranges if key[0] <= local_number <= key[1]),
+                    None,
+                )
+                if group_key is None:
+                    raise ValueError(f"{question['key']} (source question {local_number}) has no Directions set in {exercise['id']}.")
+
+                normalized = normalize_for_pdf_match(question["question_text"])
+                matched_page = None
+                for length in (80, 70, 60, 50, 40, 30, 25, 20, 15):
+                    probe = normalized[:length]
+                    if not probe:
+                        continue
+                    matched_page = next((page for page, text in page_text.items() if probe in text), None)
+                    if matched_page is not None:
+                        break
+                if matched_page is None:
+                    raise ValueError(f"Could not trace {question['key']} to a source exercise page.")
+                if matched_page < last_source_page:
+                    raise ValueError(
+                        f"Source mapping moved backwards for {question['key']}: page {last_source_page} to {matched_page}."
+                    )
+                last_source_page = matched_page
+                source_set_id = f"di-{exercise['id']}-q{group_key[0]}-{group_key[1]}"
+                question["stimulus_id"] = source_set_id
+                question["source_page"] = matched_page
+                question["source_question_number"] = local_number
+                question["source_set_id"] = source_set_id
+                source_stem = source_question_stem(visual_pdf.pages[matched_page - 1], local_number)
+                normalized_source_stem = normalize_for_pdf_match(source_stem)
+                question["source_fidelity"] = round(
+                    SequenceMatcher(None, normalized, normalized_source_stem, autojunk=False).ratio()
+                    if normalized_source_stem else 0.0,
+                    4,
+                )
+                question["source_length_ratio"] = round(
+                    min(len(normalized), len(normalized_source_stem)) / max(len(normalized), len(normalized_source_stem))
+                    if normalized and normalized_source_stem else 0.0,
+                    4,
+                )
+                questions_for_group[group_key].append(position)
+
+            regions_for_group: dict[tuple[int, int], list[tuple[int, tuple[float, float, float, float]]]] = {
+                key: [] for key in event_ranges
+            }
+            for page_number in pages:
+                minimum_top = exercise["first_page_top"] if page_number == exercise["page_start"] else 0.0
+                for region in visual_regions(visual_pdf.pages[page_number - 1]):
+                    if region[3] < minimum_top:
+                        continue
+                    page_width = float(visual_pdf.pages[page_number - 1].width)
+                    page_center = page_width / 2
+                    # A table or chart that substantially crosses the centre
+                    # is a full-width, single-column figure.  A right-column
+                    # chart may extend slightly left for labels, so require a
+                    # meaningful reach on both sides before classing it left.
+                    order_x = (
+                        region[0]
+                        if region[0] < page_center - 40 and region[2] > page_center + 40
+                        else (region[0] + region[2]) / 2
+                    )
+                    region_order = source_order(page_number, order_x, region[1] + 28, page_width)
+                    preceding = [event for event in events if event["order"] <= region_order]
+                    if not preceding:
+                        continue
+                    event = preceding[-1]
+                    regions_for_group[(event["start"], event["end"])].append((page_number, region))
+
+            for group_key in regions_for_group:
+                override = DI_GROUP_CROP_OVERRIDES.get((exercise["id"], group_key[0], group_key[1]))
+                if override:
+                    regions_for_group[group_key] = list(override)
+
+            missing_regions = [key for key, positions in questions_for_group.items() if positions and not regions_for_group[key]]
+            if missing_regions:
+                ranges = ", ".join(f"{start}-{end}" for start, end in missing_regions)
+                raise ValueError(f"No exact visual region was found for {exercise['id']} set(s): {ranges}.")
+
+            for group_key, positions in questions_for_group.items():
+                if not positions:
+                    continue
+                crops = []
+                for page_number, region in regions_for_group[group_key]:
+                    if page_number not in rendered_pages:
+                        rendered_pages[page_number] = pdf[page_number - 1].render(scale=scale).to_pil().convert("RGB")
+                    crops.append(
+                        rendered_pages[page_number].crop(tuple(round(value * scale) for value in region))
+                    )
+                cropped = compose_visual_crops(crops)
+                encoded = BytesIO()
+                cropped.save(encoded, "JPEG", quality=86, optimize=True, progressive=True)
+                stimulus_id = f"di-{exercise['id']}-q{group_key[0]}-{group_key[1]}"
+                stimuli.append({
+                    "id": stimulus_id,
+                    "type": "image",
+                    "title": f"{exercise['chapter']} - source questions {group_key[0]}-{group_key[1]}",
+                    "alt_text": f"Exact textbook visual for {exercise['chapter']} questions {group_key[0]} through {group_key[1]}.",
+                    "file": f"assets/{stimulus_id}.jpg",
+                    "asset_bytes": encoded.getvalue(),
+                })
+
         stimuli.extend(render_source_visual_crops(document, pdf))
     return stimuli
 

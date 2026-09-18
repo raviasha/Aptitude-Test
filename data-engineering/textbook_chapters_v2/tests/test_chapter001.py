@@ -119,11 +119,45 @@ class Chapter001PreflightTests(unittest.TestCase):
         finally:
             shutil.rmtree(work, ignore_errors=True)
 
+    def test_questions_154_to_155_share_reviewed_directions_without_polluting_question_153(self) -> None:
+        raw = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+        q153_segment = raw["marker_overrides"]["question"]["153"]["segments"]
+        context = raw["shared_contexts"]["question"]["questions-154-155"]
+
+        self.assertEqual(
+            q153_segment,
+            [{"page": 29, "left": 775, "top": 1579, "right": 1435, "bottom": 1750}],
+        )
+        self.assertEqual(context["question_numbers"], [154, 155])
+        self.assertEqual(
+            context["segments"],
+            [{"page": 29, "left": 775, "top": 1750, "right": 1435, "bottom": 1870}],
+        )
+        self.assertEqual(
+            context["crop_sha256s"],
+            ["0ac4826a2f300e8f967328c0b94fb74424e5e7a04a959db69580c2f097b32918"],
+        )
+
+        source_pdf = ROOT / raw["source_pdf"]
+        work = Path(tempfile.mkdtemp(prefix="ksat-shared-context-154-155-"))
+        try:
+            page = render_page(source_pdf, 29, raw["source_dpi"], work / "page-029.png")
+            q153 = crop_region(page, CropBox(775, 1579, 1435, 1750), work / "q153.png")
+            directions = crop_region(
+                page, CropBox(775, 1750, 1435, 1870), work / "questions-154-155.png"
+            )
+            self.assertEqual(
+                q153.sha256, raw["boundary_reviews"]["question:153"]["crop_sha256s"][0]
+            )
+            self.assertEqual(directions.sha256, context["crop_sha256s"][0])
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+
     def test_every_cross_boundary_record_has_human_reviewed_source_image_anchors(self) -> None:
         raw = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
         reviews = raw["boundary_reviews"]
         expected = {
-            *(f"question:{number}" for number in (11, 22, 53, 123, 136, 165, 219, 278, 309, 318)),
+            *(f"question:{number}" for number in (11, 22, 53, 123, 136, 153, 165, 219, 278, 309, 318)),
             *(f"solution:{number}" for number in (26, 40, 52, 53, 90, 170, 200, 214, 226, 234, 294, 304, 315, 325, 337, 352, 360, 377, 378)),
             "solution:44",
             "solution:45",

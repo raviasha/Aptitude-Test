@@ -109,9 +109,11 @@ class VisionJob:
     output_schema: str = ""
     output_path: Path | None = None
     fingerprint: str = ""
+    schema_bindings: Mapping[str, str] = field(default_factory=frozen_mapping)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "sources", tuple(frozen_mapping(item) for item in self.sources))
+        object.__setattr__(self, "schema_bindings", frozen_mapping(self.schema_bindings))
 
 
 @dataclass(frozen=True)

@@ -134,11 +134,12 @@ class RawBaselineTests(unittest.TestCase):
         self.assertIn("isolated_gutter_glyph", record["baseline_failures"])
 
     def test_bare_margin_solution_number_is_a_source_marker_candidate(self) -> None:
+        marker_color = (0.0, 1.0, 1.0, 0.2)
         words = [
-            {"text": "196.", "x0": 48.25, "top": 487.41, "size": 9.0},
-            {"text": "197", "x0": 48.25, "top": 563.01, "size": 9.0},
-            {"text": "198.", "x0": 48.25, "top": 584.61, "size": 9.0},
-            {"text": "197", "x0": 150.0, "top": 563.01, "size": 9.0},
+            {"text": "196.", "x0": 48.25, "top": 487.41, "size": 9.0, "non_stroking_color": marker_color},
+            {"text": "197", "x0": 48.25, "top": 563.01, "size": 9.0, "non_stroking_color": marker_color},
+            {"text": "198.", "x0": 48.25, "top": 584.61, "size": 9.0, "non_stroking_color": marker_color},
+            {"text": "197", "x0": 150.0, "top": 563.01, "size": 9.0, "non_stroking_color": marker_color},
         ]
 
         candidates = _source_marker_candidates_from_words(
@@ -150,6 +151,57 @@ class RawBaselineTests(unittest.TestCase):
 
         self.assertIn((197, 49, 48.25, 563.01), candidates)
         self.assertNotIn((197, 49, 150.0, 563.01), candidates)
+
+    def test_black_margin_table_integer_is_not_a_bare_source_marker(self) -> None:
+        marker_color = (0.0, 1.0, 1.0, 0.2)
+        words = [
+            {"text": "5.", "x0": 57.25, "top": 652.083, "size": 9.0, "non_stroking_color": marker_color},
+            {"text": "6", "x0": 57.25, "top": 665.326, "size": 9.0, "non_stroking_color": (0.0, 0.0, 0.0, 1.0)},
+            {"text": "7.", "x0": 57.25, "top": 730.0, "size": 9.0, "non_stroking_color": marker_color},
+        ]
+
+        candidates = _source_marker_candidates_from_words(
+            words,
+            page_number=71,
+            minimum_size=7.5,
+            maximum_size=10.5,
+        )
+
+        self.assertNotIn((6, 71, 57.25, 665.326), candidates)
+
+    def test_bare_marker_is_validated_across_a_source_column_transition(self) -> None:
+        marker_color = (0.0, 1.0, 1.0, 0.2)
+        words = [
+            {"text": "126.", "x0": 48.25, "top": 685.4964, "size": 9.0, "non_stroking_color": marker_color},
+            {"text": "127", "x0": 48.25, "top": 732.2964, "size": 9.0, "non_stroking_color": marker_color},
+            {"text": "128.", "x0": 315.25, "top": 71.947, "size": 9.0, "non_stroking_color": marker_color},
+        ]
+
+        candidates = _source_marker_candidates_from_words(
+            words,
+            page_number=46,
+            minimum_size=7.5,
+            maximum_size=10.5,
+        )
+
+        self.assertIn((127, 46, 48.25, 732.2964), candidates)
+
+    def test_bare_marker_allows_small_source_margin_indent_variation(self) -> None:
+        marker_color = (0.0, 1.0, 1.0, 0.2)
+        words = [
+            {"text": "176.", "x0": 48.25, "top": 364.246, "size": 9.0, "non_stroking_color": marker_color},
+            {"text": "177", "x0": 48.25, "top": 396.647, "size": 9.0, "non_stroking_color": marker_color},
+            {"text": "178.", "x0": 45.0, "top": 562.966, "size": 9.0, "non_stroking_color": marker_color},
+        ]
+
+        candidates = _source_marker_candidates_from_words(
+            words,
+            page_number=48,
+            minimum_size=7.5,
+            maximum_size=10.5,
+        )
+
+        self.assertIn((177, 48, 48.25, 396.647), candidates)
 
     def test_dotted_solution_marker_wins_over_earlier_bare_table_value(self) -> None:
         candidates = [
@@ -168,11 +220,12 @@ class RawBaselineTests(unittest.TestCase):
         self.assertIn((6, 72, 48.25, 88.0), selected)
 
     def test_horizontal_solution_grid_numbers_are_source_marker_candidates(self) -> None:
+        marker_color = (0.0, 1.0, 1.0, 0.2)
         words = [
-            {"text": "27.", "x0": 52.75, "top": 287.8, "size": 9.0},
-            {"text": "28.", "x0": 138.75, "top": 287.8, "size": 9.0},
-            {"text": "29.", "x0": 230.75, "top": 287.8, "size": 9.0},
-            {"text": "42.", "x0": 320.95, "top": 125.4, "size": 9.0},
+            {"text": "27.", "x0": 52.75, "top": 287.8, "size": 9.0, "non_stroking_color": marker_color},
+            {"text": "28.", "x0": 138.75, "top": 287.8, "size": 9.0, "non_stroking_color": marker_color},
+            {"text": "29.", "x0": 230.75, "top": 287.8, "size": 9.0, "non_stroking_color": marker_color},
+            {"text": "42.", "x0": 320.95, "top": 125.4, "size": 9.0, "non_stroking_color": marker_color},
         ]
 
         candidates = _source_marker_candidates_from_words(
@@ -190,6 +243,40 @@ class RawBaselineTests(unittest.TestCase):
                 (29, 96, 230.75, 287.8),
             ],
         )
+
+    def test_black_dotted_same_row_table_lookalike_is_not_a_grid_marker(self) -> None:
+        marker_color = (0.0, 1.0, 1.0, 0.2)
+        words = [
+            {"text": "27.", "x0": 52.75, "top": 287.8, "size": 9.0, "non_stroking_color": marker_color},
+            {"text": "28.", "x0": 138.75, "top": 287.8, "size": 9.0, "non_stroking_color": (0.0, 0.0, 0.0, 1.0)},
+            {"text": "29.", "x0": 230.75, "top": 287.8, "size": 9.0, "non_stroking_color": marker_color},
+        ]
+
+        candidates = _source_marker_candidates_from_words(
+            words,
+            page_number=96,
+            minimum_size=7.5,
+            maximum_size=10.5,
+        )
+
+        self.assertNotIn((28, 96, 138.75, 287.8), candidates)
+        self.assertNotIn((29, 96, 230.75, 287.8), candidates)
+
+    def test_nonconsecutive_same_row_dotted_numbers_are_not_grid_markers(self) -> None:
+        marker_color = (0.0, 1.0, 1.0, 0.2)
+        words = [
+            {"text": "27.", "x0": 52.75, "top": 287.8, "size": 9.0, "non_stroking_color": marker_color},
+            {"text": "29.", "x0": 138.75, "top": 287.8, "size": 9.0, "non_stroking_color": marker_color},
+        ]
+
+        candidates = _source_marker_candidates_from_words(
+            words,
+            page_number=96,
+            minimum_size=7.5,
+            maximum_size=10.5,
+        )
+
+        self.assertNotIn((29, 96, 138.75, 287.8), candidates)
 
     def test_solution_marker_scan_starts_after_solutions_heading(self) -> None:
         words = [

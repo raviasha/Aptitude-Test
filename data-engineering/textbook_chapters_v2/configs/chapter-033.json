@@ -1,0 +1,528 @@
+{
+  "chapter": 33,
+  "chapter_name": "Banker’s Discount",
+  "bank_name": "R. S. Aggarwal - Chapter 33: Banker’s Discount (all-vision text-only)",
+  "printed_question_count": 13,
+  "question_numbers": [
+    1,
+    13
+  ],
+  "question_pages": [
+    877,
+    877
+  ],
+  "answer_pages": [
+    877,
+    877
+  ],
+  "solution_pages": [
+    878,
+    878
+  ],
+  "intentional_exclusions": [],
+  "shared_contexts": {},
+  "marker_overrides": {
+    "question": {
+      "1": {
+        "segments": [
+          {
+            "page": 877,
+            "left": 95,
+            "top": 540,
+            "right": 760,
+            "bottom": 676
+          }
+        ]
+      },
+      "2": {
+        "segments": [
+          {
+            "page": 877,
+            "left": 95,
+            "top": 676,
+            "right": 760,
+            "bottom": 842
+          }
+        ]
+      },
+      "3": {
+        "segments": [
+          {
+            "page": 877,
+            "left": 95,
+            "top": 842,
+            "right": 760,
+            "bottom": 1009
+          }
+        ]
+      },
+      "4": {
+        "segments": [
+          {
+            "page": 877,
+            "left": 95,
+            "top": 1009,
+            "right": 760,
+            "bottom": 1145
+          }
+        ]
+      },
+      "5": {
+        "segments": [
+          {
+            "page": 877,
+            "left": 95,
+            "top": 1145,
+            "right": 760,
+            "bottom": 1281
+          }
+        ]
+      },
+      "6": {
+        "segments": [
+          {
+            "page": 877,
+            "left": 95,
+            "top": 1281,
+            "right": 760,
+            "bottom": 1417
+          }
+        ]
+      },
+      "7": {
+        "segments": [
+          {
+            "page": 877,
+            "left": 95,
+            "top": 1417,
+            "right": 760,
+            "bottom": 1553
+          }
+        ]
+      },
+      "8": {
+        "segments": [
+          {
+            "page": 877,
+            "left": 95,
+            "top": 1553,
+            "right": 760,
+            "bottom": 1640
+          },
+          {
+            "page": 877,
+            "left": 775,
+            "top": 505,
+            "right": 1435,
+            "bottom": 575
+          }
+        ]
+      },
+      "9": {
+        "segments": [
+          {
+            "page": 877,
+            "left": 775,
+            "top": 575,
+            "right": 1435,
+            "bottom": 738
+          }
+        ]
+      },
+      "10": {
+        "segments": [
+          {
+            "page": 877,
+            "left": 775,
+            "top": 738,
+            "right": 1435,
+            "bottom": 942
+          }
+        ]
+      },
+      "11": {
+        "segments": [
+          {
+            "page": 877,
+            "left": 775,
+            "top": 942,
+            "right": 1435,
+            "bottom": 1108
+          }
+        ]
+      },
+      "12": {
+        "segments": [
+          {
+            "page": 877,
+            "left": 775,
+            "top": 1108,
+            "right": 1435,
+            "bottom": 1319
+          }
+        ]
+      },
+      "13": {
+        "segments": [
+          {
+            "page": 877,
+            "left": 775,
+            "top": 1319,
+            "right": 1435,
+            "bottom": 1640
+          }
+        ]
+      }
+    },
+    "answer_key": {
+      "1": {
+        "segments": [
+          {
+            "page": 877,
+            "left": 95,
+            "top": 1757,
+            "right": 1435,
+            "bottom": 1790
+          }
+        ]
+      },
+      "2": {
+        "segments": [
+          {
+            "page": 877,
+            "left": 95,
+            "top": 1757,
+            "right": 1435,
+            "bottom": 1790
+          }
+        ]
+      },
+      "3": {
+        "segments": [
+          {
+            "page": 877,
+            "left": 95,
+            "top": 1757,
+            "right": 1435,
+            "bottom": 1790
+          }
+        ]
+      },
+      "4": {
+        "segments": [
+          {
+            "page": 877,
+            "left": 95,
+            "top": 1757,
+            "right": 1435,
+            "bottom": 1790
+          }
+        ]
+      },
+      "5": {
+        "segments": [
+          {
+            "page": 877,
+            "left": 95,
+            "top": 1757,
+            "right": 1435,
+            "bottom": 1790
+          }
+        ]
+      },
+      "6": {
+        "segments": [
+          {
+            "page": 877,
+            "left": 95,
+            "top": 1757,
+            "right": 1435,
+            "bottom": 1790
+          }
+        ]
+      },
+      "7": {
+        "segments": [
+          {
+            "page": 877,
+            "left": 95,
+            "top": 1757,
+            "right": 1435,
+            "bottom": 1790
+          }
+        ]
+      },
+      "8": {
+        "segments": [
+          {
+            "page": 877,
+            "left": 95,
+            "top": 1757,
+            "right": 1435,
+            "bottom": 1790
+          }
+        ]
+      },
+      "9": {
+        "segments": [
+          {
+            "page": 877,
+            "left": 95,
+            "top": 1757,
+            "right": 1435,
+            "bottom": 1790
+          }
+        ]
+      },
+      "10": {
+        "segments": [
+          {
+            "page": 877,
+            "left": 95,
+            "top": 1757,
+            "right": 1435,
+            "bottom": 1790
+          }
+        ]
+      },
+      "11": {
+        "segments": [
+          {
+            "page": 877,
+            "left": 95,
+            "top": 1792,
+            "right": 1435,
+            "bottom": 1825
+          }
+        ]
+      },
+      "12": {
+        "segments": [
+          {
+            "page": 877,
+            "left": 95,
+            "top": 1792,
+            "right": 1435,
+            "bottom": 1825
+          }
+        ]
+      },
+      "13": {
+        "segments": [
+          {
+            "page": 877,
+            "left": 95,
+            "top": 1792,
+            "right": 1435,
+            "bottom": 1825
+          }
+        ]
+      }
+    },
+    "solution": {
+      "1": {
+        "segments": [
+          {
+            "page": 878,
+            "left": 95,
+            "top": 239,
+            "right": 760,
+            "bottom": 413
+          }
+        ]
+      },
+      "2": {
+        "segments": [
+          {
+            "page": 878,
+            "left": 95,
+            "top": 413,
+            "right": 760,
+            "bottom": 531
+          }
+        ]
+      },
+      "3": {
+        "segments": [
+          {
+            "page": 878,
+            "left": 95,
+            "top": 531,
+            "right": 760,
+            "bottom": 612
+          }
+        ]
+      },
+      "4": {
+        "segments": [
+          {
+            "page": 878,
+            "left": 95,
+            "top": 612,
+            "right": 760,
+            "bottom": 785
+          }
+        ]
+      },
+      "5": {
+        "segments": [
+          {
+            "page": 878,
+            "left": 95,
+            "top": 785,
+            "right": 760,
+            "bottom": 872
+          }
+        ]
+      },
+      "6": {
+        "segments": [
+          {
+            "page": 878,
+            "left": 95,
+            "top": 872,
+            "right": 760,
+            "bottom": 1049
+          }
+        ]
+      },
+      "7": {
+        "segments": [
+          {
+            "page": 878,
+            "left": 95,
+            "top": 1049,
+            "right": 760,
+            "bottom": 1169
+          }
+        ]
+      },
+      "8": {
+        "segments": [
+          {
+            "page": 878,
+            "left": 95,
+            "top": 1169,
+            "right": 760,
+            "bottom": 1215
+          }
+        ]
+      },
+      "9": {
+        "segments": [
+          {
+            "page": 878,
+            "left": 95,
+            "top": 1215,
+            "right": 760,
+            "bottom": 1450
+          }
+        ]
+      },
+      "10": {
+        "segments": [
+          {
+            "page": 878,
+            "left": 775,
+            "top": 249,
+            "right": 1435,
+            "bottom": 617
+          }
+        ]
+      },
+      "11": {
+        "segments": [
+          {
+            "page": 878,
+            "left": 775,
+            "top": 617,
+            "right": 1435,
+            "bottom": 706
+          }
+        ]
+      },
+      "12": {
+        "segments": [
+          {
+            "page": 878,
+            "left": 775,
+            "top": 706,
+            "right": 1435,
+            "bottom": 984
+          }
+        ]
+      },
+      "13": {
+        "segments": [
+          {
+            "page": 878,
+            "left": 775,
+            "top": 984,
+            "right": 1435,
+            "bottom": 1450
+          }
+        ]
+      }
+    }
+  },
+  "layout_boundaries": {},
+  "source_scope": {
+    "section": "Exercise (Objective Type Questions)",
+    "physical_chapter_pages": [
+      875,
+      878
+    ],
+    "printed_chapter_pages": [
+      866,
+      869
+    ],
+    "printed_question_numbers": [
+      1,
+      13
+    ],
+    "excluded_sections": [],
+    "notes": [
+      "Introductory concepts, formulae and solved examples occupy physical875-877 upper, outside the objective exercise.",
+      "All13 objective questions and all13 answer-key entries occupy physical877. All13 printed worked solutions occupy physical878. Chapter34 begins physical879.",
+      "Q8's complete four-option set continues at the top of the right column on physical877, below the exercise heading. All13 records have four printed choices.",
+      "No figure, shared question context, Data Sufficiency section, or missing/ambiguous question, key or solution identified. Preserve all printed symbols, expressions and any internal inconsistencies without mathematical correction."
+    ]
+  },
+  "boundary_reviews": {
+    "all": "Visually inspected all 13 question records (14 exact segments), all 13 complete solution crops and both answer-key rows. Reviewed every question/solution first-line context strip against full pages; corrected complete superscript/fraction/radical/parenthesis starts and shared preceding boundaries. Q8 retains its genuine four-choice continuation, S9 has no false continuation, and final Q13/S13 are complete before headings/rules. No PDF text used as transcription content.",
+    "question:8": "Retained genuine right-column continuation containing all four choices. Start moved from 170 to 505 px to exclude introductory example, exercise heading and unrelated whitespace; final stem remains in the left column.",
+    "question:10": "First-line mixed-fraction ink begins at 743 px. Expanded top to 738 and adjusted preceding Q9 bottom consistently.",
+    "question:13": "First-line mixed-fraction ink begins at 1324 px. Expanded top to 1319 and adjusted preceding Q12 bottom consistently. Final question and all four options end before ANSWERS heading.",
+    "solution:9": "Removed spurious right-column segment containing SOLUTIONS heading and S10 fraction numerator. Complete S9 ends entirely in left column above the bottom rule.",
+    "solution:13": "First-line fraction start reviewed; final nested-fraction rate calculation and mixed-number result are complete above the bottom rule. Full-page/context-strip visual review and raster-ink intervals set top to 984 px for the complete first-line superscript, fraction, radical or enclosing parentheses; shared preceding boundary adjusted where applicable.",
+    "solution:2": " Full-page/context-strip visual review and raster-ink intervals set top to 413 px for the complete first-line superscript, fraction, radical or enclosing parentheses; shared preceding boundary adjusted where applicable.",
+    "solution:3": " Full-page/context-strip visual review and raster-ink intervals set top to 531 px for the complete first-line superscript, fraction, radical or enclosing parentheses; shared preceding boundary adjusted where applicable.",
+    "solution:4": " Full-page/context-strip visual review and raster-ink intervals set top to 612 px for the complete first-line superscript, fraction, radical or enclosing parentheses; shared preceding boundary adjusted where applicable.",
+    "solution:5": " Full-page/context-strip visual review and raster-ink intervals set top to 785 px for the complete first-line superscript, fraction, radical or enclosing parentheses; shared preceding boundary adjusted where applicable.",
+    "solution:6": " Full-page/context-strip visual review and raster-ink intervals set top to 872 px for the complete first-line superscript, fraction, radical or enclosing parentheses; shared preceding boundary adjusted where applicable.",
+    "solution:7": " Full-page/context-strip visual review and raster-ink intervals set top to 1049 px for the complete first-line superscript, fraction, radical or enclosing parentheses; shared preceding boundary adjusted where applicable.",
+    "solution:8": " Full-page/context-strip visual review and raster-ink intervals set top to 1169 px for the complete first-line superscript, fraction, radical or enclosing parentheses; shared preceding boundary adjusted where applicable.",
+    "solution:10": " Full-page/context-strip visual review and raster-ink intervals set top to 249 px for the complete first-line superscript, fraction, radical or enclosing parentheses; shared preceding boundary adjusted where applicable.",
+    "solution:11": " Full-page/context-strip visual review and raster-ink intervals set top to 617 px for the complete first-line superscript, fraction, radical or enclosing parentheses; shared preceding boundary adjusted where applicable.",
+    "solution:12": " Full-page/context-strip visual review and raster-ink intervals set top to 706 px for the complete first-line superscript, fraction, radical or enclosing parentheses; shared preceding boundary adjusted where applicable."
+  },
+  "known_source_issues": {},
+  "source_pdf": "data-engineering/dokumen.pub_quantitative-aptitude-for-competitive-examinations-by-rs-aggarwal-reprint-2017nbsped-9352534026-9789352534029.pdf",
+  "source_pdf_sha256": "0723862418cd7b088341bcfc78a10745fd434b3f4db695986b1ff4f40a7223bf",
+  "source_dpi": 180,
+  "work_root": "tmp/textbook-v2",
+  "candidate_path": "question-banks/ch33_bankers_discount_all_vision_text_only.zip",
+  "published_path": "question-banks/ch33_bankers_discount_all_vision_text_only.zip",
+  "validation_viewports": [
+    [
+      1024,
+      768
+    ],
+    [
+      1600,
+      900
+    ]
+  ],
+  "render_workers": 2,
+  "field_media": {}
+}

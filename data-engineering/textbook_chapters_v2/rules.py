@@ -49,13 +49,20 @@ RULES = (
     _Rule(
         "math.detached_parenthesized_power",
         re.compile(
-            r"\((?=[^()\r\n]*(?:\d|\?))[^()\r\n]{1,48}\)[ \t]*[2-9]\b"
+            # Restrict this corruption signature to numeric parenthesized
+            # expressions.  A variable expression followed by a digit, such
+            # as the textbook's ``(n - 1) 9``, is ordinary multiplication by
+            # juxtaposition rather than a flattened superscript.
+            r"\([0-9?.,+\-\u2212\u2013*/=\u00D7\u00F7 \t]{1,48}\)[ \t]*[2-9]\b"
             r"(?=[ \t]*(?:[+\-\u2212\u2013*/=\u00D7\u00F7?]|$))"
         ),
     ),
     _Rule(
         "layout.option_spill",
-        re.compile(r"^\s*\d{4,}\s+[A-Za-z]{1,3}\s+\d{2,}", re.MULTILINE),
+        re.compile(
+            r"^\s*\d{4,}\s+(?!(?:and|to)\b)[A-Za-z]{1,3}\s+\d{2,}",
+            re.MULTILINE | re.IGNORECASE,
+        ),
     ),
 )
 

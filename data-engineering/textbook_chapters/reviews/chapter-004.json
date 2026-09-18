@@ -4,6 +4,8 @@
   "chapter": 4,
   "chapter_name": "Simplification",
   "section": "Arithmetical Ability",
+  "output_file": "ch04_simplification_complete.zip",
+  "vision_audit_file": "audits/chapter-004.json",
   "printed_question_count": 545,
   "question_pages": [116, 152],
   "answer_pages": [152, 153],

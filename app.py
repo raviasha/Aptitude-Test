@@ -43,6 +43,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.middleware.sessions import SessionMiddleware
+from chapter_repairs import CHAPTER_01_REPAIRS
 import question_media
 from ksat.coordinator.artifacts import ArtifactQuarantine, recover_artifact_quarantine
 from ksat.coordinator.auth import load_or_create_client_session_secret
@@ -226,6 +227,8 @@ def configure_coordinator_state(application: FastAPI) -> None:
         submission_writer=SubmissionWriter(DB_PATH),
     )
 
+
+LEGACY_QUESTION_REPAIRS.update(CHAPTER_01_REPAIRS)
 
 app = FastAPI(title="KSAT")
 configure_coordinator_state(app)
@@ -718,7 +721,8 @@ def clean_display_text(value: str) -> str:
             value = value.encode("latin-1").decode("utf-8")
         except UnicodeError:
             break
-    value = unicodedata.normalize("NFKC", value).replace("\u00a0", " ")
+    # Preserve verified mathematical superscripts and subscripts.
+    value = unicodedata.normalize("NFC", value).replace("\u00a0", " ")
     return re.sub(r"[\uE000-\uF8FF]", "", value)
 
 

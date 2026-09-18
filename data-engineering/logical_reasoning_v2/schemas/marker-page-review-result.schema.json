@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["exercise_id", "page", "question_blocks", "answer_solution_blocks", "reviewer_notes"],
+  "properties": {
+    "exercise_id": {"type": "string"},
+    "page": {"type": "integer", "minimum": 1},
+    "question_blocks": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/block"}
+    },
+    "answer_solution_blocks": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/block"}
+    },
+    "reviewer_notes": {"type": "string"}
+  },
+  "$defs": {
+    "block": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["printed_number", "top", "bottom"],
+      "properties": {
+        "printed_number": {"type": "integer", "minimum": 1},
+        "top": {"type": "integer", "minimum": 0},
+        "bottom": {"type": "integer", "minimum": 1},
+        "continuation": {"type": "boolean"}
+      }
+    }
+  }
+}

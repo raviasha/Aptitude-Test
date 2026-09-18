@@ -46,6 +46,60 @@ class CompletedChapterPackageTests(unittest.TestCase):
         self.assertEqual(question["correct_answer"], "C")
         self.assertEqual(question["difficulty"], "Medium")
 
+    def test_number_system_square_exponents_are_preserved(self) -> None:
+        with (ROOT / "question-banks" / "ch01_number_system_complete.zip").open("rb") as package:
+            _, questions, _ = app.parse_v2_package(package)
+        question = next(question for question in questions if question["key"] == "ch01-q0128")
+
+        self.assertEqual(question["question_text"], "(80)² − (65)² + 81 = ?")
+        self.assertIn("(80)² − (65)²", question["solution_steps"][0])
+
+    def test_number_system_reciprocal_powers_match_textbook(self) -> None:
+        with (ROOT / "question-banks" / "ch01_number_system_complete.zip").open("rb") as package:
+            _, questions, _ = app.parse_v2_package(package)
+        question = next(question for question in questions if question["key"] == "ch01-q0044")
+
+        self.assertEqual(
+            question["question_text"],
+            "If 0 < x < 1, which of the following is greatest? (Campus Recruitment, 2007)",
+        )
+        self.assertEqual(
+            question["options"],
+            {"A": "x", "B": "x²", "C": "1/x", "D": "1/x²"},
+        )
+        self.assertEqual(question["correct_answer"], "D")
+        self.assertEqual(
+            question["solution_steps"],
+            [
+                "0 < x < 1 ⇒ x² < x < 1 ...(i)",
+                "⇒ 1/x² > 1/x > 1 > x > x² [using (i)]",
+                "Hence, 1/x² is the greatest.",
+            ],
+        )
+
+    def test_number_system_even_square_sum_matches_textbook(self) -> None:
+        with (ROOT / "question-banks" / "ch01_number_system_complete.zip").open("rb") as package:
+            _, questions, _ = app.parse_v2_package(package)
+        question = next(question for question in questions if question["key"] == "ch01-q0173")
+
+        self.assertEqual(
+            question["question_text"],
+            "Given that (1² + 2² + 3² + … + 20²) = 2870, the value of (2² + 4² + 6² + … + 40²) is",
+        )
+        self.assertEqual(
+            question["options"],
+            {"A": "2870", "B": "5740", "C": "11480", "D": "28700"},
+        )
+        self.assertEqual(question["correct_answer"], "C")
+        self.assertEqual(
+            question["solution_steps"],
+            [
+                "2² + 4² + 6² + … + 40² = (1 × 2)² + (2 × 2)² + (2 × 3)² + … + (2 × 20)².",
+                "= 2² × (1² + 2² + 3² + … + 20²).",
+                "= (4 × 2870) = 11480.",
+            ],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

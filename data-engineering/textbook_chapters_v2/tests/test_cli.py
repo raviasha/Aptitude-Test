@@ -4,6 +4,7 @@ import hashlib
 import json
 import sys
 import tempfile
+import threading
 import unittest
 import zipfile
 from dataclasses import replace
@@ -29,7 +30,10 @@ from textbook_chapters_v2.cli import (
     _evidence_payload,
     _path_value,
     _prepare,
+    _render,
     _render_dependency_fingerprint,
+    _renders,
+    _verification_job,
     main,
 )
 from textbook_chapters_v2.config import ChapterConfig
@@ -378,6 +382,363 @@ class WorkflowCliTests(unittest.TestCase):
             "source_fingerprint": candidate.source_fingerprint, "sha256": candidate.sha256, "status": candidate.status,
         }
 
+    def _controlled_render(self, question_number: int, *, persistent: bool = False) -> BrowserRenderArtifacts:
+        unanswered = self.root / f"q{question_number}-unanswered.png"
+        submitted = self.root / f"q{question_number}-submitted.png"
+        if persistent:
+            unanswered.write_bytes(f"question-{question_number}".encode())
+            submitted.write_bytes(f"solution-{question_number}".encode())
+            question_hash = _sha256(unanswered)
+            solution_hash = _sha256(submitted)
+        else:
+            question_hash = f"{question_number:064x}"
+            solution_hash = f"{question_number + 1000:064x}"
+        return BrowserRenderArtifacts(
+            question_screenshots={"desktop": unanswered},
+            solution_screenshots={"desktop": submitted},
+            screenshot_hashes={
+                "question.desktop": question_hash,
+                "solution.desktop": solution_hash,
+            },
+            renderer_version="controlled-concurrent-renderer",
+            browser_runtime="playwright-chromium:124.0.2",
+        )
+
+    def _render_test_candidates(self, *, render_workers: int | None = None) -> tuple[CandidateRecord, ...]:
+        raw = json.loads(self.config_path.read_text(encoding="utf-8"))
+        raw["question_numbers"] = [84, 86]
+        if render_workers is not None:
+            raw["render_workers"] = render_workers
+        self.config = ChapterConfig.from_dict(raw)
+        candidates = tuple(self._text_candidate(number, f"{number:064x}") for number in range(84, 87))
+        ledger = AuditLedger(self.work_root, 7)
+        for candidate in candidates:
+            ledger.merge_record(AuditRecord(
+                chapter=7,
+                question_number=candidate.question_number,
+                status="pending_render",
+                candidate_sha256=candidate.sha256,
+            ))
+        return candidates
+
+    def test_render_uses_three_workers_by_default_and_persists_deterministic_candidate_order(self) -> None:
+        candidates = self._render_test_candidates()
+
+        def run_with_completion_order(order: tuple[int, ...]) -> tuple[list[int], bytes]:
+            barrier = threading.Barrier(3)
+            predecessor_done = {
+                number: threading.Event()
+                for number in order
+            }
+            completions: list[int] = []
+
+            def fake_render(candidate, _assets, _viewports, _output_dir):
+                try:
+                    barrier.wait(timeout=0.5)
+                except threading.BrokenBarrierError:
+                    pass
+                position = order.index(candidate.question_number)
+                if position:
+                    predecessor_done[order[position - 1]].wait(timeout=0.5)
+                completions.append(candidate.question_number)
+                predecessor_done[candidate.question_number].set()
+                return self._controlled_render(candidate.question_number)
+
+            with patch("textbook_chapters_v2.cli._candidate_cache_is_current", return_value=True), patch(
+                "textbook_chapters_v2.cli._candidates", return_value=candidates
+            ), patch("textbook_chapters_v2.cli.render_candidate", side_effect=fake_render):
+                self.assertEqual(_render(self.config), 0)
+            state_path = self.work_root / "chapter-007" / "state" / "renders.json"
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            self.assertEqual([record["question_number"] for record in state["records"]], [84, 85, 86])
+            return completions, state_path.read_bytes()
+
+        reverse_completions, reverse_state = run_with_completion_order((86, 85, 84))
+        forward_completions, forward_state = run_with_completion_order((84, 85, 86))
+
+        self.assertEqual(reverse_completions, [86, 85, 84])
+        self.assertEqual(forward_completions, [84, 85, 86])
+        self.assertEqual(reverse_state, forward_state)
+
+    def test_render_respects_configured_worker_limit(self) -> None:
+        candidates = self._render_test_candidates(render_workers=2)
+        lock = threading.Lock()
+        release = threading.Event()
+        two_started = threading.Event()
+        third_started = threading.Event()
+        active = 0
+        peak = 0
+        outcome: list[object] = []
+
+        def fake_render(candidate, _assets, _viewports, _output_dir):
+            nonlocal active, peak
+            with lock:
+                active += 1
+                peak = max(peak, active)
+                if active >= 2:
+                    two_started.set()
+                if active >= 3:
+                    third_started.set()
+            release.wait(timeout=1.0)
+            with lock:
+                active -= 1
+            return self._controlled_render(candidate.question_number)
+
+        def invoke_render() -> None:
+            try:
+                outcome.append(_render(self.config))
+            except BaseException as error:  # Preserve worker-thread failures for the test thread.
+                outcome.append(error)
+
+        with patch("textbook_chapters_v2.cli._candidate_cache_is_current", return_value=True), patch(
+            "textbook_chapters_v2.cli._candidates", return_value=candidates
+        ), patch("textbook_chapters_v2.cli.render_candidate", side_effect=fake_render):
+            render_thread = threading.Thread(target=invoke_render)
+            render_thread.start()
+            observed_two_workers = two_started.wait(timeout=0.5)
+            observed_third_worker = third_started.wait(timeout=0.1)
+            release.set()
+            render_thread.join(timeout=2.0)
+
+        self.assertFalse(render_thread.is_alive())
+        self.assertTrue(observed_two_workers)
+        self.assertFalse(observed_third_worker)
+        self.assertEqual(peak, 2)
+        self.assertEqual(outcome, [0])
+
+    def test_render_failure_propagates_without_partial_state_updates(self) -> None:
+        candidates = self._render_test_candidates(render_workers=2)
+        ledger_path = self.work_root / "chapter-007" / "audit-ledger.json"
+        original_ledger = ledger_path.read_bytes()
+        state_path = self.work_root / "chapter-007" / "state" / "renders.json"
+        state_path.parent.mkdir(parents=True)
+        state_path.write_bytes(b"controlled-existing-render-state")
+
+        def fake_render(candidate, _assets, _viewports, _output_dir):
+            if candidate.question_number == 85:
+                raise RuntimeError("controlled render failure")
+            return self._controlled_render(candidate.question_number)
+
+        with patch("textbook_chapters_v2.cli._candidate_cache_is_current", return_value=True), patch(
+            "textbook_chapters_v2.cli._candidates", return_value=candidates
+        ), patch("textbook_chapters_v2.cli.render_candidate", side_effect=fake_render), self.assertRaisesRegex(
+            RuntimeError, "controlled render failure"
+        ):
+            _render(self.config)
+
+        self.assertEqual(ledger_path.read_bytes(), original_ledger)
+        self.assertEqual(state_path.read_bytes(), b"controlled-existing-render-state")
+
+    def test_render_retries_only_transiently_failed_records_serially(self) -> None:
+        candidates = self._render_test_candidates(render_workers=3)
+        attempts: dict[int, int] = {}
+
+        def fake_render(candidate, _assets, _viewports, _output_dir):
+            attempts[candidate.question_number] = attempts.get(candidate.question_number, 0) + 1
+            if candidate.question_number == 85 and attempts[candidate.question_number] == 1:
+                raise RuntimeError("controlled transient timeout")
+            return self._controlled_render(candidate.question_number)
+
+        with patch("textbook_chapters_v2.cli._candidate_cache_is_current", return_value=True), patch(
+            "textbook_chapters_v2.cli._candidates", return_value=candidates
+        ), patch("textbook_chapters_v2.cli.render_candidate", side_effect=fake_render):
+            self.assertEqual(_render(self.config), 0)
+
+        self.assertEqual(attempts, {84: 1, 85: 2, 86: 1})
+        state = json.loads(
+            (self.work_root / "chapter-007" / "state" / "renders.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual([record["question_number"] for record in state["records"]], [84, 85, 86])
+
+    def test_render_reuses_cryptographically_bound_unchanged_records(self) -> None:
+        candidates = self._render_test_candidates(render_workers=3)
+
+        with patch("textbook_chapters_v2.cli._candidate_cache_is_current", return_value=True), patch(
+            "textbook_chapters_v2.cli._candidates", return_value=candidates
+        ), patch(
+            "textbook_chapters_v2.cli.render_candidate",
+            side_effect=lambda candidate, *_: self._controlled_render(candidate.question_number, persistent=True),
+        ):
+            self.assertEqual(_render(self.config), 0)
+
+        changed = replace(candidates[1], question_text="Corrected question 85", sha256="f" * 64)
+        updated_candidates = (candidates[0], changed, candidates[2])
+        rerendered: list[int] = []
+
+        def rerender(candidate, *_args):
+            rerendered.append(candidate.question_number)
+            return self._controlled_render(candidate.question_number, persistent=True)
+
+        with patch("textbook_chapters_v2.cli._candidate_cache_is_current", return_value=True), patch(
+            "textbook_chapters_v2.cli._candidates", return_value=updated_candidates
+        ), patch("textbook_chapters_v2.cli.render_candidate", side_effect=rerender):
+            self.assertEqual(_render(self.config), 0)
+
+        self.assertEqual(rerendered, [85])
+        state = json.loads(
+            (self.work_root / "chapter-007" / "state" / "renders.json").read_text(encoding="utf-8")
+        )
+        bound = {
+            record["question_number"]: record["artifacts"]["candidate_sha256"]
+            for record in state["records"]
+        }
+        self.assertEqual(bound, {84: candidates[0].sha256, 85: changed.sha256, 86: candidates[2].sha256})
+
+    def test_reused_render_preserves_only_an_exact_current_vision_approval(self) -> None:
+        raw = json.loads(self.config_path.read_text(encoding="utf-8"))
+        raw["question_numbers"] = [84, 84]
+        self.config = ChapterConfig.from_dict(raw)
+        evidence = self._prepared_evidence()[0]
+        candidate = self._text_candidate(84, evidence.dependency_fingerprint)
+        ledger = AuditLedger(self.work_root, 7)
+        ledger.merge_record(AuditRecord(
+            chapter=7,
+            question_number=84,
+            status="pending_render",
+            source_crop_hashes=tuple(
+                crop.sha256
+                for crop in evidence.question_crops + evidence.answer_key_crops + evidence.solution_crops
+            ),
+            candidate_sha256=candidate.sha256,
+            policy_version=1,
+            extractor_schema_version=1,
+            verifier_schema_version=1,
+        ))
+
+        def complete_render() -> BrowserRenderArtifacts:
+            unanswered = self.root / "approved-unanswered.png"
+            submitted = self.root / "approved-submitted.png"
+            question_field = self.root / "approved-question-field.png"
+            solution_field = self.root / "approved-solution-field.png"
+            unanswered.write_bytes(b"approved unanswered")
+            submitted.write_bytes(b"approved submitted")
+            question_field.write_bytes(b"approved question field")
+            solution_field.write_bytes(b"approved solution field")
+            return BrowserRenderArtifacts(
+                question_screenshots={"desktop": unanswered},
+                solution_screenshots={"desktop": submitted},
+                field_screenshots={
+                    "unanswered.desktop.question": question_field,
+                    "submitted.desktop.solution": solution_field,
+                },
+                screenshot_hashes={
+                    "question.desktop": _sha256(unanswered),
+                    "solution.desktop": _sha256(submitted),
+                    "field.unanswered.desktop.question": _sha256(question_field),
+                    "field.submitted.desktop.solution": _sha256(solution_field),
+                },
+                renderer_version="controlled-approved-renderer",
+                browser_runtime="playwright-chromium:124.0.2",
+            )
+
+        rendered = complete_render()
+        with patch("textbook_chapters_v2.cli._candidate_cache_is_current", return_value=True), patch(
+            "textbook_chapters_v2.cli._candidates", return_value=(candidate,)
+        ), patch("textbook_chapters_v2.cli.render_candidate", return_value=rendered):
+            self.assertEqual(_render(self.config), 0)
+
+        current_render = _renders(self.config)[84]
+        verification_job = _verification_job(candidate, evidence, current_render)
+        results = self.work_root / "chapter-007" / "verification-results"
+        results.mkdir(parents=True)
+        verdicts = {
+            "question": "pass",
+            "options.A": "pass",
+            "options.B": "pass",
+            "options.C": "pass",
+            "options.D": "pass",
+            "answer_mapping": "pass",
+            "solution": "pass",
+            "readability": "pass",
+            "clipping": "pass",
+        }
+        verification_payload = {
+            "job_id": verification_job.job_id,
+            "job_fingerprint": verification_job.fingerprint,
+            "verdicts": verdicts,
+            "differences": {},
+            "reviewer": "exact-current-verifier",
+        }
+        result_path = results / f"{verification_job.job_id}.json"
+        result_path.write_text(json.dumps(verification_payload), encoding="utf-8")
+        ledger = AuditLedger(self.work_root, 7)
+        pending = ledger.record(84)
+        approved = replace(
+            pending,
+            status="approved_for_publish",
+            reviewer="exact-current-verifier",
+            field_verdicts=verdicts,
+            findings=(),
+        )
+        ledger.merge_record(replace(
+            approved,
+            dependency_fingerprint=approval_dependency_fingerprint(approved),
+        ))
+
+        with patch("textbook_chapters_v2.cli._candidate_cache_is_current", return_value=True), patch(
+            "textbook_chapters_v2.cli._candidates", return_value=(candidate,)
+        ), patch("textbook_chapters_v2.cli._evidence", return_value=(evidence,)), patch(
+            "textbook_chapters_v2.cli.render_candidate"
+        ) as rerender:
+            self.assertEqual(_render(self.config), 0)
+
+        rerender.assert_not_called()
+        preserved = AuditLedger(self.work_root, 7).record(84)
+        self.assertEqual(preserved.status, "approved_for_publish")
+        self.assertEqual(preserved.reviewer, "exact-current-verifier")
+        self.assertEqual(dict(preserved.field_verdicts), verdicts)
+
+        stale_payload = dict(verification_payload)
+        stale_payload["job_fingerprint"] = "0" * 64
+        result_path.write_text(json.dumps(stale_payload), encoding="utf-8")
+        with patch("textbook_chapters_v2.cli._candidate_cache_is_current", return_value=True), patch(
+            "textbook_chapters_v2.cli._candidates", return_value=(candidate,)
+        ), patch("textbook_chapters_v2.cli._evidence", return_value=(evidence,)), patch(
+            "textbook_chapters_v2.cli.render_candidate"
+        ) as rerender:
+            self.assertEqual(_render(self.config), 0)
+
+        rerender.assert_not_called()
+        stale = AuditLedger(self.work_root, 7).record(84)
+        self.assertEqual(stale.status, "pending_vision")
+        self.assertEqual(dict(stale.field_verdicts), {})
+
+        result_path.write_text(json.dumps(verification_payload), encoding="utf-8")
+        reapproved = replace(
+            stale,
+            status="approved_for_publish",
+            reviewer="exact-current-verifier",
+            field_verdicts=verdicts,
+            findings=(),
+        )
+        AuditLedger(self.work_root, 7).merge_record(replace(
+            reapproved,
+            dependency_fingerprint=approval_dependency_fingerprint(reapproved),
+        ))
+
+        Path(rendered.question_screenshots["desktop"]).write_bytes(b"stale render bytes")
+        with patch("textbook_chapters_v2.cli._candidate_cache_is_current", return_value=True), patch(
+            "textbook_chapters_v2.cli._candidates", return_value=(candidate,)
+        ), patch("textbook_chapters_v2.cli.render_candidate", side_effect=lambda *_: complete_render()) as rerender:
+            self.assertEqual(_render(self.config), 0)
+
+        rerender.assert_called_once()
+        invalidated = AuditLedger(self.work_root, 7).record(84)
+        self.assertEqual(invalidated.status, "pending_vision")
+        self.assertEqual(dict(invalidated.field_verdicts), {})
+        self.assertEqual(invalidated.reviewer, "")
+
+    def test_render_rejects_nonpositive_configured_worker_count_before_rendering(self) -> None:
+        candidates = self._render_test_candidates(render_workers=0)
+
+        with patch("textbook_chapters_v2.cli._candidate_cache_is_current", return_value=True), patch(
+            "textbook_chapters_v2.cli._candidates", return_value=candidates
+        ), patch("textbook_chapters_v2.cli.render_candidate") as render:
+            with self.assertRaisesRegex(PipelineBlocked, "render_workers must be a positive integer"):
+                _render(self.config)
+
+        render.assert_not_called()
+
     def test_prepare_then_run_stops_with_visible_pending_vision_queue(self) -> None:
         with patch("textbook_chapters_v2.cli.prepare_source_evidence", return_value=self._prepared_evidence()):
             self.assertEqual(main(["prepare", "--config", str(self.config_path)]), 0)
@@ -385,6 +746,11 @@ class WorkflowCliTests(unittest.TestCase):
 
         queue = self.work_root / "chapter-007" / "extraction-jobs.jsonl"
         self.assertTrue(queue.is_file())
+        queued_job = json.loads(queue.read_text(encoding="utf-8").splitlines()[0])
+        self.assertEqual(
+            set(queued_job["schema_bindings"]),
+            {"extraction-result.schema.json", "codex-extraction-result.schema.json"},
+        )
         self.assertFalse(self.published.exists())
 
     def test_prepare_quarantines_source_issue_and_persists_reasoned_evidence(self) -> None:
@@ -514,8 +880,11 @@ class WorkflowCliTests(unittest.TestCase):
             first = _application_renderer_manifest(self.config, ("playwright-chromium:124.0.2",))
         detached_probe.assert_not_called()
         application_paths = {item["path"] for item in first["application_assets"]}
+        renderer_paths = {item["path"] for item in first["renderer_contract"]}
         self.assertIn("question_media.py", application_paths)
         self.assertIn("chapter_repairs.py", application_paths)
+        self.assertEqual(renderer_paths, {"data-engineering/textbook_chapters_v2/render.py"})
+        self.assertNotIn("data-engineering/textbook_chapters_v2/cli.py", renderer_paths)
         self.assertNotIn(str(self.application_root), json.dumps(first))
 
         (self.application_root / "question_media.py").write_text("changed question media import\n", encoding="utf-8")
@@ -906,6 +1275,10 @@ class WorkflowCliTests(unittest.TestCase):
         self.assertEqual(main(["verify", "--config", str(self.config_path)]), PENDING_VISION_EXIT)
         verification_job = json.loads(
             (self.work_root / "chapter-007" / "verification-jobs.jsonl").read_text(encoding="utf-8").splitlines()[0]
+        )
+        self.assertEqual(
+            set(verification_job["schema_bindings"]),
+            {"verification-result.schema.json", "codex-verification-result.schema.json"},
         )
         field_sources = [source for source in verification_job["sources"] if source["kind"] == "field_render"]
         self.assertEqual(field_sources[0]["sha256"], _sha256(question_field))

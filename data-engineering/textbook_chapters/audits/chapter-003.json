@@ -1,0 +1,299 @@
+{
+  "schema_version": 1,
+  "policy": "codex-vision-page-fingerprint-gate",
+  "chapter": 3,
+  "chapter_name": "Decimal Fractions",
+  "source_pdf_sha256": "0723862418cd7b088341bcfc78a10745fd434b3f4db695986b1ff4f40a7223bf",
+  "source_bank_sha256": "9bf581d5d2c9a9b72a190af899ee4fe35cf11d38f1c9a8a5c20bf22c073e58c7",
+  "entries": [
+    {
+      "key": "question:083",
+      "role": "question",
+      "source_page": 83,
+      "source_image_sha256": "f2e8cd8afebb6e29198bdd3eb9f4a07b8bf4444d0d9cb7adcd1b9618f73ae9f4",
+      "candidate_sha256": "04fc68915c188cffe861b385f663ea6796d781756abc5412ef32e9166ec07836",
+      "fingerprint": "69b06f795a8b6033518e6100d0a02a88de3dc44b99c8159bb22d3ce429502b6a",
+      "blocking_issues": [],
+      "status": "pending",
+      "reviewer": "",
+      "notes": ""
+    },
+    {
+      "key": "question:084",
+      "role": "question",
+      "source_page": 84,
+      "source_image_sha256": "c451b41446dd489f2e7f8ba02413795b8ac5dc50a5701e14f61f0eca6a2f219d",
+      "candidate_sha256": "b342c8c234ffb0555bc74b14d5c2fa2c5690a981351fa989987b2d62f38af645",
+      "fingerprint": "201447195f066b99a1c2939a330fff52a9de33e6181b1ef706107a90981f0cc7",
+      "blocking_issues": [],
+      "status": "pending",
+      "reviewer": "",
+      "notes": ""
+    },
+    {
+      "key": "question:085",
+      "role": "question",
+      "source_page": 85,
+      "source_image_sha256": "893940a8152fdaa3f355ce4437e58a7a18d6a7edea93acda09e1d7d118aa18e0",
+      "candidate_sha256": "e15fcfc55d8a472422841ec6a5e535fc9ae710d28e5e463acd7714f7240d13ae",
+      "fingerprint": "6c91df339bef57d7fc11584f694783a250d178c775e6b6ac3ea3cbf0b7720f29",
+      "blocking_issues": [
+        "q0043:question:detached_parenthesized_exponent",
+        "q0045:question:detached_parenthesized_exponent"
+      ],
+      "status": "pending",
+      "reviewer": "",
+      "notes": ""
+    },
+    {
+      "key": "question:086",
+      "role": "question",
+      "source_page": 86,
+      "source_image_sha256": "8feb1b63b9fd558dbc22b1098943f0aa8fccd75e686dd1da1b4059af9779c233",
+      "candidate_sha256": "8a4d0fc2f96689ffac5988954d6a714827dbf616f9fb8c6c91d0617131c29d69",
+      "fingerprint": "868156d40c0414fca26061ccc75cb8375dbcbc0548da38188cc88e1f7bfd2029",
+      "blocking_issues": [],
+      "status": "pending",
+      "reviewer": "",
+      "notes": ""
+    },
+    {
+      "key": "question:087",
+      "role": "question",
+      "source_page": 87,
+      "source_image_sha256": "dd5e190a40c19db3d36636fc07f57d8c186d731cd392f4cfedb114c254fb8954",
+      "candidate_sha256": "b3c1c984aa9f3d2d1030f9ca638d1b24f5083f9aa1fb38b9f018dcfc76af6bf6",
+      "fingerprint": "7c24bd9b460970b5f285e01d170c5cb2c50c8f370de27d7a663e4d571f506c07",
+      "blocking_issues": [
+        "q0091:question:detached_parenthesized_exponent"
+      ],
+      "status": "pending",
+      "reviewer": "",
+      "notes": ""
+    },
+    {
+      "key": "question:088",
+      "role": "question",
+      "source_page": 88,
+      "source_image_sha256": "0d49dcaf0e75977d83341d4b09c3ff4ac1022526f7f627c1fe0c1893d918835d",
+      "candidate_sha256": "2ace566fdf713dd261ceb405f72f9b3553d99db11933d3055d8c59f72975759f",
+      "fingerprint": "26f2d346aaffa415f1aef575652b15d5e8dcfd6acded818b604f98f9d0f31746",
+      "blocking_issues": [],
+      "status": "pending",
+      "reviewer": "",
+      "notes": ""
+    },
+    {
+      "key": "question:089",
+      "role": "question",
+      "source_page": 89,
+      "source_image_sha256": "153b9a4c6289cbbe881dd9760c93f2503667b4cd2d56cbe6a7c4fbb301901a8e",
+      "candidate_sha256": "15f17b5032902f55c8df8572fb7c9143109c69a955ddbf34152fa45a1f0e24f1",
+      "fingerprint": "9375cfb41d1fce02fb0f35e6fc4b26acf391f83ddeecfd71173e5f85352b3b7d",
+      "blocking_issues": [
+        "q0127:question:detached_parenthesized_exponent"
+      ],
+      "status": "pending",
+      "reviewer": "",
+      "notes": ""
+    },
+    {
+      "key": "question:090",
+      "role": "question",
+      "source_page": 90,
+      "source_image_sha256": "17cb42d4aa415723201e24ed0c5ed4ffb52076d9590cccd8656cf12900a21052",
+      "candidate_sha256": "ab9a662909f28d5865a69022da7a632ffe2913701a29be29aaf3461635a5d312",
+      "fingerprint": "fdc516fb91e9926a775850114518cc7f786d2c54d3829b9e33a3277f2483a7cc",
+      "blocking_issues": [
+        "q0153:question:detached_parenthesized_exponent"
+      ],
+      "status": "pending",
+      "reviewer": "",
+      "notes": ""
+    },
+    {
+      "key": "question:091",
+      "role": "question",
+      "source_page": 91,
+      "source_image_sha256": "09b70c8a12c89b3c2fb6b05163fbfcec759beb3d83dee4177c4daae18b2a45fd",
+      "candidate_sha256": "a41bd5ba7422a0c7b9a4288b4b4a14cfe9d449678fb6b534ee1b7be71b090d8d",
+      "fingerprint": "05cd4a368f858670e405711b58ce444f69acc9d80bfc7f58710795a647fa804b",
+      "blocking_issues": [
+        "q0164:question:detached_parenthesized_exponent",
+        "q0165:question:detached_parenthesized_exponent",
+        "q0167:question:detached_parenthesized_exponent"
+      ],
+      "status": "pending",
+      "reviewer": "",
+      "notes": ""
+    },
+    {
+      "key": "question:092",
+      "role": "question",
+      "source_page": 92,
+      "source_image_sha256": "331fb2a1bb0181121d6afbca74473ce089648208f605576b87be517eebc7aca5",
+      "candidate_sha256": "7e5d0ea4f7fad35314989e07a970dc852012bfc4f082b0ea1a70473de1c08135",
+      "fingerprint": "4d6e5d72ece6353342ae49b2c60f973ad3c39f21586fc34feaa1d5ed621bee6e",
+      "blocking_issues": [],
+      "status": "pending",
+      "reviewer": "",
+      "notes": ""
+    },
+    {
+      "key": "question:093",
+      "role": "question",
+      "source_page": 93,
+      "source_image_sha256": "282d4e595136ad9c26249f85ffcde3f22c8b5f1d8ef9bc1517987dbd35fdeeb5",
+      "candidate_sha256": "cb0f49c0ee0509ce9b9495a413b88abea0d1fa49a9b9eadfabfd2ba388581e8f",
+      "fingerprint": "786e4c5429bd058b476bc874638b91327d568aa16cdffda63e6fe9793b834c98",
+      "blocking_issues": [],
+      "status": "pending",
+      "reviewer": "",
+      "notes": ""
+    },
+    {
+      "key": "answer:094",
+      "role": "answer",
+      "source_page": 94,
+      "source_image_sha256": "94c5d6ae7c56819c0903e53a35c5d3919389129b11090bab2ed8e32aa7d21c0f",
+      "candidate_sha256": "3455eb123323ff8f8ab47d9ab675bc36f9c024415a2c8a26d0f6c27f1b6cc7a0",
+      "fingerprint": "20b7f7334e50f47144560b900d93564543627be743061593c5f3179acafe7c43",
+      "blocking_issues": [],
+      "status": "pending",
+      "reviewer": "",
+      "notes": ""
+    },
+    {
+      "key": "solution:094",
+      "role": "solution",
+      "source_page": 94,
+      "source_image_sha256": "94c5d6ae7c56819c0903e53a35c5d3919389129b11090bab2ed8e32aa7d21c0f",
+      "candidate_sha256": "8f88a6c6e58370255a63c1c67bf6ea589841ebd24500c32c16fa9858590109da",
+      "fingerprint": "701a918d1082e52efd4f769a75822688a7106c3e0da3f768f404189a8e294890",
+      "blocking_issues": [],
+      "status": "pending",
+      "reviewer": "",
+      "notes": ""
+    },
+    {
+      "key": "solution:095",
+      "role": "solution",
+      "source_page": 95,
+      "source_image_sha256": "76b85f05dd0c23981eddaa33ac002c494b0fc599d5689a16b39e75c5311eadf3",
+      "candidate_sha256": "44836da361a6d1c051ba502f77bfd8bdf564f891a3add3c35b655d38fe1ed76a",
+      "fingerprint": "a3b2cf4c8af3bf4fef69ae623b329f5c8dc5b6e38b87d3b6caef5c330ea64432",
+      "blocking_issues": [],
+      "status": "pending",
+      "reviewer": "",
+      "notes": ""
+    },
+    {
+      "key": "solution:096",
+      "role": "solution",
+      "source_page": 96,
+      "source_image_sha256": "8fd3e10fcc3e97f04cc68827104cfcaffae38e5b3b3507a990dac6c4698536e7",
+      "candidate_sha256": "76bff2ec0ac5e801abe1694736b83acc9b44a7a734b37ca9384ea85ccc81265e",
+      "fingerprint": "f7e7dda7b081f1e10d14d92313fd291a549ce3dadfb6bf1503d1ddd915ce513f",
+      "blocking_issues": [
+        "q0043:solution:detached_parenthesized_exponent"
+      ],
+      "status": "pending",
+      "reviewer": "",
+      "notes": ""
+    },
+    {
+      "key": "solution:097",
+      "role": "solution",
+      "source_page": 97,
+      "source_image_sha256": "b28ba6c9cd7599fee63fa7532f2db913bcd585a8dc331e9584cecacf72b47f5d",
+      "candidate_sha256": "b35eff6562739a59026b82157107a27d594f75f7c0726c81054f92a166deb1d6",
+      "fingerprint": "0c966cd24c446f7b0448c5feef01a4cbc531dc5a1da6769e97c3f42891afc43b",
+      "blocking_issues": [],
+      "status": "pending",
+      "reviewer": "",
+      "notes": ""
+    },
+    {
+      "key": "solution:098",
+      "role": "solution",
+      "source_page": 98,
+      "source_image_sha256": "d709fc6694305511409fac78ca100aca5a644a2b438a86e43187095fd9e8489e",
+      "candidate_sha256": "269da49c524fff073fe560e18800008db375d5ffd28b3b734ff4bc23b5834795",
+      "fingerprint": "ef63375545be3afe5934c631c23b4a578091ab469514900349b970e693db7984",
+      "blocking_issues": [],
+      "status": "pending",
+      "reviewer": "",
+      "notes": ""
+    },
+    {
+      "key": "solution:099",
+      "role": "solution",
+      "source_page": 99,
+      "source_image_sha256": "24e101905dec54cd83c19ed090704be83bedf10722d0134dfade3c07944dc582",
+      "candidate_sha256": "b5a513329cf61b7b8a34b044083456df096e2a2fb2665d7ca06a59e8a0182f26",
+      "fingerprint": "b3721a5ac3ec377bf5b55fab573a45296958dbc6c96cfdfce0fa0afdeac8600a",
+      "blocking_issues": [
+        "q0127:solution:detached_parenthesized_exponent"
+      ],
+      "status": "pending",
+      "reviewer": "",
+      "notes": ""
+    },
+    {
+      "key": "solution:100",
+      "role": "solution",
+      "source_page": 100,
+      "source_image_sha256": "edcf840643e06af5451c9010fd6cd25b251743ab41e040a84085a81fcec542e7",
+      "candidate_sha256": "cea3428aba940e10116cb62ce3e220c0b4b927278679bd99160e36ec7a8a3b3b",
+      "fingerprint": "a914214a9e919bd348165561dbc7082aaf86fe5e7d220d9f78b44545ff6c2f72",
+      "blocking_issues": [
+        "q0153:solution:detached_parenthesized_exponent",
+        "q0162:solution:detached_parenthesized_exponent",
+        "q0164:solution:detached_parenthesized_exponent"
+      ],
+      "status": "pending",
+      "reviewer": "",
+      "notes": ""
+    },
+    {
+      "key": "solution:101",
+      "role": "solution",
+      "source_page": 101,
+      "source_image_sha256": "2ef84997b96eb7c542721ec19a3ce25257f6a59703468930d094bb566f9eb758",
+      "candidate_sha256": "5c10796f31e74f4035b34820205cca53669938fd1117bfdbc6820dab7435035b",
+      "fingerprint": "3bc7c527e06d0f6e07055075c0b8314b253fc3e5df9f83c78ded928dbfd11793",
+      "blocking_issues": [
+        "q0165:solution:detached_parenthesized_exponent",
+        "q0167:solution:detached_parenthesized_exponent",
+        "q0168:solution:detached_parenthesized_exponent"
+      ],
+      "status": "pending",
+      "reviewer": "",
+      "notes": ""
+    },
+    {
+      "key": "solution:102",
+      "role": "solution",
+      "source_page": 102,
+      "source_image_sha256": "e3e1354d551d90c4fae63613dec7d5aa29c9e308aeec8f448d288d059ba386dd",
+      "candidate_sha256": "c33e9b6a8f3ab9af4e7dfd8f9e7b79588a7f04d5f7a1d31ad6538aac93630eab",
+      "fingerprint": "b4216d74034f3db288740e7ffaf11ba25934d9467a76eb9fec02452accb6f942",
+      "blocking_issues": [],
+      "status": "pending",
+      "reviewer": "",
+      "notes": ""
+    },
+    {
+      "key": "solution:103",
+      "role": "solution",
+      "source_page": 103,
+      "source_image_sha256": "47ddd935f9cd23d881c03dbac1a01c177d4628d6984bbac4ce0291e13856dcdc",
+      "candidate_sha256": "64fe86878c68f92a2aebeffb4ca5b675e43cdeab42a3afaca86144dfc5d5477a",
+      "fingerprint": "11cb5030c1107adde60e660653a7315bfbd586621275cb033a2835ec05c0a1b2",
+      "blocking_issues": [],
+      "status": "pending",
+      "reviewer": "",
+      "notes": ""
+    }
+  ]
+}

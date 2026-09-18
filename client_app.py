@@ -1413,7 +1413,7 @@ def _load_production_services() -> ClientServices:
 
 
 def _load_locked_production_services(
-    data_dir: Path, lifecycle_lock: ClientProcessLock
+    data_dir: Path, lifecycle_lock: ClientProcessLock, *, identity_protector=None
 ) -> ClientServices:
     immutable_store = ClientConfigStore(data_dir / "client-config.json")
     config_store = ClientRuntimeConfigStore(
@@ -1421,7 +1421,7 @@ def _load_locked_production_services(
     )
     config = config_store.load()
     _validate_production_trust(config)
-    identity_store = DeviceIdentityStore(data_dir / "identity")
+    identity_store = DeviceIdentityStore(data_dir / "identity", protector=identity_protector)
     identity = identity_store.load_or_create()
     store = ClientStore(
         data_dir / "state" / "client.sqlite3",

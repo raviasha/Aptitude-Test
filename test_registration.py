@@ -39,6 +39,12 @@ class StudentRegistrationTests(unittest.TestCase):
         self.assertEqual(app.clean_display_text("x\uf8eb + y\uf8f6"), "x + y")
         self.assertEqual(clean_math_text("a\uf8ec = b"), "a = b")
 
+    def test_display_cleaning_preserves_verified_math_superscripts_and_subscripts(self):
+        self.assertEqual(
+            app.clean_display_text("7⁸⁴, a⁴ − b⁴, r₁ + r₂"),
+            "7⁸⁴, a⁴ − b⁴, r₁ + r₂",
+        )
+
     def test_malformed_di_solution_is_replaced_with_readable_calculation(self):
         raw_step = "Amount spent on Groceries, Entertainment and Investments = { } (23 10 15) 4845800"
         self.assertEqual(app.clean_display_value([raw_step]), next(iter(app.SOLUTION_STEP_OVERRIDES.values())))
@@ -57,6 +63,103 @@ class StudentRegistrationTests(unittest.TestCase):
         self.assertIn("2² × 3³ × 5⁵", repaired_text)
         self.assertEqual(repaired_options["A"], "2² × 3² × 5")
         self.assertEqual(repaired_steps[-1], "Therefore, H.C.F. = 2² × 3² × 5 = 180.")
+
+    def test_already_imported_square_question_uses_superscripts(self):
+        source_key = "ch01-q0128"
+
+        repaired_text = app.display_question_text("(80) 2 − (65) 2 + 81 = ?", source_key)
+        repaired_steps = app.display_solution_steps(
+            "(80) 2 − (65) 2 + 81 = ?",
+            '["(80) 2 − (65) 2 + 81 = 2256."]',
+            source_key,
+        )
+
+        self.assertEqual(repaired_text, "(80)² − (65)² + 81 = ?")
+        self.assertIn("(80)² − (65)²", repaired_steps[0])
+
+    def test_already_imported_reciprocal_question_matches_textbook(self):
+        source_key = "ch01-q0044"
+
+        repaired_text = app.display_question_text(
+            "If 0 < x < 1, which of the following is greatest? (Campus Recruitment, 2007)",
+            source_key,
+        )
+        repaired_options = app.question_options(
+            {
+                "source_key": source_key,
+                "options_json": '{"A":"x","B":"x2","C":"1 x","D":"2 1 x"}',
+            }
+        )
+        repaired_steps = app.display_solution_steps(
+            "If 0 < x < 1, which of the following is greatest?",
+            '["x2 < x < 1", "2 2 11 1 xx ixx > >> >"]',
+            source_key,
+        )
+
+        self.assertEqual(
+            repaired_text,
+            "If 0 < x < 1, which of the following is greatest? (Campus Recruitment, 2007)",
+        )
+        self.assertEqual(
+            repaired_options,
+            {"A": "x", "B": "x²", "C": "1/x", "D": "1/x²"},
+        )
+        self.assertEqual(
+            repaired_steps,
+            [
+                "0 < x < 1 ⇒ x² < x < 1 ...(i)",
+                "⇒ 1/x² > 1/x > 1 > x > x² [using (i)]",
+                "Hence, 1/x² is the greatest.",
+            ],
+        )
+
+    def test_already_imported_even_square_sum_matches_textbook(self):
+        source_key = "ch01-q0173"
+
+        repaired_text = app.display_question_text("Given that (12 + 22 + 32)", source_key)
+        repaired_options = app.question_options(
+            {
+                "source_key": source_key,
+                "options_json": '{"A":"2870","B":"5740","C":"11480","D":"28700 ab 252 ba 24 12 12 ×"}',
+            }
+        )
+        repaired_steps = app.display_solution_steps(
+            "Given that (12 + 22 + 32)",
+            '["22 + 42 + 62", "This is 22(12 + 22 + 32)"]',
+            source_key,
+        )
+
+        self.assertEqual(
+            repaired_text,
+            "Given that (1² + 2² + 3² + … + 20²) = 2870, the value of (2² + 4² + 6² + … + 40²) is",
+        )
+        self.assertEqual(
+            repaired_options,
+            {"A": "2870", "B": "5740", "C": "11480", "D": "28700"},
+        )
+        self.assertEqual(
+            repaired_steps,
+            [
+                "2² + 4² + 6² + … + 40² = (1 × 2)² + (2 × 2)² + (2 × 3)² + … + (2 × 20)².",
+                "= 2² × (1² + 2² + 3² + … + 20²).",
+                "= (4 × 2870) = 11480.",
+            ],
+        )
+
+    def test_already_imported_number_system_repairs_cover_spill_and_powers(self):
+        spill_steps = app.display_solution_steps(
+            "legacy",
+            '["merged with the next solution"]',
+            "ch01-q0305",
+        )
+        power_text = app.display_question_text(
+            "The number (2 48 - 1) is exactly divisible",
+            "ch01-q0341",
+        )
+
+        self.assertEqual(spill_steps[-1], "Therefore, the number leaves remainder 5 when divided by 29.")
+        self.assertNotIn("square", " ".join(spill_steps).lower())
+        self.assertIn("2⁴⁸", power_text)
 
     def test_reported_decimal_solution_is_repaired_for_existing_database(self):
         steps = app.display_solution_steps("broken", '["merged columns"]', "ch03-q0030")

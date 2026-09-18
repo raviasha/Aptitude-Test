@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["job_id", "job_fingerprint", "verdict", "notes", "pages"],
+  "properties": {
+    "job_id": {"type": "string"},
+    "job_fingerprint": {"type": "string"},
+    "verdict": {"type": "string", "enum": ["approved", "blocked"]},
+    "notes": {"type": "string"},
+    "pages": {"type": "array", "items": {"$ref": "#/$defs/page"}}
+  },
+  "$defs": {
+    "region": {
+      "type": "object", "additionalProperties": false,
+      "required": ["left", "top", "right", "bottom"],
+      "properties": {
+        "left": {"type": "integer", "minimum": 0},
+        "top": {"type": "integer", "minimum": 0},
+        "right": {"type": "integer", "minimum": 1},
+        "bottom": {"type": "integer", "minimum": 1}
+      }
+    },
+    "block": {
+      "type": "object", "additionalProperties": false,
+      "required": ["printed_number", "regions", "continuation", "start_question"],
+      "properties": {
+        "printed_number": {"type": ["integer", "null"], "minimum": 1},
+        "regions": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/region"}},
+        "continuation": {"type": "boolean"},
+        "start_question": {"type": "boolean"}
+      }
+    },
+    "shared_block": {
+      "type": "object", "additionalProperties": false,
+      "required": ["printed_number", "regions", "continuation", "start_question", "target_printed_number_start", "target_printed_number_end"],
+      "properties": {
+        "printed_number": {"type": ["integer", "null"], "minimum": 1},
+        "regions": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/region"}},
+        "continuation": {"type": "boolean"},
+        "start_question": {"type": "boolean"},
+        "target_printed_number_start": {"type": ["integer", "null"], "minimum": 1},
+        "target_printed_number_end": {"type": ["integer", "null"], "minimum": 1}
+      }
+    },
+    "exercise": {
+      "type": "object", "additionalProperties": false,
+      "required": ["exercise_id", "question_blocks", "answer_solution_blocks", "shared_context_blocks"],
+      "properties": {
+        "exercise_id": {"type": "string"},
+        "question_blocks": {"type": "array", "items": {"$ref": "#/$defs/block"}},
+        "answer_solution_blocks": {"type": "array", "items": {"$ref": "#/$defs/block"}},
+        "shared_context_blocks": {"type": "array", "items": {"$ref": "#/$defs/shared_block"}}
+      }
+    },
+    "page": {
+      "type": "object", "additionalProperties": false,
+      "required": ["page", "coverage_complete", "observed_counts", "exercises"],
+      "properties": {
+        "page": {"type": "integer", "minimum": 1},
+        "coverage_complete": {"type": "boolean"},
+        "observed_counts": {
+          "type": "object", "additionalProperties": false,
+          "required": ["question_blocks", "answer_solution_blocks", "shared_context_blocks"],
+          "properties": {
+            "question_blocks": {"type": "integer", "minimum": 0},
+            "answer_solution_blocks": {"type": "integer", "minimum": 0},
+            "shared_context_blocks": {"type": "integer", "minimum": 0}
+          }
+        },
+        "exercises": {"type": "array", "items": {"$ref": "#/$defs/exercise"}}
+      }
+    }
+  }
+}

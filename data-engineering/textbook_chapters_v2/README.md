@@ -22,13 +22,16 @@ config supplies these paths:
   "work_root": "tmp/textbook-v2",
   "candidate_path": "tmp/textbook-v2/chapter-001/ch01_number_system_v2_candidate.zip",
   "published_path": "question-banks/ch01_number_system_complete.zip",
-  "validation_viewports": [[1024, 768], [1600, 900]]
+  "validation_viewports": [[1024, 768], [1600, 900]],
+  "render_workers": 3
 }
 ```
 
 Paths are resolved from the directory where the command is run. Run commands
 from the repository root. The crop-marker format is documented by the checked
 chapter configs and is validated before any source crop is accepted.
+Independent candidates render concurrently; `render_workers` is an optional
+positive integer and defaults to the conservative value `3`.
 
 Fields that must remain images require an explicit, record-scoped
 `field_media` mapping. The mapping selects only source crops already authorized
@@ -89,6 +92,12 @@ compares the textbook source crops with screenshots from the real KSAT student
 screen in unanswered and submitted states. The queue includes both full-card
 screenshots and Task 8 field screenshots; every persisted screenshot is
 reloaded and hash-validated before it can enter the verification fingerprint.
+Extraction and verification are source-fidelity stages, not silent textbook
+correction stages: printed exponents, radicals, fractions, and even apparent
+textbook inconsistencies remain as printed. Long element screenshots can show
+a repeated sticky header at a screenshot tile boundary; verification uses the
+complete field-bounded screenshots to distinguish that capture artifact from
+real clipping.
 Put results in the verification results directory, then run:
 
 ```powershell
@@ -144,14 +153,24 @@ render assets, and verification jobs/results are fingerprinted. Replacing any
 dependency invalidates only the downstream cache and returns a
 `vision_pending` boundary instead of silently reusing stale results.
 
+Vision jobs use policy version 2. Each queue item stores the complete
+substantive extraction or verification prompt plus SHA-256 bindings for both
+the pipeline ingestion schema and the Codex structured-output schema. The
+Codex queue runners consume the job's prompt instead of maintaining a separate
+fidelity policy, and they refuse a `--schema` file whose exact bytes do not
+match the binding in that job. Consequently, changing a fidelity rule or even
+changing schema bytes creates a new job fingerprint; an older result is treated
+as pending rather than reused.
+
 Reviewed rejections remain documented in the package audit metadata, but only
 the authoritative ledger's `approved_records` are written to the published
 question JSONL.
 
 Every render also persists an application/renderer manifest. It hashes the real
 `app.py`, its first-party `question_media.py` and `chapter_repairs.py` startup
-imports, every static frontend asset, the V2 renderer and package/vision contract
-code, and both result schemas. Its deterministic runtime data binds the Python
+imports, every static frontend asset, and the pixel-producing V2 renderer.
+Extraction prompts, verification policy, packaging, and CLI orchestration do
+not invalidate byte-identical screenshots. Its deterministic runtime data binds the Python
 ABI, Playwright version, browser-selection policy, the actually selected browser
 engine and version, viewports, package format, and render-contract version
 without recording machine-specific browser paths. That identity comes from the
@@ -162,7 +181,13 @@ content-addressed to that manifest, the exact candidate hashes, and normalized
 per-record hashes for every full-card and field screenshot. Release validation
 also compares those hashes with each approved audit record. A changed asset,
 renderer contract, browser runtime, candidate, or screenshot therefore forces a
-fresh render and fresh vision result; `package` and `promote` refuse approvals
+fresh render and fresh vision result for the affected record. Unchanged records
+are reused only when their candidate hash, renderer manifest, screenshot paths,
+and every screenshot byte hash still match. A reused render retains an existing
+approval only when the current source, candidate, complete field verdicts, and
+the exact verification-result fingerprint still match; missing or stale
+verification evidence returns that record to `pending_vision`. Newly generated
+renders always require fresh verification. `package` and `promote` refuse approvals
 made against earlier evidence.
 
 `--force` only clears disposable cache entries under the configured chapter

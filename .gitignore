@@ -14,3 +14,29 @@ release/
 .worktrees/
 *-dataless-backup/
 *-dataless-backup.md
+
+# Local tools, caches, and machine-specific Android settings.
+.code-buddy/
+.code-buddy-update/
+.freeup-space/
+.pytest_cache/
+.docx_render/
+dist-fixed/
+android/.gradle/
+android/local.properties
+android/mobile-config.properties
+android/app/build/
+
+# Locally supplied textbook PDFs are inputs, not release source.
+/*.pdf
+/data-engineering/*.pdf
+/question-banks/**/*.tmp
+
+# Local copies of release artifacts and rendered documentation.
+# Keep the reusable guide-generation scripts under version control.
+/deliverables/*
+!/deliverables/guide-work/
+/deliverables/guide-work/*
+!/deliverables/guide-work/*.py
+!/deliverables/guide-work/*.ps1
+!/deliverables/guide-work/*.md

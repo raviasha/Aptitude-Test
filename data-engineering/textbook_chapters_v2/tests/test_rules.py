@@ -68,6 +68,33 @@ class DeterministicCorruptionRuleTests(unittest.TestCase):
             ],
         )
 
+    def test_variable_expression_followed_by_coefficient_is_not_a_detached_power(self) -> None:
+        findings = validate_record(
+            {
+                "solution_steps": [
+                    "⇒ 999 = 108 + (n − 1) 9",
+                    "⇒ 999 − 108 = (n − 1) 9",
+                    "⇒ 891 = (n − 1) 9",
+                ]
+            }
+        )
+
+        self.assertEqual(findings, [])
+
+    def test_plain_numeric_ranges_are_not_treated_as_option_spill(self) -> None:
+        findings = validate_record(
+            {
+                "options": {
+                    "A": "1000 and 2000",
+                    "B": "2000 and 3000",
+                    "C": "3000 and 4000",
+                    "D": "4000 and 5000",
+                }
+            }
+        )
+
+        self.assertEqual(findings, [])
+
     def test_representation_policy_is_selected_per_field_and_fails_closed(self) -> None:
         blocking = [
             Finding(

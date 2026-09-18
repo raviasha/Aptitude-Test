@@ -1,0 +1,8 @@
+#!/bin/sh
+set -eu
+if [ -d /run/systemd/system ]; then
+    systemctl stop ksat-client.service
+    if [ "$1" = remove ]; then
+        systemctl disable ksat-client.service
+    fi
+fi

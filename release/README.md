@@ -1,5 +1,22 @@
 # KSAT client-server test builds — Coordinator update 17 September 2026
 
+## Ubuntu graphical installers — 18 September 2026
+
+- [Ubuntu 18.04 amd64](KSATClient-Ubuntu-18.04-amd64.deb)
+- [Ubuntu 22.04 amd64](KSATClient-Ubuntu-22.04-amd64.deb)
+
+Package revision `2.0.0+ubuntu2`: install the matching `.deb` through Ubuntu's
+graphical package installer, then open **KSAT Client Setup** from Applications.
+Choose the server HTTPS address, `coordinator-ca.pem`, and `coordinator-public.json`,
+approve the administrator password prompt, and click **Open KSAT**. No terminal
+commands are needed for installation or first setup. Standard Ubuntu desktop
+dependencies may require internet access. This updates only the Ubuntu clients;
+the Windows installers and server-only 1.3.4 installer are unchanged.
+
+Read the [graphical installation guide](../docs/ubuntu-client-installation.md)
+and [verification/remaining acceptance checks](../docs/ubuntu-gui-build-verification.md).
+The adjacent `.sha256` and `.build-info.json` files identify these pilot packages.
+
 ## Coordinator DHCP startup fix — 17 September 2026
 
 The Coordinator installer and standalone executable in this folder now allow

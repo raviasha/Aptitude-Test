@@ -52,30 +52,34 @@ def main():
         for source, destination in (
             ("ksat-client.service", "lib/systemd/system/ksat-client.service"),
             ("ksat-client.desktop", "usr/share/applications/ksat-client.desktop"),
+            ("ksat-client-setup.desktop", "usr/share/applications/ksat-client-setup.desktop"),
+            ("setup_gui.py", "opt/ksat-client/setup_gui.py"),
+            ("org.ksat.client.policy", "usr/share/polkit-1/actions/org.ksat.client.policy"),
         ):
             target = package / destination
             target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(root / "installer/linux" / source, target)
+            target.write_text((root / "installer/linux" / source).read_text(), newline="\n")
+            target.chmod(0o644)
         metadata = package / "DEBIAN"
         metadata.mkdir()
         for name in ("preinst", "postinst", "prerm", "postrm"):
             target = metadata / name
             target.write_text((root / "installer/linux" / name).read_text(), newline="\n")
             target.chmod(0o755)
-        version = "2.0.0+ubuntu1." + args.target.replace(".", "")
+        version = "2.0.0+ubuntu2." + args.target.replace(".", "")
         (metadata / "control").write_text(
             f"Package: ksat-client\nVersion: {version}\nArchitecture: amd64\n"
             "Maintainer: KSAT Lab\nSection: education\nPriority: optional\n"
-            f"Depends: libc6 (>= {'2.27' if args.target == '18.04' else '2.35'}), libgcc1, zlib1g, systemd, adduser, xdg-utils\n"
+            f"Depends: libc6 (>= {'2.27' if args.target == '18.04' else '2.35'}), libgcc1, zlib1g, systemd, adduser, xdg-utils, python3, python3-gi, gir1.2-gtk-3.0, policykit-1\n"
             "Description: KSAT lab client for a Windows faculty coordinator\n"
-            " Includes the Python runtime. Configure with your coordinator public trust files.\n"
+            " Includes the assessment runtime and a graphical first-run setup wizard.\n"
         )
         dependencies = subprocess.check_output([sys.executable, "-m", "pip", "freeze"], text=True)
         provenance = {"target": args.target, "architecture": "amd64", "python": sys.version, "sqlite": sqlite3.sqlite_version,
                       "dependencies": dependencies.splitlines(), "status": "TEST BUILD",
                       "source_revision": args.source_revision,
                       "source_sha256": {str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest()
-                                        for p in sorted([root / "linux_client_main.py", root / "client_app.py"]
+                                        for p in sorted([root / "linux_client_main.py", root / "client_app.py", Path(__file__).resolve()]
                                                         + list((root / "ksat").rglob("*.py"))
                                                         + list((root / "installer/linux").glob("*"))) if p.is_file()}}
         (package / "opt/ksat-client/build-info.json").write_text(json.dumps(provenance, indent=2))

@@ -75,6 +75,62 @@ class LinuxClientTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "missing"):
                 main.configure(**kwargs)
 
+    def test_invalid_bundle_does_not_stop_service_or_create_private_state(self):
+        import linux_client_main as main
+        data = self.root / "data"
+        with patch.object(main, "PROGRAM_DATA", data), patch.object(main, "DATA_DIR", data / "KSAT Client"), patch.object(main.subprocess, "run") as run:
+            with self.assertRaises(ValueError):
+                main.configure("http://not-https", self.root / "missing.pem", self.root / "missing.json")
+            self.assertFalse(data.exists())
+            run.assert_not_called()  # The external service must not be stopped on validation failure.
+
+    def test_restart_existing_client_requires_configuration_and_preserves_files(self):
+        import linux_client_main as main
+        self.assertTrue(hasattr(main, "start_configured_service"), "GUI recovery needs a narrow privileged service-start operation")
+        from ksat.coordinator.tls import load_or_create_coordinator_security
+        from client_app import install_client_configuration
+        tls = load_or_create_coordinator_security(self.root / "server", hostname="ksat.example.edu", port=8443, lan_ip_addresses=["10.0.0.8"])
+        data = self.root / "data"
+        client_dir = data / "KSAT Client"
+        with patch.object(main, "DATA_DIR", client_dir), patch.object(main, "KEY_PATH", self.key), patch.object(main.subprocess, "run") as run:
+            with self.assertRaises((OSError, ValueError)):
+                main.start_configured_service()
+            run.assert_not_called()
+            install_client_configuration(data, base_url="https://ksat.example.edu:8443", ca_source=tls.public_export_dir / "coordinator-ca.pem", metadata_source=tls.public_export_dir / "coordinator-public.json")
+            before = {p: p.read_bytes() for p in client_dir.rglob("*") if p.is_file()}
+            main.start_configured_service()
+            self.assertEqual(before, {p: p.read_bytes() for p in client_dir.rglob("*") if p.is_file()})
+            run.assert_called_once_with(["systemctl", "enable", "--now", main.SERVICE], check=True)
+
+    def test_retry_completes_permissions_after_interrupted_initial_setup(self):
+        import linux_client_main as main
+        import pwd
+        import stat
+        from client_app import install_client_configuration
+        from ksat.coordinator.tls import load_or_create_coordinator_security
+        tls = load_or_create_coordinator_security(self.root / "server", hostname="ksat.example.edu", port=8443, lan_ip_addresses=["10.0.0.8"])
+        data = self.root / "data"
+        client_dir = data / "KSAT Client"
+        account = pwd.getpwnam("ksat-client")
+        kwargs = dict(base_url="https://ksat.example.edu:8443", ca=tls.public_export_dir / "coordinator-ca.pem", metadata=tls.public_export_dir / "coordinator-public.json")
+        with patch.object(main, "PROGRAM_DATA", data), patch.object(main, "DATA_DIR", client_dir), patch.object(main, "KEY_PATH", self.key), patch.object(main.subprocess, "run"):
+            main.configure(**kwargs)
+            config = client_dir / "client-config.json"
+            ca = client_dir / "trust/coordinator-ca.pem"
+            lock = client_dir / "state/.client.lock"
+            contents = {p: p.read_bytes() for p in (config, ca, self.key)}
+            for retry in (lambda: main.configure(**kwargs), main.start_configured_service):
+                # Simulate interruption after config publication, before chmod/chown.
+                config.chmod(0o600)
+                ca.chmod(0o600)
+                os.chown(lock, 0, 0)
+                retry()
+                self.assertEqual(0o640, stat.S_IMODE(config.stat().st_mode))
+                self.assertEqual(0o640, stat.S_IMODE(ca.stat().st_mode))
+                self.assertEqual(account.pw_gid, config.stat().st_gid)
+                self.assertEqual(account.pw_uid, lock.stat().st_uid)
+                self.assertEqual(contents, {p: p.read_bytes() for p in contents})
+
 
 if __name__ == "__main__":
     unittest.main()

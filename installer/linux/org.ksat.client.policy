@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN" "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <vendor>KSAT Lab</vendor>
+  <action id="org.ksat.client.configure">
+    <description>Configure this KSAT lab computer</description>
+    <message>Administrator authorization is required to save KSAT coordinator settings and start the client.</message>
+    <icon_name>applications-education</icon_name>
+    <defaults><allow_any>no</allow_any><allow_inactive>no</allow_inactive><allow_active>auth_admin</allow_active></defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/opt/ksat-client/KSATClient</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">--configure</annotate>
+  </action>
+  <action id="org.ksat.client.start">
+    <description>Start the configured KSAT client</description>
+    <message>Administrator authorization is required to validate and start the existing KSAT client.</message>
+    <icon_name>applications-education</icon_name>
+    <defaults><allow_any>no</allow_any><allow_inactive>no</allow_inactive><allow_active>auth_admin</allow_active></defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/opt/ksat-client/KSATClient</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">--start-service</annotate>
+  </action>
+</policyconfig>

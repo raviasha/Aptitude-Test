@@ -16,4 +16,4 @@ if [ -d /run/systemd/system ]; then
         systemctl start ksat-client.service
     fi
 fi
-echo 'KSAT installed. For first setup, run sudo /opt/ksat-client/KSATClient --configure --base-url HTTPS_URL --ca CA_FILE --metadata METADATA_FILE'
+echo 'KSAT installed. Open KSAT Client Setup from Applications to choose the server address and both coordinator public files. No terminal commands are needed.'

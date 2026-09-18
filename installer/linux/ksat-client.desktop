@@ -2,7 +2,7 @@
 Type=Application
 Name=KSAT Lab Client
 Comment=Open the local KSAT assessment client
-Exec=xdg-open http://127.0.0.1:8010/
+Exec=/usr/bin/python3 /opt/ksat-client/setup_gui.py --launch
 Icon=applications-education
 Terminal=false
 Categories=Education;

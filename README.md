@@ -1,5 +1,11 @@
 # Aptitude Lab / KSAT 2.0
 
+Ubuntu 18.04 and 22.04 desktop clients now include a **graphical setup wizard**:
+install the matching `.deb` with Software Install, then open **KSAT Client Setup**
+to select the server address and its two public trust files. No terminal commands
+are needed for installation/configuration. See the [Ubuntu installation guide](docs/ubuntu-client-installation.md)
+and [GUI build verification](docs/ubuntu-gui-build-verification.md). These remain pilot builds.
+
 **Current Windows downloads are TEST-SIGNED — NOT FOR PRODUCTION.**
 The 10 September 2026 client-server integrity and faculty timer update is available in
 [`release/`](release/README.md), with installers for both products and SHA-256

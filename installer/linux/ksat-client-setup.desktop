@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=KSAT Client Setup
+Comment=Configure the faculty server address and coordinator public files
+Exec=/usr/bin/python3 /opt/ksat-client/setup_gui.py
+Icon=applications-education
+Terminal=false
+Categories=Education;Settings;

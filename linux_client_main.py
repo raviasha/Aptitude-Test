@@ -6,8 +6,10 @@ import json
 import os
 from pathlib import Path
 import pwd
+import stat
 import subprocess
 import sys
+import tempfile
 
 from client_app import (
     ClientProcessLock, ClientConfigStore, ClientRuntimeConfigStore,
@@ -20,12 +22,12 @@ PROGRAM_DATA = Path("/var/lib/ksat")
 DATA_DIR = PROGRAM_DATA / "KSAT Client"
 KEY_PATH = Path("/etc/ksat-client/device-wrap.key")
 SERVICE = "ksat-client.service"
-VERSION = "2.0.0+ubuntu1"
+VERSION = "2.0.0+ubuntu2"
 
 
 def require_root():
     if os.geteuid() != 0:
-        raise PermissionError("Run client configuration with sudo.")
+        raise PermissionError("Administrator authorization is required. Open KSAT Client Setup from Applications.")
 
 
 def protected_directory(path: Path, uid: int, gid: int, mode: int):
@@ -38,6 +40,35 @@ def protected_directory(path: Path, uid: int, gid: int, mode: int):
 
 def configure(base_url: str, ca: Path, metadata: Path):
     require_root()
+    # Validate a private snapshot before touching the live service or its state.
+    # Reuse the shared validator, including CA/signing-key hash and URL checks.
+    with tempfile.TemporaryDirectory(prefix="ksat-setup-") as directory:
+        staging = Path(directory)
+        for source, name, limit in ((ca, "ca.pem", 256 * 1024), (metadata, "public.json", 64 * 1024)):
+            try:
+                with Path(source).open("rb") as stream:
+                    content = stream.read(limit + 1)
+            except OSError as error:
+                raise ValueError("Cannot read both coordinator public files. Select them again.") from error
+            if not content or len(content) > limit:
+                raise ValueError("Coordinator public trust file has an invalid size.")
+            (staging / name).write_bytes(content)
+        candidate = install_client_configuration(staging / "check", base_url=base_url,
+                                                 ca_source=staging / "ca.pem", metadata_source=staging / "public.json")
+        config_path = DATA_DIR / "client-config.json"
+        if config_path.is_file():
+            existing = ClientRuntimeConfigStore(ClientConfigStore(config_path), DATA_DIR / "coordinator-url.json").load()
+            _validate_production_trust(existing)
+            if (existing.coordinator_base_url != candidate.coordinator_base_url
+                    or existing.coordinator_signing_public_key_b64 != candidate.coordinator_signing_public_key_b64
+                    or Path(existing.trusted_ca_path).read_bytes() != (staging / "ca.pem").read_bytes()):
+                raise ValueError("This PC is already configured for a different coordinator. Existing settings and attempts were kept. Ask your lab administrator before changing servers.")
+            start_configured_service()
+            return
+        _configure_new_client(base_url, staging / "ca.pem", staging / "public.json")
+
+
+def _configure_new_client(base_url: str, ca: Path, metadata: Path):
     subprocess.run(["systemctl", "stop", SERVICE], check=True)
     account = pwd.getpwnam("ksat-client")
     os.umask(0o027)
@@ -58,19 +89,47 @@ def configure(base_url: str, ca: Path, metadata: Path):
             os.chown(KEY_PATH, 0, account.pw_gid)
         LinuxKeyProtector(KEY_PATH)
         install_client_configuration(PROGRAM_DATA, base_url=base_url, ca_source=ca, metadata_source=metadata)
-        # Trust is private to the service and is used explicitly by its HTTPS client.
-        # No global certificate-store modification is needed for the loopback UI.
-        for path in (DATA_DIR / "trust",):
-            protected_directory(path, 0, account.pw_gid, 0o750)
-        for path in (DATA_DIR / "client-config.json", DATA_DIR / "trust" / "coordinator-ca.pem"):
-            if path.is_symlink():
-                raise ValueError("Client configuration cannot be a symbolic link.")
-            os.chown(path, 0, account.pw_gid)
-            os.chmod(path, 0o640)
-    # The service must be able to take the lock initially made by root.
-    os.chown(DATA_DIR / "state" / ".client.lock", account.pw_uid, account.pw_gid)
+        finalize_setup_permissions(account)
     subprocess.run(["systemctl", "enable", "--now", SERVICE], check=True)
     print("KSAT client configured. Open KSAT Lab Client from Applications.")
+
+
+def finalize_setup_permissions(account):
+    # Idempotent after config publication: power loss must not strand root-only
+    # configuration/CA files or a root-owned lock. Never rewrite their contents.
+    protected_directory(DATA_DIR / "trust", 0, account.pw_gid, 0o750)
+    paths = [(DATA_DIR / "client-config.json", 0, 0o640),
+             (DATA_DIR / "trust/coordinator-ca.pem", 0, 0o640),
+             (KEY_PATH, 0, 0o640)]
+    lock = DATA_DIR / "state/.client.lock"
+    if os.path.lexists(lock):
+        paths.append((lock, account.pw_uid, 0o600))
+    for path, uid, mode in paths:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                raise ValueError("Client configuration must be a regular file.")
+            os.fchown(descriptor, uid, account.pw_gid)
+            os.fchmod(descriptor, mode)
+        finally:
+            os.close(descriptor)
+
+
+def validate_configuration():
+    if not (DATA_DIR / "client-config.json").is_file():
+        raise ValueError("This PC is not configured yet. Select the server address and both public files, then click Configure client.")
+    config = ClientRuntimeConfigStore(ClientConfigStore(DATA_DIR / "client-config.json"), DATA_DIR / "coordinator-url.json").load()
+    _validate_production_trust(config)
+    if not KEY_PATH.is_file():
+        raise ValueError("Wrapping key is missing from an existing installation. Restore its matching backup.")
+    LinuxKeyProtector(KEY_PATH)
+
+
+def start_configured_service():
+    require_root()
+    validate_configuration()
+    finalize_setup_permissions(pwd.getpwnam("ksat-client"))
+    subprocess.run(["systemctl", "enable", "--now", SERVICE], check=True)
 
 
 def load_services():
@@ -92,6 +151,7 @@ def main(argv=None):
     operation.add_argument("--version", action="store_true")
     operation.add_argument("--configure", action="store_true")
     operation.add_argument("--validate-config", action="store_true")
+    operation.add_argument("--start-service", action="store_true")
     operation.add_argument("--service", action="store_true")
     parser.add_argument("--base-url")
     parser.add_argument("--ca", type=Path)
@@ -105,10 +165,10 @@ def main(argv=None):
             parser.error("--configure requires --base-url, --ca and --metadata")
         configure(args.base_url, args.ca, args.metadata)
     elif args.validate_config:
-        config = ClientRuntimeConfigStore(ClientConfigStore(DATA_DIR / "client-config.json"), DATA_DIR / "coordinator-url.json").load()
-        _validate_production_trust(config)
-        LinuxKeyProtector(KEY_PATH)
+        validate_configuration()
         print("Configuration and Linux device wrapping key are valid.")
+    elif args.start_service:
+        start_configured_service()
     else:
         import uvicorn
         services = load_services()

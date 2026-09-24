@@ -8,7 +8,9 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 from PIL import Image, ImageDraw
 
@@ -104,6 +106,18 @@ class RealRendererTests(unittest.TestCase):
         image.save(path, format="PNG")
         return path
 
+    def _package(self, question: dict[str, object], name: str = "bank.zip") -> Path:
+        path = self.root / name
+        manifest = {
+            "format_version": 3,
+            "bank_name": f"Validation {name}",
+            "question_files": ["questions/data.jsonl"],
+        }
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("manifest.json", json.dumps(manifest))
+            archive.writestr("questions/data.jsonl", json.dumps(question, ensure_ascii=False) + "\n")
+        return path
+
     @staticmethod
     def _candidate(**changes: object) -> dict[str, object]:
         candidate: dict[str, object] = {
@@ -151,6 +165,16 @@ class RealRendererTests(unittest.TestCase):
         self.assertTrue(all(item.path.is_file() for item in artifacts.all_screenshots()))
         self.assertGreaterEqual(len(artifacts.field_screenshots), 12)
         self.assertEqual(artifacts.clipping_findings, [])
+        self.assertRegex(artifacts.package_sha256, r"^[0-9a-f]{64}$")
+        self.assertRegex(artifacts.imported_record_sha256, r"^[0-9a-f]{64}$")
+        self.assertTrue(artifacts.import_evidence_path.is_file())
+        self.assertEqual(
+            artifacts.import_evidence_sha256,
+            hashlib.sha256(artifacts.import_evidence_path.read_bytes()).hexdigest(),
+        )
+        imported = json.loads(artifacts.import_evidence_path.read_text(encoding="utf-8"))
+        self.assertEqual(imported["source_key"], "ch01-q0334")
+        self.assertEqual(imported["record"]["question_text"], self._candidate()["question_text"])
         self.assertFalse(artifacts.temporary_data_dir.exists())
         self._assert_server_stopped(artifacts.server_port)
 
@@ -193,6 +217,53 @@ class RealRendererTests(unittest.TestCase):
         )
         self.assertFalse(artifacts.temporary_data_dir.exists())
         self._assert_server_stopped(artifacts.server_port)
+
+    def test_imported_renderer_binds_screenshots_to_the_packaged_database_record(self) -> None:
+        from textbook_chapters_v2.render import render_imported_question
+
+        packaged = self._candidate(
+            key="ch01-q0124",
+            question_text="PACKAGED 112 × 5⁴",
+            options={"A": "6700", "B": "70000", "C": "76500", "D": "77200"},
+            correct_answer="B",
+            solution_steps=["112 × 5⁴ = 70000"],
+        )
+        package = self._package(packaged)
+
+        artifacts = render_imported_question(
+            package, "ch01-q0124", self.root / "imported-render", ((1024, 768),)
+        )
+
+        evidence = json.loads(artifacts.import_evidence_path.read_text(encoding="utf-8"))
+        self.assertEqual(evidence["record"]["question_text"], "PACKAGED 112 × 5⁴")
+        self.assertEqual(evidence["record"]["options"]["B"], "70000")
+        self.assertEqual(evidence["record"]["correct_answer"], "B")
+        self.assertEqual(artifacts.source_key, "ch01-q0124")
+        self.assertEqual(artifacts.package_sha256, hashlib.sha256(package.read_bytes()).hexdigest())
+        self.assertEqual(artifacts.imported_record_sha256, evidence["imported_record_sha256"])
+        self.assertIn(artifacts.imported_record_sha256, artifacts.renderer_version)
+        self.assertTrue(all(item.path.is_file() for item in artifacts.all_screenshots()))
+
+    def test_imported_renderer_refuses_a_source_key_absent_from_the_package(self) -> None:
+        from textbook_chapters_v2.render import render_imported_question
+
+        package = self._package(self._candidate())
+
+        with self.assertRaisesRegex(RuntimeError, "source key"):
+            render_imported_question(
+                package, "ch01-q0124", self.root / "missing-source-key", ((1024, 768),)
+            )
+
+        self.assertEqual(list((self.root / "missing-source-key").glob("*.png")), [])
+
+    def test_browser_launcher_fails_closed_when_no_runtime_is_available(self) -> None:
+        from textbook_chapters_v2.render import _launch_browser
+
+        playwright = Mock()
+        playwright.chromium.launch.side_effect = RuntimeError("runtime unavailable")
+        with patch("textbook_chapters_v2.render._edge_executable", return_value=None):
+            with self.assertRaisesRegex(RuntimeError, "No usable Microsoft Edge or Playwright Chromium"):
+                _launch_browser(playwright)
 
 
 if __name__ == "__main__":

@@ -513,6 +513,11 @@ def _render_payload(
         "renderer_version": manifest_fingerprint,
         "observed_renderer_version": rendered.renderer_version,
         "browser_runtime": getattr(rendered, "browser_runtime", ""),
+        "package_sha256": getattr(rendered, "package_sha256", ""),
+        "imported_record_sha256": getattr(rendered, "imported_record_sha256", ""),
+        "source_key": getattr(rendered, "source_key", ""),
+        "import_evidence_path": str(getattr(rendered, "import_evidence_path", Path())),
+        "import_evidence_sha256": getattr(rendered, "import_evidence_sha256", ""),
     }
 
 
@@ -523,6 +528,11 @@ def _render_from_payload(raw: Mapping[str, Any]) -> BrowserRenderArtifacts:
         field_screenshots={key: Path(value) for key, value in raw.get("field_screenshots", {}).items()},
         screenshot_hashes=raw["screenshot_hashes"], findings=tuple(raw["findings"]), renderer_version=str(raw["renderer_version"]),
         browser_runtime=str(raw.get("browser_runtime", "")),
+        package_sha256=str(raw.get("package_sha256", "")),
+        imported_record_sha256=str(raw.get("imported_record_sha256", "")),
+        source_key=str(raw.get("source_key", "")),
+        import_evidence_path=Path(raw.get("import_evidence_path", "")),
+        import_evidence_sha256=str(raw.get("import_evidence_sha256", "")),
     )
 
 
@@ -595,9 +605,26 @@ def _render_dependency_fingerprint(
         hashes = artifacts.get("screenshot_hashes") if isinstance(artifacts, Mapping) else None
         if not isinstance(hashes, Mapping) or not hashes:
             raise PipelineBlocked("Render state needs exact full-card and field screenshot hashes.")
+        package_sha256 = artifacts.get("package_sha256") if isinstance(artifacts, Mapping) else None
+        imported_record_sha256 = artifacts.get("imported_record_sha256") if isinstance(artifacts, Mapping) else None
+        import_evidence_sha256 = artifacts.get("import_evidence_sha256") if isinstance(artifacts, Mapping) else None
+        source_key = artifacts.get("source_key") if isinstance(artifacts, Mapping) else None
+        for label, value in (
+            ("package", package_sha256),
+            ("imported record", imported_record_sha256),
+            ("import evidence", import_evidence_sha256),
+        ):
+            if not isinstance(value, str) or len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
+                raise PipelineBlocked(f"Render state needs an exact {label} SHA-256.")
+        if not isinstance(source_key, str) or not source_key:
+            raise PipelineBlocked("Render state needs the imported source key.")
         normalized_render_hashes.append({
             "question_number": int(item["question_number"]),
             "screenshot_hashes": {str(key): str(value) for key, value in sorted(hashes.items())},
+            "package_sha256": package_sha256,
+            "imported_record_sha256": imported_record_sha256,
+            "import_evidence_sha256": import_evidence_sha256,
+            "source_key": source_key,
         })
     return dependency_fingerprint(
         "render-state",
@@ -674,6 +701,17 @@ def _render_asset_hashes(rendered: RenderArtifacts) -> tuple[str, ...]:
 
 
 def _render_files_are_current(rendered: RenderArtifacts) -> bool:
+    evidence_path = getattr(rendered, "import_evidence_path", Path())
+    evidence_hash = getattr(rendered, "import_evidence_sha256", "")
+    if (
+        not evidence_path.is_file()
+        or not evidence_hash
+        or _sha256_path(evidence_path) != evidence_hash
+        or not getattr(rendered, "package_sha256", "")
+        or not getattr(rendered, "imported_record_sha256", "")
+        or not getattr(rendered, "source_key", "")
+    ):
+        return False
     declared_paths = {
         **{f"question.{key}": value for key, value in rendered.question_screenshots.items()},
         **{f"solution.{key}": value for key, value in rendered.solution_screenshots.items()},

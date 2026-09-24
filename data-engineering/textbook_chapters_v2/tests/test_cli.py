@@ -33,6 +33,8 @@ from textbook_chapters_v2.cli import (
     _prepare_field_media,
     _render,
     _render_dependency_fingerprint,
+    _render_files_are_current,
+    _render_payload,
     _renders,
     _verification_job,
     main,
@@ -421,7 +423,23 @@ class WorkflowCliTests(unittest.TestCase):
             },
             renderer_version="controlled-concurrent-renderer",
             browser_runtime="playwright-chromium:124.0.2",
+            **self._render_binding(question_number),
         )
+
+    def _render_binding(self, question_number: int) -> dict[str, object]:
+        source_key = f"ch07-q{question_number:04d}"
+        evidence_path = self.root / f"{source_key}-import-evidence.json"
+        evidence_path.write_bytes(canonical_json({
+            "source_key": source_key,
+            "record": {"key": source_key, "question_text": f"Question {question_number}"},
+        }) + b"\n")
+        return {
+            "package_sha256": hashlib.sha256(f"package-{question_number}".encode()).hexdigest(),
+            "imported_record_sha256": hashlib.sha256(f"record-{question_number}".encode()).hexdigest(),
+            "source_key": source_key,
+            "import_evidence_path": evidence_path,
+            "import_evidence_sha256": _sha256(evidence_path),
+        }
 
     def _render_test_candidates(self, *, render_workers: int | None = None) -> tuple[CandidateRecord, ...]:
         raw = json.loads(self.config_path.read_text(encoding="utf-8"))
@@ -439,6 +457,19 @@ class WorkflowCliTests(unittest.TestCase):
                 candidate_sha256=candidate.sha256,
             ))
         return candidates
+
+    def test_render_state_binds_screenshots_to_package_import_evidence(self) -> None:
+        rendered = self._controlled_render(84, persistent=True)
+
+        payload = _render_payload(rendered, "manifest", "candidate")
+
+        self.assertEqual(payload["package_sha256"], rendered.package_sha256)
+        self.assertEqual(payload["imported_record_sha256"], rendered.imported_record_sha256)
+        self.assertEqual(payload["source_key"], "ch07-q0084")
+        self.assertEqual(payload["import_evidence_sha256"], rendered.import_evidence_sha256)
+        self.assertTrue(_render_files_are_current(rendered))
+        rendered.import_evidence_path.write_text("tampered\n", encoding="utf-8")
+        self.assertFalse(_render_files_are_current(rendered))
 
     def test_render_uses_three_workers_by_default_and_persists_deterministic_candidate_order(self) -> None:
         candidates = self._render_test_candidates()
@@ -648,6 +679,7 @@ class WorkflowCliTests(unittest.TestCase):
                 },
                 renderer_version="controlled-approved-renderer",
                 browser_runtime="playwright-chromium:124.0.2",
+                **self._render_binding(84),
             )
 
         rendered = complete_render()
@@ -1139,6 +1171,7 @@ class WorkflowCliTests(unittest.TestCase):
             renderer_version="controlled-mixed-renderer",
             field_screenshots={"unanswered.desktop.question": field},
             browser_runtime="playwright-chromium:124.0.2",
+            **self._render_binding(84),
         )
         with patch("textbook_chapters_v2.cli.render_candidate", return_value=rendered):
             self.assertEqual(main(["render", "--config", str(self.config_path)]), 0)
@@ -1275,6 +1308,7 @@ class WorkflowCliTests(unittest.TestCase):
             renderer_version="controlled-real-app-renderer",
             field_screenshots={"unanswered.desktop.question": question_field},
             browser_runtime="playwright-chromium:124.0.2",
+            **self._render_binding(84),
         )
         with patch("textbook_chapters_v2.cli.render_candidate", return_value=rendered):
             self.assertEqual(main(["render", "--config", str(self.config_path)]), 0)

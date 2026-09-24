@@ -1,4 +1,23 @@
-# KSAT client-server test builds — Coordinator update 17 September 2026
+# KSAT release files
+
+## KSAT 2.1 private-lab release — 24 September 2026
+
+The 2.1 Coordinator and Client files are signed by the persistent private-lab
+publisher `CN=KSAT LAB RELEASE SIGNING`. Install
+`KSATLabReleaseSigning.cer` with `Install-KSATLabReleaseTrust.ps1` before running
+the coordinator installer; the hostname bootstrap installs the same pinned
+certificate on each client. Verify every file against `SHA256SUMS.txt`.
+
+Use [the sequential lab upgrade guide](../docs/ksat-2.1-lab-upgrade.md). Future
+client updates use `KSATClientUpdate-2.1.0.ksat-client-update` through Faculty's
+**Client updates** page.
+
+| Product | Installer | Standalone executable |
+| --- | --- | --- |
+| Lab Client 2.1 | [KSATClientSetup-2.1.0.exe](KSATClientSetup-2.1.0.exe) | [KSATClient-2.1.0.exe](KSATClient-2.1.0.exe) |
+| Faculty Coordinator 2.1 | [KSATCoordinatorSetup-2.1.0.exe](KSATCoordinatorSetup-2.1.0.exe) | [KSATCoordinator-2.1.0.exe](KSATCoordinator-2.1.0.exe) |
+
+# Earlier test builds — Coordinator update 17 September 2026
 
 ## Ubuntu graphical installers — 18 September 2026
 

@@ -5,7 +5,15 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
+
+from cryptography import x509
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.serialization import pkcs12
+
+from scripts.create_lab_signing_identity import create_lab_signing_identity
 
 from scripts.windows_release import (
     APP_VERSION,
@@ -17,6 +25,8 @@ from scripts.windows_release import (
     build_executables,
     coordinator_payload_manifest,
     create_ephemeral_test_signing_config,
+    create_lab_client_update_bundle,
+    lab_signing_config,
     create_test_client_update_bundle,
     inspect_release_inputs,
     publish_signed_executables,
@@ -28,6 +38,82 @@ from scripts.windows_release import (
 
 
 class WindowsPackagingTests(unittest.TestCase):
+    def test_lab_identity_protects_directory_only_after_all_secrets_are_written(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "identity"
+
+            def assert_complete_before_protection(path):
+                for name in (
+                    "KSATLabReleaseSigning.pfx",
+                    "pfx-password.txt",
+                    "update-signing-private.key",
+                    "update-signing-public.key",
+                ):
+                    self.assertTrue((path / name).is_file(), name)
+
+            with patch(
+                "scripts.create_lab_signing_identity._protect_directory",
+                side_effect=assert_complete_before_protection,
+            ):
+                create_lab_signing_identity(root, years=5)
+
+    def test_persistent_lab_identity_has_separate_public_and_private_outputs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            result = create_lab_signing_identity(root, years=5)
+
+            self.assertEqual("CN=KSAT LAB RELEASE SIGNING", result["publisher"])
+            self.assertEqual(32, (root / "update-signing-private.key").stat().st_size)
+            self.assertEqual(32, (root / "update-signing-public.key").stat().st_size)
+            certificate = x509.load_der_x509_certificate(
+                (root / "KSATLabReleaseSigning.cer").read_bytes()
+            )
+            self.assertGreater(
+                certificate.not_valid_after_utc,
+                datetime.now(timezone.utc).replace(microsecond=0),
+            )
+            password = (root / "pfx-password.txt").read_text("ascii").strip()
+            key, pfx_certificate, _chain = pkcs12.load_key_and_certificates(
+                (root / "KSATLabReleaseSigning.pfx").read_bytes(),
+                password.encode("ascii"),
+            )
+            self.assertIsNotNone(key)
+            self.assertEqual(
+                certificate.public_bytes(serialization.Encoding.DER),
+                pfx_certificate.public_bytes(serialization.Encoding.DER),
+            )
+            public_names = {"KSATLabReleaseSigning.cer", "update-signing-public.key"}
+            for name in public_names:
+                self.assertNotIn(b"PRIVATE", (root / name).read_bytes().upper())
+
+    def test_lab_signing_accepts_persistent_self_signed_identity_without_timestamp(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            created = create_lab_signing_identity(root, years=5)
+            config = lab_signing_config(
+                pfx_path=root / "KSATLabReleaseSigning.pfx",
+                password_environment_name="LAB_PASSWORD",
+                expected_publisher=created["publisher"],
+                environ={
+                    "LAB_PASSWORD": (root / "pfx-password.txt").read_text("ascii").strip()
+                },
+            )
+            self.assertTrue(config.lab_identity)
+            self.assertIsNone(config.timestamp_url)
+            self.assertEqual(created["thumbprint"], config.expected_thumbprint)
+
+    def test_lab_bootstrap_pins_and_installs_public_release_certificate(self):
+        root = Path(__file__).resolve().parents[1]
+        bootstrap = (root / "scripts" / "bootstrap_windows_clients.ps1").read_text("utf-8")
+        trust = (root / "scripts" / "install_lab_release_trust.ps1").read_text("utf-8")
+        self.assertIn("[Parameter(Mandatory)] [string]$TrustCertificate", bootstrap)
+        self.assertIn("SignerCertificate.Thumbprint", bootstrap)
+        self.assertIn("Import-Certificate", bootstrap)
+        self.assertIn("Cert:\\LocalMachine\\Root", bootstrap)
+        self.assertIn("Cert:\\LocalMachine\\TrustedPublisher", bootstrap)
+        self.assertIn("'@ | Set-Content -LiteralPath $script -Encoding UTF8", bootstrap)
+        self.assertIn("$candidate.Thumbprint", trust)
+        self.assertIn("Import-Certificate", trust)
     def test_secret_scan_rejects_pem_but_not_marker_text_inside_a_pe_binary(self):
         marker = b"-----BEGIN PRIVATE KEY-----"
         with self.assertRaisesRegex(ValueError, "private/live"):
@@ -50,6 +136,15 @@ class WindowsPackagingTests(unittest.TestCase):
                 check=False,
             )
             self.assertEqual(0, completed.returncode, completed.stderr)
+        release_help = subprocess.run(
+            [sys.executable, str(root / "scripts" / "windows_release.py"), "--help"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        self.assertIn("--lab-signing", release_help)
+        self.assertIn("--update-signing-private-key", release_help)
 
     def test_release_writes_only_canonical_public_update_key_metadata(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -144,6 +239,13 @@ class WindowsPackagingTests(unittest.TestCase):
             )
             self.assertEqual("SHA256SUMS.txt", layout.hash_manifest.name)
             self.assertEqual(
+                "KSATClientUpdate-2.1.0.ksat-client-update",
+                layout.client_update.name,
+            )
+            self.assertEqual(
+                "KSATLabReleaseSigning.cer", layout.lab_trust_certificate.name
+            )
+            self.assertEqual(
                 "SHA256SUMS-2.1.0-TEST-ONLY.txt", layout.test_hash_manifest.name
             )
 
@@ -166,6 +268,23 @@ class WindowsPackagingTests(unittest.TestCase):
             self.assertEqual(layout.test_client_update, output)
             self.assertTrue(output.is_file())
             self.assertNotIn(b"k" * 32, output.read_bytes())
+
+    def test_lab_update_bundle_uses_normal_release_name(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            layout = ReleaseLayout(root)
+            layout.release_dir.mkdir(parents=True)
+            layout.client_installer.write_bytes(b"signed lab installer")
+            private = root / "update-private.key"
+            private.write_bytes(b"l" * 32)
+            output = create_lab_client_update_bundle(
+                layout,
+                private,
+                publisher="CN=KSAT LAB RELEASE SIGNING",
+                authenticode_verifier=lambda _path, _publisher: None,
+            )
+            self.assertEqual(layout.client_update, output)
+            self.assertTrue(output.is_file())
 
     def test_build_commands_use_distinct_entrypoints_workpaths_and_safe_assets(self):
         root = Path(__file__).resolve().parents[1]

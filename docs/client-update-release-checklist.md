@@ -1,60 +1,41 @@
-# KSAT 2.1 client-update release checklist
+# KSAT 2.1 private-lab release record
 
-This record covers the verification-only build made on 24 September 2026. Every
-artifact named here uses the ephemeral publisher
-`CN=KSAT TEST SIGNING IDENTITY - NOT FOR PRODUCTION`. It has no timestamp and
-must not be distributed or installed in the lab.
+Release built 24 September 2026 for the controlled KSAT lab. The persistent
+release publisher is `CN=KSAT LAB RELEASE SIGNING`, thumbprint
+`13AE2A6440C33E074FC9C99FB35E5A1CFD9BE908`, valid through 23 September 2031.
+The private PFX, password, and update-signing key remain outside the repository
+under administrator/SYSTEM-only ACLs. Only the public certificate is shipped.
 
-## Automated verification
+## Verification
 
 | Gate | Result |
 |---|---|
-| Application suite | 636 tests passed; 32 skipped |
-| Legacy registration, media, feedback, visual-bank and completed-package suite | 84 tests passed |
-| Textbook chapter pipeline suite | 140 tests passed |
-| Recurring-decimal JavaScript regression | Passed |
+| Complete application suite | 641 tests passed; 32 skipped |
+| Focused signing, packaging, update-protocol and updater suite | 50 tests passed |
 | Windows hostname bootstrap test | Passed |
-| Client-update end-to-end and Windows packaging/entrypoint suite | 52 tests passed |
 | Frozen application smoke | Coordinator 2.1.0, verified TLS, client `device_setup`, IPv4 loopback only, UAC payload equivalent |
-| Artifact inspection | Authenticode checked; PyInstaller and Inno payloads recursively extracted/scanned; embedded update key found in coordinator, client and updater; client-update bundle parsed and signature checked |
+| Artifact inspection | Exact signer pinned; PyInstaller and Inno payloads recursively extracted; embedded update key verified; managed-update signature parsed and checked |
+| Release checksums | Recomputed after successful inspection |
 
-The two-client end-to-end test covers pilot gating, health-gated publication,
-an offline client reconnecting, mandatory pre-login update policy, active
-attempt and sealed-submission deferral, identity/config/state preservation, and
-100 concurrent policy reads during submission traffic.
+Because the certificate is private and self-signed, Windows reports the files
+as untrusted until `KSATLabReleaseSigning.cer` is installed in Local Machine
+Root and Trusted Publishers. The trust/bootstrap scripts require the exact
+publisher and thumbprint. After trust is installed, normal Authenticode
+validation succeeds without weakening the client updater's checks.
 
-## Test artifact evidence
-
-Build environment: Windows 11 build 26200, Python 3.14.2, PyInstaller 6.22.3,
-Inno Setup 6.7.3 and innoextract 1.12-dev (`e561d8c`, Inno 6.7 support).
-
-Signer thumbprint for both installers:
-`ADF1625E77B7F7E23A14890FED3A13A0C8FA8066`.
+## Release artifacts
 
 | Artifact | Bytes | SHA-256 |
 |---|---:|---|
-| `KSATCoordinator-2.1.0.exe` | 26,581,880 | `a62c4401fb0858433bfc377f880e0fc7ee19e49e86c3b1017481c30612c58e72` |
-| `KSATCoordinatorSetup-2.1.0.exe` | 28,238,032 | `eb6d7e1429e044b90472aa980f8afe9197028a55b02874bae0fd53dd4c797735` |
-| `KSATClient-2.1.0.exe` | 26,470,992 | `8a57ba6f4e68310f339b64959859ddb5f329f65d41a06d547d8fc0bf9a8418f0` |
-| `KSATClientSetup-2.1.0.exe` | 51,746,192 | `102afc161c2e51a4ab8243522d7d8fc37542d34559b83fb1e2c3e374de319166` |
-| `KSATClientUpdate-2.1.0-TEST-ONLY.ksat-client-update` | 51,747,208 | `cfe50a7b5071d3c868bd9f111010431c4e523a94877455c075f8638ba9529634` |
+| `Install-KSATLabReleaseTrust.ps1` | 1,074 | `948fae4b9e1b49988124994b557443c89a37982a1a6fb29fcaad3517dbecc43a` |
+| `KSATLabReleaseSigning.cer` | 1,037 | `82a458843d5f028fee881e8b46ca0db5dbaa69a4a77f2d5b18bc94818c392096` |
+| `KSATCoordinator-2.1.0.exe` | 26,581,632 | `628c565cac0c4469e001427615927cb6c3940e6246e596c8f31bee5d5c7f07f0` |
+| `KSATCoordinatorSetup-2.1.0.exe` | 28,238,128 | `d217254f11fef7469917704ce7074b8b6c810e0373b58118004c744ab088854f` |
+| `KSATClient-2.1.0.exe` | 26,472,208 | `ec197f85e95c9169413e3922491452791527ba8ee22cf46b14ab9e8b91437783` |
+| `KSATClientSetup-2.1.0.exe` | 51,746,968 | `1b9d3cc9fcae7abead029beed4f2dbe31f57d7f70e9d13dc6bab7406f4d10c86` |
+| `KSATClientUpdate-2.1.0.ksat-client-update` | 51,747,947 | `6a1341031bfdb0e79320a54de6aa2b6606bfcbe7b957196a195701f45a97a6ec` |
 
-The acceptance bundle targets 2.1.0 from a minimum source version of 2.0.0.
-Its Ed25519 private key and Authenticode PFX were generated in a temporary
-directory and deleted when the build exited. Only the matching public update
-key was embedded in the test executables.
-
-## Production release gates
-
-- Rebuild with the institution Authenticode PFX, exact publisher pin, approved
-  HTTPS timestamp service, and institution update-signing public key.
-- Build client update bundles separately with the offline institution update
-  private key.
-- Repeat the disposable coordinator plus two-client VM acceptance procedure in
-  the implementation plan, including interrupted download/install and rollback.
-- Complete physical-lab pilot acceptance before broad deployment.
-- Replace this test evidence with production hashes, signer identity,
-  timestamp evidence, VM versions, pilot results and the approved change record.
-
-This test build proves the automated release path; it does not establish
-production readiness or physical-lab acceptance.
+The managed update targets 2.1.0 and accepts installed source versions from
+2.0.0. Test-only 2.1 artifacts have been removed. Physical lab acceptance is
+recorded during the one-client pilot before publishing the update to the
+remaining clients.

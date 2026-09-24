@@ -42,6 +42,7 @@ from scripts.build_client_update import build_client_update
 
 
 APP_VERSION = "2.1.0"
+LAB_SIGNING_PUBLISHER = "CN=KSAT LAB RELEASE SIGNING"
 _FORBIDDEN_INPUT_NAMES = {
     "aptitude.db",
     "client.sqlite3",
@@ -108,6 +109,7 @@ class ReleaseSigningConfig:
     expected_thumbprint: str
     timestamp_url: str | None
     test_identity: bool = False
+    lab_identity: bool = False
 
     def __post_init__(self) -> None:
         path = Path(self.pfx_path).resolve()
@@ -116,9 +118,14 @@ class ReleaseSigningConfig:
             raise SigningConfigurationError("A readable signing identity and secret are required.")
         if not self.expected_publisher or not self.expected_thumbprint:
             raise SigningConfigurationError("The signing publisher identity must be pinned.")
+        if self.test_identity and self.lab_identity:
+            raise SigningConfigurationError("A signing identity cannot use two release profiles.")
         if self.test_identity:
             if self.timestamp_url is not None or self.expected_publisher != _TEST_SIGNING_SUBJECT:
                 raise SigningConfigurationError("The nonproduction signing identity is invalid.")
+        elif self.lab_identity:
+            if self.timestamp_url is not None or self.expected_publisher != LAB_SIGNING_PUBLISHER:
+                raise SigningConfigurationError("The private-lab signing identity is invalid.")
         else:
             try:
                 parsed = urlsplit(self.timestamp_url or "")
@@ -145,6 +152,53 @@ def _certificate_identity(pfx_path: Path, password: str) -> tuple[str, str]:
     return (
         certificate.subject.rfc4514_string(),
         certificate.fingerprint(hashes.SHA1()).hex().upper(),
+    )
+
+
+def lab_signing_config(
+    *,
+    pfx_path: Path | None,
+    password_environment_name: str,
+    expected_publisher: str | None,
+    environ: dict[str, str] | os._Environ[str] | None = None,
+) -> ReleaseSigningConfig:
+    values = os.environ if environ is None else environ
+    password = values.get(password_environment_name) if password_environment_name else None
+    if pfx_path is None or not password or expected_publisher != LAB_SIGNING_PUBLISHER:
+        raise SigningConfigurationError(
+            "Lab signing requires the persistent PFX, its password, and the exact KSAT Lab publisher."
+        )
+    try:
+        _key, certificate, _chain = pkcs12.load_key_and_certificates(
+            Path(pfx_path).read_bytes(), password.encode("utf-8")
+        )
+    except (OSError, ValueError) as error:
+        raise SigningConfigurationError("The lab signing identity could not be loaded.") from error
+    if certificate is None or certificate.subject.rfc4514_string() != expected_publisher:
+        raise SigningConfigurationError("The lab signing publisher does not match the pin.")
+    now = datetime.now(timezone.utc)
+    if (
+        certificate.not_valid_before_utc > now
+        or certificate.not_valid_after_utc < now + timedelta(days=365)
+    ):
+        raise SigningConfigurationError(
+            "The lab signing certificate must remain valid for at least one year."
+        )
+    try:
+        usage = certificate.extensions.get_extension_for_class(x509.ExtendedKeyUsage).value
+    except x509.ExtensionNotFound as error:
+        raise SigningConfigurationError(
+            "The lab signing certificate lacks code-signing usage."
+        ) from error
+    if ExtendedKeyUsageOID.CODE_SIGNING not in usage:
+        raise SigningConfigurationError("The lab signing certificate lacks code-signing usage.")
+    return ReleaseSigningConfig(
+        pfx_path=Path(pfx_path),
+        password=password,
+        expected_publisher=expected_publisher,
+        expected_thumbprint=certificate.fingerprint(hashes.SHA1()).hex().upper(),
+        timestamp_url=None,
+        lab_identity=True,
     )
 
 
@@ -322,13 +376,17 @@ def verify_authenticode_signature(path: Path, config: ReleaseSigningConfig) -> d
     if not path.is_file():
         raise FileNotFoundError(path)
     evidence = _run_signing_powershell(_VERIFY_SCRIPT, _signing_environment(path, config))
-    accepted_statuses = {"Valid", "UnknownError", "NotTrusted"} if config.test_identity else {"Valid"}
+    accepted_statuses = (
+        {"Valid", "UnknownError", "NotTrusted"}
+        if config.test_identity or config.lab_identity
+        else {"Valid"}
+    )
     if (
         evidence.get("status") not in accepted_statuses
         or evidence.get("signer_subject") != config.expected_publisher
         or str(evidence.get("signer_thumbprint") or "").upper()
         != config.expected_thumbprint
-        or not config.test_identity
+        or not (config.test_identity or config.lab_identity)
         and not evidence.get("timestamp_thumbprint")
     ):
         raise ValueError(f"Authenticode signature verification failed: {path.name}")
@@ -407,6 +465,18 @@ class ReleaseLayout:
             f"KSATClientUpdate-{APP_VERSION}-TEST-ONLY.ksat-client-update"
         )
 
+    @property
+    def client_update(self) -> Path:
+        return self.release_dir / f"KSATClientUpdate-{APP_VERSION}.ksat-client-update"
+
+    @property
+    def lab_trust_certificate(self) -> Path:
+        return self.release_dir / "KSATLabReleaseSigning.cer"
+
+    @property
+    def lab_trust_installer(self) -> Path:
+        return self.release_dir / "Install-KSATLabReleaseTrust.ps1"
+
 
 def create_test_client_update_bundle(
     layout: ReleaseLayout,
@@ -426,6 +496,42 @@ def create_test_client_update_bundle(
         release_notes="TEST ONLY - coordinator-managed update acceptance artifact",
         authenticode_verifier=authenticode_verifier,
     )
+
+
+def create_lab_client_update_bundle(
+    layout: ReleaseLayout,
+    private_key_file: Path,
+    *,
+    publisher: str,
+    authenticode_verifier,
+) -> Path:
+    """Create the signed bundle distributed by a private KSAT lab."""
+    return build_client_update(
+        installer=layout.client_installer,
+        version=APP_VERSION,
+        minimum_source_version="2.0.0",
+        publisher=publisher,
+        private_key_file=private_key_file,
+        output=layout.client_update,
+        release_notes="KSAT Lab Client 2.1 managed-update bootstrap",
+        authenticode_verifier=authenticode_verifier,
+    )
+
+
+def export_lab_trust_certificate(
+    signing: ReleaseSigningConfig, destination: Path
+) -> Path:
+    if not signing.lab_identity:
+        raise SigningConfigurationError("Only a lab identity may export lab trust.")
+    _key, certificate, _chain = pkcs12.load_key_and_certificates(
+        signing.pfx_path.read_bytes(), signing.password.encode("utf-8")
+    )
+    if certificate is None:
+        raise SigningConfigurationError("The lab signing identity contains no certificate.")
+    destination = Path(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(certificate.public_bytes(serialization.Encoding.DER))
+    return destination
 
 
 def _add_data(source: Path, destination: str) -> list[str]:
@@ -1075,16 +1181,23 @@ def inspect_artifacts(
         layout.client_installer, layout.client_executable, extractor,
         (layout.updater_executable,),
     )
-    if layout.test_client_update.is_file():
+    update_bundle = (
+        layout.test_client_update
+        if layout.test_client_update.is_file()
+        else layout.client_update
+        if layout.client_update.is_file()
+        else None
+    )
+    if update_bundle is not None:
         resource = json.loads(
             (layout.build_dir / "update-release-public.json").read_text("utf-8")
         )
         parse_client_update(
-            layout.test_client_update,
+            update_bundle,
             resource["update_signing_public_key_b64"],
             lambda path, publisher: verify_authenticode_signature(path, signing),
         )
-        sizes[layout.test_client_update.name] = layout.test_client_update.stat().st_size
+        sizes[update_bundle.name] = update_bundle.stat().st_size
     return sizes
 
 
@@ -1118,6 +1231,14 @@ def create_hash_manifest(
         ]
     if layout.test_client_update.is_file():
         artifacts.append(layout.test_client_update)
+    elif layout.client_update.is_file():
+        artifacts.append(layout.client_update)
+    if signing.lab_identity:
+        if not layout.lab_trust_certificate.is_file():
+            raise FileNotFoundError(layout.lab_trust_certificate)
+        if not layout.lab_trust_installer.is_file():
+            raise FileNotFoundError(layout.lab_trust_installer)
+        artifacts.extend((layout.lab_trust_certificate, layout.lab_trust_installer))
     destination = layout.test_hash_manifest if signing.test_identity else layout.hash_manifest
     return write_sha256s(artifacts, destination)
 
@@ -1137,7 +1258,9 @@ def _parse(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument("--signing-publisher")
     parser.add_argument("--timestamp-url")
     parser.add_argument("--test-signing", action="store_true")
+    parser.add_argument("--lab-signing", action="store_true")
     parser.add_argument("--update-signing-public-key", type=Path)
+    parser.add_argument("--update-signing-private-key", type=Path)
     return parser.parse_args(argv)
 
 
@@ -1146,8 +1269,14 @@ def _run_release_command(
     signing: ReleaseSigningConfig,
     *,
     test_update_private_key: Path | None = None,
+    lab_update_private_key: Path | None = None,
 ) -> int:
     layout = ReleaseLayout(arguments.root)
+    if signing.lab_identity:
+        layout.test_client_update.unlink(missing_ok=True)
+        layout.test_hash_manifest.unlink(missing_ok=True)
+    elif signing.test_identity:
+        layout.client_update.unlink(missing_ok=True)
     if arguments.command in {"build-executables", "all"}:
         layout = build_executables(layout.root, arguments.python, signing)
     if arguments.command in {"smoke", "all"}:
@@ -1167,6 +1296,15 @@ def _run_release_command(
                 path, signing
             ),
         )
+    if arguments.command == "all" and lab_update_private_key is not None:
+        create_lab_client_update_bundle(
+            layout,
+            lab_update_private_key,
+            publisher=signing.expected_publisher,
+            authenticode_verifier=lambda path, publisher: verify_authenticode_signature(
+                path, signing
+            ),
+        )
     if arguments.command in {"inspect", "all"}:
         sizes = inspect_artifacts(
             layout.root, arguments.python, arguments.innoextract, signing
@@ -1180,6 +1318,8 @@ def _run_release_command(
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = _parse(argv)
     public_resource = ReleaseLayout(arguments.root).build_dir / "update-release-public.json"
+    if arguments.test_signing and arguments.lab_signing:
+        raise SigningConfigurationError("Choose either test signing or lab signing.")
     if arguments.test_signing:
         if any(
             value is not None
@@ -1210,6 +1350,35 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _run_release_command(
                 arguments, signing, test_update_private_key=private_key_file
             )
+    if arguments.lab_signing:
+        if arguments.timestamp_url is not None:
+            raise SigningConfigurationError("Private-lab signing does not use a timestamp service.")
+        if arguments.update_signing_public_key is None:
+            raise SigningConfigurationError("The lab update-signing public key is required.")
+        if arguments.command == "all" and arguments.update_signing_private_key is None:
+            raise SigningConfigurationError(
+                "The lab update-signing private key is required to build the managed update bundle."
+            )
+        signing = lab_signing_config(
+            pfx_path=arguments.signing_pfx,
+            password_environment_name=arguments.signing_password_env,
+            expected_publisher=arguments.signing_publisher,
+        )
+        write_update_public_key_resource(
+            load_release_update_public_key(arguments.update_signing_public_key),
+            public_resource,
+        )
+        layout = ReleaseLayout(arguments.root)
+        export_lab_trust_certificate(signing, layout.lab_trust_certificate)
+        shutil.copy2(
+            layout.root / "scripts" / "install_lab_release_trust.ps1",
+            layout.lab_trust_installer,
+        )
+        return _run_release_command(
+            arguments,
+            signing,
+            lab_update_private_key=arguments.update_signing_private_key,
+        )
     if arguments.update_signing_public_key is None:
         raise SigningConfigurationError("The institution update-signing public key is required.")
     write_update_public_key_resource(

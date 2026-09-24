@@ -50,8 +50,43 @@ release\KSATCoordinator-2.1.0.exe
 release\KSATClient-2.1.0.exe
 release\KSATCoordinatorSetup-2.1.0.exe
 release\KSATClientSetup-2.1.0.exe
+release\KSATClientUpdate-2.1.0.ksat-client-update
+release\KSATLabReleaseSigning.cer
+release\Install-KSATLabReleaseTrust.ps1
 release\SHA256SUMS.txt
 ```
+
+### Private lab release profile
+
+When a public or institution Authenticode service is unavailable, the private
+lab profile uses one persistent self-signed code-signing identity and one
+persistent Ed25519 update identity. Store both private keys and the PFX password
+outside the repository in an administrator/SYSTEM-only directory. Distribute
+only `KSATLabReleaseSigning.cer`; clients pin its exact thumbprint before adding
+it to Local Machine Root and Trusted Publishers. The profile deliberately has
+no external timestamp, so rebuild and redistribute before the certificate
+expires.
+
+Create the identity once, then keep the resulting directory backed up in a
+protected location:
+
+```powershell
+python scripts\create_lab_signing_identity.py 'C:\ProgramData\KSAT Release Signing\lab-2026' --years 5
+```
+
+Build subsequent releases with the same identity:
+
+```powershell
+$identity = 'C:\ProgramData\KSAT Release Signing\lab-2026'
+$env:KSAT_SIGNING_PFX_PASSWORD = (Get-Content "$identity\pfx-password.txt").Trim()
+python scripts\windows_release.py all --lab-signing --signing-pfx "$identity\KSATLabReleaseSigning.pfx" --signing-publisher 'CN=KSAT LAB RELEASE SIGNING' --update-signing-public-key "$identity\update-signing-public.key" --update-signing-private-key "$identity\update-signing-private.key"
+Remove-Item Env:KSAT_SIGNING_PFX_PASSWORD
+```
+
+The fail-closed build checks the certificate lifetime and code-signing usage,
+signs every executable, verifies the pinned subject and thumbprint, signs the
+managed update bundle, recursively inspects installer payloads, runs the frozen
+application smoke test, and writes checksums only after all gates pass.
 
 Verify a delivered file before use:
 

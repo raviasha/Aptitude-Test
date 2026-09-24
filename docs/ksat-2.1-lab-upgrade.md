@@ -78,14 +78,17 @@ Retry powered-off or failed machines later with:
 pwsh -NoProfile -File .\scripts\bootstrap_windows_clients.ps1 -HostsFile .\lab-hosts.txt -Installer .\release\KSATClientSetup-2.1.0.exe -TrustCertificate .\release\KSATLabReleaseSigning.cer -RetryResults .\bootstrap-results.json
 ```
 
-## 7. Enable future central client updates
+## 7. Confirm that future central updates are enabled
 
-In Faculty, open **Client updates** and upload
-`release\KSATClientUpdate-2.1.0.ksat-client-update`. Select the pilot client, wait for
-its successful health report, then publish the release. A client with an active
-assessment waits until the attempt and any pending submission are safe. Every
-idle client installs the mandatory update before the next student sign-in.
+After the bootstrap, every successfully updated client already runs 2.1.0 and
+has the managed updater. Do not publish
+`KSATClientUpdate-2.1.0.ksat-client-update` to those clients again; that bundle
+is retained as release evidence and for controlled update-path testing.
 
-For later client releases, upload one newer signed `.ksat-client-update` bundle
-through this same page. The coordinator does not need to be reinstalled merely
-to distribute a client update.
+Starting with the next client version after 2.1.0, open **Client updates** in
+Faculty and upload the newer signed `.ksat-client-update` bundle. Select one
+client as the pilot, wait for its successful health report, then publish the
+release. A client with an active assessment waits until the attempt and any
+pending submission are safe. Every idle client installs the mandatory update
+before the next student sign-in. The coordinator does not need to be
+reinstalled merely to distribute a client update.

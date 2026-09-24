@@ -102,6 +102,12 @@ class ClientUpdateStore:
             raise KeyError(f"Unknown client update release: {release_id}")
         return self._release_from_row(row)
 
+    def releases(self) -> list[ClientUpdateRelease]:
+        rows = self.connection.execute(
+            "SELECT * FROM client_update_releases ORDER BY created_at DESC, release_id DESC"
+        ).fetchall()
+        return [self._release_from_row(row) for row in rows]
+
     def bundle_path(self, release_id: str) -> Path:
         release = self.release(release_id)
         candidate = (self.storage_root / release.bundle_filename).resolve()

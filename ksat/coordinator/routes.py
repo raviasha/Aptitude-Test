@@ -10,6 +10,7 @@ import tempfile
 import threading
 import time
 from collections import deque
+from contextlib import closing
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -17,7 +18,7 @@ from typing import Any, AsyncIterator, BinaryIO
 
 import bcrypt
 from fastapi import APIRouter, HTTPException, Request, Response
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict
 from starlette.concurrency import run_in_threadpool
 
@@ -44,6 +45,7 @@ from ksat.coordinator.reviews import (
     list_completed_assessments,
 )
 from ksat.coordinator.submissions import SubmissionProblem, validate_and_score
+from ksat.coordinator.client_updates import ClientUpdateStore, UpdateStateError
 from ksat.crypto import verify_json
 from ksat.protocol import (
     AssessmentReviewGrant,
@@ -76,6 +78,16 @@ class CoordinatorConfig:
     pack_master_key: bytes
     submission_writer: Any | None = None
     pack_registry: Any | None = field(default=None, repr=False)
+    update_signing_public_key_b64: str | None = None
+    update_authenticode_verifier: Any | None = field(default=None, repr=False)
+
+
+class ClientUpdateStatusBody(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid")
+    stage: str
+    installed_version: str
+    diagnostic_code: str | None = None
+    attempt_id: str
 
 
 router = APIRouter(prefix="/api/client/v1")
@@ -211,6 +223,74 @@ def _verified_student(request: Request, config: CoordinatorConfig, device_id: st
             "invalid_client_session", "The client session is invalid.", status_code=403
         )
     return claims["student_id"]
+
+
+def _client_update_store(config: CoordinatorConfig, connection) -> ClientUpdateStore:
+    return ClientUpdateStore(connection, config.data_dir / "Client Updates")
+
+
+def _require_visible_update(store: ClientUpdateStore, release_id: str, device_id: str):
+    try:
+        release = store.release(release_id)
+    except (KeyError, ValueError) as error:
+        raise HTTPException(404, "Client update was not found.") from error
+    if release.state == "published" or (
+        release.state == "pilot" and release.pilot_device_id == device_id
+    ):
+        return release
+    raise HTTPException(404, "Client update was not found.")
+
+
+@router.get("/update-policy")
+async def client_update_policy(request: Request):
+    config: CoordinatorConfig = request.app.state.coordinator_config
+    installed_version = request.headers.get("X-KSAT-Client-Version", "")
+    try:
+        with closing(connect_sqlite(config.db_path)) as connection:
+            device_id = await _verified_device(request, connection)
+            policy = _client_update_store(config, connection).policy_for_device(
+                device_id, installed_version
+            )
+    except AuthenticationProblem as error:
+        _raise_http(error)
+    except ValueError as error:
+        raise HTTPException(400, "Client version is invalid.") from error
+    return policy
+
+
+@router.get("/updates/{release_id}/bundle")
+async def client_update_bundle(release_id: str, request: Request):
+    config: CoordinatorConfig = request.app.state.coordinator_config
+    try:
+        with closing(connect_sqlite(config.db_path)) as connection:
+            device_id = await _verified_device(request, connection)
+            store = _client_update_store(config, connection)
+            _require_visible_update(store, release_id, device_id)
+            path = store.bundle_path(release_id)
+    except AuthenticationProblem as error:
+        _raise_http(error)
+    except (KeyError, OSError, ValueError) as error:
+        raise HTTPException(404, "Client update was not found.") from error
+    return FileResponse(path, media_type="application/octet-stream", filename="bundle.ksat-client-update")
+
+
+@router.post("/updates/{release_id}/status")
+async def client_update_status(release_id: str, body: ClientUpdateStatusBody, request: Request):
+    config: CoordinatorConfig = request.app.state.coordinator_config
+    try:
+        with closing(connect_sqlite(config.db_path)) as connection:
+            device_id = await _verified_device(request, connection)
+            store = _client_update_store(config, connection)
+            _require_visible_update(store, release_id, device_id)
+            status = store.record_status(
+                release_id, device_id, body.stage, body.installed_version,
+                body.diagnostic_code, attempt_id=body.attempt_id,
+            )
+    except AuthenticationProblem as error:
+        _raise_http(error)
+    except (UpdateStateError, ValueError) as error:
+        raise HTTPException(409, str(error)) from error
+    return status
 
 
 def _pack_path(config: CoordinatorConfig, filename: str) -> Path:

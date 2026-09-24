@@ -47,6 +47,7 @@ from chapter_repairs import CHAPTER_01_REPAIRS
 import question_media
 from ksat.coordinator.artifacts import ArtifactQuarantine, recover_artifact_quarantine
 from ksat.coordinator.auth import load_or_create_client_session_secret
+from ksat.coordinator.client_updates import ClientUpdateStore, UpdateStateError
 from ksat.coordinator.releases import load_release_manifest, prepare_release
 from ksat.coordinator.routes import (
     CoordinatorConfig,
@@ -65,6 +66,8 @@ from ksat.coordinator.submissions import (
     validate_release_answer_state,
 )
 from ksat.crypto import load_or_create_coordinator_keyring, sign_json, verify_json
+from ksat.update_protocol import MAX_UNCOMPRESSED_BYTES, load_update_public_key, parse_client_update
+from ksat.windows_authenticode import verify_authenticode
 from ksat.integrity import (
     DEFINITIONS as INTEGRITY_DEFINITIONS,
     accepted_integrity_codes,
@@ -211,6 +214,8 @@ def configure_coordinator_state(application: FastAPI) -> None:
                     enrollment_code = row[0]
         finally:
             settings_connection.close()
+    update_key_path = BUNDLE_DIR / "update-release-public.json"
+    update_public_key = load_update_public_key(update_key_path) if update_key_path.is_file() else None
     application.state.coordinator_config = CoordinatorConfig(
         db_path=DB_PATH,
         data_dir=DATA_DIR,
@@ -220,6 +225,8 @@ def configure_coordinator_state(application: FastAPI) -> None:
         signing_public_key_b64=keyring.signing_public_key_b64,
         pack_master_key=keyring.pack_master_key,
         submission_writer=SubmissionWriter(DB_PATH),
+        update_signing_public_key_b64=update_public_key,
+        update_authenticode_verifier=verify_authenticode,
     )
 
 
@@ -316,6 +323,10 @@ class DurationExtensionPayload(BaseModel):
 
 class AdminReasonPayload(BaseModel):
     reason: str
+
+
+class ClientUpdatePilotPayload(BaseModel):
+    device_id: str
 
 
 class VoidAttemptPayload(AdminReasonPayload):
@@ -2783,6 +2794,121 @@ def list_distributed_devices(request: Request) -> Dict[str, Any]:
             "public_key_fingerprint": fingerprint,
         })
     return {"devices": devices}
+
+
+def _client_update_release_json(release) -> Dict[str, Any]:
+    return {
+        "release_id": release.release_id,
+        "client_version": release.client_version,
+        "state": release.state,
+        "manifest": release.manifest.model_dump(mode="json"),
+        "bundle_sha256": release.bundle_sha256,
+        "bundle_size": release.bundle_size,
+        "pilot_device_id": release.pilot_device_id,
+        "created_at": release.created_at,
+        "published_at": release.published_at,
+        "withdrawn_at": release.withdrawn_at,
+    }
+
+
+@app.get("/api/admin/client-updates")
+def list_client_updates(request: Request) -> Dict[str, Any]:
+    require_user(request, "admin")
+    with db() as connection:
+        store = ClientUpdateStore(connection, DATA_DIR / "Client Updates")
+        releases = store.releases()
+        return {
+            "releases": [
+                {**_client_update_release_json(release), "devices": store.dashboard(release.release_id)}
+                for release in releases
+            ]
+        }
+
+
+@app.post("/api/admin/client-updates/upload")
+async def upload_client_update(request: Request, bundle: UploadFile = File(...)) -> Dict[str, Any]:
+    require_admin_mutation(request)
+    config = app.state.coordinator_config
+    if not config.update_signing_public_key_b64 or not callable(config.update_authenticode_verifier):
+        raise HTTPException(503, "Client update verification is not configured.")
+    if not (bundle.filename or "").endswith(".ksat-client-update"):
+        raise HTTPException(400, "Choose a .ksat-client-update release bundle.")
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    file_descriptor, temporary_name = tempfile.mkstemp(
+        prefix=".client-update-", suffix=".ksat-client-update", dir=DATA_DIR
+    )
+    temporary_path = Path(temporary_name)
+    total = 0
+    try:
+        with os.fdopen(file_descriptor, "wb") as output:
+            while chunk := await bundle.read(1024 * 1024):
+                total += len(chunk)
+                if total > MAX_UNCOMPRESSED_BYTES:
+                    raise HTTPException(413, "Client update bundle is too large.")
+                output.write(chunk)
+            output.flush()
+            os.fsync(output.fileno())
+        if total == 0:
+            raise HTTPException(400, "Choose a non-empty client update bundle.")
+        verified = parse_client_update(
+            temporary_path,
+            config.update_signing_public_key_b64,
+            config.update_authenticode_verifier,
+        )
+        with db() as connection:
+            release = ClientUpdateStore(connection, DATA_DIR / "Client Updates").upload(verified)
+        return {"release": _client_update_release_json(release)}
+    except HTTPException:
+        raise
+    except UpdateStateError as error:
+        raise HTTPException(409, str(error)) from error
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+    finally:
+        temporary_path.unlink(missing_ok=True)
+
+
+@app.post("/api/admin/client-updates/{release_id}/pilot")
+def pilot_client_update(
+    release_id: str, payload: ClientUpdatePilotPayload, request: Request
+) -> Dict[str, Any]:
+    require_admin_mutation(request)
+    try:
+        with db() as connection:
+            release = ClientUpdateStore(connection, DATA_DIR / "Client Updates").select_pilot(
+                release_id, payload.device_id
+            )
+        return {"release": _client_update_release_json(release)}
+    except KeyError as error:
+        raise HTTPException(404, "Client update was not found.") from error
+    except (UpdateStateError, ValueError) as error:
+        raise HTTPException(409, str(error)) from error
+
+
+@app.post("/api/admin/client-updates/{release_id}/publish")
+def publish_client_update(release_id: str, request: Request) -> Dict[str, Any]:
+    require_admin_mutation(request)
+    try:
+        with db() as connection:
+            release = ClientUpdateStore(connection, DATA_DIR / "Client Updates").publish(release_id)
+        return {"release": _client_update_release_json(release)}
+    except KeyError as error:
+        raise HTTPException(404, "Client update was not found.") from error
+    except (UpdateStateError, ValueError) as error:
+        raise HTTPException(409, str(error)) from error
+
+
+@app.post("/api/admin/client-updates/{release_id}/withdraw")
+def withdraw_client_update(release_id: str, request: Request) -> Dict[str, Any]:
+    require_admin_mutation(request)
+    try:
+        with db() as connection:
+            release = ClientUpdateStore(connection, DATA_DIR / "Client Updates").withdraw(release_id)
+        return {"release": _client_update_release_json(release)}
+    except KeyError as error:
+        raise HTTPException(404, "Client update was not found.") from error
+    except ValueError as error:
+        raise HTTPException(409, str(error)) from error
 
 
 def _set_device_status(device_id: str, target: str, payload: AdminReasonPayload, request: Request) -> Dict[str, Any]:

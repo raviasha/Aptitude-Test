@@ -3832,6 +3832,7 @@
   ],
   "render_workers": 2,
   "field_media": {},
+  "question_media_strategy": "source_segments",
   "boundary_reviews": {
     "solution:3": "Bottom stops before the following solution's complete first-line fraction numerator.",
     "solution:4": "first-line fraction numerator clips; preceding solution includes numerator",

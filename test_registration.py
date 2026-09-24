@@ -35,6 +35,38 @@ class StudentRegistrationTests(unittest.TestCase):
         app.QUESTION_BANKS_DIR = self.original_question_banks_dir
         self.temp_dir.cleanup()
 
+    def test_explicit_package_update_refreshes_an_unused_bank_in_place(self):
+        question = {
+            "key": "ch01-q0124", "question_text": "112 × 54", "question_html": "",
+            "category": "Quantitative Aptitude", "chapter": "1", "stimulus_id": None,
+            "difficulty": "Medium", "options": {"A": "6700", "B": "70000", "C": "76500", "D": "77200"},
+            "correct_answer": "A", "explanation": "", "solution_steps": ["stale"],
+            "option_explanations": {},
+        }
+        first = app.save_question_package("Update test", [question], [], "old.zip", 3)
+        with app.db() as connection:
+            original_id = connection.execute(
+                "SELECT question_id FROM questions WHERE bank_id = ?", (first["bank_id"],)
+            ).fetchone()[0]
+
+        question.update(
+            question_text="112 × 5⁴", correct_answer="B",
+            solution_steps=["112 × 5⁴ = 70000"],
+        )
+        updated = app.save_question_package(
+            "Update test", [question], [], "corrected.zip", 3, replace_existing=True
+        )
+
+        self.assertEqual(updated["bank_id"], first["bank_id"])
+        with app.db() as connection:
+            stored = connection.execute(
+                "SELECT * FROM questions WHERE bank_id = ?", (first["bank_id"],)
+            ).fetchone()
+        self.assertEqual(stored["question_id"], original_id)
+        self.assertEqual(stored["question_text"], "112 × 5⁴")
+        self.assertEqual(stored["correct_answer"], "B")
+        self.assertEqual(json.loads(stored["solution_steps"]), ["112 × 5⁴ = 70000"])
+
     def test_private_use_math_fragments_are_not_returned_to_the_browser(self):
         self.assertEqual(app.clean_display_text("x\uf8eb + y\uf8f6"), "x + y")
         self.assertEqual(clean_math_text("a\uf8ec = b"), "a = b")

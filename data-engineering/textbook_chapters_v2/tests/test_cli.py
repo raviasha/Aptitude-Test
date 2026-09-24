@@ -30,6 +30,7 @@ from textbook_chapters_v2.cli import (
     _evidence_payload,
     _path_value,
     _prepare,
+    _prepare_field_media,
     _render,
     _render_dependency_fingerprint,
     _renders,
@@ -332,6 +333,24 @@ class WorkflowCliTests(unittest.TestCase):
             self.assertEqual(main(["prepare", "--config", str(self.config_path)]), 0)
         self.assertEqual(main(["extract", "--config", str(self.config_path)]), PENDING_VISION_EXIT)
         return self.work_root / "chapter-007"
+
+    def test_source_segments_strategy_builds_question_media_from_reviewed_crops(self) -> None:
+        raw = json.loads(self.config_path.read_text(encoding="utf-8"))
+        raw["question_media_strategy"] = "source_segments"
+        config = ChapterConfig.from_dict(raw)
+        original = self._media_evidence()[0]
+        evidence = replace(original, question_crops=original.question_crops[:2])
+
+        augmented, manifest = _prepare_field_media(config, evidence, self.root / "prepared")
+
+        self.assertEqual(
+            manifest["question"]["component_sha256s"],
+            [crop.sha256 for crop in evidence.question_crops],
+        )
+        self.assertEqual(len(manifest["question"]["crop_sha256s"]), 1)
+        combined = augmented.question_crops[-1]
+        self.assertEqual((combined.width, combined.height), (10, 25))
+        self.assertTrue(combined.path.is_file())
 
     def _package(self, path: Path, summary, candidate_sha256: str = "d" * 64) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)

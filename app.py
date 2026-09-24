@@ -37,7 +37,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Dict, List, Optional
 
 import bcrypt
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -1469,22 +1469,52 @@ def save_question_package(
     stimuli: List[Dict[str, Any]],
     package_name: str,
     format_version: int,
+    *,
+    replace_existing: bool = False,
 ) -> Dict[str, Any]:
     if format_version not in {2, 3}:
         raise HTTPException(400, "Question-bank packages must use format_version 2 or 3.")
     bank_asset_dir: Optional[Path] = None
+    new_bank = True
     try:
         with db() as connection:
-            if connection.execute("SELECT 1 FROM question_banks WHERE bank_name = ?", (bank_name,)).fetchone():
+            connection.execute("BEGIN IMMEDIATE")
+            existing = connection.execute(
+                "SELECT bank_id FROM question_banks WHERE bank_name = ?", (bank_name,)
+            ).fetchone()
+            if existing and not replace_existing:
                 raise HTTPException(409, "A question bank with this name already exists. Use a versioned bank_name.")
-            bank_id = connection.execute(
-                """INSERT INTO question_banks
-                   (bank_name, source_html_filename, answer_key_filename, imported_at, format_version)
-                   VALUES (?, ?, ?, ?, ?)""",
-                (bank_name, package_name, "manifest.json", now(), format_version),
-            ).lastrowid
+            if existing:
+                new_bank = False
+                bank_id = existing["bank_id"]
+                has_history = connection.execute(
+                    """SELECT 1 FROM responses r
+                       JOIN questions q ON q.question_id = r.question_id
+                       WHERE q.bank_id = ? LIMIT 1""",
+                    (bank_id,),
+                ).fetchone()
+                if has_history:
+                    raise HTTPException(
+                        409,
+                        "This bank has attempt history. Import a versioned bank to preserve those attempts.",
+                    )
+                connection.execute(
+                    """UPDATE question_banks
+                       SET source_html_filename = ?, imported_at = ?, format_version = ?
+                       WHERE bank_id = ?""",
+                    (package_name, now(), format_version, bank_id),
+                )
+                connection.execute("DELETE FROM stimuli WHERE bank_id = ?", (bank_id,))
+                connection.execute("UPDATE questions SET active = 0 WHERE bank_id = ?", (bank_id,))
+            else:
+                bank_id = connection.execute(
+                    """INSERT INTO question_banks
+                       (bank_name, source_html_filename, answer_key_filename, imported_at, format_version)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    (bank_name, package_name, "manifest.json", now(), format_version),
+                ).lastrowid
             bank_asset_dir = question_assets_dir() / str(bank_id)
-            bank_asset_dir.mkdir(parents=True, exist_ok=False)
+            bank_asset_dir.mkdir(parents=True, exist_ok=not new_bank)
             for stimulus in stimuli:
                 asset_filename = None
                 if stimulus["asset_bytes"] is not None:
@@ -1505,6 +1535,32 @@ def save_question_package(
                 stored_media = question_media.store_display_media(
                     question.get("display_media", {}), asset_dir=bank_asset_dir
                 )
+                if not new_bank:
+                    matches = connection.execute(
+                        "SELECT question_id FROM questions WHERE bank_id = ? AND source_key = ?",
+                        (bank_id, question["key"]),
+                    ).fetchall()
+                    if len(matches) > 1:
+                        raise HTTPException(409, "Existing bank has duplicate source keys; use a versioned bank.")
+                    if matches:
+                        connection.execute(
+                            """UPDATE questions SET
+                               question_text = ?, question_html = ?, category = ?, chapter = ?, stimulus_id = ?,
+                               difficulty = ?, option_a = ?, option_b = ?, option_c = ?, option_d = ?,
+                               options_json = ?, correct_answer = ?, explanation = ?, solution_steps = ?,
+                               option_explanations = ?, display_media_json = ?, active = 1
+                               WHERE question_id = ?""",
+                            (
+                                question["question_text"], question["question_html"], question["category"],
+                                question["chapter"], question["stimulus_id"], question["difficulty"],
+                                options["A"], options["B"], options["C"], options["D"], json.dumps(options),
+                                question["correct_answer"], question["explanation"],
+                                json.dumps(question["solution_steps"]),
+                                json.dumps(question["option_explanations"]), json.dumps(stored_media),
+                                matches[0]["question_id"],
+                            ),
+                        )
+                        continue
                 connection.execute(
                     """INSERT INTO questions
                        (source_key, question_text, question_html, category, chapter, stimulus_id, difficulty,
@@ -1528,7 +1584,7 @@ def save_question_package(
             "stimulus_count": len(stimuli),
         }
     except Exception:
-        if bank_asset_dir and bank_asset_dir.is_dir():
+        if new_bank and bank_asset_dir and bank_asset_dir.is_dir():
             shutil.rmtree(bank_asset_dir)
         raise
 
@@ -2997,6 +3053,7 @@ async def import_question_bank(
 async def import_question_bank_package(
     request: Request,
     package_file: UploadFile = File(...),
+    replace_existing: bool = Form(False),
 ) -> Dict[str, Any]:
     require_user(request, "admin")
     package_name = Path(package_file.filename or "").name
@@ -3008,7 +3065,10 @@ async def import_question_bank_package(
     if len(package_bytes) > MAX_PACKAGE_BYTES:
         raise HTTPException(413, "The compressed question-bank package must be under 50 MB.")
     bank_name, questions, stimuli, format_version = parse_question_package(io.BytesIO(package_bytes))
-    return save_question_package(bank_name, questions, stimuli, package_name, format_version)
+    return save_question_package(
+        bank_name, questions, stimuli, package_name, format_version,
+        replace_existing=replace_existing,
+    )
 
 
 @app.post("/api/admin/question-banks/import-from-folder")

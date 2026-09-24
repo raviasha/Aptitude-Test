@@ -371,7 +371,15 @@ def _combined_segment(
 
 
 def _prepare_field_media(config: ChapterConfig, evidence: RecordEvidence, chapter_root: Path) -> tuple[RecordEvidence, dict[str, Any]]:
-    configured = _field_specs(config, evidence.question_number)
+    configured = dict(_field_specs(config, evidence.question_number))
+    strategy = config.extras.get("question_media_strategy")
+    if strategy not in (None, "source_segments"):
+        raise PipelineBlocked("Unknown question_media_strategy.")
+    if strategy == "source_segments" and "question" not in configured:
+        configured["question"] = [
+            {"role": "question", "source_index": index}
+            for index in range(len(evidence.question_crops))
+        ]
     output_dir = chapter_root / "field-media" / f"q{evidence.question_number:04d}"
     manifest: dict[str, Any] = {}
     extra_question: list[SourceCrop] = []

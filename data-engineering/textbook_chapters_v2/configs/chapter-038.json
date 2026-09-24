@@ -15,6 +15,7 @@
   ],
   "render_workers": 2,
   "field_media": {},
+  "question_media_strategy": "source_segments",
   "chapter": 38,
   "chapter_name": "Pie Chart",
   "bank_name": "R. S. Aggarwal - Chapter 38: Pie Chart (all-vision text-only)",

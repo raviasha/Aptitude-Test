@@ -562,6 +562,33 @@ class DistributedSubmissionTests(unittest.TestCase):
         self.assertEqual(2, self.count("responses"))
         self.assertEqual(4, self.count("exam_violations"))
 
+    def test_submission_cause_is_audited_without_counting_as_a_violation(self):
+        event = IntegrityEvent(
+            event_type="submission_manual_confirmed",
+            occurred_at=self.started_at + timedelta(seconds=10),
+        )
+        first = self.submit(self.bundle(events=(event,)))
+        second = self.submit(self.bundle(events=(event,)))
+
+        self.assertEqual(200, first.status_code, first.text)
+        self.assertEqual(first.json(), second.json())
+        self.assertEqual(0, first.json()["violations"])
+        with app.db() as connection:
+            cause = connection.execute(
+                "SELECT submission_cause FROM attempts WHERE attempt_id=?",
+                (self.attempt_id,),
+            ).fetchone()[0]
+        self.assertEqual("manual_confirmed", cause)
+
+    def test_legacy_bundle_without_cause_is_reported_as_sealed_recovery(self):
+        response = self.submit(self.bundle())
+
+        self.assertEqual(200, response.status_code, response.text)
+        self.assertEqual(0, response.json()["violations"])
+        with app.db() as connection:
+            result = app.result_for_attempt(connection, self.attempt_id)
+        self.assertEqual("sealed_recovery", result["attempt"]["submission_cause"])
+
     def test_submission_requires_active_matching_device_request_proof(self):
         signed = self.bundle()
         body = canonical_json(signed)

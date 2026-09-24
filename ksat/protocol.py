@@ -742,6 +742,9 @@ class IntegrityEvent(ProtocolModel):
     occurred_at: datetime
 
 
+SubmissionCause = Literal["manual_confirmed", "timer_expired", "sealed_recovery"]
+
+
 class ResponseBundle(ProtocolModel):
     protocol_version: int = PROTOCOL_VERSION
     ticket: SignedAttemptTicket

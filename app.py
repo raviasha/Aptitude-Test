@@ -34,7 +34,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
 from pathlib import Path, PurePosixPath
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 import bcrypt
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -306,6 +306,7 @@ class AnswerPayload(BaseModel):
 
 class SubmitPayload(BaseModel):
     confirmed: bool = False
+    cause: Literal["manual_confirmed"] = "manual_confirmed"
 
 
 class DurationExtensionPayload(BaseModel):
@@ -1686,7 +1687,12 @@ def ensure_faculty_deadline(connection: sqlite3.Connection, attempt: sqlite3.Row
     return attempt
 
 
-def finalize_attempt(connection: sqlite3.Connection, attempt_id: str) -> sqlite3.Row:
+def finalize_attempt(
+    connection: sqlite3.Connection,
+    attempt_id: str,
+    *,
+    submission_cause: str = "manual_confirmed",
+) -> sqlite3.Row:
     attempt = get_attempt(connection, attempt_id)
     if attempt["status"] == "submitted":
         return attempt
@@ -1715,8 +1721,8 @@ def finalize_attempt(connection: sqlite3.Connection, attempt_id: str) -> sqlite3
     percentage = round(correct / total * 100, 1) if total else 0
     connection.execute(
         """UPDATE attempts SET submitted_at = ?, status = 'submitted', attempted = ?,
-                  correct = ?, score = ?, percentage = ? WHERE attempt_id = ?""",
-        (now(), attempted, correct, correct, percentage, attempt_id),
+                  correct = ?, score = ?, percentage = ?, submission_cause=? WHERE attempt_id = ?""",
+        (now(), attempted, correct, correct, percentage, submission_cause, attempt_id),
     )
     return get_attempt(connection, attempt_id)
 
@@ -1727,7 +1733,7 @@ def expire_attempt_if_needed(connection: sqlite3.Connection, attempt: sqlite3.Ro
         and attempt["status"] == "in_progress"
         and seconds_remaining(attempt) == 0
     ):
-        return finalize_attempt(connection, attempt["attempt_id"])
+        return finalize_attempt(connection, attempt["attempt_id"], submission_cause="timer_expired")
     return attempt
 
 
@@ -1739,7 +1745,7 @@ def finalize_expired_attempts(connection: sqlite3.Connection) -> int:
         (now(),),
     ).fetchall()
     for attempt in expired:
-        finalize_attempt(connection, attempt["attempt_id"])
+        finalize_attempt(connection, attempt["attempt_id"], submission_cause="timer_expired")
     return len(expired)
 
 
@@ -2628,7 +2634,7 @@ def submit_attempt(attempt_id: str, payload: SubmitPayload, request: Request) ->
         unanswered = connection.execute("SELECT COUNT(*) AS count FROM responses WHERE attempt_id = ? AND selected_answer IS NULL", (attempt_id,)).fetchone()["count"]
         if unanswered and not payload.confirmed:
             return {"requires_confirmation": True, "unanswered": unanswered, "attempted": attempt["total_questions"] - unanswered}
-        finalize_attempt(connection, attempt_id)
+        finalize_attempt(connection, attempt_id, submission_cause=payload.cause)
         return result_for_attempt(connection, attempt_id)
 
 
@@ -3744,7 +3750,7 @@ def export_results(request: Request) -> StreamingResponse:
     require_user(request, "admin")
     with db() as connection:
         result = connection.execute(
-            """SELECT a.attempt_id, s.student_id, s.name, t.test_name, a.submitted_at, a.score, a.total_questions, a.percentage,
+            """SELECT a.attempt_id, s.student_id, s.name, t.test_name, a.submitted_at, a.submission_cause, a.score, a.total_questions, a.percentage,
                  ROUND(AVG(CASE WHEN r.category = 'Quantitative Aptitude' THEN r.correct END) * 100, 1) AS quantitative,
                  ROUND(AVG(CASE WHEN r.category = 'Logical Reasoning' THEN r.correct END) * 100, 1) AS logical,
                  ROUND(AVG(CASE WHEN r.category = 'Data Interpretation' THEN r.correct END) * 100, 1) AS data_interpretation,
@@ -3768,7 +3774,7 @@ def export_results(request: Request) -> StreamingResponse:
             for violation in violation_rows:
                 violations_by_attempt.setdefault(violation["attempt_id"], []).append(violation)
     output = io.StringIO()
-    writer = csv.DictWriter(output, fieldnames=["Student ID", "Student Name", "Test", "Date", "Overall Score", "Total Questions", "Percentage", "Quantitative", "Logical Reasoning", "Data Interpretation", "Verbal Ability", "Coding", "Violation Count", "Violations"])
+    writer = csv.DictWriter(output, fieldnames=["Student ID", "Student Name", "Test", "Date", "Submission Cause", "Overall Score", "Total Questions", "Percentage", "Quantitative", "Logical Reasoning", "Data Interpretation", "Verbal Ability", "Coding", "Violation Count", "Violations"])
     writer.writeheader()
     for item in result:
         incidents = [
@@ -3782,7 +3788,7 @@ def export_results(request: Request) -> StreamingResponse:
             for incident in incidents
             for detail in incident["details"]
         )
-        writer.writerow({"Student ID": item["student_id"], "Student Name": item["name"], "Test": item["test_name"], "Date": item["submitted_at"], "Overall Score": item["score"], "Total Questions": item["total_questions"], "Percentage": item["percentage"], "Quantitative": item["quantitative"], "Logical Reasoning": item["logical"], "Data Interpretation": item["data_interpretation"], "Verbal Ability": item["verbal"], "Coding": item["coding"], "Violation Count": sum(len(incident["details"]) for incident in incidents), "Violations": violation_details})
+        writer.writerow({"Student ID": item["student_id"], "Student Name": item["name"], "Test": item["test_name"], "Date": item["submitted_at"], "Submission Cause": item["submission_cause"] or "sealed_recovery", "Overall Score": item["score"], "Total Questions": item["total_questions"], "Percentage": item["percentage"], "Quantitative": item["quantitative"], "Logical Reasoning": item["logical"], "Data Interpretation": item["data_interpretation"], "Verbal Ability": item["verbal"], "Coding": item["coding"], "Violation Count": sum(len(incident["details"]) for incident in incidents), "Violations": violation_details})
     return StreamingResponse(iter([output.getvalue()]), media_type="text/csv", headers={"Content-Disposition": "attachment; filename=aptitude-results.csv"})
 
 

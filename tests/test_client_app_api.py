@@ -108,6 +108,7 @@ class FakeRuntime:
         self.start_calls = []
         self.position_calls = []
         self.seal_count = 0
+        self.submit_causes = []
         self.review_calls = []
         self.expire_on_snapshot = False
         self.questions = {
@@ -188,7 +189,8 @@ class FakeRuntime:
         self.store.snapshot.current_question_id = question_id
         return self.store.snapshot
 
-    def submit(self):
+    def submit(self, *, cause=None):
+        self.submit_causes.append(cause)
         if self.store.snapshot.state == "in_progress":
             self.event_log.append("seal")
             self.seal_count += 1
@@ -707,7 +709,7 @@ class ClientAppApiTests(unittest.TestCase):
         self.events.clear()
         response = self.client.post(
             f"/api/attempts/{ATTEMPT_ID}/submit",
-            json={"confirmed": True},
+            json={"confirmed": True, "cause": "manual_confirmed"},
             headers=self.mutation_headers,
         )
         self.assertEqual(202, response.status_code)
@@ -717,10 +719,21 @@ class ClientAppApiTests(unittest.TestCase):
             response.json()["message"],
         )
         self.assertEqual(["seal", "wake"], self.events)
+        self.assertEqual(["manual_confirmed"], self.runtime.submit_causes)
         self.assertEqual([], self.coordinator.calls)
+
+    def test_submit_rejects_any_browser_selected_nonmanual_cause(self):
+        response = self.client.post(
+            f"/api/attempts/{ATTEMPT_ID}/submit",
+            json={"confirmed": True, "cause": "timer_expired"},
+            headers=self.mutation_headers,
+        )
+
+        self.assertEqual(422, response.status_code)
+        self.assertEqual([], self.runtime.submit_causes)
         duplicate = self.client.post(
             f"/api/attempts/{ATTEMPT_ID}/submit",
-            json={"confirmed": True},
+            json={"confirmed": True, "cause": "manual_confirmed"},
             headers=self.mutation_headers,
         )
         self.assertEqual(202, duplicate.status_code)

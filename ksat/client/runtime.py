@@ -21,6 +21,7 @@ from pydantic import ValidationError
 from ksat.client.identity import DeviceIdentity
 from ksat.client.store import AttemptSealedError, ClientStore, LocalAttemptRecord
 from ksat.crypto import decrypt_pack, sha256_hex, sign_json, verify_json
+from ksat.integrity import count_integrity_violations
 from ksat.protocol import (
     AssessmentReview,
     AssessmentReviewGrant,
@@ -38,6 +39,7 @@ from ksat.protocol import (
     ResponseBundle,
     ResponseEntry,
     SignedResponseBundle,
+    SubmissionCause,
     SealedAssessmentReviewGrant,
     canonical_json,
     deterministic_question_order,
@@ -351,7 +353,7 @@ class AssessmentRuntime:
                 anchor_monotonic=resumed_monotonic,
             )
             if safe_remaining == 0:
-                return self._seal(record)
+                return self._seal(record, cause="timer_expired")
             return self._snapshot_record(record, remaining=safe_remaining)
 
     def answer(self, question_id: int, selected_answer: str | None) -> AttemptSnapshot:
@@ -366,7 +368,7 @@ class AssessmentRuntime:
                 raise ValueError("Selected answer is not an option for this question.")
             remaining = self._remaining()
             if remaining == 0:
-                self._seal(record)
+                self._seal(record, cause="timer_expired")
                 raise AttemptSealedError("The assessment time has expired.")
             now = self._trusted_now(record)
             self.store.save_answer_checkpoint(
@@ -389,7 +391,7 @@ class AssessmentRuntime:
                 raise ValueError("Question is not part of this assessment release.")
             remaining = self._remaining()
             if remaining == 0:
-                self._seal(record)
+                self._seal(record, cause="timer_expired")
                 raise AttemptSealedError("The assessment time has expired.")
             now = self._trusted_now(record)
             self.store.update_timer_checkpoint(
@@ -406,7 +408,7 @@ class AssessmentRuntime:
                 raise AttemptSealedError("The attempt is sealed and cannot be changed.")
             remaining = self._remaining()
             if remaining == 0:
-                return self._seal(record)
+                return self._seal(record, cause="timer_expired")
             occurred_at = self._trusted_now(record)
             self.store.update_timer_checkpoint(
                 record.attempt_id, remaining, last_wall_time=occurred_at
@@ -470,7 +472,7 @@ class AssessmentRuntime:
                 self._check_browser_monitor(record)
                 remaining = self._remaining()
                 if remaining == 0:
-                    return self._seal(record)
+                    return self._seal(record, cause="timer_expired")
                 if self._checkpoint_due():
                     now = self._trusted_now(record)
                     self.store.update_timer_checkpoint(
@@ -484,12 +486,14 @@ class AssessmentRuntime:
     def tick(self) -> AttemptSnapshot:
         return self.snapshot()
 
-    def submit(self) -> AttemptSnapshot:
+    def submit(self, *, cause: SubmissionCause = "manual_confirmed") -> AttemptSnapshot:
         with self._lock:
             record = self._current_record()
             if record.state != "in_progress":
                 return self._snapshot_record(record)
-            return self._seal(record)
+            if cause != "manual_confirmed":
+                raise ValueError("Manual submission cause is invalid.")
+            return self._seal(record, cause=cause)
 
     def dismiss_completed_attempt(self) -> bool:
         """Remove an acknowledged attempt from the active view without deleting its record."""
@@ -567,7 +571,7 @@ class AssessmentRuntime:
                     record.attempt_id, "browser_monitor_restarted", occurred_at=self._trusted_now(record)
                 )
             if safe_remaining == 0:
-                return self._seal(record)
+                return self._seal(record, cause="timer_expired")
             return self._snapshot_record(record, remaining=safe_remaining)
 
     def apply_deadline_update(
@@ -607,7 +611,7 @@ class AssessmentRuntime:
                 return self.snapshot()
             remaining = self._remaining()
             if remaining == 0:
-                return self._seal(record)
+                return self._seal(record, cause="timer_expired")
             trusted_now = self._trusted_now(record)
             updated = self.store.apply_deadline_update(
                 record.attempt_id,
@@ -999,11 +1003,11 @@ class AssessmentRuntime:
             question_order=record.question_order,
             responses=dict(record.responses),
             remaining_seconds=record.remaining_seconds if remaining is None else remaining,
-            violations=len(self.store.integrity_events(record.attempt_id)),
+            violations=count_integrity_violations(self.store.integrity_events(record.attempt_id)),
             current_question_id=record.current_question_id,
         )
 
-    def _seal(self, record: LocalAttemptRecord) -> AttemptSnapshot:
+    def _seal(self, record: LocalAttemptRecord, *, cause: SubmissionCause) -> AttemptSnapshot:
         latest = self.store.load_attempt(record.attempt_id)
         if latest.state != "in_progress":
             return self._snapshot_record(latest)
@@ -1019,6 +1023,15 @@ class AssessmentRuntime:
         sealed_at = self._trusted_now(latest)
         if remaining == 0:
             sealed_at = latest.deadline
+        cause_codes = {"submission_manual_confirmed", "submission_timer_expired"}
+        events = self.store.integrity_events(latest.attempt_id)
+        if not any(event.event_type in cause_codes for event in events):
+            self.store.record_integrity_event(
+                latest.attempt_id,
+                f"submission_{cause}",
+                occurred_at=sealed_at,
+            )
+            latest = self.store.load_attempt(latest.attempt_id)
         responses = [
             ResponseEntry(
                 question_id=question_id,

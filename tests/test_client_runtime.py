@@ -965,7 +965,10 @@ class ClientRuntimeTests(unittest.TestCase):
         self.clock.advance(1800)
         self.runtime.submit()
         events = self.store.pending_submissions()[0].bundle.bundle.integrity_events
-        self.assertEqual(["browser_monitor_gap", "browser_monitor_gap"], [e.event_type for e in events])
+        self.assertEqual(
+            ["browser_monitor_gap", "browser_monitor_gap", "submission_manual_confirmed"],
+            [e.event_type for e in events],
+        )
         self.assertLessEqual(events[-1].occurred_at, self.store.load_attempt(started.attempt_id).deadline)
 
     def test_monitor_restart_during_active_exam_is_recorded_but_repeated_recover_is_not(self):
@@ -993,6 +996,23 @@ class ClientRuntimeTests(unittest.TestCase):
         )
         self.assertEqual(bundle.bundle.sealed_at, STARTED + timedelta(minutes=30))
         verify_json(self.device_public, bundle.bundle, bundle.device_signature_b64)
+        self.assertIn(
+            "submission_timer_expired",
+            [event.event_type for event in bundle.bundle.integrity_events],
+        )
+
+    def test_manual_submit_records_signed_non_violation_cause(self):
+        self._prepare_and_start()
+
+        sealed = self.runtime.submit(cause="manual_confirmed")
+        [pending] = self.store.pending_submissions()
+
+        self.assertEqual("sealed_pending", sealed.state)
+        self.assertIn(
+            "submission_manual_confirmed",
+            [event.event_type for event in pending.bundle.bundle.integrity_events],
+        )
+        self.assertEqual(0, sealed.violations)
 
     def test_manual_submit_and_reopen_preserve_one_immutable_outbox(self):
         self._prepare_and_start()

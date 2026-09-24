@@ -16,6 +16,8 @@ class Element {
     this.value = '';
     this.copy = '';
     this.classList = { add() {} };
+    this.open = false;
+    this.focused = false;
   }
   get textContent() { return this.copy + this.children.map(child => child.textContent).join(' '); }
   set textContent(value) { this.copy = String(value); this.children = []; }
@@ -24,7 +26,9 @@ class Element {
   removeChild(child) { this.children.splice(this.children.indexOf(child), 1); }
   addEventListener(name, listener) { this.listeners.set(name, listener); }
   setAttribute() {}
-  focus() {}
+  focus() { this.focused = true; }
+  showModal() { this.open = true; }
+  close() { this.open = false; }
   querySelectorAll(selector) {
     const descendants = this.children.flatMap(child => [child, ...child.querySelectorAll('*')]);
     if (selector === 'button[data-answer]') {
@@ -173,6 +177,33 @@ async function boot(initialState = 'waiting_or_ready', routes = {}, savedStorage
 }
 
 const scenarios = {
+  async manual_submission_requires_explicit_dialog_confirmation() {
+    const page = await boot('waiting_or_ready', {
+      [`/api/attempts/${attempt.attempt_id}/submit`]: () => ({ ...attempt, state: 'sealed_pending' }),
+    });
+    await page.click('Start');
+    await page.elements.get('submit-attempt').listeners.get('click')();
+    const dialog = page.elements.get('submit-confirmation');
+    assert.equal(dialog.open, true);
+    assert.equal(page.elements.get('answered-count').textContent, '0');
+    assert.equal(page.elements.get('unanswered-count').textContent, '1');
+    assert.equal(page.elements.get('continue-assessment').focused, true);
+    assert.equal(page.calls.filter(call => call.path.endsWith('/submit')).length, 0);
+
+    dialog.listeners.get('cancel')({ preventDefault() {} });
+    assert.equal(dialog.open, false, 'Escape/cancel must return to the assessment');
+    await page.elements.get('submit-attempt').listeners.get('click')();
+    const confirm = page.elements.get('confirm-submit');
+    const first = confirm.listeners.get('click')();
+    const second = confirm.listeners.get('click')();
+    await Promise.all([first, second]);
+    const calls = page.calls.filter(call => call.path.endsWith('/submit'));
+    assert.equal(calls.length, 1, 'double activation must create one submission');
+    assert.deepEqual(JSON.parse(calls[0].options.body), {
+      confirmed: true,
+      cause: 'manual_confirmed',
+    });
+  },
   async context_menu_is_blocked_without_an_integrity_event() {
     const page = await boot();
     await page.click('Start');
@@ -263,7 +294,8 @@ const scenarios = {
     page.handlers[`/api/attempts/${attempt.attempt_id}`] = () => poll.promise;
     await page.tick(1000);
     await page.emit('document', 'copy');
-    const submitted = page.elements.get('submit-attempt').listeners.get('click')();
+    page.elements.get('submit-attempt').listeners.get('click')();
+    const submitted = page.elements.get('confirm-submit').listeners.get('click')();
     await page.flush();
     assert.equal(page.calls.filter(c => c.path.endsWith('/submit')).length, 0);
     poll.resolve(attempt);

@@ -54,6 +54,8 @@ DEFINITIONS = {
         _definition("shortcut_p", "Print shortcut blocked", "The client blocked the print keyboard shortcut while the assessment was active.", "blocked_action"),
         _definition("shortcut_s", "Save shortcut blocked", "The client blocked the save keyboard shortcut while the assessment was active.", "blocked_action"),
         _definition("context_menu", "Blocked browser menu request (informational)", "The client blocked a right-click or equivalent browser menu request. This historical event is informational and is not counted as a violation.", "blocked_action", counts_as_violation=False),
+        _definition("submission_manual_confirmed", "Submission confirmed by student", "The student used the separate confirmation control to submit the assessment.", "monitoring_anomaly", counts_as_violation=False),
+        _definition("submission_timer_expired", "Submitted when time expired", "The assessment was sealed automatically when its trusted timer reached zero.", "monitoring_anomaly", counts_as_violation=False),
     )
 }
 
@@ -63,7 +65,8 @@ ALIASES = {
 }
 
 CLIENT_EMITTED_CODES = frozenset(
-    code for code in DEFINITIONS if code != "context_menu"
+    code for code in DEFINITIONS
+    if code not in {"context_menu", "submission_manual_confirmed", "submission_timer_expired"}
 )
 
 _UNKNOWN = IntegrityDefinition(

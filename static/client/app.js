@@ -235,6 +235,11 @@ if (typeof document !== 'undefined') {
     timer: document.getElementById('timer'),
     gate: document.getElementById('fullscreen-gate'),
     enterFullscreen: document.getElementById('enter-fullscreen'),
+    submitConfirmation: document.getElementById('submit-confirmation'),
+    answeredCount: document.getElementById('answered-count'),
+    unansweredCount: document.getElementById('unanswered-count'),
+    continueAssessment: document.getElementById('continue-assessment'),
+    confirmSubmit: document.getElementById('confirm-submit'),
     announcer: document.getElementById('announcer'),
     errorAnnouncer: document.getElementById('error-announcer'),
     rightsNotice: document.getElementById('rights-notice'),
@@ -266,6 +271,7 @@ if (typeof document !== 'undefined') {
     integrityStorageFailed: false,
     integrityTimer: null,
     submitting: false,
+    confirmingSubmission: false,
   };
 
   async function request(path, options = {}) {
@@ -807,6 +813,8 @@ if (typeof document !== 'undefined') {
     if (canEdit(attempt.state)) initializeIntegrity(attempt.attempt_id);
     setSafeText(elements.timer, formatTime(attempt.remaining_seconds));
     if (!canEdit(attempt.state)) {
+      ui.confirmingSubmission = false;
+      if (elements.submitConfirmation.open) elements.submitConfirmation.close();
       ui.integrityArmed = false;
       if (ui.integrityTimer !== null) window.clearInterval(ui.integrityTimer);
       ui.integrityTimer = null;
@@ -1344,9 +1352,27 @@ if (typeof document !== 'undefined') {
       persistPosition(ui.questionIndex + 1);
     }
   });
-  elements.submit.addEventListener('click', async () => {
+  function closeSubmissionConfirmation() {
+    ui.confirmingSubmission = false;
+    if (elements.submitConfirmation.open) elements.submitConfirmation.close();
+  }
+
+  function requestManualSubmission() {
+    if (!ui.attempt || !canEdit(ui.state) || ui.submitting || ui.confirmingSubmission
+        || ui.saving || ui.positionSaving) return;
+    const answered = Object.values(ui.attempt.responses || {}).filter(value => value !== null).length;
+    const unanswered = Math.max(0, ui.attempt.questions.length - answered);
+    setSafeText(elements.answeredCount, answered);
+    setSafeText(elements.unansweredCount, unanswered);
+    ui.confirmingSubmission = true;
+    elements.submitConfirmation.showModal();
+    elements.continueAssessment.focus();
+  }
+
+  async function submitAttempt(cause) {
     if (!ui.attempt || !canEdit(ui.state) || ui.submitting || ui.saving || ui.positionSaving) return;
     ui.submitting = true;
+    closeSubmissionConfirmation();
     disableExamControls();
     try {
       checkIntegrityState();
@@ -1357,7 +1383,7 @@ if (typeof document !== 'undefined') {
       }
       ui.state = 'sealed_pending';
       const sealed = await request(`/api/attempts/${encodeURIComponent(ui.attempt.attempt_id)}/submit`, {
-        method: 'POST', body: JSON.stringify({ confirmed: true }),
+        method: 'POST', body: JSON.stringify({ confirmed: true, cause }),
       });
       renderAttempt(sealed);
     } catch (error) {
@@ -1367,7 +1393,15 @@ if (typeof document !== 'undefined') {
       ui.submitting = false;
       if (canEdit(ui.state)) renderAttempt(ui.attempt);
     }
+  }
+
+  elements.submit.addEventListener('click', requestManualSubmission);
+  elements.continueAssessment.addEventListener('click', closeSubmissionConfirmation);
+  elements.submitConfirmation.addEventListener('cancel', (event) => {
+    event.preventDefault();
+    closeSubmissionConfirmation();
   });
+  elements.confirmSubmit.addEventListener('click', () => submitAttempt('manual_confirmed'));
   elements.enterFullscreen.addEventListener('click', async () => {
     await enterFullscreen();
     if (ui.attempt) renderAttempt(ui.attempt);

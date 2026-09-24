@@ -145,6 +145,14 @@ class ClientStoreTests(unittest.TestCase):
         self.assertEqual(self.receipt, acknowledged.receipt)
         self.assertEqual([], self.store.pending_submissions())
 
+    def test_legacy_sealed_bundle_has_derived_recovery_submission_cause(self):
+        self._cache_and_create()
+        self.store.save_answer(self.attempt_id, 3, "B", saved_at=self.now)
+        self.store.record_integrity_event(self.attempt_id, "focus_lost", occurred_at=self.now)
+        self.store.seal_attempt(self.attempt_id, self._bundle(), sealed_at=self.deadline)
+
+        self.assertEqual("sealed_recovery", self.store.submission_cause(self.attempt_id))
+
     def test_close_and_reopen_preserves_every_lifecycle_stage(self):
         self._cache_and_create()
         self.store.save_answer(self.attempt_id, 3, "B", saved_at=self.now)

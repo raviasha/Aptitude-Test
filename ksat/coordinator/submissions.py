@@ -248,6 +248,17 @@ def _problem(code: str, message: str) -> SubmissionProblem:
     return SubmissionProblem(code, message)
 
 
+def _submission_cause(events: tuple[IntegrityEvent, ...]) -> str:
+    mapping = {
+        "submission_manual_confirmed": "manual_confirmed",
+        "submission_timer_expired": "timer_expired",
+    }
+    causes = [mapping[event.event_type] for event in events if event.event_type in mapping]
+    if len(causes) > 1:
+        raise _problem("invalid_submission_cause", "The submission contains conflicting cause records.")
+    return causes[0] if causes else "sealed_recovery"
+
+
 def _utc(value: datetime, *, code: str = "invalid_timestamp") -> datetime:
     if not isinstance(value, datetime) or value.tzinfo is None:
         raise _problem(code, "Submission timestamps must include a time zone.")
@@ -762,10 +773,11 @@ class SubmissionWriter:
             percentage=scored.percentage,
             violations=count_integrity_violations(scored.violations),
         )
+        submission_cause = _submission_cause(scored.violations)
         updated = connection.execute(
             """UPDATE attempts
                SET submitted_at=?, status='submitted', attempted=?, correct=?, score=?,
-                   percentage=?, sealed_at=?, submission_hash=?
+                   percentage=?, sealed_at=?, submission_hash=?, submission_cause=?
                WHERE attempt_id=? AND status='in_progress'""",
             (
                 accepted_at.isoformat(timespec="seconds"),
@@ -775,6 +787,7 @@ class SubmissionWriter:
                 scored.percentage,
                 scored.sealed_at,
                 scored.bundle_hash,
+                submission_cause,
                 scored.attempt_id,
             ),
         )

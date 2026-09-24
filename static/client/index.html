@@ -55,6 +55,21 @@
     </div>
   </div>
 
+  <dialog id="submit-confirmation" aria-labelledby="submit-confirmation-title">
+    <form method="dialog" class="panel submit-confirmation-card">
+      <h2 id="submit-confirmation-title">Submit this assessment?</h2>
+      <p>After submission, you cannot change your answers.</p>
+      <dl class="submission-counts">
+        <div><dt>Answered</dt><dd id="answered-count">0</dd></div>
+        <div><dt>Unanswered</dt><dd id="unanswered-count">0</dd></div>
+      </dl>
+      <div class="dialog-actions">
+        <button id="continue-assessment" type="button">Continue assessment</button>
+        <button id="confirm-submit" type="button" class="danger">Submit assessment</button>
+      </div>
+    </form>
+  </dialog>
+
   <div id="announcer" class="sr-only" role="status" aria-live="polite"></div>
   <div id="error-announcer" class="sr-only" role="alert" aria-live="assertive"></div>
 </body>

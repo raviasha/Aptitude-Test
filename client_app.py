@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import wraps
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Literal, Mapping, Sequence
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Request
@@ -120,6 +120,11 @@ class PrefetchBody(_StrictBody):
 
 class ConfirmBody(_StrictBody):
     confirmed: bool
+
+
+class SubmissionConfirmBody(_StrictBody):
+    confirmed: bool
+    cause: Literal["manual_confirmed"]
 
 
 class AnswerBody(_StrictBody):
@@ -2375,12 +2380,12 @@ def create_client_app(services: ClientServices | None = None) -> FastAPI:
         return {"state": snapshot.state, "violations": snapshot.violations}
 
     @app.post("/api/attempts/{attempt_id}/submit", status_code=202)
-    async def submit(attempt_id: str, body: ConfirmBody):
+    async def submit(attempt_id: str, body: SubmissionConfirmBody):
         require_attempt(attempt_id)
         if not body.confirmed:
             raise ClientApiProblem("confirmation_required", "Submit confirmation is required.", 422)
         current = require_services()
-        snapshot = context.observe_snapshot(current.runtime.submit())
+        snapshot = context.observe_snapshot(current.runtime.submit(cause=body.cause))
         if snapshot.attempt_id != attempt_id:
             raise ClientApiProblem("attempt_mismatch", "The requested attempt is not active.", 409)
         return _attempt_payload(context, snapshot, include_questions=False)

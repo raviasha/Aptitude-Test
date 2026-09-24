@@ -22,11 +22,13 @@ from typing import Callable, Iterator, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
+from ksat.integrity import count_integrity_violations
 from ksat.protocol import (
     IntegrityEvent,
     SignedAttemptTicket,
     SignedAttemptDeadlineUpdate,
     SignedResponseBundle,
+    SubmissionCause,
     SubmissionReceipt,
     canonical_json,
 )
@@ -330,7 +332,7 @@ def _validate_receipt_for_sealed_attempt(
         receipt.total_questions != len(question_order)
         or receipt.attempted
         != sum(item.selected_answer is not None for item in bundle.bundle.responses)
-        or receipt.violations != len(bundle.bundle.integrity_events)
+        or receipt.violations != count_integrity_violations(bundle.bundle.integrity_events)
     ):
         raise ValueError(message)
 
@@ -1762,6 +1764,35 @@ class ClientStore:
             )
         except (ValidationError, ValueError) as error:
             raise ValueError("Stored integrity event is invalid.") from error
+
+    def submission_cause(self, attempt_id: str) -> SubmissionCause | None:
+        """Derive the auditable cause without changing an immutable sealed bundle."""
+        with self._read_transaction() as connection:
+            row = connection.execute(
+                "SELECT sealed_bundle_json FROM local_attempts WHERE attempt_id=?",
+                (attempt_id,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(f"Unknown local attempt: {attempt_id}")
+        if row["sealed_bundle_json"] is None:
+            return None
+        bundle = _stored_model(
+            row["sealed_bundle_json"],
+            SignedResponseBundle,
+            "Stored submission bundle is invalid.",
+        )
+        mapping = {
+            "submission_manual_confirmed": "manual_confirmed",
+            "submission_timer_expired": "timer_expired",
+        }
+        causes = [
+            mapping[event.event_type]
+            for event in bundle.bundle.integrity_events
+            if event.event_type in mapping
+        ]
+        if len(causes) > 1:
+            raise ValueError("Stored submission bundle has conflicting cause records.")
+        return causes[0] if causes else "sealed_recovery"
 
     def update_timer_checkpoint(
         self,

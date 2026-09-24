@@ -24,6 +24,7 @@ from .models import (
     RuleProposal,
     VerificationResult,
 )
+from .maintenance import KNOWN_FAILURE_STAGES
 from .rules import POLICY_VERSION
 from .store import canonical_json, dependency_fingerprint
 
@@ -71,6 +72,10 @@ def _approval_dependencies(record: AuditRecord) -> dict[str, Any]:
         "verifier_schema_version": record.verifier_schema_version,
         "renderer_version": record.renderer_version,
         "application_asset_version": record.application_asset_version,
+        "category_rule_version": record.category_rule_version,
+        "provenance": record.provenance,
+        "baseline_archive_sha256": record.baseline_archive_sha256,
+        "baseline_record_sha256": record.baseline_record_sha256,
     }
 
 
@@ -94,6 +99,10 @@ def _record_payload(record: AuditRecord) -> dict[str, Any]:
         "verifier_schema_version": record.verifier_schema_version,
         "renderer_version": record.renderer_version,
         "application_asset_version": record.application_asset_version,
+        "category_rule_version": record.category_rule_version,
+        "provenance": record.provenance,
+        "baseline_archive_sha256": record.baseline_archive_sha256,
+        "baseline_record_sha256": record.baseline_record_sha256,
         "reviewer": record.reviewer,
         "rejection_reason": record.rejection_reason,
         "dependency_fingerprint": record.dependency_fingerprint,
@@ -273,6 +282,7 @@ class AuditLedger:
             raise ValueError("Audit ledger chapter path escapes its work root.") from error
         self.path = self.chapter_root / "audit-ledger.json"
         self._records: dict[int, AuditRecord] = {}
+        self._issues: list[dict[str, Any]] = []
         if self.path.exists():
             self._load()
 
@@ -297,6 +307,10 @@ class AuditLedger:
         if declared_chapter != self.chapter or chapters - {self.chapter}:
             raise PipelineBlocked("Audit ledger contains inconsistent chapter records.")
         self._records = loaded
+        issues = payload.get("issues", [])
+        if not isinstance(issues, list) or any(not isinstance(item, dict) for item in issues):
+            raise PipelineBlocked("Audit ledger issues must be a JSON list of objects.")
+        self._issues = [dict(item) for item in issues]
 
     def _persist(self) -> None:
         _atomic_write(
@@ -305,6 +319,7 @@ class AuditLedger:
                 "schema_version": AUDIT_SCHEMA_VERSION,
                 "chapter": self.chapter,
                 "records": [_record_payload(self._records[number]) for number in sorted(self._records)],
+                "issues": list(self._issues),
             },
         )
 
@@ -313,6 +328,58 @@ class AuditLedger:
             return self._records[question_number]
         except KeyError as error:
             raise KeyError(f"No audit record for question {question_number}.") from error
+
+    @property
+    def issue_events(self) -> tuple[Mapping[str, Any], ...]:
+        return tuple(MappingProxyType(dict(item)) for item in self._issues)
+
+    def record_issue_event(self, event: Mapping[str, Any]) -> None:
+        """Persist one idempotent issue diagnosis alongside chapter audit records."""
+        if not isinstance(event, Mapping):
+            raise TypeError("issue event must be a mapping")
+        required = {
+            "issue_id", "stage", "source_keys", "old_categories", "new_categories",
+            "rule_version", "dependency_tags", "evidence_hashes", "affected_records",
+            "root_cause", "fix", "outcome",
+        }
+        if set(event) != required:
+            raise PipelineBlocked("Audit issue event fields are missing or unknown.")
+        issue_id = event["issue_id"]
+        if not isinstance(issue_id, str) or re.fullmatch(r"[a-z0-9][a-z0-9-]*", issue_id) is None:
+            raise PipelineBlocked("Audit issue event has an invalid issue_id.")
+        if event["stage"] not in KNOWN_FAILURE_STAGES:
+            raise PipelineBlocked("Audit issue event has an unknown failure stage.")
+        source_keys = event["source_keys"]
+        affected = event["affected_records"]
+        key_pattern = re.compile(r"^ch\d{2}-q\d{4}$")
+        for name, values in (("source_keys", source_keys), ("affected_records", affected)):
+            if not isinstance(values, list) or not values or any(not isinstance(value, str) or key_pattern.fullmatch(value) is None for value in values):
+                raise PipelineBlocked(f"Audit issue event {name} are invalid.")
+        if any(int(value[2:4]) != self.chapter for value in set(source_keys) | set(affected)):
+            raise PipelineBlocked("Audit issue event source keys do not match the ledger chapter.")
+        if not isinstance(event["rule_version"], int) or isinstance(event["rule_version"], bool) or event["rule_version"] <= 0:
+            raise PipelineBlocked("Audit issue event rule_version must be positive.")
+        hashes = event["evidence_hashes"]
+        if not isinstance(hashes, list) or not hashes or any(not _valid_hash(value) for value in hashes):
+            raise PipelineBlocked("Audit issue event evidence_hashes are invalid.")
+        for name in ("dependency_tags",):
+            values = event[name]
+            if not isinstance(values, list) or any(not _nonempty_string(value) for value in values):
+                raise PipelineBlocked(f"Audit issue event {name} are invalid.")
+        for name in ("old_categories", "new_categories"):
+            if not isinstance(event[name], Mapping):
+                raise PipelineBlocked(f"Audit issue event {name} must be an object.")
+        for name in ("root_cause", "fix", "outcome"):
+            if not _nonempty_string(event[name]):
+                raise PipelineBlocked(f"Audit issue event {name} must be non-empty.")
+        normalized = json.loads(canonical_json(event).decode("utf-8"))
+        previous = next((item for item in self._issues if item.get("issue_id") == issue_id), None)
+        if previous is not None:
+            if previous != normalized:
+                raise PipelineBlocked(f"Audit issue event {issue_id} has conflicting evidence.")
+            return
+        self._issues.append(normalized)
+        self._persist()
 
     @staticmethod
     def _invalidate_changed_approval(previous: AuditRecord, incoming: AuditRecord) -> AuditRecord:
@@ -328,7 +395,7 @@ class AuditLedger:
             return incoming
 
         extraction_dependencies = {"source_crop_hashes", "policy_version", "extractor_schema_version"}
-        render_dependencies = {"candidate_sha256", "renderer_version", "application_asset_version"}
+        render_dependencies = {"candidate_sha256", "renderer_version", "application_asset_version", "category_rule_version"}
         if changed & extraction_dependencies:
             return replace(
                 incoming,
@@ -388,6 +455,16 @@ class AuditLedger:
     @staticmethod
     def _require_approved_evidence(record: AuditRecord) -> None:
         key = f"ch{record.chapter:02d}-q{record.question_number:04d}"
+        if record.provenance == "baseline_accepted":
+            if not _valid_hash(record.baseline_archive_sha256) or not _valid_hash(record.baseline_record_sha256):
+                raise PipelineBlocked(f"{key} baseline_accepted record is missing exact baseline hashes.")
+            if record.candidate_sha256 != record.baseline_record_sha256:
+                raise PipelineBlocked(f"{key} baseline_accepted record differs from its inventoried record hash.")
+            if record.dependency_fingerprint != approval_dependency_fingerprint(record):
+                raise PipelineBlocked(f"{key} baseline_accepted record has a stale dependency fingerprint.")
+            return
+        if record.provenance != "vision_verified":
+            raise PipelineBlocked(f"{key} approved record has unknown provenance.")
         if not _nonempty_string(record.reviewer):
             raise PipelineBlocked(f"{key} approved record is missing reviewer evidence.")
         if not record.source_crop_hashes or any(not _valid_hash(value) for value in record.source_crop_hashes):

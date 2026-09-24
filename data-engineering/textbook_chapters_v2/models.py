@@ -179,6 +179,10 @@ class AuditRecord:
     verifier_schema_version: int = 0
     renderer_version: str = ""
     application_asset_version: str = ""
+    category_rule_version: int = 0
+    provenance: str = "vision_verified"
+    baseline_archive_sha256: str = ""
+    baseline_record_sha256: str = ""
     reviewer: str = ""
     rejection_reason: str = ""
     dependency_fingerprint: str = ""

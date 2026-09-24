@@ -29,6 +29,10 @@ def _literal_fingerprint(record: AuditRecord) -> str:
         "verifier_schema_version": record.verifier_schema_version,
         "renderer_version": record.renderer_version,
         "application_asset_version": record.application_asset_version,
+        "category_rule_version": record.category_rule_version,
+        "provenance": record.provenance,
+        "baseline_archive_sha256": record.baseline_archive_sha256,
+        "baseline_record_sha256": record.baseline_record_sha256,
     }
     encoded = json.dumps([dependencies], ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
@@ -295,6 +299,64 @@ class AuditLedgerTests(unittest.TestCase):
         self.assertEqual(current.asset_hashes, fresh_assets)
         self.assertEqual(current.renderer_version, "playwright-2")
         self.assertEqual(current.application_asset_version, "ksat-ui-2")
+
+    def test_category_rule_change_preserves_extraction_and_requires_rerender(self) -> None:
+        ledger = AuditLedger(self.root / "category-change" / "work", 7)
+        previous = self._approved(84, category_rule_version=1)
+        ledger.merge_record(previous)
+        changed = replace(previous, category_rule_version=2)
+        changed = replace(changed, dependency_fingerprint=_literal_fingerprint(changed))
+
+        ledger.merge_record(changed)
+
+        current = ledger.record(84)
+        self.assertEqual(current.status, "pending_render")
+        self.assertEqual(current.source_crop_hashes, previous.source_crop_hashes)
+        self.assertEqual(current.candidate_sha256, previous.candidate_sha256)
+
+    def test_baseline_provenance_is_distinct_from_vision_verification(self) -> None:
+        baseline = AuditRecord(
+            chapter=7,
+            question_number=84,
+            status="approved_for_publish",
+            candidate_sha256="b" * 64,
+            provenance="baseline_accepted",
+            baseline_archive_sha256="a" * 64,
+            baseline_record_sha256="b" * 64,
+        )
+        baseline = replace(baseline, dependency_fingerprint=_literal_fingerprint(baseline))
+        ledger = self._ledger_with(baseline, "baseline.json")
+
+        summary = ledger.validate_release_gate(self.config)
+
+        self.assertEqual(summary.approved_count, 1)
+        self.assertEqual(ledger.record(84).provenance, "baseline_accepted")
+
+    def test_issue_event_is_idempotent_and_persists_root_cause_evidence(self) -> None:
+        ledger = AuditLedger(self.root / "issues" / "work", 7)
+        event = {
+            "issue_id": "ch07-q0084-recurring-render",
+            "stage": "frontend_rendering",
+            "source_keys": ["ch07-q0084"],
+            "old_categories": {"option.D": "unicode_math"},
+            "new_categories": {"option.D": "structured_math"},
+            "rule_version": 2,
+            "dependency_tags": ["math:recurring"],
+            "evidence_hashes": ["a" * 64, "b" * 64],
+            "affected_records": ["ch07-q0084"],
+            "root_cause": "Combining overbars collapse in the supported browser font.",
+            "fix": "Render recurring digit groups with controlled notation.",
+            "outcome": "pending_validation",
+        }
+
+        ledger.record_issue_event(event)
+        ledger.record_issue_event(event)
+
+        loaded = AuditLedger(ledger.work_root, 7)
+        self.assertEqual(len(loaded.issue_events), 1)
+        self.assertEqual(loaded.issue_events[0]["root_cause"], event["root_cause"])
+        with self.assertRaisesRegex(PipelineBlocked, "conflicting"):
+            ledger.record_issue_event({**event, "outcome": "passed"})
 
 
 if __name__ == "__main__":

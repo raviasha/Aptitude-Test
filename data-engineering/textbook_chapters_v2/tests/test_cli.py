@@ -354,6 +354,47 @@ class WorkflowCliTests(unittest.TestCase):
         self.assertEqual((combined.width, combined.height), (10, 25))
         self.assertTrue(combined.path.is_file())
 
+    def test_shared_context_strategy_excludes_the_individual_question_crop(self) -> None:
+        raw = json.loads(self.config_path.read_text(encoding="utf-8"))
+        raw["question_media_strategy"] = "shared_contexts"
+        raw["shared_contexts"] = {
+            "question": {
+                "table-84-85": {
+                    "question_numbers": [84, 85],
+                    "description": "Reviewed shared table with every row, column and unit",
+                    "segments": [{"page": 1, "left": 0, "top": 0, "right": 10, "bottom": 10}],
+                }
+            }
+        }
+        config = ChapterConfig.from_dict(raw)
+        original = self._media_evidence()[0]
+        evidence = replace(original, question_crops=(
+            replace(original.question_crops[0], context_id="table-84-85"),
+            replace(original.question_crops[1], context_id="table-84-85"),
+            original.question_crops[2],
+        ))
+
+        augmented, manifest = _prepare_field_media(config, evidence, self.root / "prepared-shared")
+
+        self.assertEqual(
+            manifest["question"]["component_sha256s"],
+            [crop.sha256 for crop in evidence.question_crops[:2]],
+        )
+        self.assertNotIn(evidence.question_crops[2].sha256, manifest["question"]["component_sha256s"])
+        self.assertEqual(len(augmented.question_crops), len(evidence.question_crops) + 1)
+        self.assertEqual(
+            manifest["question"]["alt_text"],
+            "Reviewed shared table with every row, column and unit",
+        )
+
+    def test_shared_context_strategy_fails_closed_without_a_named_context(self) -> None:
+        raw = json.loads(self.config_path.read_text(encoding="utf-8"))
+        raw["question_media_strategy"] = "shared_contexts"
+        config = ChapterConfig.from_dict(raw)
+
+        with self.assertRaisesRegex(PipelineBlocked, "named shared question context"):
+            _prepare_field_media(config, self._media_evidence()[0], self.root / "missing-shared")
+
     def _package(self, path: Path, summary, candidate_sha256: str = "d" * 64) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         manifest = {"format_version": 3, "bank_name": "CLI Contract", "question_files": ["questions/ch07.jsonl"]}

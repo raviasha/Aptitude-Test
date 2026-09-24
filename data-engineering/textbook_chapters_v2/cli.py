@@ -373,12 +373,24 @@ def _combined_segment(
 def _prepare_field_media(config: ChapterConfig, evidence: RecordEvidence, chapter_root: Path) -> tuple[RecordEvidence, dict[str, Any]]:
     configured = dict(_field_specs(config, evidence.question_number))
     strategy = config.extras.get("question_media_strategy")
-    if strategy not in (None, "source_segments"):
+    if strategy not in (None, "source_segments", "shared_contexts"):
         raise PipelineBlocked("Unknown question_media_strategy.")
     if strategy == "source_segments" and "question" not in configured:
         configured["question"] = [
             {"role": "question", "source_index": index}
             for index in range(len(evidence.question_crops))
+        ]
+    if strategy == "shared_contexts" and "question" not in configured:
+        context_indexes = [
+            index for index, crop in enumerate(evidence.question_crops) if crop.context_id
+        ]
+        context_ids = {evidence.question_crops[index].context_id for index in context_indexes}
+        if not context_indexes or len(context_ids) != 1:
+            raise PipelineBlocked(
+                "Shared-context image strategy requires exactly one named shared question context."
+            )
+        configured["question"] = [
+            {"role": "question", "source_index": index} for index in context_indexes
         ]
     output_dir = chapter_root / "field-media" / f"q{evidence.question_number:04d}"
     manifest: dict[str, Any] = {}
@@ -401,6 +413,13 @@ def _prepare_field_media(config: ChapterConfig, evidence: RecordEvidence, chapte
             "crop_sha256s": [crop.sha256 for crop in prepared],
             "component_sha256s": [crop.sha256 for crop in selected],
         }
+        context_ids = {crop.context_id for crop in selected if crop.context_id}
+        if field == "question" and len(context_ids) == 1:
+            context_id = next(iter(context_ids))
+            raw_context = config.shared_contexts.get("question", {}).get(context_id, {})
+            description = raw_context.get("description") if isinstance(raw_context, Mapping) else None
+            if isinstance(description, str) and description.strip():
+                manifest[field]["alt_text"] = description.strip()
         return prepared
 
     if "question" in configured:
@@ -985,7 +1004,8 @@ def _image_evidence(config: ChapterConfig, raw: dict[str, Any], evidence: Record
         if len(question) != 1:
             raise PipelineBlocked("Question image field evidence must be combined into one complete display artifact.")
         media_crops["question"] = question[0]
-        alt_text["question"] = raw.get("question_text")
+        configured_alt_text = record_manifest.get("question", {}).get("alt_text")
+        alt_text["question"] = configured_alt_text or raw.get("question_text")
     image_options = {label: field_crops(f"options.{label}") for label, mode in option_modes.items() if mode == "image"}
     if image_options:
         if any(len(crops) != 1 for crops in image_options.values()):

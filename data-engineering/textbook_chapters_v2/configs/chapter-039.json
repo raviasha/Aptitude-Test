@@ -15,7 +15,7 @@
   ],
   "render_workers": 2,
   "field_media": {},
-  "question_media_strategy": "source_segments",
+  "question_media_strategy": "shared_contexts",
   "chapter": 39,
   "chapter_name": "Line Graphs",
   "bank_name": "R. S. Aggarwal - Chapter 39: Line Graphs (all-vision text-only)",

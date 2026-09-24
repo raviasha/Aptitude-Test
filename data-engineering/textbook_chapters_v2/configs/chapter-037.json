@@ -15,7 +15,7 @@
   ],
   "render_workers": 2,
   "field_media": {},
-  "question_media_strategy": "source_segments",
+  "question_media_strategy": "shared_contexts",
   "chapter": 37,
   "chapter_name": "Bar Graphs",
   "bank_name": "R. S. Aggarwal - Chapter 37: Bar Graphs (all-vision text-only)",
@@ -40,6 +40,7 @@
   "shared_contexts": {
     "question": {
       "i-pearls": {
+        "description": "Pearl exports by year in crore rupees, with complete axes and printed values",
         "question_numbers": [
           1,
           2,
@@ -65,6 +66,7 @@
         ]
       },
       "i-schools": {
+        "description": "Student percentage pie chart and boys-by-school bar chart, including the total of 6000 students",
         "question_numbers": [
           6,
           7,
@@ -90,6 +92,7 @@
         ]
       },
       "i-vehicles": {
+        "description": "Vehicle travel-time graph for two days and matching distance table for vehicles A through F",
         "question_numbers": [
           11,
           12,
@@ -122,6 +125,7 @@
         ]
       },
       "i-scholarship": {
+        "description": "Students appeared and qualified by school in the scholarship examination",
         "question_numbers": [
           16,
           17,
@@ -154,6 +158,7 @@
         ]
       },
       "i-paper": {
+        "description": "Paper production by companies X, Y and Z from 2006 through 2010, with legend and units",
         "question_numbers": [
           21,
           22,
@@ -180,6 +185,7 @@
         ]
       },
       "i-materials": {
+        "description": "Raw-material investment and finished-goods sales graphs from 2005 through 2010, in lakh rupees",
         "question_numbers": [
           27,
           28,
@@ -205,6 +211,7 @@
         ]
       },
       "ii-fertilizers": {
+        "description": "Fertilizer production by year in ten-thousand tonnes, with every printed bar value",
         "question_numbers": [
           32,
           33,
@@ -230,6 +237,7 @@
         ]
       },
       "ii-expenditure": {
+        "description": "Company expenditure percentages for infrastructure, transport, advertising, taxes, research, salary and loan interest",
         "question_numbers": [
           37,
           38,
@@ -255,6 +263,7 @@
         ]
       },
       "ii-teachers": {
+        "description": "Teacher distribution pie chart and male-teacher counts by district, including the total of 4500 teachers",
         "question_numbers": [
           42,
           43,
@@ -280,6 +289,7 @@
         ]
       },
       "ii-specializations": {
+        "description": "University students in Hindi, English and Mathematics specializations across five years, in thousands",
         "question_numbers": [
           47,
           48,
@@ -305,6 +315,7 @@
         ]
       },
       "ii-cars": {
+        "description": "Percentage distribution of six car types in 2008 and 2009, with totals and pattern legend",
         "question_numbers": [
           52,
           53,
@@ -330,6 +341,7 @@
         ]
       },
       "iii-demand": {
+        "description": "Demand and production for companies A through E, with both series and complete vertical scale",
         "question_numbers": [
           57,
           58,
@@ -355,6 +367,7 @@
         ]
       },
       "iii-books": {
+        "description": "Book sales for branches B1 through B6 in 2000 and 2001, preserving the source's repeated B4 label",
         "question_numbers": [
           62,
           63,
@@ -380,6 +393,7 @@
         ]
       },
       "iii-income": {
+        "description": "Monthly income of Arun, Suman and Jyoti from 2005 through 2010, in thousand rupees",
         "question_numbers": [
           67,
           68,
@@ -405,6 +419,7 @@
         ]
       },
       "iii-marks": {
+        "description": "English, Hindi and Marathi marks for students A through E, with complete legend and scale",
         "question_numbers": [
           72,
           73,
@@ -430,6 +445,7 @@
         ]
       },
       "iii-companies": {
+        "description": "Income and expenditure for companies M, N, P, Q and R in crore rupees",
         "question_numbers": [
           77,
           78,

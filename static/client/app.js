@@ -134,6 +134,24 @@ function shouldAutoLogout(freshBrowserSession, state) {
     && (state === 'waiting_or_ready' || state === 'acknowledged_result');
 }
 
+const updatePresentations = {
+  required: ['Checking for required update', 'This lab computer must update before student sign in.'],
+  downloading: ['Downloading client update', 'The signed update is downloading. Keep this computer on.'],
+  verifying: ['Verifying client update', 'Checking the release signature and installer identity.'],
+  ready_to_install: ['Installing and restarting', 'The lab client will restart automatically when installation finishes.'],
+  failed: ['Client update needs attention', 'The update did not finish. Your saved assessment data has not been changed.'],
+};
+function updatePresentation(stage) {
+  const value = updatePresentations[stage] || updatePresentations.required;
+  return { title: value[0], message: value[1] };
+}
+function canRetryUpdate(update) {
+  return update?.stage === 'failed' && [
+    'coordinator_unavailable', 'download_failed', 'download_range_invalid',
+    'disk_full', 'bundle_hash_mismatch', 'bundle_verification_failed',
+  ].includes(update.diagnostic_code);
+}
+
 async function logoutStudent(requester) {
   return requester('/api/logout', {
     method: 'POST',
@@ -208,6 +226,8 @@ const exported = {
   sealedMessage,
   setSafeText,
   shouldAutoLogout,
+  updatePresentation,
+  canRetryUpdate,
 };
 
 if (typeof module !== 'undefined' && module.exports) {
@@ -444,6 +464,25 @@ if (typeof document !== 'undefined') {
     } catch (error) {
       showProblem(error.problem);
       elements.actionArea.append(button('Try again', renderDeviceSetup, 'secondary'));
+    }
+  }
+
+  function renderClientUpdate(update) {
+    beginView('client_update');
+    const presentation = updatePresentation(update && update.stage);
+    showStatus(presentation.title, presentation.message);
+    elements.statusPanel.setAttribute('aria-busy', String(update?.stage !== 'failed'));
+    announce(`${presentation.title}. ${presentation.message}`);
+    if (canRetryUpdate(update)) {
+      elements.actionArea.append(button('Try update again', async () => {
+        try {
+          await request('/api/update/retry', { method: 'POST', body: JSON.stringify({}) });
+          await refreshState();
+        } catch (error) { showProblem(error.problem); }
+      }, 'secondary'));
+    }
+    if (['required', 'downloading', 'verifying', 'ready_to_install'].includes(update?.stage)) {
+      ui.pollHandle = window.setTimeout(refreshState, 1500);
     }
   }
 
@@ -1170,6 +1209,7 @@ if (typeof document !== 'undefined') {
       }
       freshBrowserSession = false;
       ui.state = state.state;
+      if (state.state === 'client_update_required') return renderClientUpdate(state.update);
       if (state.state === 'device_setup') return renderDeviceSetup();
       if (state.state === 'login') return renderLogin();
       if (state.state === 'waiting_or_ready') return loadAssessments();
@@ -1414,7 +1454,7 @@ if (typeof document !== 'undefined') {
   });
   window.addEventListener('blur', () => observeIntegrityLoss('focus_lost'));
   window.addEventListener('focus', () => { checkIntegrityState(); monitorIntegrity(); });
-  window.addEventListener('pagehide', () => observeIntegrityLoss('browser_page_hidden'));
+  window.addEventListener('pagehide', () => { stopPolling(); observeIntegrityLoss('browser_page_hidden'); });
   window.addEventListener('pageshow', () => { ui.integrityFaults.delete('browser_page_hidden'); monitorIntegrity(); });
   document.addEventListener('freeze', () => observeIntegrityLoss('browser_frozen'));
   document.addEventListener('resume', () => { ui.integrityFaults.delete('browser_frozen'); monitorIntegrity(); });

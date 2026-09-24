@@ -92,6 +92,13 @@ class FakeStore:
     def pending_submissions(self, **_kwargs):
         return list(self.pending)
 
+    def update_deferral_reason(self):
+        if self.snapshot and self.snapshot.state == "in_progress":
+            return "active_attempt"
+        if self.snapshot and self.snapshot.state == "sealed_pending":
+            return "pending_submission"
+        return "pending_submission" if self.pending else None
+
     def close(self):
         self.closed += 1
 
@@ -356,6 +363,26 @@ class ClientAppApiTests(unittest.TestCase):
 
     def tearDown(self):
         self.client_context.__exit__(None, None, None)
+
+    def test_idle_outdated_client_returns_maintenance_before_login(self):
+        from client_app import ClientServices, create_client_app
+        from ksat.client.updates import UpdateSnapshot
+
+        class FailedUpdate:
+            def check(self, **_kwargs):
+                return UpdateSnapshot(RELEASE_ID, "2.1.0", "failed", 0, "download_failed")
+
+        store = FakeStore(None)
+        coordinator = FakeCoordinator()
+        services = ClientServices(
+            FakeIdentityStore(), store, FakeRuntime(store), coordinator, FakeOutbox(),
+            update_manager=FailedUpdate(),
+        )
+        with TestClient(create_client_app(services), base_url="http://127.0.0.1:8010") as client:
+            response = client.get("/api/state", headers={"Host": "127.0.0.1:8010"})
+        self.assertEqual(200, response.status_code)
+        self.assertEqual("client_update_required", response.json()["state"])
+        self.assertEqual("failed", response.json()["update"]["stage"])
 
     def test_available_post_close_review_is_exposed_without_keys(self):
         summary = SimpleNamespace(

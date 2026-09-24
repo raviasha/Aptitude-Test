@@ -118,6 +118,8 @@ input, select { min-height: 44px; padding: .65rem .75rem; border: 2px solid #8b9
 .review-option.student-choice { border-color: #9a6700; background: #fff7d6; }
 .review-option.correct-choice { border-color: var(--success); background: #d9f4e4; }
 .review-state-unanswered { font-weight: 700; color: var(--danger); }
+#status-panel[aria-busy="true"] #status-title::before { content: ""; display: inline-block; width: .8em; height: .8em; margin-right: .55em; border: 2px solid #cad4e7; border-top-color: var(--brand); border-radius: 50%; animation: update-spin .9s linear infinite; }
+@keyframes update-spin { to { transform: rotate(360deg); } }
 
 #submit-confirmation {
   border: 0;

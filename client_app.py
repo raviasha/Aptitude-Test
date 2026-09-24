@@ -1861,7 +1861,11 @@ def create_client_app(services: ClientServices | None = None) -> FastAPI:
                 "attempt": attempt,
                 "problem": None,
             }
-        if context.update_snapshot is not None and context.update_snapshot.stage != "current":
+        if (
+            snapshot is None
+            and context.update_snapshot is not None
+            and context.update_snapshot.stage != "current"
+        ):
             return {
                 "state": "client_update_required",
                 "enrolled": bool(getattr(context.identity, "device_id", None)),
@@ -1882,6 +1886,24 @@ def create_client_app(services: ClientServices | None = None) -> FastAPI:
     @app.get("/api/build")
     async def client_build():
         return {"version": _CLIENT_VERSION}
+
+    @app.post("/api/update/retry")
+    async def retry_client_update():
+        current = require_services()
+        manager = current.update_manager
+        if manager is None or context.update_snapshot is None:
+            raise ClientApiProblem("update_unavailable", "Client update is unavailable.", 409)
+        reason = current.store.update_deferral_reason()
+        if reason is not None:
+            raise ClientApiProblem("update_deferred", "Saved assessment work must finish first.", 409)
+        if context.update_snapshot.stage != "failed":
+            raise ClientApiProblem("update_retry_not_allowed", "Client update retry is not available.", 409)
+        context.update_snapshot = manager.check()
+        if context.update_snapshot.stage == "required":
+            context.update_snapshot = manager.download()
+        if context.update_snapshot.stage == "ready_to_install" and current.updater_launcher is not None:
+            current.updater_launcher(manager.prepare_install())
+        return {"update": _jsonable(context.update_snapshot)}
 
     @app.get("/api/attempts/{attempt_id}/assets/{filename}")
     async def public_attempt_asset(attempt_id: str, filename: str):

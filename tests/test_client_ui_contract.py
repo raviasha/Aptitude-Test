@@ -12,6 +12,26 @@ INDEX = ROOT / "static" / "client" / "index.html"
 
 
 class ClientUiContractTests(unittest.TestCase):
+    def test_mandatory_update_copy_and_retry_policy_are_fixed_locally(self):
+        result = self._run_node(
+            """
+const ui = require(process.argv[1]);
+process.stdout.write(JSON.stringify({
+  downloading: ui.updatePresentation('downloading'),
+  installing: ui.updatePresentation('ready_to_install'),
+  retrySafe: ui.canRetryUpdate({stage:'failed', diagnostic_code:'download_failed'}),
+  retryUnsafe: ui.canRetryUpdate({stage:'failed', diagnostic_code:'rollback_failed'})
+}));
+"""
+        )
+        self.assertEqual("Downloading client update", result["downloading"]["title"])
+        self.assertEqual("Installing and restarting", result["installing"]["title"])
+        self.assertTrue(result["retrySafe"])
+        self.assertFalse(result["retryUnsafe"])
+        source = SCRIPT.read_text(encoding="utf-8")
+        self.assertNotIn("Skip update", source)
+        self.assertIn("aria-busy", source)
+
     def test_exam_integrity_behaviors(self):
         for scenario in (
             'manual_submission_requires_explicit_dialog_confirmation',

@@ -330,6 +330,10 @@ class ReleaseLayout:
         return self.dist_dir / "KSATClient.exe"
 
     @property
+    def updater_executable(self) -> Path:
+        return self.dist_dir / "KSATClientUpdater.exe"
+
+    @property
     def coordinator_installer(self) -> Path:
         return self.release_dir / f"KSATCoordinatorSetup-{APP_VERSION}.exe"
 
@@ -415,6 +419,8 @@ def build_commands(root: Path, python: Path) -> list[list[str]]:
     root = Path(root).resolve()
     python = Path(python)
     coordinator = _common_pyinstaller(root, python, "KSATCoordinator", "coordinator")
+    public_key_resource = ReleaseLayout(root).build_dir / "update-release-public.json"
+    coordinator.extend(_add_data(public_key_resource, "."))
     coordinator.extend(_add_data(root / "static", "static"))
     coordinator.extend(_add_data(root / "templates", "templates"))
     coordinator.extend(
@@ -422,12 +428,16 @@ def build_commands(root: Path, python: Path) -> list[list[str]]:
     )
 
     client = _common_pyinstaller(root, python, "KSATClient", "client")
+    client.extend(_add_data(public_key_resource, "."))
     client.extend(_add_data(root / "static" / "client", "static/client"))
     client.extend(_add_data(root / "static" / "branding", "static/branding"))
     client.extend(_add_data(root / "static" / "branding.css", "static"))
     client.extend(_add_data(root / "static" / "math.css", "static"))
     client.append(str(root / "client_app.py"))
-    return [coordinator, client]
+    updater = _common_pyinstaller(root, python, "KSATClientUpdater", "updater")
+    updater.extend(_add_data(public_key_resource, "."))
+    updater.extend(["--uac-admin", str(root / "client_updater.py")])
+    return [coordinator, client, updater]
 
 
 def smoke_coordinator_command(
@@ -486,6 +496,9 @@ def write_version_resources(layout: ReleaseLayout) -> None:
     (layout.build_dir / "KSATClient.version.txt").write_text(
         _version_resource("KSAT Lab Client", "KSATClient.exe"), encoding="utf-8"
     )
+    (layout.build_dir / "KSATClientUpdater.version.txt").write_text(
+        _version_resource("KSAT Lab Client Updater", "KSATClientUpdater.exe"), encoding="utf-8"
+    )
 
 
 def inspect_release_inputs(root: Path) -> None:
@@ -525,7 +538,7 @@ def publish_signed_executables(
     signer=sign_and_verify_artifact,
 ) -> None:
     signing = _require_signing(signing)
-    for executable in (layout.coordinator_executable, layout.client_executable):
+    for executable in (layout.coordinator_executable, layout.client_executable, layout.updater_executable):
         if not executable.is_file() or executable.stat().st_size <= 0:
             raise RuntimeError(f"Expected executable was not built: {executable}")
         signer(executable, signing)
@@ -544,9 +557,9 @@ def build_executables(
     inspect_release_inputs(layout.root)
     layout.dist_dir.mkdir(parents=True, exist_ok=True)
     layout.build_dir.mkdir(parents=True, exist_ok=True)
-    for name in ("coordinator", "client"):
+    for name in ("coordinator", "client", "updater"):
         _safe_remove_tree(layout.build_dir / name, layout.root)
-    for executable in (layout.coordinator_executable, layout.client_executable):
+    for executable in (layout.coordinator_executable, layout.client_executable, layout.updater_executable):
         try:
             executable.unlink()
         except FileNotFoundError:
@@ -678,7 +691,7 @@ def smoke_executables(
 ) -> dict[str, object]:
     signing = _require_signing(signing)
     layout = ReleaseLayout(root)
-    for path in (layout.coordinator_executable, layout.client_executable):
+    for path in (layout.coordinator_executable, layout.client_executable, layout.updater_executable):
         if not path.is_file():
             raise FileNotFoundError(path)
         verify_authenticode_signature(path, signing)
@@ -893,6 +906,7 @@ def _inspect_installer(
     installer: Path,
     expected_executable: Path,
     innoextract: Path,
+    additional_executables: tuple[Path, ...] = (),
 ) -> None:
     with tempfile.TemporaryDirectory(prefix="ksat-inno-inspect-") as directory:
         destination = Path(directory)
@@ -923,6 +937,11 @@ def _inspect_installer(
             relative = path.relative_to(destination).as_posix()
             _assert_payload_safe(relative, path.read_bytes())
         pyinstaller_payload_manifest(matches[0])
+        for expected in additional_executables:
+            extra = [path for path in files if path.name == expected.name]
+            if len(extra) != 1 or hashlib.sha256(extra[0].read_bytes()).digest() != hashlib.sha256(expected.read_bytes()).digest():
+                raise ValueError(f"Installer executable differs from dist output: {expected.name}")
+            pyinstaller_payload_manifest(extra[0])
 
 
 def inspect_artifacts(
@@ -936,6 +955,7 @@ def inspect_artifacts(
     artifacts = [
         layout.coordinator_executable,
         layout.client_executable,
+        layout.updater_executable,
         layout.coordinator_release_executable,
         layout.client_release_executable,
         layout.coordinator_installer,
@@ -956,13 +976,18 @@ def inspect_artifacts(
         raise ValueError("Coordinator dist/release executables differ.")
     if layout.client_executable.read_bytes() != layout.client_release_executable.read_bytes():
         raise ValueError("Client dist/release executables differ.")
-    for executable in (layout.coordinator_executable, layout.client_executable):
-        pyinstaller_payload_manifest(executable)
+    for executable in (layout.coordinator_executable, layout.client_executable, layout.updater_executable):
+        manifest = pyinstaller_payload_manifest(executable)
+        if not any(Path(name).name == "update-release-public.json" for name in manifest):
+            raise ValueError(f"Public update verification key is missing: {executable.name}")
     extractor = Path(innoextract).resolve() if innoextract is not None else discover_innoextract()
     if extractor is None or not extractor.is_file():
         raise FileNotFoundError("innoextract is required for deep installer inspection.")
     _inspect_installer(layout.coordinator_installer, layout.coordinator_executable, extractor)
-    _inspect_installer(layout.client_installer, layout.client_executable, extractor)
+    _inspect_installer(
+        layout.client_installer, layout.client_executable, extractor,
+        (layout.updater_executable,),
+    )
     return sizes
 
 

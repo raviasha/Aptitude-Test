@@ -26,6 +26,7 @@ SetupLogging=yes
 
 [Files]
 Source: "..\dist\KSATClient.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\dist\KSATClientUpdater.exe"; DestDir: "{app}"; Flags: ignoreversion
 
 [Dirs]
 Name: "{commonappdata}\KSAT Client"; Permissions: admins-full system-full users-readexec
@@ -33,6 +34,7 @@ Name: "{commonappdata}\KSAT Client\trust"; Permissions: admins-full system-full 
 Name: "{commonappdata}\KSAT Client\identity"; Permissions: admins-full system-full
 Name: "{commonappdata}\KSAT Client\state"; Permissions: admins-full system-full
 Name: "{commonappdata}\KSAT Client\packs"; Permissions: admins-full system-full
+Name: "{commonappdata}\KSAT Client\updates"; Permissions: admins-full system-full
 
 [Icons]
 Name: "{group}\KSAT Lab Client"; Filename: "{app}\{#AppExeName}"; Parameters: "--open-client"; WorkingDir: "{app}"
@@ -45,6 +47,7 @@ Filename: "{app}\{#AppExeName}"; Parameters: "--open-client"; Description: "Open
 var
   UrlPage: TInputQueryWizardPage;
   TrustPage: TInputFileWizardPage;
+  HadExistingConfiguration: Boolean;
 
 function ConfigPath(): String;
 begin Result := ExpandConstant('{commonappdata}\KSAT Client\client-config.json'); end;
@@ -59,6 +62,7 @@ procedure StopClientService(); forward;
 
 procedure InitializeWizard();
 begin
+  HadExistingConfiguration := ExistingConfiguration();
   UrlPage := CreateInputQueryPage(wpSelectDir, 'Coordinator address',
     'Enter the coordinator HTTPS address.',
     'This value is saved on the computer. Later changes require an Administrator.');
@@ -147,6 +151,20 @@ begin
   if (not Exec(ExpandConstant('{sys}\sc.exe'), 'start "KSATLabClientAuthority"',
     '', SW_HIDE, ewWaitUntilTerminated, ResultCode)) or (ResultCode <> 0) then
     RaiseException('The LocalSystem client service could not be started.');
+end;
+
+procedure SeedLastKnownGood();
+var ResultCode: Integer; Script, Parameters: String;
+begin
+  Script := '$ErrorActionPreference=''Stop'';$s=Get-AuthenticodeSignature -LiteralPath ''' +
+    ExpandConstant('{srcexe}') + ''';if($s.Status-ne ''Valid'' -or $null-eq $s.SignerCertificate){throw ''invalid installer signature''};' +
+    '$d=''' + ExpandConstant('{commonappdata}\KSAT Client\updates\last-known-good') + ''';' +
+    'New-Item -ItemType Directory -Force -Path $d|Out-Null;' +
+    'Copy-Item -LiteralPath ''' + ExpandConstant('{srcexe}') + ''' -Destination ($d+''\KSATClientSetup-{#AppVersion}.exe'') -Force';
+  Parameters := '-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "' + Script + '"';
+  if (not Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'), Parameters,
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode)) or (ResultCode <> 0) then
+    RaiseException('The signed rollback installer could not be preserved.');
 end;
 
 procedure MigrateClientState();
@@ -260,6 +278,8 @@ begin
     ProtectAuthorityDirectory(ExpandConstant('{commonappdata}\KSAT Client\identity'));
     ProtectAuthorityDirectory(ExpandConstant('{commonappdata}\KSAT Client\state'));
     ProtectAuthorityDirectory(ExpandConstant('{commonappdata}\KSAT Client\packs'));
+    ProtectAuthorityDirectory(ExpandConstant('{commonappdata}\KSAT Client\updates'));
+    if not HadExistingConfiguration then SeedLastKnownGood();
     StartClientService();
   end;
 end;

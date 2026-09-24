@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 import app as faculty_app
 import client_app as client_app_module
+import client_updater as client_updater_module
 import ksat.client.store as client_store_module
 
 from client_app import (
@@ -34,6 +35,9 @@ from ksat.coordinator.process_lock import CoordinatorLockHeld, CoordinatorProces
 
 
 class WindowsEntrypointTests(unittest.TestCase):
+    def test_client_updater_has_a_separate_required_request_entrypoint(self):
+        with self.assertRaises(SystemExit):
+            client_updater_module.main([])
     def test_version_is_consistent_and_build_endpoint_exposes_2_0_0(self):
         self.assertEqual("2.0.0", faculty_app.APP_VERSION)
         response = faculty_app.build_information()

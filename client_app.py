@@ -14,8 +14,10 @@ import os
 import re
 import random
 import secrets
+import shutil
 import socket
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import threading
@@ -747,6 +749,7 @@ class ClientServices:
     outbox_factory: Any | None = None
     lifecycle_lock: ClientProcessLock | None = None
     update_manager: ClientUpdateManager | None = None
+    updater_launcher: Any | None = None
 
 
 def _diagnostic_reference() -> str:
@@ -869,6 +872,8 @@ class _ClientContext:
         )
         if self.update_snapshot.stage == "required":
             self.update_snapshot = manager.download()
+        if self.update_snapshot.stage == "ready_to_install" and self.services.updater_launcher is not None:
+            self.services.updater_launcher(manager.prepare_install())
 
     def shutdown(self) -> None:
         with self._prefetch_state_lock:
@@ -1485,6 +1490,20 @@ def _load_locked_production_services(
     def outbox_factory(candidate: CoordinatorClient) -> OutboxWorker:
         return OutboxWorker(store, candidate, SystemClock())
 
+    def updater_launcher(request_path: Path) -> None:
+        installed_helper = Path(sys.executable).resolve().parent / "KSATClientUpdater.exe"
+        if not installed_helper.is_file():
+            raise ValueError("Installed client updater is unavailable.")
+        helper_dir = data_dir / "updates" / "helper"
+        helper_dir.mkdir(parents=True, exist_ok=True)
+        staged_helper = helper_dir / "KSATClientUpdater.exe"
+        shutil.copy2(installed_helper, staged_helper)
+        subprocess.Popen(
+            [str(staged_helper), "--request", str(request_path)],
+            cwd=helper_dir, close_fds=True,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+
     return ClientServices(
         identity_store=identity_store,
         store=store,
@@ -1500,6 +1519,7 @@ def _load_locked_production_services(
         outbox_factory=outbox_factory,
         lifecycle_lock=lifecycle_lock,
         update_manager=update_manager,
+        updater_launcher=updater_launcher,
     )
 
 
@@ -1858,6 +1878,10 @@ def create_client_app(services: ClientServices | None = None) -> FastAPI:
             "attempt": None,
             "problem": None,
         }
+
+    @app.get("/api/build")
+    async def client_build():
+        return {"version": _CLIENT_VERSION}
 
     @app.get("/api/attempts/{attempt_id}/assets/{filename}")
     async def public_attempt_asset(attempt_id: str, filename: str):

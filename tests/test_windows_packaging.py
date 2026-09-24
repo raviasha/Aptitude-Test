@@ -43,6 +43,7 @@ class WindowsPackagingTests(unittest.TestCase):
             layout.dist_dir.mkdir(parents=True)
             layout.coordinator_executable.write_bytes(b"MZcoordinator")
             layout.client_executable.write_bytes(b"MZclient")
+            layout.updater_executable.write_bytes(b"MZupdater")
             events = []
 
             def fake_sign(path, _config):
@@ -54,7 +55,7 @@ class WindowsPackagingTests(unittest.TestCase):
                 environ={"KSAT_RELEASE_TEST_SIGNING": "1"},
             )
             publish_signed_executables(layout, config, signer=fake_sign)
-            self.assertEqual(["KSATCoordinator.exe", "KSATClient.exe"], events)
+            self.assertEqual(["KSATCoordinator.exe", "KSATClient.exe", "KSATClientUpdater.exe"], events)
             self.assertEqual(
                 layout.coordinator_executable.read_bytes(),
                 layout.coordinator_release_executable.read_bytes(),
@@ -86,6 +87,7 @@ class WindowsPackagingTests(unittest.TestCase):
             self.assertEqual("2.0.0", APP_VERSION)
             self.assertEqual("KSATCoordinator.exe", layout.coordinator_executable.name)
             self.assertEqual("KSATClient.exe", layout.client_executable.name)
+            self.assertEqual("KSATClientUpdater.exe", layout.updater_executable.name)
             self.assertEqual(
                 "KSATCoordinator-2.0.0.exe",
                 layout.coordinator_release_executable.name,
@@ -102,8 +104,8 @@ class WindowsPackagingTests(unittest.TestCase):
     def test_build_commands_use_distinct_entrypoints_workpaths_and_safe_assets(self):
         root = Path(__file__).resolve().parents[1]
         commands = build_commands(root, Path("C:/Python/python.exe"))
-        self.assertEqual(2, len(commands))
-        coordinator, client = commands
+        self.assertEqual(3, len(commands))
+        coordinator, client, updater = commands
         self.assertIn(str(root / "coordinator_main.py"), coordinator)
         hidden_imports = [
             coordinator[index + 1]
@@ -112,8 +114,10 @@ class WindowsPackagingTests(unittest.TestCase):
         ]
         self.assertIn("app", hidden_imports)
         self.assertIn(str(root / "client_app.py"), client)
+        self.assertIn(str(root / "client_updater.py"), updater)
         self.assertIn("KSATCoordinator", coordinator)
         self.assertIn("KSATClient", client)
+        self.assertIn("KSATClientUpdater", updater)
         self.assertNotEqual(
             coordinator[coordinator.index("--workpath") + 1],
             client[client.index("--workpath") + 1],
@@ -188,6 +192,14 @@ class WindowsPackagingTests(unittest.TestCase):
         for name in ("KSATCoordinator.iss", "KSATClient.iss"):
             script = (root / "installer" / name).read_text("utf-8")
             self.assertNotIn("TryStrToInt", script)
+
+    def test_client_installer_contains_protected_updater_and_rollback_seed(self):
+        root = Path(__file__).resolve().parents[1]
+        script = (root / "installer" / "KSATClient.iss").read_text("utf-8")
+        self.assertIn("KSATClientUpdater.exe", script)
+        self.assertIn("SeedLastKnownGood", script)
+        self.assertIn("Get-AuthenticodeSignature", script)
+        self.assertIn("KSAT Client\\updates", script)
 
     def test_installers_track_only_owned_firewall_and_root_ca_cleanup(self):
         root = Path(__file__).resolve().parents[1]

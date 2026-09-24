@@ -160,8 +160,16 @@ async function persistOptimisticAnswer(attempt, questionId, selected, write, onS
   }
 }
 
+// Parenthesized recurring digits remain clear even when a browser font drops combining overbars.
+function mathText(value) {
+  return String(value ?? '').normalize('NFC').replace(
+    /(\d+\.\d*)((?:\d[\u0305\u0304])+)/g,
+    (_, prefix, digits) => `${prefix}(${digits.replace(/[\u0305\u0304]/g, '')})`,
+  );
+}
+
 function setSafeText(element, value) {
-  element.textContent = value == null ? '' : String(value);
+  element.textContent = mathText(value);
 }
 
 function assetUrl(attemptId, reference) {
@@ -185,6 +193,7 @@ const exported = {
   beginBrowserSession,
   canEdit,
   logoutStudent,
+  mathText,
   optimisticSelection,
   persistOptimisticAnswer,
   problemMessage,

@@ -443,6 +443,19 @@ process.stdout.write(JSON.stringify(element));
         self.assertEqual("<img src=x onerror=steal()>", result["textContent"])
         self.assertEqual("unchanged", result["innerHTML"])
 
+    def test_recurring_decimals_remain_distinct_in_lab_client(self):
+        result = self._run_node(
+            """
+const ui = require(process.argv[1]);
+const ordinary = {textContent: ''};
+const recurring = {textContent: ''};
+ui.setSafeText(ordinary, '2.64');
+ui.setSafeText(recurring, '2.6\u03054\u0305');
+process.stdout.write(JSON.stringify({ordinary: ordinary.textContent, recurring: recurring.textContent}));
+"""
+        )
+        self.assertEqual({"ordinary": "2.64", "recurring": "2.(64)"}, result)
+
     def test_public_asset_urls_are_local_attempt_bound_and_reject_hostile_references(self):
         result = self._run_node(
             """

@@ -8,9 +8,28 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "static" / "app.js"
+UPDATE_FLOW = ROOT / "tests" / "client_update_admin_flow.js"
 
 
 class FacultyUiContractTests(unittest.TestCase):
+    def test_client_update_dashboard_enforces_pilot_and_publish_gate(self):
+        node = os.environ.get("KSAT_NODE") or shutil.which("node")
+        if node is None:
+            self.skipTest("Node.js is unavailable for the JavaScript behavior contract.")
+        completed = subprocess.run(
+            [node, str(UPDATE_FLOW), str(SCRIPT)], cwd=ROOT, text=True,
+            encoding="utf-8", capture_output=True, check=False,
+        )
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        result = json.loads(completed.stdout)
+        self.assertEqual(["active"], [item["device_id"] for item in result["pilots"]])
+        self.assertTrue(result["publish"])
+        self.assertFalse(result["wrongVersion"])
+        self.assertEqual(["Updated", "Downloading", "Waiting", "Offline", "Failed"], result["labels"])
+
+        source = SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("Keep this error visible", source)
+        self.assertIn("Withdraw this client update", source)
     def test_manual_enrollment_code_control_is_absent(self):
         source = SCRIPT.read_text(encoding="utf-8")
 

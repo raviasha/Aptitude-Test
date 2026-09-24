@@ -324,7 +324,7 @@ function layout(title, subtitle, content, nav = '') {
       <div class="sidebar-footer"><div class="institution-mark">KSIT<small>Aptitude & assessment</small></div><button class="server-stop" data-stop-server>${facultyIcon('power')}Stop server</button></div>
     </aside>
     <div class="faculty-body">
-      <header class="faculty-topbar"><span>Faculty portal <span class="breadcrumb-divider">/</span> <strong>${({overview:'Overview',banks:'Question banks',tests:'Tests',students:'Students'})[nav.match(/aria-current="page" data-nav="(\w+)"/)?.[1]] || 'Workspace'}</strong></span><div class="faculty-account"><span class="avatar" aria-hidden="true">${esc((state.user.name || 'F').slice(0,1).toUpperCase())}</span><span>${esc(state.user.name || 'Faculty')}<small>Faculty</small></span><button class="secondary small" data-logout>Sign out</button></div></header>
+      <header class="faculty-topbar"><span>Faculty portal <span class="breadcrumb-divider">/</span> <strong>${({overview:'Overview',banks:'Question banks',tests:'Tests',students:'Students',updates:'Client updates'})[nav.match(/aria-current="page" data-nav="(\w+)"/)?.[1]] || 'Workspace'}</strong></span><div class="faculty-account"><span class="avatar" aria-hidden="true">${esc((state.user.name || 'F').slice(0,1).toUpperCase())}</span><span>${esc(state.user.name || 'Faculty')}<small>Faculty</small></span><button class="secondary small" data-logout>Sign out</button></div></header>
       <main id="faculty-main" tabindex="-1"><div class="heading"><div><p class="eyebrow">Your assessment workspace</p><h1>${title}</h1><p>${subtitle || ''}</p></div></div>${content}<footer class="faculty-footer"><span>KSAT · Faculty workspace</span><span>AIML Department, KSIT</span></footer></main>
     </div>
   </div>` : `<header class="top"><a class="brand" href="#" data-home><span>K</span>KSAT</a><nav>${nav}</nav>${logoutButton()}</header><main><div class="heading"><div><p class="eyebrow">College LAN assessment server</p><h1>${title}</h1><p>${subtitle || ''}</p></div></div>${content}</main>`;
@@ -482,6 +482,7 @@ function facultyIcon(name) {
     banks: '<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20M6.5 3H20v19H6.5A2.5 2.5 0 0 1 4 19.5v-14A2.5 2.5 0 0 1 6.5 3Z"/><path d="M8 7h8M8 11h5"/>',
     tests: '<rect x="5" y="5" width="14" height="16" rx="2"/><rect x="9" y="2" width="6" height="5" rx="1"/><path d="m9 14 2 2 4-4"/>',
     students: '<circle cx="9" cy="8" r="3"/><path d="M3 21v-3a6 6 0 0 1 12 0v3M16 5a3 3 0 0 1 0 6M18 15a5 5 0 0 1 3 5"/>',
+    updates: '<path d="M12 3v12m-5-5 5 5 5-5"/><path d="M5 21h14"/>',
     upload: '<path d="M12 16V3m-5 5 5-5 5 5M4 16v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4"/>',
     search: '<circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/>',
     power: '<path d="M12 2v10M6 5a9 9 0 1 0 12 0"/>',
@@ -490,16 +491,72 @@ function facultyIcon(name) {
   return `<svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[name] || paths.banks}</svg>`;
 }
 function adminNav(active) {
-  return [['overview','Overview'],['banks','Question banks'],['tests','Tests'],['students','Students']].map(([key,label]) =>
+  return [['overview','Overview'],['banks','Question banks'],['tests','Tests'],['students','Students'],['updates','Client updates']].map(([key,label]) =>
     `<button class="${active === key ? 'active' : ''}" ${active === key ? 'aria-current="page"' : ''} data-nav="${key}">${facultyIcon(key)}<span>${label}</span></button>`).join('');
 }
 async function admin(view) {
   if (view === 'banks') return questionBanks();
   if (view === 'tests') return tests();
   if (view === 'students') return students();
+  if (view === 'updates') return clientUpdates();
   const data = await api('/api/admin/dashboard');
   const results = data.recent_attempts.length ? `<div class="table-scroll"><table><thead><tr><th>Student</th><th>Assessment</th><th>Submitted</th><th>Score</th><th>Exam integrity</th></tr></thead><tbody>${data.recent_attempts.map(item => `<tr><td><strong>${esc(item.name)}</strong><small>${esc(item.student_id)}</small></td><td>${esc(item.test_name)}</td><td>${date(item.submitted_at)}</td><td><strong>${item.score}/${item.total_questions}</strong><small>${pct(item.percentage)}</small></td><td>${item.violation_count ? `<span class="violation-badge">⚠ ${item.violation_count} violation${item.violation_count===1?'':'s'}</span><small>${item.violations.map(esc).join(' · ')}</small>` : '<span class="clean-badge">✓ Clear</span>'}</td></tr>`).join('')}</tbody></table></div>` : '<p class="muted">Faculty assessment results will appear here after students submit.</p>';
   layout('Overview', 'A clear view of your students, assessments and progress.', `<section class="faculty-welcome"><div><p class="eyebrow">A little preparation. A lot of possibility.</p><h2>Make room for<br/>what comes next.</h2><p>Bring your question banks, launch an assessment and help your students move forward.</p><div class="welcome-actions"><button class="primary" data-nav="tests">Create an assessment ${facultyIcon('arrow')}</button><button class="welcome-link" data-nav="banks">Explore question banks</button></div></div><div class="welcome-art" aria-hidden="true"><span class="art-orbit"></span><div class="art-sheet"><span></span><span></span><i>✓</i><span></span><span></span><i>✓</i></div><div class="art-caption">PREPARE. PRACTISE. PROGRESS.</div></div></section><section class="metrics"><article><span>Enrolled students</span><b>${data.totals.students}</b></article><article><span>Tests completed</span><b>${data.totals.completed}</b></article><article class="dark"><span>Class average</span><b>${pct(data.totals.average)}</b></article></section><section class="grid two"><article class="card"><p class="eyebrow">Class analytics</p><h2>Category performance</h2>${data.category_performance.length ? data.category_performance.map(item => `<div class="bar"><div><span>${esc(item.category)}</span><b>${pct(item.percentage)}</b></div><i><em style="width:${item.percentage}%"></em></i></div>`).join('') : '<p class="muted">Data will appear once students complete tests.</p>'}</article><article class="card"><p class="eyebrow">Exports and backup</p><h2>Keep records safe</h2><p class="muted">Results are shown below and remain available as CSV. Download a full SQLite backup for safe storage.</p><p><a class="secondary link" href="/api/admin/export">Download results CSV</a> <a class="secondary link" href="/api/admin/backup">Download database backup</a></p></article></section><section class="card faculty-results"><p class="eyebrow">Faculty assessment results</p><h2>Submitted results</h2>${results}</section>`, adminNav('overview'));
+}
+
+const eligiblePilotDevices = devices => (devices || []).filter(device => device.active === true);
+const clientUpdateStatusLabel = device => ['Updated','Downloading','Waiting','Offline','Failed'].includes(device?.status)
+  ? device.status : 'Waiting';
+function canPublishClientUpdate(release) {
+  const pilot = (release?.devices || []).find(device => device.device_id === release.pilot_device_id);
+  return release?.state === 'pilot' && pilot?.stage === 'healthy' && pilot.installed_version === release.client_version;
+}
+function appendText(parent, tag, value, className = '') {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  node.textContent = value == null || value === '' ? '—' : String(value);
+  parent.append(node);
+  return node;
+}
+function renderClientUpdateRelease(root, release, devices) {
+  const card = document.createElement('article'); card.className = 'card client-update-release';
+  const heading = document.createElement('div'); heading.className = 'heading';
+  const title = document.createElement('div');
+  appendText(title, 'p', release.state, 'eyebrow');
+  appendText(title, 'h2', `Client ${release.client_version}`);
+  appendText(title, 'p', release.manifest?.release_notes || 'No release notes supplied.', 'muted');
+  heading.append(title); card.append(heading);
+  const metadata = document.createElement('dl'); metadata.className = 'update-metadata';
+  [['Release ID',release.release_id],['Publisher',release.manifest?.authenticode_publisher],['SHA-256',release.bundle_sha256],['Size',`${Number(release.bundle_size || 0).toLocaleString('en-IN')} bytes`]].forEach(([label,value]) => { appendText(metadata,'dt',label); appendText(metadata,'dd',value); });
+  card.append(metadata);
+  const actions = document.createElement('div'); actions.className = 'row-actions update-actions';
+  if (release.state === 'uploaded') {
+    const select = document.createElement('select'); select.setAttribute('aria-label','Pilot lab computer');
+    eligiblePilotDevices(devices).forEach(device => { const option=document.createElement('option'); option.value=device.device_id; option.textContent=device.label; select.append(option); });
+    const pilot = appendText(actions,'button','Start pilot','primary small'); pilot.disabled=!select.value;
+    pilot.addEventListener('click', async () => { try { await api(`/api/admin/client-updates/${encodeURIComponent(release.release_id)}/pilot`,{method:'POST',body:{device_id:select.value}}); notify('Pilot update enabled.'); clientUpdates(); } catch(error) { notify(error.message,true); } });
+    actions.prepend(select);
+  }
+  if (release.state === 'pilot') {
+    const publish=appendText(actions,'button','Publish to all clients','primary small'); publish.disabled=!canPublishClientUpdate(release); publish.title=publish.disabled?'The pilot must report healthy on this exact version first.':'';
+    publish.addEventListener('click', async () => { try { await api(`/api/admin/client-updates/${encodeURIComponent(release.release_id)}/publish`,{method:'POST'}); notify('Update published to all clients.'); clientUpdates(); } catch(error) { notify(error.message,true); } });
+  }
+  if (release.state !== 'withdrawn') {
+    const withdraw=appendText(actions,'button','Withdraw','danger small');
+    withdraw.addEventListener('click', async () => { if (!confirm('Withdraw this client update? Clients that have not started it will no longer receive it.')) return; try { await api(`/api/admin/client-updates/${encodeURIComponent(release.release_id)}/withdraw`,{method:'POST'}); notify('Client update withdrawn.'); clientUpdates(); } catch(error) { notify(error.message,true); } });
+  }
+  card.append(actions);
+  const scroll=document.createElement('div'); scroll.className='table-scroll'; const table=document.createElement('table'); const thead=document.createElement('thead'), header=document.createElement('tr');
+  ['Lab computer','Status','Installed version','Diagnostic','Last report'].forEach(value => appendText(header,'th',value)); thead.append(header); table.append(thead); const tbody=document.createElement('tbody');
+  (release.devices || []).forEach(device => { const row=document.createElement('tr'); [device.label || device.device_id,clientUpdateStatusLabel(device),device.installed_version,device.diagnostic_code,device.reported_at].forEach(value => appendText(row,'td',value)); tbody.append(row); });
+  table.append(tbody); scroll.append(table); card.append(scroll); root.append(card);
+}
+async function clientUpdates() {
+  const [data,deviceData]=await Promise.all([api('/api/admin/client-updates'),api('/api/admin/devices')]);
+  layout('Client updates','Upload one signed release, verify it on a pilot lab computer, then publish it to the lab.',`<section class="card update-upload"><p class="eyebrow">Signed release bundle</p><h2>Upload client update</h2><form id="client-update-upload"><label>Release bundle<input name="bundle" type="file" accept=".ksat-client-update" required /></label><button class="primary">Verify and upload</button><p id="client-update-upload-status" class="muted" role="status" aria-live="polite"></p></form></section><section id="client-update-releases" class="client-update-list"></section>`,adminNav('updates'));
+  const releases=document.querySelector('#client-update-releases'); data.releases.forEach(release => renderClientUpdateRelease(releases,release,deviceData.devices));
+  if (!data.releases.length) appendText(releases,'p','No signed client updates have been uploaded.','muted');
+  document.querySelector('#client-update-upload').addEventListener('submit',async event => { event.preventDefault(); const status=document.querySelector('#client-update-upload-status'); status.textContent='Verifying signatures and release contents…'; status.classList.remove('update-error'); try { await api('/api/admin/client-updates/upload',{method:'POST',body:new FormData(event.currentTarget)}); notify('Client update uploaded.'); clientUpdates(); } catch(error) { status.textContent=error.message; status.classList.add('update-error'); /* Keep this error visible until the next submission. */ } });
 }
 
 async function questionBanks() {
@@ -671,5 +728,5 @@ async function students() {
 }
 
 async function boot() { try { const result=await api('/api/me'); state.user=result.user; state.csrfToken=result.csrf_token || null; state.user ? home() : loginScreen(); } catch { loginScreen(); } }
-if (typeof module !== 'undefined' && module.exports) module.exports = {mathText, mathEsc, questionContentMarkup, facultyLaunchAction, facultyTimingMarkup, tickFacultyTimers, syncFacultyTimers, createFacultyTimerSync};
+if (typeof module !== 'undefined' && module.exports) module.exports = {mathText, mathEsc, questionContentMarkup, facultyLaunchAction, facultyTimingMarkup, tickFacultyTimers, syncFacultyTimers, createFacultyTimerSync, eligiblePilotDevices, clientUpdateStatusLabel, canPublishClientUpdate};
 if (typeof document !== 'undefined') boot();

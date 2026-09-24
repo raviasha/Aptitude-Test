@@ -8,6 +8,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import ssl
 import stat
 import tempfile
@@ -50,6 +51,7 @@ from ksat.protocol import (
 _API_PREFIX = "/api/client/v1"
 _MAX_JSON_BYTES = 1024 * 1024
 _MAX_PACK_BYTES = 64 * 1024 * 1024
+_MAX_UPDATE_BYTES = 260 * 1024 * 1024
 _PACK_CHUNK_BYTES = 256 * 1024
 _MAX_RETRY_AFTER_SECONDS = 300.0
 _CONTENT_HASH_LENGTH = 64
@@ -775,6 +777,93 @@ class CoordinatorClient:
                 "invalid_coordinator_response", "The coordinator returned an invalid response.", False
             )
         return receipt
+
+    def update_policy(self, installed_version: str) -> dict | None:
+        path = f"{_API_PREFIX}/update-policy"
+        headers = self._proof_headers("GET", path, b"", bearer=False)
+        headers.update({"Accept": "application/json", "X-KSAT-Client-Version": installed_version})
+        try:
+            response = self._client.get(path, headers=headers)
+            self._raise_for_status(response.status_code, response.headers, response.content)
+            value = _decode_json(response.content, "invalid_coordinator_response")
+        except CoordinatorProblem:
+            raise
+        except httpx.TimeoutException as error:
+            raise CoordinatorProblem("coordinator_timeout", "The coordinator request timed out.", True) from error
+        except httpx.TransportError as error:
+            raise CoordinatorProblem("coordinator_unavailable", "The coordinator is unavailable.", True) from error
+        if value is None:
+            return None
+        required = {"release_id","client_version","minimum_source_version","bundle_sha256","bundle_size","manifest","state"}
+        if not isinstance(value, dict) or set(value) != required:
+            raise CoordinatorProblem("invalid_coordinator_response", "The coordinator returned an invalid response.", False)
+        return value
+
+    def download_update_range(self, release_id: str, offset: int, destination: Path) -> tuple[int, int]:
+        if type(offset) is not int or offset < 0 or offset > _MAX_UPDATE_BYTES:
+            raise ContentVerificationError("Client update download offset is invalid.")
+        path = f"{_API_PREFIX}/updates/{release_id}/bundle"
+        headers = self._proof_headers("GET", path, b"", bearer=False)
+        headers["Accept"] = "application/octet-stream"
+        if offset:
+            headers["Range"] = f"bytes={offset}-"
+        destination = Path(destination)
+        if destination.exists() and destination.stat().st_size != offset:
+            raise ContentVerificationError("Client update partial file does not match its resume offset.")
+        try:
+            with self._client.stream("GET", path, headers=headers) as response:
+                if response.status_code not in ({206} if offset else {200, 206}):
+                    body = response.read()
+                    self._raise_for_status(response.status_code, response.headers, body)
+                    raise ContentVerificationError("Client update range response is invalid.")
+                content_range = response.headers.get("Content-Range")
+                if response.status_code == 206:
+                    match = re.fullmatch(r"bytes (\d+)-(\d+)/(\d+)", content_range or "")
+                    if match is None or int(match.group(1)) != offset:
+                        raise ContentVerificationError("Client update content range is invalid.")
+                    end, total = int(match.group(2)), int(match.group(3))
+                    if end < offset or total <= end or total > _MAX_UPDATE_BYTES:
+                        raise ContentVerificationError("Client update content range is invalid.")
+                else:
+                    try:
+                        total = int(response.headers["Content-Length"])
+                    except (KeyError, ValueError) as error:
+                        raise ContentVerificationError("Client update content length is invalid.") from error
+                    if total <= 0 or total > _MAX_UPDATE_BYTES:
+                        raise ContentVerificationError("Client update content length is invalid.")
+                mode = "ab" if offset else "wb"
+                count = offset
+                with destination.open(mode) as stream:
+                    for chunk in response.iter_bytes(chunk_size=_PACK_CHUNK_BYTES):
+                        count += len(chunk)
+                        if count > total:
+                            raise ContentVerificationError("Client update exceeds its declared size.")
+                        stream.write(chunk)
+                    stream.flush(); os.fsync(stream.fileno())
+                if count != total:
+                    raise ContentVerificationError("Client update download is truncated.")
+                return count, total
+        except CoordinatorProblem:
+            raise
+        except httpx.TimeoutException as error:
+            raise CoordinatorProblem("coordinator_timeout", "The coordinator request timed out.", True) from error
+        except httpx.TransportError as error:
+            raise CoordinatorProblem("coordinator_unavailable", "The coordinator is unavailable.", True) from error
+
+    def report_update_status(
+        self, release_id: str, *, stage: str, installed_version: str,
+        diagnostic_code: str | None, attempt_id: str,
+    ) -> dict:
+        path = f"{_API_PREFIX}/updates/{release_id}/status"
+        body = canonical_json({
+            "stage": stage, "installed_version": installed_version,
+            "diagnostic_code": diagnostic_code, "attempt_id": attempt_id,
+        })
+        response = self._request_bytes("POST", path, body=body)
+        value = _decode_json(response, "invalid_coordinator_response")
+        if not isinstance(value, dict):
+            raise CoordinatorProblem("invalid_coordinator_response", "The coordinator returned an invalid response.", False)
+        return value
 
     def download_pack(
         self,

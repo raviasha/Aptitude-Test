@@ -1616,6 +1616,17 @@ class ClientStore:
             raise ValueError("Multiple active attempts require recovery intervention.")
         return None if not rows else self.load_attempt(rows[0]["attempt_id"])
 
+    def update_deferral_reason(self) -> str | None:
+        """Return the assessment-safety reason that blocks client replacement."""
+        active = self.active_attempt()
+        if active is not None and active.state == "in_progress":
+            return "active_attempt"
+        if active is not None and active.state == "sealed_pending":
+            return "pending_submission"
+        if self.pending_submissions():
+            return "pending_submission"
+        return None
+
     @staticmethod
     def _editable(connection: sqlite3.Connection, attempt_id: str) -> sqlite3.Row:
         row = connection.execute(

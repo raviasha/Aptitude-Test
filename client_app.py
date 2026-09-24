@@ -16,6 +16,7 @@ import random
 import secrets
 import socket
 import sqlite3
+import sys
 import tempfile
 import threading
 import time
@@ -46,6 +47,7 @@ from ksat.client.coordinator import (
 from ksat.client.identity import DeviceIdentityStore, derive_state_integrity_key
 from ksat.client.outbox import OutboxWorker
 from ksat.client.runtime import AssessmentRuntime, SystemClock
+from ksat.client.updates import ClientUpdateManager
 from ksat.client.store import (
     AttemptSealedError,
     ClientStateMigrationRequired,
@@ -53,9 +55,13 @@ from ksat.client.store import (
 )
 from ksat.coordinator.process_lock import CoordinatorProcessLock
 from ksat.coordinator.tls import COORDINATOR_SIGNING_KEY_OID
+from ksat.update_protocol import load_update_public_key
+from ksat.windows_authenticode import verify_authenticode
 
 
 _ROOT = Path(__file__).resolve().parent
+_BUNDLE_ROOT = Path(getattr(sys, "_MEIPASS", _ROOT))
+_CLIENT_VERSION = "2.0.0"
 _CLIENT_STATIC = _ROOT / "static" / "client"
 _SHARED_STATIC = _ROOT / "static"
 _MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
@@ -740,6 +746,7 @@ class ClientServices:
     coordinator_factory: Any | None = None
     outbox_factory: Any | None = None
     lifecycle_lock: ClientProcessLock | None = None
+    update_manager: ClientUpdateManager | None = None
 
 
 def _diagnostic_reference() -> str:
@@ -814,6 +821,7 @@ class _ClientContext:
         self._control_thread: threading.Thread | None = None
         self._control_reaper_thread: threading.Thread | None = None
         self._control_restart_thread: threading.Thread | None = None
+        self.update_snapshot = None
 
     def initialize(self) -> None:
         with self._prefetch_state_lock:
@@ -837,6 +845,7 @@ class _ClientContext:
             self._outbox_stop_called = False
             self._outbox_started = True
             self.observe_snapshot(recovered)
+            self._check_client_update(recovered)
             self._start_control_thread()
             if (
                 self.services.background_prefetch
@@ -848,6 +857,18 @@ class _ClientContext:
             if self.startup_problem is None:
                 self.startup_problem = self.problem("client_startup_failed", status=500)
             self._stop_started_services()
+
+    def _check_client_update(self, recovered: Any | None) -> None:
+        manager = self.services.update_manager if self.services is not None else None
+        if manager is None or getattr(self.identity, "device_id", None) is None:
+            return
+        reason = self.services.store.update_deferral_reason()
+        self.update_snapshot = manager.check(
+            active_attempt=reason == "active_attempt",
+            pending_submission=reason == "pending_submission",
+        )
+        if self.update_snapshot.stage == "required":
+            self.update_snapshot = manager.download()
 
     def shutdown(self) -> None:
         with self._prefetch_state_lock:
@@ -1444,6 +1465,13 @@ def _load_locked_production_services(
                 raise ValueError("Protected device enrollment does not match client configuration.")
             runtime = AssessmentRuntime(store, identity, SystemClock())
         outbox = OutboxWorker(store, coordinator, SystemClock())
+        update_key_path = _BUNDLE_ROOT / "update-release-public.json"
+        update_manager = None
+        if update_key_path.is_file():
+            update_manager = ClientUpdateManager(
+                data_dir / "updates", coordinator, _CLIENT_VERSION,
+                load_update_public_key(update_key_path), verify_authenticode,
+            )
     except BaseException:
         try:
             if coordinator is not None:
@@ -1471,6 +1499,7 @@ def _load_locked_production_services(
         coordinator_factory=coordinator_factory,
         outbox_factory=outbox_factory,
         lifecycle_lock=lifecycle_lock,
+        update_manager=update_manager,
     )
 
 
@@ -1810,6 +1839,15 @@ def create_client_app(services: ClientServices | None = None) -> FastAPI:
                 "enrolled": True,
                 "student": _student_payload(session),
                 "attempt": attempt,
+                "problem": None,
+            }
+        if context.update_snapshot is not None and context.update_snapshot.stage != "current":
+            return {
+                "state": "client_update_required",
+                "enrolled": bool(getattr(context.identity, "device_id", None)),
+                "student": None,
+                "attempt": None,
+                "update": _jsonable(context.update_snapshot),
                 "problem": None,
             }
         enrolled = bool(getattr(context.identity, "device_id", None))

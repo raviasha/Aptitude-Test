@@ -1487,16 +1487,20 @@ def save_question_package(
             if existing:
                 new_bank = False
                 bank_id = existing["bank_id"]
+                has_assessment = connection.execute(
+                    "SELECT 1 FROM tests WHERE bank_id = ? LIMIT 1",
+                    (bank_id,),
+                ).fetchone()
                 has_history = connection.execute(
                     """SELECT 1 FROM responses r
                        JOIN questions q ON q.question_id = r.question_id
                        WHERE q.bank_id = ? LIMIT 1""",
                     (bank_id,),
                 ).fetchone()
-                if has_history:
+                if has_assessment or has_history:
                     raise HTTPException(
                         409,
-                        "This bank has attempt history. Import a versioned bank to preserve those attempts.",
+                        "This bank has assessment or attempt history. Import a versioned bank to preserve it.",
                     )
                 connection.execute(
                     """UPDATE question_banks

@@ -9,6 +9,7 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 import app
 from scripts.build_quantitative_bank import clean_math_text
@@ -34,6 +35,15 @@ class StudentRegistrationTests(unittest.TestCase):
         app.BACKUP_DIR = self.original_backup_dir
         app.QUESTION_BANKS_DIR = self.original_question_banks_dir
         self.temp_dir.cleanup()
+
+    def _replacement_question(self, *, text: str = "112 × 5⁴") -> dict:
+        return {
+            "key": "ch01-q0124", "question_text": text, "question_html": "",
+            "category": "Quantitative Aptitude", "chapter": "1", "stimulus_id": None,
+            "difficulty": "Medium", "options": {"A": "6700", "B": "70000", "C": "76500", "D": "77200"},
+            "correct_answer": "B", "explanation": "", "solution_steps": ["112 × 5⁴ = 70000"],
+            "option_explanations": {},
+        }
 
     def test_explicit_package_update_refreshes_an_unused_bank_in_place(self):
         question = {
@@ -62,10 +72,101 @@ class StudentRegistrationTests(unittest.TestCase):
             stored = connection.execute(
                 "SELECT * FROM questions WHERE bank_id = ?", (first["bank_id"],)
             ).fetchone()
+            bank_count = connection.execute(
+                "SELECT COUNT(*) FROM question_banks WHERE bank_name = ?", ("Update test",)
+            ).fetchone()[0]
+            question_count = connection.execute(
+                "SELECT COUNT(*) FROM questions WHERE bank_id = ?", (first["bank_id"],)
+            ).fetchone()[0]
         self.assertEqual(stored["question_id"], original_id)
         self.assertEqual(stored["question_text"], "112 × 5⁴")
         self.assertEqual(stored["correct_answer"], "B")
         self.assertEqual(json.loads(stored["solution_steps"]), ["112 × 5⁴ = 70000"])
+        self.assertEqual((bank_count, question_count), (1, 1))
+
+    def test_package_update_refuses_a_bank_referenced_by_an_assessment(self):
+        question = self._replacement_question(text="stale")
+        first = app.save_question_package("Referenced bank", [question], [], "old.zip", 3)
+        with app.db() as connection:
+            connection.execute(
+                "INSERT INTO tests (test_name, composition, bank_id, created_at) VALUES (?, ?, ?, ?)",
+                ("Uses bank", "{}", first["bank_id"], app.now()),
+            )
+
+        with self.assertRaisesRegex(app.HTTPException, "assessment or attempt history") as caught:
+            app.save_question_package(
+                "Referenced bank", [self._replacement_question()], [], "corrected.zip", 3,
+                replace_existing=True,
+            )
+
+        self.assertEqual(caught.exception.status_code, 409)
+        with app.db() as connection:
+            bank = connection.execute(
+                "SELECT source_html_filename FROM question_banks WHERE bank_id = ?", (first["bank_id"],)
+            ).fetchone()
+            stored = connection.execute(
+                "SELECT question_text, active FROM questions WHERE bank_id = ?", (first["bank_id"],)
+            ).fetchone()
+            test_count = connection.execute(
+                "SELECT COUNT(*) FROM tests WHERE bank_id = ?", (first["bank_id"],)
+            ).fetchone()[0]
+        self.assertEqual(bank["source_html_filename"], "old.zip")
+        self.assertEqual((stored["question_text"], stored["active"], test_count), ("stale", 1, 1))
+
+    def test_package_update_rejects_duplicate_existing_source_keys_without_partial_changes(self):
+        question = self._replacement_question(text="stale")
+        first = app.save_question_package("Duplicate-key bank", [question], [], "old.zip", 3)
+        with app.db() as connection:
+            connection.execute(
+                """INSERT INTO questions
+                   (question_text, source_key, category, chapter, difficulty, option_a, option_b,
+                    option_c, option_d, options_json, correct_answer, explanation, active, bank_id,
+                    question_html, solution_steps, option_explanations, display_media_json, created_at)
+                   SELECT question_text, source_key, category, chapter, difficulty, option_a, option_b,
+                    option_c, option_d, options_json, correct_answer, explanation, active, bank_id,
+                    question_html, solution_steps, option_explanations, display_media_json, created_at
+                   FROM questions WHERE bank_id = ?""",
+                (first["bank_id"],),
+            )
+
+        with self.assertRaisesRegex(app.HTTPException, "duplicate source keys"):
+            app.save_question_package(
+                "Duplicate-key bank", [self._replacement_question()], [], "corrected.zip", 3,
+                replace_existing=True,
+            )
+
+        with app.db() as connection:
+            bank = connection.execute(
+                "SELECT source_html_filename FROM question_banks WHERE bank_id = ?", (first["bank_id"],)
+            ).fetchone()
+            stored = connection.execute(
+                "SELECT question_text, active FROM questions WHERE bank_id = ? ORDER BY question_id",
+                (first["bank_id"],),
+            ).fetchall()
+        self.assertEqual(bank["source_html_filename"], "old.zip")
+        self.assertEqual([(row["question_text"], row["active"]) for row in stored], [("stale", 1), ("stale", 1)])
+
+    def test_package_update_rolls_back_database_changes_when_media_storage_fails(self):
+        question = self._replacement_question(text="stale")
+        first = app.save_question_package("Rollback bank", [question], [], "old.zip", 3)
+        changed = self._replacement_question()
+        changed["display_media"] = {"question": {"sha256": "a" * 64}}
+
+        with patch("app.question_media.store_display_media", side_effect=RuntimeError("disk failure")):
+            with self.assertRaisesRegex(RuntimeError, "disk failure"):
+                app.save_question_package(
+                    "Rollback bank", [changed], [], "corrected.zip", 3, replace_existing=True
+                )
+
+        with app.db() as connection:
+            bank = connection.execute(
+                "SELECT source_html_filename FROM question_banks WHERE bank_id = ?", (first["bank_id"],)
+            ).fetchone()
+            stored = connection.execute(
+                "SELECT question_text, active FROM questions WHERE bank_id = ?", (first["bank_id"],)
+            ).fetchone()
+        self.assertEqual(bank["source_html_filename"], "old.zip")
+        self.assertEqual((stored["question_text"], stored["active"]), ("stale", 1))
 
     def test_private_use_math_fragments_are_not_returned_to_the_browser(self):
         self.assertEqual(app.clean_display_text("x\uf8eb + y\uf8f6"), "x + y")

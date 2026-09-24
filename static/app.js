@@ -166,6 +166,15 @@ function mediaMarkup(media, className) {
   if (!media?.url) return '';
   return `<figure class="display-media ${className}"><img src="${esc(media.url)}" alt="${esc(media.alt_text)}" width="${Number(media.width)}" height="${Number(media.height)}" /></figure>`;
 }
+
+function questionContentMarkup(q) {
+  const textQuestion = q.question_html ? `<div class="visual-question">${q.question_html}</div>` : `<h1>${mathEsc(q.question_text)}</h1>`;
+  const questionMedia = q.display_media?.question;
+  const visibleText = questionMedia && questionMedia.placement !== 'context'
+    ? `<div class="sr-only">${textQuestion}</div>`
+    : textQuestion;
+  return `${stimulusMarkup(q.stimulus)}${mediaMarkup(questionMedia, 'question-media')}${visibleText}`;
+}
 const date = value => value ? new Intl.DateTimeFormat('en-IN', {day:'2-digit',month:'short',year:'numeric'}).format(new Date(value)) : '—';
 
 async function api(path, options = {}) {
@@ -421,8 +430,7 @@ function renderAttempt() {
   const timed = Number.isFinite(attempt.remaining_seconds);
   const solutionMedia = q.feedback?.display_media?.solution || [];
   const feedback = attempt.feedback_allowed && q.feedback ? `<article class="card feedback"><h3>${q.feedback.correct ? 'Correct' : 'Not quite'}</h3><p><strong>Correct answer:</strong> ${q.feedback.correct_answer}</p>${q.feedback.solution_steps?.length ? `<h4>Solution steps</h4>${solutionMedia.length ? `<ol class="sr-only">${q.feedback.solution_steps.map(step => `<li>${mathEsc(step)}</li>`).join('')}</ol>` : `<ol>${q.feedback.solution_steps.map(step => `<li>${mathEsc(step)}</li>`).join('')}</ol>`}` : ''}${solutionMedia.map((_, index) => mediaMarkup(q.feedback?.display_media?.solution?.[index], 'solution-media')).join('')}</article>` : '';
-  const textQuestion = q.question_html ? `<div class="visual-question">${q.question_html}</div>` : `<h1>${mathEsc(q.question_text)}</h1>`;
-  const questionContent = `${stimulusMarkup(q.stimulus)}${mediaMarkup(q.display_media?.question, 'question-media')}${q.display_media?.question ? `<div class="sr-only">${textQuestion}</div>` : textQuestion}`;
+  const questionContent = questionContentMarkup(q);
   app.innerHTML = `<header class="top exam-top"><a class="brand"><span>K</span>KSAT</a>${timed ? `<div class="exam-timer"><span>Time remaining</span><strong data-exam-timer>${formatTime(attempt.remaining_seconds)}</strong></div>` : '<div class="save">✓ Answer saved automatically</div><button class="ghost" data-exit>Save and exit</button>'}</header><main class="assessment ${proctored?'proctored-assessment':''}"><aside><p class="eyebrow">Questions launched</p><strong>${attempt.questions.length}</strong><p>${answered} answered · ${attempt.questions.length-answered} unanswered</p><div class="legend-key"><span><i class="answered"></i>Attempted</span><span><i class="unanswered"></i>Unattempted</span></div><div class="numbers">${attempt.questions.map((item,index) => `<button class="${index===state.questionIndex?'current':''} ${item.selected_answer?'answered':'unanswered'}" data-index="${index}" aria-label="Question ${index+1}, ${item.selected_answer?'attempted':'unattempted'}">${index+1}</button>`).join('')}</div></aside><section class="question"><div class="question-meta"><span>${esc(short(q.category))} · ${esc(q.chapter)} · ${esc(q.difficulty)}</span><span>Question ${state.questionIndex+1} of ${attempt.questions.length}</span></div>${questionContent}<div class="answers">${optionEntries(q).map(([key,value]) => `<button class="${q.selected_answer===key?'selected':''}" data-answer="${key}" ${attempt.feedback_allowed && q.selected_answer ? 'disabled' : ''}><i>${key}</i>${mediaMarkup(q.display_media?.options?.[key], 'option-media')}${q.display_media?.options?.[key] ? `<span class="sr-only">${mathEsc(value)}</span>` : mathEsc(value)}<b>${q.selected_answer===key?'✓':''}</b></button>`).join('')}</div>${feedback}<footer><button class="secondary" data-prev ${state.questionIndex===0?'disabled':''}>← Previous</button>${state.questionIndex===attempt.questions.length-1 ? '<button class="primary" data-submit>Review & submit →</button>' : '<button class="primary" data-next>Next question →</button>'}</footer></section></main>`;
   const assessmentMain = document.querySelector('main.assessment');
   assessmentMain.classList.add('institutional-assessment');
@@ -663,5 +671,5 @@ async function students() {
 }
 
 async function boot() { try { const result=await api('/api/me'); state.user=result.user; state.csrfToken=result.csrf_token || null; state.user ? home() : loginScreen(); } catch { loginScreen(); } }
-if (typeof module !== 'undefined' && module.exports) module.exports = {mathText, mathEsc, facultyLaunchAction, facultyTimingMarkup, tickFacultyTimers, syncFacultyTimers, createFacultyTimerSync};
+if (typeof module !== 'undefined' && module.exports) module.exports = {mathText, mathEsc, questionContentMarkup, facultyLaunchAction, facultyTimingMarkup, tickFacultyTimers, syncFacultyTimers, createFacultyTimerSync};
 if (typeof document !== 'undefined') boot();

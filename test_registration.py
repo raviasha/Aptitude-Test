@@ -572,7 +572,7 @@ class StudentRegistrationTests(unittest.TestCase):
             "options": {"A": "0", "B": "1", "C": "7", "D": "84"}, "correct_answer": "B",
             "solution_steps": ["The correct answer is option B."],
             "display_media": {
-                "question": {"asset": "assets/q.png", "sha256": digest, "alt_text": "seven to the power eighty-four"},
+                "question": {"asset": "assets/q.png", "sha256": digest, "alt_text": "seven to the power eighty-four", "placement": "context"},
                 "options": {"D": {"asset": "assets/d.png", "sha256": digest, "alt_text": "option D"}},
                 "solution": [{"asset": "assets/s.png", "sha256": digest, "alt_text": "textbook solution"}],
             },
@@ -596,7 +596,9 @@ class StudentRegistrationTests(unittest.TestCase):
             row = connection.execute(
                 "SELECT display_media_json FROM questions WHERE bank_id = ?", (saved["bank_id"],)
             ).fetchone()
-        self.assertIn("asset_filename", json.loads(row["display_media_json"])["question"])
+        stored_question_media = json.loads(row["display_media_json"])["question"]
+        self.assertIn("asset_filename", stored_question_media)
+        self.assertEqual(stored_question_media["placement"], "context")
 
         v2_manifest = {
             "format_version": 2,

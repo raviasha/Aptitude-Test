@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import sys
 import tempfile
@@ -18,7 +19,7 @@ import app
 
 from .audit import AuditSummary
 from .config import ChapterConfig
-from .models import CandidateRecord, PackageResult, PipelineBlocked, PIPELINE_VERSION
+from .models import CandidateRecord, PackageResult, PipelineBlocked, PIPELINE_VERSION, RecordEvidence
 from .rules import POLICY_VERSION
 from .store import canonical_json, dependency_fingerprint
 
@@ -43,6 +44,139 @@ def _write_member(archive: zipfile.ZipFile, name: str, content: bytes) -> None:
     info.compress_type = zipfile.ZIP_DEFLATED
     info.external_attr = 0o100644 << 16
     archive.writestr(info, content, compresslevel=9)
+
+
+def package_content_digest(path: Path) -> str:
+    """Hash sorted ZIP member names and bytes, excluding container metadata."""
+    try:
+        with zipfile.ZipFile(path) as archive:
+            members = {item.filename: archive.read(item.filename) for item in archive.infolist() if not item.is_dir()}
+    except (OSError, zipfile.BadZipFile) as error:
+        raise PipelineBlocked(f"Question package is unreadable: {path}") from error
+    digest = hashlib.sha256()
+    for name in sorted(members):
+        encoded = name.encode("utf-8")
+        digest.update(len(encoded).to_bytes(8, "big"))
+        digest.update(encoded)
+        digest.update(len(members[name]).to_bytes(8, "big"))
+        digest.update(members[name])
+    return digest.hexdigest()
+
+
+def build_shared_visual_overlay_package(
+    config: ChapterConfig,
+    baseline_path: Path,
+    evidence: Iterable[RecordEvidence],
+    field_media: Mapping[str, Any],
+    validation: Mapping[str, Any],
+    output_path: Path,
+) -> PackageResult:
+    """Preserve accepted baseline records and add only reviewed shared source visuals."""
+    baseline = Path(baseline_path)
+    output = Path(output_path)
+    if not baseline.is_file() or baseline.resolve() == output.resolve():
+        raise PipelineBlocked("Shared-visual packaging needs a separate accepted baseline ZIP.")
+    if output.exists():
+        raise PipelineBlocked("Shared-visual packaging refuses to overwrite an existing ZIP.")
+    chapter_validation = validation.get("chapters", {}).get(str(config.chapter), {})
+    if chapter_validation.get("errors") != [] or chapter_validation.get("association_count") is None:
+        raise PipelineBlocked("Shared-visual packaging needs a current zero-error association audit.")
+    approved_groups = {
+        item.get("context_id"): item
+        for item in chapter_validation.get("groups", [])
+        if isinstance(item, Mapping) and item.get("vision_verdict") == "pass"
+    }
+    configured_groups = config.shared_contexts.get("question", {})
+    if set(approved_groups) != set(configured_groups):
+        raise PipelineBlocked("Shared-visual vision coverage does not match configured context groups.")
+    evidence_values = tuple(evidence)
+    by_number = {item.question_number: item for item in evidence_values}
+    if len(by_number) != len(evidence_values):
+        raise PipelineBlocked("Source evidence contains duplicate question numbers.")
+    try:
+        with zipfile.ZipFile(baseline) as archive:
+            members = {item.filename: archive.read(item.filename) for item in archive.infolist() if not item.is_dir()}
+    except (OSError, zipfile.BadZipFile) as error:
+        raise PipelineBlocked("Accepted baseline ZIP is unreadable.") from error
+    try:
+        manifest = json.loads(members["manifest.json"])
+        question_file = manifest["question_files"][0]
+        questions = [json.loads(line) for line in members[question_file].decode("utf-8").splitlines() if line]
+    except (KeyError, UnicodeDecodeError, json.JSONDecodeError, TypeError, IndexError) as error:
+        raise PipelineBlocked("Accepted baseline ZIP has malformed questions or manifest.") from error
+    assets: dict[str, bytes] = {}
+    changed_keys: list[str] = []
+    for question in questions:
+        key = question.get("key")
+        if not isinstance(key, str) or not key.startswith(f"ch{config.chapter:02d}-q"):
+            raise PipelineBlocked("Accepted baseline question identity does not match the configured chapter.")
+        number = int(key.rsplit("q", 1)[1])
+        record = by_number.get(number)
+        raw_media = field_media.get(str(number))
+        question_media = raw_media.get("question") if isinstance(raw_media, Mapping) else None
+        hashes = question_media.get("crop_sha256s") if isinstance(question_media, Mapping) else None
+        alt_text = question_media.get("alt_text") if isinstance(question_media, Mapping) else None
+        if not isinstance(hashes, list) or len(hashes) != 1 or not isinstance(alt_text, str) or not alt_text.strip():
+            raise PipelineBlocked(f"{key} lacks one reviewed shared visual and meaningful alternative text.")
+        if record is None:
+            raise PipelineBlocked(f"{key} lacks current source evidence.")
+        crop = {item.sha256: item for item in record.question_crops}.get(hashes[0])
+        if crop is None or not crop.path.is_file():
+            raise PipelineBlocked(f"{key} shared visual is absent from current source evidence.")
+        content = crop.path.read_bytes()
+        digest = hashlib.sha256(content).hexdigest()
+        if digest != crop.sha256:
+            raise PipelineBlocked(f"{key} shared visual bytes changed after review.")
+        asset_name = f"assets/{digest}.png"
+        assets.setdefault(asset_name, content)
+        question["display_media"] = {
+            **(question.get("display_media") if isinstance(question.get("display_media"), dict) else {}),
+            "question": {"asset": asset_name, "alt_text": alt_text.strip(), "sha256": digest, "placement": "context"},
+        }
+        changed_keys.append(key)
+    rejection_member = manifest.get("rejected_questions_file")
+    rejected = []
+    if isinstance(rejection_member, str) and rejection_member in members:
+        rejected = [json.loads(line) for line in members[rejection_member].decode("utf-8").splitlines() if line]
+    configured_count = config.question_numbers[1] - config.question_numbers[0] + 1
+    if len(questions) + len(rejected) != configured_count:
+        raise PipelineBlocked("Baseline questions and explicit omissions do not cover the configured chapter.")
+    if len(rejected) > int(configured_count * 0.05):
+        raise PipelineBlocked("Explicit omissions exceed the five-percent chapter cap.")
+    maintenance = {
+        "chapter": config.chapter,
+        "baseline_archive_sha256": _sha256_path(baseline),
+        "baseline_content_digest": package_content_digest(baseline),
+        "changed_question_keys": changed_keys,
+        "omissions": rejected,
+        "root_cause": "genuine spatial source visuals were absent from the accepted text-only package",
+        "fix": "attach reviewed shared textbook crops as display_media.question while preserving baseline text",
+        "validation": chapter_validation,
+    }
+    members[question_file] = _canonical_jsonl(questions)
+    members["metadata/fidelity-maintenance.json"] = canonical_json(maintenance)
+    members.update(assets)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    temporary_name: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=output.parent, prefix=f".{output.stem}.", suffix=".tmp", delete=False) as temporary:
+            temporary_name = temporary.name
+        temporary_path = Path(temporary_name)
+        with zipfile.ZipFile(temporary_path, "w") as archive:
+            for name in sorted(members):
+                _write_member(archive, name, members[name])
+        with temporary_path.open("rb") as source:
+            app.parse_question_package(source)
+        try:
+            os.link(temporary_path, output)
+        except FileExistsError as error:
+            raise PipelineBlocked("Shared-visual packaging refuses to overwrite an existing ZIP.") from error
+        temporary_path.unlink()
+        temporary_name = None
+    finally:
+        if temporary_name is not None:
+            Path(temporary_name).unlink(missing_ok=True)
+    return PackageResult(path=output, sha256=_sha256_path(output), question_count=len(questions), rejected_count=len(rejected), manifest=manifest)
 
 
 def _require_audit_summary(

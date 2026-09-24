@@ -53,6 +53,9 @@ def validate_media_item(
     digest = hashlib.sha256(content).hexdigest()
     if str(raw.get("sha256", "")).lower() != digest:
         raise ValueError(f"{question_key} display-media hash does not match: {asset}")
+    placement = raw.get("placement", "replacement")
+    if placement not in {"replacement", "context"}:
+        raise ValueError(f"{question_key} display media placement must be replacement or context.")
     return {
         "asset": asset,
         "alt_text": alt_text,
@@ -60,6 +63,7 @@ def validate_media_item(
         "width": width,
         "height": height,
         "content": content,
+        "placement": placement,
     }
 
 
@@ -104,13 +108,16 @@ def _store_item(item: Mapping[str, Any], asset_dir: Path) -> dict[str, Any]:
     digest = str(item["sha256"])
     filename = digest + ".png"
     (asset_dir / filename).write_bytes(bytes(item["content"]))
-    return {
+    result = {
         "asset_filename": filename,
         "alt_text": str(item["alt_text"]),
         "sha256": digest,
         "width": int(item["width"]),
         "height": int(item["height"]),
     }
+    if item.get("placement") == "context":
+        result["placement"] = "context"
+    return result
 
 
 def store_display_media(media: Mapping[str, Any], *, asset_dir: Path) -> dict[str, Any]:
@@ -128,12 +135,15 @@ def store_display_media(media: Mapping[str, Any], *, asset_dir: Path) -> dict[st
 
 def _public_item(item: Mapping[str, Any], bank_id: int) -> dict[str, Any]:
     filename = str(item["asset_filename"])
-    return {
+    result = {
         "asset_url": f"/api/question-assets/{bank_id}/{filename}",
         "alt_text": str(item["alt_text"]),
         "width": int(item["width"]),
         "height": int(item["height"]),
     }
+    if item.get("placement") == "context":
+        result["placement"] = "context"
+    return result
 
 
 def public_display_media(

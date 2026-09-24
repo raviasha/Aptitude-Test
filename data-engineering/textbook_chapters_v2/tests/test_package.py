@@ -25,7 +25,11 @@ from textbook_chapters_v2.audit import AuditLedger, AuditSummary, approval_depen
 from textbook_chapters_v2.candidates import assemble_candidate
 from textbook_chapters_v2.config import ChapterConfig
 from textbook_chapters_v2.models import AuditRecord, CandidateRecord, CropBox, PipelineBlocked, RecordEvidence, SourceCrop
-from textbook_chapters_v2.package import build_candidate_package
+from textbook_chapters_v2.package import (
+    build_candidate_package,
+    build_shared_visual_overlay_package,
+    package_content_digest,
+)
 from textbook_chapters_v2.store import dependency_fingerprint
 from textbook_chapters_v2.vision import extraction_job_fingerprint
 
@@ -88,6 +92,69 @@ class CandidatePackageTests(unittest.TestCase):
             source_image_sha256="c" * 64,
             source_dpi=240,
         )
+
+    def test_package_content_digest_ignores_zip_timestamp_and_compression(self) -> None:
+        first = self.root / "first.zip"
+        second = self.root / "second.zip"
+        with zipfile.ZipFile(first, "w", compression=zipfile.ZIP_STORED) as archive:
+            archive.writestr("b.txt", b"two")
+            archive.writestr("a.txt", b"one")
+        with zipfile.ZipFile(second, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            info = zipfile.ZipInfo("a.txt", date_time=(2026, 9, 24, 1, 2, 4))
+            archive.writestr(info, b"one")
+            archive.writestr("b.txt", b"two")
+
+        self.assertEqual(package_content_digest(first), package_content_digest(second))
+
+    def test_shared_visual_overlay_preserves_baseline_text_and_adds_reviewed_asset(self) -> None:
+        baseline = self.root / "baseline.zip"
+        output = self.root / "visual.zip"
+        manifest = {
+            "format_version": 3,
+            "bank_name": "Accepted baseline",
+            "question_files": ["questions/ch01.jsonl"],
+            "rejected_questions_file": "metadata/rejected-questions.jsonl",
+        }
+        question = {
+            "key": "ch01-q0334", "question_text": "Preserve this text", "category": "Test",
+            "chapter": "1", "difficulty": "Medium", "options": {"A": "0", "B": "1", "C": "2", "D": "3"},
+            "correct_answer": "B", "solution_steps": ["Preserve this solution."],
+        }
+        with zipfile.ZipFile(baseline, "w") as archive:
+            archive.writestr("manifest.json", json.dumps(manifest))
+            archive.writestr("questions/ch01.jsonl", json.dumps(question) + "\n")
+            archive.writestr("metadata/rejected-questions.jsonl", b"")
+        config = ChapterConfig.from_dict({
+            "chapter": 1, "bank_name": "Accepted baseline", "question_pages": [1, 1],
+            "answer_pages": [1, 1], "solution_pages": [1, 1], "question_numbers": [334, 334],
+            "shared_contexts": {"question": {"visual": {
+                "question_numbers": [334], "description": "Complete reviewed chart",
+                "segments": [{"page": 1, "left": 0, "top": 0, "right": 1, "bottom": 1}],
+            }}},
+        })
+        evidence = replace(self.evidence, question_crops=(replace(self.question_crop, context_id="visual"),))
+        field_media = {"334": {"question": {
+            "crop_sha256s": [self.question_crop.sha256],
+            "component_sha256s": [self.question_crop.sha256],
+            "alt_text": "Complete reviewed chart",
+        }}}
+        validation = {"chapters": {"1": {
+            "errors": [], "association_count": 1,
+            "groups": [{"context_id": "visual", "vision_verdict": "pass"}],
+        }}}
+
+        result = build_shared_visual_overlay_package(
+            config, baseline, (evidence,), field_media, validation, output
+        )
+
+        self.assertEqual(result.question_count, 1)
+        with zipfile.ZipFile(output) as archive:
+            packaged = json.loads(archive.read("questions/ch01.jsonl"))
+            maintenance = json.loads(archive.read("metadata/fidelity-maintenance.json"))
+            asset = packaged["display_media"]["question"]["asset"]
+            self.assertEqual(packaged["question_text"], "Preserve this text")
+            self.assertEqual(archive.read(asset), _PNG)
+            self.assertEqual(maintenance["changed_question_keys"], ["ch01-q0334"])
 
     def _extraction(self, **changes: object) -> dict[str, object]:
         fingerprint = extraction_job_fingerprint(self.evidence)

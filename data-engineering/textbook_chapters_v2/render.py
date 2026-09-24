@@ -166,12 +166,15 @@ def _attempt_media_item(raw: Any, assets: Mapping[str, Any] | Path) -> dict[str,
     if not isinstance(alt_text, str) or not alt_text.strip():
         raise ValueError("Validation display media requires non-empty verified alt text.")
     width, height = _png_dimensions(content)
-    return {
+    result = {
         "url": "data:image/png;base64," + base64.b64encode(content).decode("ascii"),
         "alt_text": alt_text.strip(),
         "width": width,
         "height": height,
     }
+    if raw.get("placement") == "context":
+        result["placement"] = "context"
+    return result
 
 
 def _attempt_display_media(raw: Any, assets: Mapping[str, Any] | Path) -> dict[str, Any]:
@@ -602,11 +605,14 @@ asset_dir = app.question_assets_dir() / str(row["bank_id"])
 
 
 def media_item(item):
-    return {
+    result = {
         "source_path": str(asset_dir / str(item["asset_filename"])),
         "alt_text": str(item["alt_text"]),
         "sha256": str(item["sha256"]),
     }
+    if item.get("placement") == "context":
+        result["placement"] = "context"
+    return result
 
 
 display_media = {}
@@ -740,7 +746,10 @@ def _validation_media_item(
         raise ValueError("Validation display media requires non-empty verified alt text.")
     member = f"assets/{digest}.png"
     archive_assets[member] = content
-    return {"asset": member, "alt_text": alt_text.strip(), "sha256": digest}
+    result = {"asset": member, "alt_text": alt_text.strip(), "sha256": digest}
+    if raw.get("placement") == "context":
+        result["placement"] = "context"
+    return result
 
 
 def _validation_display_media(

@@ -82,6 +82,13 @@ of any transcribed solution-step count. If vision recommends an image field but
 no safe field-level mapping exists, the record is quarantined instead of
 substituting a broader crop.
 
+Data-interpretation chapters can set `question_media_strategy` to
+`shared_contexts`. Each question must then belong to exactly one named reviewed
+question context. The pipeline packages that textbook table or chart once by
+content hash, marks it with `placement: "context"`, and keeps the semantic
+question text visible below it. Missing associations, multiple context groups,
+missing alternative text, or stale crop bytes block packaging.
+
 ## Repeatable workflow
 
 In PowerShell:

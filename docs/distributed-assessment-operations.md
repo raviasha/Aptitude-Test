@@ -1,5 +1,9 @@
 # Distributed assessment operations runbook
 
+## Managed Windows client updates
+
+Existing Windows lab clients require one updater-enabled bootstrap release. Follow [client-update-bootstrap.md](client-update-bootstrap.md) to deploy it by hostname with one interactive administrator credential. Later client versions are uploaded once through the Faculty **Client updates** page, verified on one pilot computer, and then published to all clients. Updates wait until there is no active assessment or sealed submission.
+
 This runbook is for institution-managed Windows lab computers. The supported
 release is one **KSAT Faculty Coordinator** and at most 100 installed **KSAT Lab
 Clients** on the private institutional network. Students answer locally; the

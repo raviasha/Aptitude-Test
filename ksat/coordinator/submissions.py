@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from ksat.crypto import sha256_hex, verify_json
+from ksat.integrity import count_integrity_violations
 from ksat.protocol import (
     IntegrityEvent,
     SignedResponseBundle,
@@ -259,8 +260,7 @@ def _utc(value: datetime, *, code: str = "invalid_timestamp") -> datetime:
 def _stored_receipt(connection: sqlite3.Connection, attempt_id: str) -> SubmissionReceipt | None:
     row = connection.execute(
         """SELECT s.receipt_json, s.accepted_at, a.score, a.total_questions,
-                  a.attempted, a.percentage,
-                  (SELECT COUNT(*) FROM exam_violations ev WHERE ev.attempt_id=a.attempt_id) AS violations
+                  a.attempted, a.percentage
            FROM submissions s JOIN attempts a ON a.attempt_id=s.attempt_id
            WHERE s.attempt_id=?""",
         (attempt_id,),
@@ -272,6 +272,10 @@ def _stored_receipt(connection: sqlite3.Connection, attempt_id: str) -> Submissi
             return SubmissionReceipt.model_validate_json(row["receipt_json"])
         except Exception as error:
             raise _problem("stored_submission_invalid", "The stored submission receipt is invalid.") from error
+    stored_events = connection.execute(
+        "SELECT violation_type FROM exam_violations WHERE attempt_id=?",
+        (attempt_id,),
+    ).fetchall()
     return SubmissionReceipt(
         attempt_id=attempt_id,
         accepted_at=row["accepted_at"],
@@ -279,7 +283,7 @@ def _stored_receipt(connection: sqlite3.Connection, attempt_id: str) -> Submissi
         total_questions=row["total_questions"],
         attempted=row["attempted"],
         percentage=row["percentage"],
-        violations=row["violations"],
+        violations=count_integrity_violations(stored_events),
     )
 
 
@@ -756,7 +760,7 @@ class SubmissionWriter:
             total_questions=scored.total_questions,
             attempted=scored.attempted,
             percentage=scored.percentage,
-            violations=len(scored.violations),
+            violations=count_integrity_violations(scored.violations),
         )
         updated = connection.execute(
             """UPDATE attempts

@@ -14,6 +14,7 @@ INDEX = ROOT / "static" / "client" / "index.html"
 class ClientUiContractTests(unittest.TestCase):
     def test_exam_integrity_behaviors(self):
         for scenario in (
+            'context_menu_is_blocked_without_an_integrity_event',
             'two_tabs_cannot_overwrite_pending_integrity_events',
             'focus_loss_blocks_immediately_while_still_fullscreen',
             'polling_catches_missing_browser_events_and_fullscreen_exit',

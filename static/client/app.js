@@ -1385,7 +1385,10 @@ if (typeof document !== 'undefined') {
   document.addEventListener('freeze', () => observeIntegrityLoss('browser_frozen'));
   document.addEventListener('resume', () => { ui.integrityFaults.delete('browser_frozen'); monitorIntegrity(); });
   window.addEventListener('online', monitorIntegrity);
-  ['copy', 'cut', 'paste', 'contextmenu', 'dragstart', 'drop'].forEach((name) => {
+  document.addEventListener('contextmenu', (event) => {
+    if (ui.attempt && canEdit(ui.state)) event.preventDefault();
+  });
+  ['copy', 'cut', 'paste', 'dragstart', 'drop'].forEach((name) => {
     document.addEventListener(name, (event) => blockAndRecord(event, name));
   });
   window.addEventListener('beforeprint', (event) => blockAndRecord(event, 'print_attempt'));

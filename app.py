@@ -65,6 +65,12 @@ from ksat.coordinator.submissions import (
     validate_release_answer_state,
 )
 from ksat.crypto import load_or_create_coordinator_keyring, sign_json, verify_json
+from ksat.integrity import (
+    DEFINITIONS as INTEGRITY_DEFINITIONS,
+    accepted_integrity_codes,
+    count_integrity_violations,
+    summarize_integrity_events,
+)
 from ksat.protocol import (
     AttemptDeadlineUpdate,
     FrozenReviewQuestion,
@@ -114,20 +120,9 @@ QUESTION_DIFFICULTIES = ("Easy", "Medium", "Hard")
 SECONDS_PER_FACULTY_QUESTION = 60
 STUDENT_SESSION_TIMEOUT_SECONDS = 120
 EXAM_VIOLATION_LABELS = {
-    "fullscreen_exit": "Exited full-screen mode",
-    "fullscreen_exited": "Exited full-screen mode",
-    "visibility_hidden": "Exam tab hidden or browser minimized",
-    "focus_lost": "Changed tab, window, or minimized the exam",
-    "browser_page_hidden": "Left or closed the exam page",
-    "browser_page_reloaded": "Reloaded or reopened the exam page",
-    "browser_frozen": "Exam page was suspended by the browser",
-    "browser_monitor_gap": "Browser monitoring interrupted (cause unverified)",
-    "browser_monitor_restarted": "Client monitoring restarted during the exam",
-    "browser_storage_unavailable": "Browser integrity storage unavailable or invalid",
-    "copy": "Attempted to copy exam content",
-    "cut": "Attempted to cut exam content",
-    "paste": "Attempted to paste into the exam",
-    "context_menu": "Attempted to open the browser context menu",
+    **{code: definition.title for code, definition in INTEGRITY_DEFINITIONS.items()},
+    "fullscreen_exit": INTEGRITY_DEFINITIONS["fullscreen_exited"].title,
+    "contextmenu": INTEGRITY_DEFINITIONS["context_menu"].title,
 }
 MAX_LEGACY_FILE_BYTES = 25_000_000
 MAX_PACKAGE_BYTES = 50_000_000
@@ -2030,13 +2025,15 @@ def result_for_attempt(connection: sqlite3.Connection, attempt_id: str) -> Dict[
            WHERE attempt_id = ? ORDER BY occurred_at, violation_id""",
         (attempt_id,),
     ).fetchall()
+    integrity_history = summarize_integrity_events(violation_rows)
     violations = [
         {
-            "type": row["violation_type"],
-            "label": EXAM_VIOLATION_LABELS.get(row["violation_type"], row["violation_type"]),
-            "occurred_at": row["occurred_at"],
+            **incident,
+            "type": incident["canonical_code"],
+            "label": incident["title"],
         }
-        for row in violation_rows
+        for incident in integrity_history
+        if incident["counts_as_violation"]
     ]
     return {
         "attempt": dict(attempt), "categories": categories, "chapters": chapters,
@@ -2045,6 +2042,7 @@ def result_for_attempt(connection: sqlite3.Connection, attempt_id: str) -> Dict[
         "feedback_allowed": feedback_allowed(attempt),
         "violation_flag": bool(violations),
         "violations": violations,
+        "integrity_history": integrity_history,
     }
 
 
@@ -2588,7 +2586,7 @@ def save_answer(attempt_id: str, question_id: int, payload: AnswerPayload, reque
 @app.post("/api/attempts/{attempt_id}/violations")
 def record_exam_violation(attempt_id: str, payload: ExamViolationPayload, request: Request) -> Dict[str, Any]:
     user = require_user(request, "student")
-    if payload.violation_type not in EXAM_VIOLATION_LABELS:
+    if payload.violation_type not in accepted_integrity_codes():
         raise HTTPException(400, "Unknown exam violation type.")
     with db() as connection:
         attempt = expire_attempt_if_needed(connection, assert_student_attempt(connection, attempt_id, user["id"]))
@@ -2603,17 +2601,19 @@ def record_exam_violation(attempt_id: str, payload: ExamViolationPayload, reques
         if latest and latest["violation_type"] == payload.violation_type:
             elapsed = datetime.now(timezone.utc) - parse_timestamp(latest["occurred_at"])
             if elapsed.total_seconds() < 2:
-                count = connection.execute(
-                    "SELECT COUNT(*) AS count FROM exam_violations WHERE attempt_id = ?", (attempt_id,)
-                ).fetchone()["count"]
+                saved = connection.execute(
+                    "SELECT violation_type FROM exam_violations WHERE attempt_id = ?", (attempt_id,)
+                ).fetchall()
+                count = count_integrity_violations(saved)
                 return {"recorded": False, "violation_count": count}
         connection.execute(
             "INSERT INTO exam_violations (attempt_id, violation_type, occurred_at) VALUES (?, ?, ?)",
             (attempt_id, payload.violation_type, occurred_at),
         )
-        count = connection.execute(
-            "SELECT COUNT(*) AS count FROM exam_violations WHERE attempt_id = ?", (attempt_id,)
-        ).fetchone()["count"]
+        saved = connection.execute(
+            "SELECT violation_type FROM exam_violations WHERE attempt_id = ?", (attempt_id,)
+        ).fetchall()
+        count = count_integrity_violations(saved)
     return {"recorded": True, "violation_count": count}
 
 
@@ -2696,17 +2696,21 @@ def admin_dashboard(request: Request) -> Dict[str, Any]:
                GROUP BY r.category ORDER BY percentage DESC"""
         ).fetchall()
         recent = connection.execute(
-            """SELECT a.attempt_id, s.name, s.student_id, t.test_name, a.score, a.total_questions, a.percentage, a.submitted_at,
-                      (SELECT COUNT(*) FROM exam_violations ev WHERE ev.attempt_id = a.attempt_id) AS violation_count,
-                      (SELECT GROUP_CONCAT(DISTINCT ev.violation_type) FROM exam_violations ev WHERE ev.attempt_id = a.attempt_id) AS violation_types
+            """SELECT a.attempt_id, s.name, s.student_id, t.test_name, a.score, a.total_questions, a.percentage, a.submitted_at
                FROM attempts a JOIN students s ON s.student_id = a.student_id JOIN tests t ON t.test_id = a.test_id
                WHERE a.status = 'submitted' AND t.mode = 'faculty'
                ORDER BY a.submitted_at DESC"""
         ).fetchall()
     recent_attempts = rows(recent)
     for attempt in recent_attempts:
-        types = [item for item in (attempt.pop("violation_types") or "").split(",") if item]
-        attempt["violations"] = [EXAM_VIOLATION_LABELS.get(item, item) for item in types]
+        with db() as connection:
+            event_rows = connection.execute(
+                "SELECT violation_type, occurred_at FROM exam_violations WHERE attempt_id=? ORDER BY occurred_at, violation_id",
+                (attempt["attempt_id"],),
+            ).fetchall()
+        incidents = [item for item in summarize_integrity_events(event_rows) if item["counts_as_violation"]]
+        attempt["violation_count"] = sum(len(item["details"]) for item in incidents)
+        attempt["violations"] = [item["title"] for item in incidents]
     return {"totals": dict(totals), "students": rows(students), "category_performance": rows(category), "recent_attempts": recent_attempts}
 
 
@@ -3767,12 +3771,18 @@ def export_results(request: Request) -> StreamingResponse:
     writer = csv.DictWriter(output, fieldnames=["Student ID", "Student Name", "Test", "Date", "Overall Score", "Total Questions", "Percentage", "Quantitative", "Logical Reasoning", "Data Interpretation", "Verbal Ability", "Coding", "Violation Count", "Violations"])
     writer.writeheader()
     for item in result:
-        violations = violations_by_attempt.get(item["attempt_id"], [])
+        incidents = [
+            incident
+            for incident in summarize_integrity_events(violations_by_attempt.get(item["attempt_id"], []))
+            if incident["counts_as_violation"]
+        ]
         violation_details = "; ".join(
-            f'{EXAM_VIOLATION_LABELS.get(event["violation_type"], event["violation_type"])} ({event["occurred_at"]})'
-            for event in violations
+            f'{incident["title"]} ({detail["occurred_at"]}) — {incident["explanation"]} '
+            f'[{incident["evidence_class"]}; {incident["canonical_code"]}]'
+            for incident in incidents
+            for detail in incident["details"]
         )
-        writer.writerow({"Student ID": item["student_id"], "Student Name": item["name"], "Test": item["test_name"], "Date": item["submitted_at"], "Overall Score": item["score"], "Total Questions": item["total_questions"], "Percentage": item["percentage"], "Quantitative": item["quantitative"], "Logical Reasoning": item["logical"], "Data Interpretation": item["data_interpretation"], "Verbal Ability": item["verbal"], "Coding": item["coding"], "Violation Count": len(violations), "Violations": violation_details})
+        writer.writerow({"Student ID": item["student_id"], "Student Name": item["name"], "Test": item["test_name"], "Date": item["submitted_at"], "Overall Score": item["score"], "Total Questions": item["total_questions"], "Percentage": item["percentage"], "Quantitative": item["quantitative"], "Logical Reasoning": item["logical"], "Data Interpretation": item["data_interpretation"], "Verbal Ability": item["verbal"], "Coding": item["coding"], "Violation Count": sum(len(incident["details"]) for incident in incidents), "Violations": violation_details})
     return StreamingResponse(iter([output.getvalue()]), media_type="text/csv", headers={"Content-Disposition": "attachment; filename=aptitude-results.csv"})
 
 

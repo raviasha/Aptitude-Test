@@ -1038,6 +1038,7 @@ class StudentRegistrationTests(unittest.TestCase):
                     ("copy", "2026-08-23T10:02:00+00:00"),
                     ("fullscreen_exited", "2026-08-23T10:03:00+00:00"),
                     ("browser_monitor_gap", "2026-08-23T10:04:00+00:00"),
+                    ("contextmenu", "2026-08-23T10:04:30+00:00"),
                 ],
             )
 
@@ -1057,6 +1058,40 @@ class StudentRegistrationTests(unittest.TestCase):
         self.assertIn("Attempted to copy exam content (2026-08-23T10:02:00+00:00)", exported[0]["Violations"])
         self.assertIn("Exited full-screen mode (2026-08-23T10:03:00+00:00)", exported[0]["Violations"])
         self.assertIn("Browser monitoring interrupted (cause unverified)", exported[0]["Violations"])
+        self.assertNotIn("contextmenu", exported[0]["Violations"])
+        self.assertNotIn("browser menu", exported[0]["Violations"].lower())
+
+    def test_historical_context_menu_is_not_a_result_violation(self):
+        with app.db() as connection:
+            connection.execute(
+                "INSERT INTO students VALUES (?, ?, ?, ?, ?, ?)",
+                ("HIST1", "History Student", "hash", "AIML", "A", app.now()),
+            )
+            test_id = connection.execute(
+                "INSERT INTO tests (test_name, composition, created_at, mode) VALUES ('History Test', '[]', ?, 'faculty')",
+                (app.now(),),
+            ).lastrowid
+            connection.execute(
+                """INSERT INTO attempts
+                   (attempt_id, student_id, test_id, started_at, submitted_at, status,
+                    total_questions, attempted, correct, score, percentage)
+                   VALUES ('history-attempt', 'HIST1', ?, ?, ?, 'submitted', 0, 0, 0, 0, 0)""",
+                (test_id, app.now(), app.now()),
+            )
+            connection.executemany(
+                "INSERT INTO exam_violations (attempt_id, violation_type, occurred_at) VALUES ('history-attempt', ?, ?)",
+                [
+                    ("contextmenu", "2026-09-24T10:00:00+00:00"),
+                    ("context_menu", "2026-09-24T10:00:01+00:00"),
+                ],
+            )
+
+            result = app.result_for_attempt(connection, "history-attempt")
+
+        self.assertFalse(result["violation_flag"])
+        self.assertEqual([], result["violations"])
+        self.assertEqual(2, len(result["integrity_history"]))
+        self.assertTrue(all(not item["counts_as_violation"] for item in result["integrity_history"]))
 
     def test_legacy_live_faculty_attempt_gets_a_timer_when_serialized(self):
         app.register_student("LEGACY1", "Legacy Student", "AI & DS", "A", "secret123")

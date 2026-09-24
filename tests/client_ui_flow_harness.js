@@ -162,13 +162,28 @@ async function boot(initialState = 'waiting_or_ready', routes = {}, savedStorage
   };
   await flush();
   const emit = async (target, name) => {
-    (target === 'document' ? documentListeners : windowListeners).get(name)?.({ preventDefault() {} });
+    let prevented = false;
+    (target === 'document' ? documentListeners : windowListeners).get(name)?.({
+      preventDefault() { prevented = true; },
+    });
     await flush();
+    return prevented;
   };
   return { elements, actions, getButton, click, tick, flush, calls, handlers, timers, document, window, emit, savedStorage };
 }
 
 const scenarios = {
+  async context_menu_is_blocked_without_an_integrity_event() {
+    const page = await boot();
+    await page.click('Start');
+    const prevented = await page.emit('document', 'contextmenu');
+    assert.equal(prevented, true, 'right-click must remain blocked during an attempt');
+    assert.equal(
+      page.calls.filter(call => call.path.endsWith('/violations')).length,
+      0,
+      'right-click must not be reported as an integrity event',
+    );
+  },
   async two_tabs_cannot_overwrite_pending_integrity_events() {
     const path = `/api/attempts/${attempt.attempt_id}/violations`;
     const routes = { [path]: () => { throw failure('temporarily_unavailable'); } };

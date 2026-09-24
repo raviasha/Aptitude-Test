@@ -230,9 +230,11 @@ automatic submissions can be distinguished from expiry and recovery.
 
 The current client emits `contextmenu` when the browser reports a context-menu
 request, while the coordinator's readable-label mapping expects `context_menu`.
-Distributed submissions therefore can display the raw `contextmenu` code. Other
-emitted actions, including drag/drop, print attempts, and blocked shortcuts, also
-lack complete faculty-facing explanations.
+Distributed submissions therefore can display the raw `contextmenu` code as a
+violation. A right-click can be accidental, and KSAT already prevents the menu
+from opening, so it is not meaningful evidence of misconduct. Other emitted
+actions, including drag/drop, print attempts, and blocked shortcuts, also lack
+complete faculty-facing explanations.
 
 Define one versioned integrity-event catalogue used by client validation,
 coordinator ingestion, result views, and CSV exports. Each entry contains:
@@ -244,19 +246,24 @@ coordinator ingestion, result views, and CSV exports. Each entry contains:
   monitoring anomaly; and
 - a caution where the event does not establish intent.
 
-For example, `context_menu` displays **Browser context menu requested** with the
-explanation: “The browser reported a right-click or another request to open its
-context menu. KSAT blocked the menu. This records the attempted action; it does
-not by itself establish why it occurred.” `browser_monitor_gap` explains that
-the page stopped sending monitoring heartbeats for more than the configured
-interval and that browser suspension, reload, device load, or connectivity can
-cause it; its cause remains unverified.
+The client continues preventing the browser context menu during an active
+assessment, but it stops recording right-click or `contextmenu` as an integrity
+event. Historical `contextmenu` and `context_menu` records remain in storage for
+audit continuity, are classified as **Blocked browser menu request
+(informational)**, and are excluded from violation counts, integrity flags, and
+the primary Faculty results view. They may appear only in expandable technical
+history or a diagnostic export.
+
+`browser_monitor_gap` explains that the page stopped sending monitoring
+heartbeats for more than the configured interval and that browser suspension,
+reload, device load, or connectivity can cause it; its cause remains unverified.
 
 The client emits only canonical catalogue codes. The coordinator accepts the
-legacy aliases `contextmenu` and `fullscreen_exit` for existing records and maps
-them to their canonical entries without rewriting historical timestamps. Unknown
-future codes display **Unrecognized integrity event** in the main view; the raw
-code is available only under technical details.
+legacy aliases `contextmenu`, `context_menu`, and `fullscreen_exit` for existing
+records and maps them without rewriting historical timestamps. Context-menu
+aliases map to the non-violation informational entry. Unknown future codes
+display **Unrecognized integrity event** in the main view; the raw code is
+available only under technical details.
 
 Faculty results group events occurring in the same short browser-state
 transition as one incident while retaining every timestamp in expandable
@@ -295,8 +302,9 @@ manual confirmation focus and keyboard behavior, duplicate activation, timer
 expiry, and submission-cause reporting. Integrity tests enumerate every event the
 client can emit and fail when any event or legacy alias lacks a catalogue entry,
 plain explanation, evidence class, API rendering, and CSV rendering. They verify
-that `contextmenu` history and new `context_menu` events both display the readable
-context-menu explanation and that monitoring gaps remain explicitly unverified.
+that no new context-menu action is recorded, historical context-menu codes are
+excluded from violation counts and primary results, and monitoring gaps remain
+explicitly unverified.
 
 The remote bootstrap tool is tested with fake transports for credential and
 failure handling, then on disposable Windows virtual machines. Acceptance uses

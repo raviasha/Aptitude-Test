@@ -1,6 +1,6 @@
-# KSAT 2.0 Windows build and deployment guide
+# KSAT 2.1 Windows build and deployment guide
 
-KSAT 2.0 has two products. Install **KSAT Faculty Coordinator** on the faculty/server computer and **KSAT Lab Client** on each lab computer. The client always serves its UI on `127.0.0.1:8010`; only coordinator API traffic crosses the private lab network.
+KSAT 2.1 has two products. Install **KSAT Faculty Coordinator** on the faculty/server computer and **KSAT Lab Client** on each lab computer. The client always serves its UI on `127.0.0.1:8010`; only coordinator API traffic crosses the private lab network.
 
 ## Build prerequisites
 
@@ -10,6 +10,7 @@ KSAT 2.0 has two products. Install **KSAT Faculty Coordinator** on the faculty/s
 - Inno Setup 6.7.3 (`ISCC.exe`); the release inspection gate requires an extractable Inno 6.x payload
 - `innoextract.exe` with Inno 6.7 support (set `INNOEXTRACT_EXE` when it is not on `PATH`)
 - An institution-controlled Authenticode PFX with code-signing usage, its password, the exact certificate subject to pin as publisher, and an approved HTTPS timestamp service
+- The 32-byte raw or base64 institution update-signing public key. The matching private key stays offline and is used only by `scripts\build_client_update.py`.
 
 From an ordinary Command Prompt in the repository root, configure the signing
 identity and build tools, then run the fail-closed build. Keep the PFX and
@@ -23,10 +24,11 @@ set "KSAT_SIGNING_PFX=D:\Protected\institution-code-signing.pfx"
 set "KSAT_SIGNING_PFX_PASSWORD=<supply through the protected build environment>"
 set "KSAT_SIGNING_PUBLISHER=CN=Example Institution, O=Example Institution, C=IN"
 set "KSAT_SIGNING_TIMESTAMP_URL=https://timestamp.example.edu"
+set "KSAT_UPDATE_SIGNING_PUBLIC_KEY=D:\Protected\client-update-public.key"
 build-windows.bat
 ```
 
-`build-windows.bat` refuses to begin without all four signing inputs.
+`build-windows.bat` refuses to begin without all five signing inputs.
 `KSAT_BUILD_PYTHON` may point to an existing build-environment Python. The
 script installs only `requirements.txt` plus PyInstaller, cleans only the
 explicit `build\windows`/`dist` outputs, builds isolated one-file images, signs
@@ -44,19 +46,19 @@ shipped UAC image exactly.
 The release directory contains:
 
 ```text
-release\KSATCoordinator-2.0.0.exe
-release\KSATClient-2.0.0.exe
-release\KSATCoordinatorSetup-2.0.0.exe
-release\KSATClientSetup-2.0.0.exe
+release\KSATCoordinator-2.1.0.exe
+release\KSATClient-2.1.0.exe
+release\KSATCoordinatorSetup-2.1.0.exe
+release\KSATClientSetup-2.1.0.exe
 release\SHA256SUMS.txt
 ```
 
 Verify a delivered file before use:
 
 ```powershell
-Get-FileHash .\release\KSATCoordinatorSetup-2.0.0.exe -Algorithm SHA256
+Get-FileHash .\release\KSATCoordinatorSetup-2.1.0.exe -Algorithm SHA256
 Get-Content .\release\SHA256SUMS.txt
-Get-AuthenticodeSignature .\release\KSATCoordinatorSetup-2.0.0.exe |
+Get-AuthenticodeSignature .\release\KSATCoordinatorSetup-2.1.0.exe |
   Format-List Status,StatusMessage,SignerCertificate,TimeStamperCertificate
 ```
 
@@ -65,12 +67,17 @@ For source/test verification only, set `KSAT_RELEASE_TEST_SIGNING=1` and invoke
 arguments. This creates an ephemeral self-signed test identity, exercises the
 same sign/verify/order gates, and deletes the identity when the command exits.
 Its publisher is visibly marked `NOT FOR PRODUCTION`, it has no timestamp, and
-its artifacts must never be distributed. A production release remains blocked
-until the institution supplies the four protected signing inputs above.
+its artifacts must never be distributed. An `all` test build also creates a
+matching `KSATClientUpdate-2.1.0-TEST-ONLY.ksat-client-update` acceptance
+bundle and `SHA256SUMS-2.1.0-TEST-ONLY.txt`; the ephemeral update private key
+is deleted at command exit. The test build does not overwrite the production
+hash manifest. A
+production release remains blocked until the institution supplies the five
+protected signing inputs above.
 
 ## Initial coordinator setup
 
-Task 13 is the authorization gate for physically running installers, changing firewall rules, or installing a CA. During an approved deployment, run `KSATCoordinatorSetup-2.0.0.exe` as Administrator. Choose a stable DNS name that every lab computer can resolve and keep the default HTTPS port 8443 unless IT has reserved another private-network port.
+Task 13 is the authorization gate for physically running installers, changing firewall rules, or installing a CA. During an approved deployment, run `KSATCoordinatorSetup-2.1.0.exe` as Administrator. Choose a stable DNS name that every lab computer can resolve and keep the default HTTPS port 8443 unless IT has reserved another private-network port.
 
 The installer writes only the program under Program Files. Runtime data is retained under:
 
@@ -90,12 +97,12 @@ The installer creates one private-profile inbound rule for the selected TCP port
 Silent first install example:
 
 ```bat
-KSATCoordinatorSetup-2.0.0.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /HOSTNAME=ksat-server.example.edu /PORT=8443
+KSATCoordinatorSetup-2.1.0.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /HOSTNAME=ksat-server.example.edu /PORT=8443
 ```
 
 ## Initial client setup
 
-During an approved Task 13 rollout, run `KSATClientSetup-2.0.0.exe` as Administrator on each lab computer. Supply:
+During an approved Task 13 rollout, run `KSATClientSetup-2.1.0.exe` as Administrator on each lab computer. Supply:
 
 - the exact coordinator URL recorded in `coordinator-public.json`;
 - `coordinator-ca.pem`;
@@ -126,7 +133,7 @@ computer label or enrollment code.
 Silent first install example (quote all paths and account names):
 
 ```bat
-KSATClientSetup-2.0.0.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /COORDINATORURL=https://ksat-server.example.edu:8443 /CAFILE="D:\KSAT\coordinator-ca.pem" /METADATAFILE="D:\KSAT\coordinator-public.json"
+KSATClientSetup-2.1.0.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /COORDINATORURL=https://ksat-server.example.edu:8443 /CAFILE="D:\KSAT\coordinator-ca.pem" /METADATAFILE="D:\KSAT\coordinator-public.json"
 ```
 
 An upgrade with an existing valid configuration reuses it and reapplies the

@@ -1,8 +1,8 @@
 #define AppName "KSAT Faculty Coordinator"
-#define AppVersion "2.0.0"
+#define AppVersion "2.1.0"
 #define AppPublisher "College Assessment Lab"
 #define AppExeName "KSATCoordinator.exe"
-#define FirewallRule "KSAT Faculty Coordinator 2.0.0"
+#define FirewallRule "KSAT Faculty Coordinator 2.1.0"
 
 [Setup]
 AppId={{6A30525E-E010-4B63-B5E9-1AEFDF47A6DC}
@@ -14,7 +14,7 @@ DefaultDirName={autopf}\KSAT Coordinator
 DefaultGroupName=KSAT
 DisableProgramGroupPage=yes
 OutputDir=..\release
-OutputBaseFilename=KSATCoordinatorSetup-2.0.0
+OutputBaseFilename=KSATCoordinatorSetup-2.1.0
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
@@ -33,6 +33,7 @@ Name: "{commonappdata}\KSAT Coordinator"; Permissions: admins-full system-full
 Name: "{commonappdata}\KSAT Coordinator\secrets"; Permissions: admins-full system-full
 Name: "{commonappdata}\KSAT Coordinator\backups"; Permissions: admins-full system-full
 Name: "{commonappdata}\KSAT Coordinator\Assessment Releases"; Permissions: admins-full system-full
+Name: "{commonappdata}\KSAT Coordinator\Client Updates"; Permissions: admins-full system-full
 Name: "{commonappdata}\KSAT Coordinator\Question Assets"; Permissions: admins-full system-full
 Name: "{commonappdata}\KSAT Coordinator\Question Banks"; Permissions: admins-full system-full
 Name: "{commonappdata}\KSAT Coordinator\public"; Permissions: admins-full system-full users-readexec

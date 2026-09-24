@@ -1057,7 +1057,7 @@ class _ExternalFixture:
             raise ValueError("External coordinator CA does not carry the KSAT signing pin.") from error
         parsed = urlsplit(self.base_url)
         metadata = {
-            "version": "2.0.0",
+            "version": "2.1.0",
             "hostname": parsed.hostname,
             "port": parsed.port or 443,
             "coordinator_url": self.base_url,
@@ -1375,7 +1375,7 @@ def run_isolated_gate(
                             "Origin": "http://127.0.0.1:8010",
                             "X-KSAT-CSRF": context.csrf_token,
                         },
-                        json={"confirmed": True},
+                        json={"confirmed": True, "cause": "manual_confirmed"},
                     )
                     if response.status_code != 202:
                         raise RuntimeError(

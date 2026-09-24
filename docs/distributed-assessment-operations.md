@@ -29,7 +29,7 @@ full test suite, executable smoke, recursive PyInstaller/Inno extraction scan,
 
 1. On the authorized faculty/server computer, verify the installer hash against
    `release\SHA256SUMS.txt`.
-2. Run `KSATCoordinatorSetup-2.0.0.exe` as Administrator. Enter the stable DNS
+2. Run `KSATCoordinatorSetup-2.1.0.exe` as Administrator. Enter the stable DNS
    hostname and approved private-network TCP port (normally 8443).
 3. Start the coordinator and browse locally to `https://127.0.0.1:8443`.
 4. Confirm `C:\ProgramData\KSAT Coordinator\public` contains
@@ -56,7 +56,7 @@ restore” below.
 
 ## Install each lab client
 
-1. Verify `KSATClientSetup-2.0.0.exe`, `coordinator-ca.pem`, and
+1. Verify `KSATClientSetup-2.1.0.exe`, `coordinator-ca.pem`, and
    `coordinator-public.json` hashes through the approved channel.
 2. Run the client installer as Administrator and supply the coordinator HTTPS
    URL and both public files. The installer creates the automatic LocalSystem
@@ -269,7 +269,7 @@ python scripts/upgrade_distributed_assessments.py `
 
 This compatibility command targets the protected pre-2.0 data tree. Run it
 against a complete disposable copy first; after approval, move the upgraded
-data into the KSAT 2.0 coordinator root only through the documented controlled
+data into the KSAT 2.1 coordinator root only through the documented controlled
 upgrade. The dry-run may create only the coordinator OS lock file; database, keys,
 packs, configuration, and backups must remain byte-identical. Review the report,
 take a complete backup, then remove `--dry-run`. Repeat the integrity check and

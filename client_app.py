@@ -63,7 +63,7 @@ from ksat.windows_authenticode import verify_authenticode
 
 _ROOT = Path(__file__).resolve().parent
 _BUNDLE_ROOT = Path(getattr(sys, "_MEIPASS", _ROOT))
-_CLIENT_VERSION = "2.0.0"
+_CLIENT_VERSION = "2.1.0"
 _CLIENT_STATIC = _ROOT / "static" / "client"
 _SHARED_STATIC = _ROOT / "static"
 _MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
@@ -656,7 +656,7 @@ def install_client_configuration(
         raise ValueError("Coordinator public trust bundle is invalid.")
     normalized_url = _normalize_coordinator_base_url(base_url)
     if (
-        metadata.get("version") != "2.0.0"
+        metadata.get("version") != "2.1.0"
         or metadata.get("coordinator_url") != normalized_url
         or metadata.get("ca_sha256") != hashlib.sha256(ca_bytes).hexdigest()
         or type(metadata.get("port")) is not int

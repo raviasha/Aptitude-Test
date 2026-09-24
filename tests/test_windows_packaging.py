@@ -1,26 +1,65 @@
 import hashlib
+import json
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 from scripts.windows_release import (
     APP_VERSION,
+    _assert_payload_safe,
+    _manifest_has_update_key,
     ReleaseLayout,
     SigningConfigurationError,
     build_commands,
     build_executables,
     coordinator_payload_manifest,
     create_ephemeral_test_signing_config,
+    create_test_client_update_bundle,
     inspect_release_inputs,
     publish_signed_executables,
     sign_and_verify_artifact,
     verify_authenticode_signature,
+    write_update_public_key_resource,
     write_sha256s,
 )
 
 
 class WindowsPackagingTests(unittest.TestCase):
+    def test_secret_scan_rejects_pem_but_not_marker_text_inside_a_pe_binary(self):
+        marker = b"-----BEGIN PRIVATE KEY-----"
+        with self.assertRaisesRegex(ValueError, "private/live"):
+            _assert_payload_safe("secret.txt", marker)
+        _assert_payload_safe("dependency.dll", b"MZ" + marker)
+
+    def test_inspector_recognizes_pyinstaller_typed_data_entry_names(self):
+        self.assertTrue(
+            _manifest_has_update_key({"C:b:update-release-public.json": "digest"})
+        )
+
+    def test_release_scripts_are_directly_invokable_from_repository_root(self):
+        root = Path(__file__).resolve().parents[1]
+        for script in ("windows_release.py", "build_client_update.py"):
+            completed = subprocess.run(
+                [sys.executable, str(root / "scripts" / script), "--help"],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(0, completed.returncode, completed.stderr)
+
+    def test_release_writes_only_canonical_public_update_key_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "update-release-public.json"
+            write_update_public_key_resource(b"p" * 32, target)
+            value = json.loads(target.read_bytes())
+            self.assertEqual(1, value["format_version"])
+            self.assertNotIn("private", target.read_text("ascii").lower())
+            self.assertEqual(target.read_bytes(), json.dumps(value, sort_keys=True, separators=(",", ":")).encode())
+
     def test_artifact_build_fails_closed_before_work_without_signing_identity(self):
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaisesRegex(SigningConfigurationError, "signing"):
@@ -84,22 +123,49 @@ class WindowsPackagingTests(unittest.TestCase):
     def test_release_layout_has_two_distinct_versioned_products(self):
         with tempfile.TemporaryDirectory() as directory:
             layout = ReleaseLayout(Path(directory))
-            self.assertEqual("2.0.0", APP_VERSION)
+            self.assertEqual("2.1.0", APP_VERSION)
             self.assertEqual("KSATCoordinator.exe", layout.coordinator_executable.name)
             self.assertEqual("KSATClient.exe", layout.client_executable.name)
             self.assertEqual("KSATClientUpdater.exe", layout.updater_executable.name)
             self.assertEqual(
-                "KSATCoordinator-2.0.0.exe",
+                "KSATCoordinator-2.1.0.exe",
                 layout.coordinator_release_executable.name,
             )
             self.assertEqual(
-                "KSATClient-2.0.0.exe", layout.client_release_executable.name
+                "KSATClient-2.1.0.exe", layout.client_release_executable.name
             )
             self.assertEqual(
-                "KSATCoordinatorSetup-2.0.0.exe", layout.coordinator_installer.name
+                "KSATCoordinatorSetup-2.1.0.exe", layout.coordinator_installer.name
             )
-            self.assertEqual("KSATClientSetup-2.0.0.exe", layout.client_installer.name)
+            self.assertEqual("KSATClientSetup-2.1.0.exe", layout.client_installer.name)
+            self.assertEqual(
+                "KSATClientUpdate-2.1.0-TEST-ONLY.ksat-client-update",
+                layout.test_client_update.name,
+            )
             self.assertEqual("SHA256SUMS.txt", layout.hash_manifest.name)
+            self.assertEqual(
+                "SHA256SUMS-2.1.0-TEST-ONLY.txt", layout.test_hash_manifest.name
+            )
+
+    def test_test_update_bundle_uses_matching_ephemeral_update_key(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            layout = ReleaseLayout(root)
+            layout.release_dir.mkdir(parents=True)
+            layout.client_installer.write_bytes(b"signed test installer")
+            private = root / "update-private.key"
+            private.write_bytes(b"k" * 32)
+
+            output = create_test_client_update_bundle(
+                layout,
+                private,
+                publisher="CN=KSAT TEST SIGNING IDENTITY - NOT FOR PRODUCTION",
+                authenticode_verifier=lambda _path, _publisher: None,
+            )
+
+            self.assertEqual(layout.test_client_update, output)
+            self.assertTrue(output.is_file())
+            self.assertNotIn(b"k" * 32, output.read_bytes())
 
     def test_build_commands_use_distinct_entrypoints_workpaths_and_safe_assets(self):
         root = Path(__file__).resolve().parents[1]
@@ -156,6 +222,10 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertIn('for name in ("identity", "state", "packs")', source)
         self.assertIn('client_state.get("state") != "device_setup"', source)
         self.assertIn('or client_state.get("problem") is not None', source)
+        self.assertIn(
+            '_add_data(layout.build_dir / "update-release-public.json", ".")',
+            source,
+        )
 
     def test_input_inspection_rejects_deployment_values_in_client_static(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -176,8 +246,8 @@ class WindowsPackagingTests(unittest.TestCase):
             root = Path(directory)
             release = root / "release"
             release.mkdir()
-            second = release / "KSATClientSetup-2.0.0.exe"
-            first = release / "KSATCoordinatorSetup-2.0.0.exe"
+            second = release / "KSATClientSetup-2.1.0.exe"
+            first = release / "KSATCoordinatorSetup-2.1.0.exe"
             second.write_bytes(b"client-installer")
             first.write_bytes(b"coordinator-installer")
             manifest = write_sha256s([second, first], release / "SHA256SUMS.txt")
@@ -301,7 +371,7 @@ class WindowsPackagingTests(unittest.TestCase):
         )
         for path in paths:
             text = path.read_text("utf-8")
-            self.assertIn("2.0.0", text, path.name)
+            self.assertIn("2.1.0", text, path.name)
             self.assertNotIn("1.3.3", text, path.name)
 
 

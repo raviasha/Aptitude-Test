@@ -1,6 +1,6 @@
 const app = typeof document === 'undefined' ? null : document.querySelector('#app');
 const toast = typeof document === 'undefined' ? null : document.querySelector('#toast');
-const BUILD_VERSION = '2.0.0';
+const BUILD_VERSION = '2.1.0';
 let state = { user: null, csrfToken: null, attempt: null, questionIndex: 0 };
 let examGuard = {active:false, deadlineMs:null, timerId:null, syncTimerId:null, submitting:false, lastViolation:null, needsResume:false};
 let facultyTimerId = null;

@@ -329,7 +329,7 @@ class CoordinatorClient:
         """Perform a real unsigned TLS request before persisting an endpoint."""
         body = self._request_bytes("GET", "/api/build", signed=False)
         value = _decode_json(body, "invalid_coordinator_build")
-        if value != {"version": "2.0.0"}:
+        if value != {"version": "2.1.0"}:
             raise CoordinatorProblem(
                 "invalid_coordinator_build",
                 "The coordinator returned an incompatible build response.",

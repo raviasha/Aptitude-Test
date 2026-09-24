@@ -64,7 +64,7 @@ def main(argv=None) -> int:
     updater=Updater(
         updates,load_update_public_key(_BUNDLE_ROOT/"update-release-public.json"),verify_authenticode,
         WindowsServices(),WindowsInstallers(),HealthVerifier(version_probe,store_probe),
-        installed_version="2.0.0",identity_digest=before[0],config_digest=before[1],state_digest=before[2],
+        installed_version="2.1.0",identity_digest=before[0],config_digest=before[1],state_digest=before[2],
         current_digest_probe=lambda:(_digest(identity_path),_digest(config_path),_digest(database_path)),
     )
     return 0 if updater.run(args.request).success else 1

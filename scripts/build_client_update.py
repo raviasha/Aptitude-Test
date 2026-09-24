@@ -6,11 +6,16 @@ import argparse
 import base64
 import hashlib
 import json
+import sys
 import uuid
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
+
+_REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPOSITORY_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPOSITORY_ROOT))
 
 from ksat.crypto import public_key_b64_from_private, sign_bytes
 from ksat.protocol import canonical_json

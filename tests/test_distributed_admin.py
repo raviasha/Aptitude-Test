@@ -503,6 +503,10 @@ class DistributedAdminTests(unittest.TestCase):
             ("POST", "/api/admin/tests/{test_id}/launch"),
             ("POST", "/api/admin/tests/{test_id}/close"),
             ("POST", "/api/admin/tests/{test_id}/extend"),
+            ("POST", "/api/admin/client-updates/upload"),
+            ("POST", "/api/admin/client-updates/{release_id}/pilot"),
+            ("POST", "/api/admin/client-updates/{release_id}/publish"),
+            ("POST", "/api/admin/client-updates/{release_id}/withdraw"),
         }
         actual_routes = {
             (method, route.path)

@@ -24,7 +24,7 @@ from ksat.coordinator.tls import (
 )
 
 
-APP_VERSION = "2.0.0"
+APP_VERSION = "2.1.0"
 _HOSTNAME = re.compile(
     r"(?=.{1,253}\Z)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)"
     r"(?:\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))*\Z"

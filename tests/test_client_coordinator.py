@@ -249,9 +249,9 @@ class CoordinatorClientTests(unittest.TestCase):
         def handler(request):
             self.assertEqual("/api/build", request.url.path)
             self.assertNotIn("X-KSAT-Signature", request.headers)
-            return httpx.Response(200, json={"version": "2.0.0"})
+            return httpx.Response(200, json={"version": "2.1.0"})
 
-        self.assertEqual("2.0.0", self.make_client(handler).probe_build())
+        self.assertEqual("2.1.0", self.make_client(handler).probe_build())
         with self.assertRaisesRegex(Exception, "incompatible build"):
             self.make_client(
                 lambda _request: httpx.Response(200, json={"version": "1.3.3"})

@@ -38,10 +38,10 @@ class WindowsEntrypointTests(unittest.TestCase):
     def test_client_updater_has_a_separate_required_request_entrypoint(self):
         with self.assertRaises(SystemExit):
             client_updater_module.main([])
-    def test_version_is_consistent_and_build_endpoint_exposes_2_0_0(self):
-        self.assertEqual("2.0.0", faculty_app.APP_VERSION)
+    def test_version_is_consistent_and_build_endpoint_exposes_2_1_0(self):
+        self.assertEqual("2.1.0", faculty_app.APP_VERSION)
         response = faculty_app.build_information()
-        self.assertEqual({"version": "2.0.0"}, response)
+        self.assertEqual({"version": "2.1.0"}, response)
 
     def test_coordinator_defaults_to_private_network_https_and_programdata(self):
         with tempfile.TemporaryDirectory() as directory:

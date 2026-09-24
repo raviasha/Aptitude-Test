@@ -157,7 +157,8 @@ class ClientCommunicationLatencyTests(unittest.TestCase):
             with ThreadPoolExecutor(max_workers=1) as pool:
                 submitted = pool.submit(
                     self.client.post, f"/api/attempts/{ATTEMPT_ID}/submit",
-                    headers=self.headers, json={"confirmed": True},
+                    headers=self.headers,
+                    json={"confirmed": True, "cause": "manual_confirmed"},
                 )
                 try:
                     response = submitted.result(timeout=1)
@@ -188,7 +189,8 @@ class ClientCommunicationLatencyTests(unittest.TestCase):
                 self.assertTrue(entered.wait(1))
                 submitted = pool.submit(
                     self.client.post, f"/api/attempts/{ATTEMPT_ID}/submit",
-                    headers=self.headers, json={"confirmed": True},
+                    headers=self.headers,
+                    json={"confirmed": True, "cause": "manual_confirmed"},
                 )
                 response = submitted.result(timeout=1)
                 self.assertEqual(202, response.status_code, response.text)

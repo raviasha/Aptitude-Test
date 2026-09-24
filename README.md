@@ -107,8 +107,8 @@ Run [`build-windows.bat`](build-windows.bat) on a Windows computer with Python
 3.10+, Node.js, Inno Setup 6.7.3, and `innoextract`. The fail-fast build produces:
 
 ```text
-release\KSATCoordinatorSetup-2.0.0.exe
-release\KSATClientSetup-2.0.0.exe
+release\KSATCoordinatorSetup-2.1.0.exe
+release\KSATClientSetup-2.1.0.exe
 ```
 
 Detailed build, smoke, recursive payload-scan, and hash verification steps are in

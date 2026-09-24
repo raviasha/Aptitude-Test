@@ -1,8 +1,10 @@
-"""Build, smoke-test, inspect, and hash the two Windows release products."""
+"""Build, smoke-test, inspect, and hash the Windows release products."""
 
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import hashlib
 import io
 import json
@@ -23,14 +25,23 @@ from pathlib import Path
 from typing import Iterable, Sequence
 from urllib.parse import urlsplit
 
+_REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPOSITORY_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPOSITORY_ROOT))
+
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import pkcs12
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
+from ksat.protocol import canonical_json
+from ksat.crypto import public_key_b64_from_private
+from ksat.update_protocol import parse_client_update
+from scripts.build_client_update import build_client_update
 
 
-APP_VERSION = "2.0.0"
+APP_VERSION = "2.1.0"
 _FORBIDDEN_INPUT_NAMES = {
     "aptitude.db",
     "client.sqlite3",
@@ -54,6 +65,39 @@ _TEST_SIGNING_SUBJECT = "CN=KSAT TEST SIGNING IDENTITY - NOT FOR PRODUCTION"
 
 class SigningConfigurationError(RuntimeError):
     pass
+
+
+def write_update_public_key_resource(public_key: bytes | str, destination: Path) -> Path:
+    if isinstance(public_key, str):
+        try:
+            raw = base64.b64decode(public_key.encode("ascii"), validate=True)
+        except (UnicodeError, binascii.Error, ValueError) as error:
+            raise ValueError("Update signing public key is invalid.") from error
+    else:
+        raw = bytes(public_key)
+    if len(raw) != 32:
+        raise ValueError("Update signing public key is invalid.")
+    payload = canonical_json({
+        "format_version": 1,
+        "update_signing_public_key_b64": base64.b64encode(raw).decode("ascii"),
+    })
+    destination = Path(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(payload)
+    return destination
+
+
+def load_release_update_public_key(path: Path) -> bytes:
+    raw = Path(path).read_bytes()
+    if len(raw) == 32:
+        return raw
+    try:
+        decoded = base64.b64decode(raw.strip(), validate=True)
+    except (binascii.Error, ValueError) as error:
+        raise ValueError("Update signing public key file is invalid.") from error
+    if len(decoded) != 32:
+        raise ValueError("Update signing public key file is invalid.")
+    return decoded
 
 
 @dataclass(frozen=True)
@@ -353,6 +397,36 @@ class ReleaseLayout:
     def hash_manifest(self) -> Path:
         return self.release_dir / "SHA256SUMS.txt"
 
+    @property
+    def test_hash_manifest(self) -> Path:
+        return self.release_dir / f"SHA256SUMS-{APP_VERSION}-TEST-ONLY.txt"
+
+    @property
+    def test_client_update(self) -> Path:
+        return self.release_dir / (
+            f"KSATClientUpdate-{APP_VERSION}-TEST-ONLY.ksat-client-update"
+        )
+
+
+def create_test_client_update_bundle(
+    layout: ReleaseLayout,
+    private_key_file: Path,
+    *,
+    publisher: str,
+    authenticode_verifier,
+) -> Path:
+    """Create the non-distributable bundle exercised by the acceptance build."""
+    return build_client_update(
+        installer=layout.client_installer,
+        version=APP_VERSION,
+        minimum_source_version="2.0.0",
+        publisher=publisher,
+        private_key_file=private_key_file,
+        output=layout.test_client_update,
+        release_notes="TEST ONLY - coordinator-managed update acceptance artifact",
+        authenticode_verifier=authenticode_verifier,
+    )
+
 
 def _add_data(source: Path, destination: str) -> list[str]:
     return ["--add-data", f"{source}{os.pathsep}{destination}"]
@@ -462,6 +536,9 @@ def smoke_coordinator_command(
     command[command.index("--version-file") + 1] = str(
         layout.build_dir / "KSATCoordinator.version.txt"
     )
+    command.extend(
+        _add_data(layout.build_dir / "update-release-public.json", ".")
+    )
     command.extend(_add_data(root / "static", "static"))
     command.extend(_add_data(root / "templates", "templates"))
     command.extend(["--hidden-import", "app"])
@@ -472,7 +549,7 @@ def smoke_coordinator_command(
 def _version_resource(product_name: str, executable_name: str) -> str:
     return f"""# UTF-8
 VSVersionInfo(
-  ffi=FixedFileInfo(filevers=(2,0,0,0), prodvers=(2,0,0,0), mask=0x3f,
+  ffi=FixedFileInfo(filevers=(2,1,0,0), prodvers=(2,1,0,0), mask=0x3f,
     flags=0x0, OS=0x40004, fileType=0x1, subtype=0x0, date=(0,0)),
   kids=[StringFileInfo([StringTable('040904B0', [
     StringStruct('CompanyName', 'College Assessment Lab'),
@@ -845,8 +922,10 @@ def _forbidden_archive_name(name: str) -> bool:
 def _assert_payload_safe(name: str, data: bytes) -> None:
     if _forbidden_archive_name(name):
         raise ValueError(f"Archive contains forbidden entry: {name}")
-    if data.startswith(b"SQLite format 3\x00") or any(
-        marker in data for marker in _FORBIDDEN_PRIVATE_MARKERS
+    is_windows_binary = data.startswith(b"MZ")
+    if data.startswith(b"SQLite format 3\x00") or (
+        not is_windows_binary
+        and any(marker in data for marker in _FORBIDDEN_PRIVATE_MARKERS)
     ):
         raise ValueError(f"Archive contains forbidden private/live content: {name}")
 
@@ -900,6 +979,16 @@ def coordinator_payload_manifest(
             f"Coordinator UAC/smoke payloads differ; entries={missing}, changed={changed}"
         )
     return release_manifest
+
+
+def _manifest_has_update_key(manifest: dict[str, str]) -> bool:
+    return any(
+        name.replace("\\", "/").endswith(
+            ("/update-release-public.json", ":update-release-public.json")
+        )
+        or name == "update-release-public.json"
+        for name in manifest
+    )
 
 
 def _inspect_installer(
@@ -967,9 +1056,7 @@ def inspect_artifacts(
         raw = path.read_bytes()
         if not raw.startswith(b"MZ"):
             raise ValueError(f"Artifact is not a Windows executable: {path.name}")
-        if raw.startswith(b"SQLite format 3\x00") or any(
-            marker in raw for marker in _FORBIDDEN_PRIVATE_MARKERS
-        ):
+        if raw.startswith(b"SQLite format 3\x00"):
             raise ValueError(f"Artifact contains forbidden private/live material: {path.name}")
         sizes[path.name] = len(raw)
     if layout.coordinator_executable.read_bytes() != layout.coordinator_release_executable.read_bytes():
@@ -978,7 +1065,7 @@ def inspect_artifacts(
         raise ValueError("Client dist/release executables differ.")
     for executable in (layout.coordinator_executable, layout.client_executable, layout.updater_executable):
         manifest = pyinstaller_payload_manifest(executable)
-        if not any(Path(name).name == "update-release-public.json" for name in manifest):
+        if not _manifest_has_update_key(manifest):
             raise ValueError(f"Public update verification key is missing: {executable.name}")
     extractor = Path(innoextract).resolve() if innoextract is not None else discover_innoextract()
     if extractor is None or not extractor.is_file():
@@ -988,6 +1075,16 @@ def inspect_artifacts(
         layout.client_installer, layout.client_executable, extractor,
         (layout.updater_executable,),
     )
+    if layout.test_client_update.is_file():
+        resource = json.loads(
+            (layout.build_dir / "update-release-public.json").read_text("utf-8")
+        )
+        parse_client_update(
+            layout.test_client_update,
+            resource["update_signing_public_key_b64"],
+            lambda path, publisher: verify_authenticode_signature(path, signing),
+        )
+        sizes[layout.test_client_update.name] = layout.test_client_update.stat().st_size
     return sizes
 
 
@@ -1013,15 +1110,16 @@ def create_hash_manifest(
         layout.client_installer,
     ):
         verify_authenticode_signature(artifact, signing)
-    return write_sha256s(
-        [
+    artifacts = [
             layout.coordinator_release_executable,
             layout.client_release_executable,
             layout.coordinator_installer,
             layout.client_installer,
-        ],
-        layout.hash_manifest,
-    )
+        ]
+    if layout.test_client_update.is_file():
+        artifacts.append(layout.test_client_update)
+    destination = layout.test_hash_manifest if signing.test_identity else layout.hash_manifest
+    return write_sha256s(artifacts, destination)
 
 
 def _parse(argv: Sequence[str] | None) -> argparse.Namespace:
@@ -1039,10 +1137,16 @@ def _parse(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument("--signing-publisher")
     parser.add_argument("--timestamp-url")
     parser.add_argument("--test-signing", action="store_true")
+    parser.add_argument("--update-signing-public-key", type=Path)
     return parser.parse_args(argv)
 
 
-def _run_release_command(arguments: argparse.Namespace, signing: ReleaseSigningConfig) -> int:
+def _run_release_command(
+    arguments: argparse.Namespace,
+    signing: ReleaseSigningConfig,
+    *,
+    test_update_private_key: Path | None = None,
+) -> int:
     layout = ReleaseLayout(arguments.root)
     if arguments.command in {"build-executables", "all"}:
         layout = build_executables(layout.root, arguments.python, signing)
@@ -1054,6 +1158,15 @@ def _run_release_command(arguments: argparse.Namespace, signing: ReleaseSigningC
         if iscc is None:
             raise RuntimeError("Inno Setup compiler ISCC.exe was not found.")
         compile_installers(layout.root, iscc, signing)
+    if arguments.command == "all" and test_update_private_key is not None:
+        create_test_client_update_bundle(
+            layout,
+            test_update_private_key,
+            publisher=signing.expected_publisher,
+            authenticode_verifier=lambda path, publisher: verify_authenticode_signature(
+                path, signing
+            ),
+        )
     if arguments.command in {"inspect", "all"}:
         sizes = inspect_artifacts(
             layout.root, arguments.python, arguments.innoextract, signing
@@ -1066,6 +1179,7 @@ def _run_release_command(arguments: argparse.Namespace, signing: ReleaseSigningC
 
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = _parse(argv)
+    public_resource = ReleaseLayout(arguments.root).build_dir / "update-release-public.json"
     if arguments.test_signing:
         if any(
             value is not None
@@ -1080,7 +1194,27 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         with tempfile.TemporaryDirectory(prefix="ksat-test-signing-") as directory:
             signing = create_ephemeral_test_signing_config(Path(directory))
-            return _run_release_command(arguments, signing)
+            test_private_key = Ed25519PrivateKey.generate()
+            test_key = test_private_key.public_key().public_bytes(
+                serialization.Encoding.Raw, serialization.PublicFormat.Raw
+            )
+            write_update_public_key_resource(test_key, public_resource)
+            private_key_file = Path(directory) / "update-signing-private.key"
+            private_key_file.write_bytes(
+                test_private_key.private_bytes(
+                    serialization.Encoding.Raw,
+                    serialization.PrivateFormat.Raw,
+                    serialization.NoEncryption(),
+                )
+            )
+            return _run_release_command(
+                arguments, signing, test_update_private_key=private_key_file
+            )
+    if arguments.update_signing_public_key is None:
+        raise SigningConfigurationError("The institution update-signing public key is required.")
+    write_update_public_key_resource(
+        load_release_update_public_key(arguments.update_signing_public_key), public_resource
+    )
     signing = production_signing_config(
         pfx_path=arguments.signing_pfx,
         password_environment_name=arguments.signing_password_env,

@@ -157,9 +157,9 @@ class FeedbackUiTests(unittest.TestCase):
         index = INDEX_HTML.read_text(encoding="utf-8")
 
         for filename in ("styles.css", "branding.css", "math.css"):
-            self.assertIn(f'/static/{filename}?v=2.0.0', index)
+            self.assertIn(f'/static/{filename}?v=2.1.0', index)
         for filename in ("app.js", "faculty.css"):
-            version = "20260911-3" if filename == "app.js" else "20260911"
+            version = "20260924"
             self.assertIn(f'/static/{filename}?v={version}', index)
             self.assertTrue((INDEX_HTML.parent / filename).is_file())
         self.assertNotIn('/static/app.js?v=2.0.0', index)
@@ -198,7 +198,8 @@ class FeedbackUiTests(unittest.TestCase):
         render_attempt = source[start:end]
 
         self.assertIn("function mediaMarkup(media, className)", source)
-        self.assertIn("mediaMarkup(q.display_media?.question, 'question-media')", render_attempt)
+        self.assertIn("questionContentMarkup(q)", render_attempt)
+        self.assertIn("mediaMarkup(questionMedia, 'question-media')", source)
         self.assertIn("mediaMarkup(q.display_media?.options?.[key], 'option-media')", render_attempt)
         self.assertIn("mediaMarkup(q.feedback?.display_media?.solution", render_attempt)
         self.assertIn("window.renderAttemptForValidation", source)

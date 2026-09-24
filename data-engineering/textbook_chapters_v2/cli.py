@@ -1360,6 +1360,9 @@ def _run(config: ChapterConfig) -> int:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m textbook_chapters_v2")
     subcommands = parser.add_subparsers(dest="command", required=True)
+    inventory = subcommands.add_parser("inventory")
+    inventory.add_argument("--bank-dir", required=True, type=Path)
+    inventory.add_argument("--output", required=True, type=Path)
     for name in ("prepare", "extract", "build", "render", "verify", "package", "promote", "run"):
         command = subcommands.add_parser(name)
         command.add_argument("--config", required=True, type=Path)
@@ -1380,6 +1383,18 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     try:
         arguments = _parser().parse_args(argv)
+        if arguments.command == "inventory":
+            from .registry import inventory_banks, write_inventory
+
+            inventory = inventory_banks(arguments.bank_dir.resolve())
+            write_inventory(arguments.output.resolve(), inventory)
+            print(json.dumps({
+                "status": "ok",
+                "bank_count": inventory["bank_count"],
+                "question_count": inventory["question_count"],
+                "output": str(arguments.output.resolve()),
+            }))
+            return SUCCESS_EXIT
         config = ChapterConfig.load(arguments.config)
         if getattr(arguments, "force", False):
             _clear_cache(config, arguments.command)

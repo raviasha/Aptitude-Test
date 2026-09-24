@@ -11,6 +11,23 @@ published question-bank ZIP. Only `promote` can replace a published ZIP, and it
 does so only after revalidating the live audit ledger and the package with the
 application parser.
 
+## Accepted-bank rendering registry
+
+The current `*_all_vision_text_only.zip` archives can be inventoried without
+modifying or repackaging them:
+
+```powershell
+$env:PYTHONPATH = "data-engineering"
+python -m textbook_chapters_v2 inventory `
+  --bank-dir question-banks `
+  --output tmp/textbook-v2/rendering-registry.json
+```
+
+The sidecar records archive and member hashes, stable chapter-scoped question
+keys, literal field hashes, rendering-category proposals, and dependency tags.
+It is evidence about the accepted baseline; it does not claim that unchanged
+records received a new visual verification.
+
 ## Chapter configuration
 
 Along with page ranges, reviewed crop markers, and question numbers, each JSON

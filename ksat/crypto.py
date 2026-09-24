@@ -77,11 +77,37 @@ def sign_json(private_key_b64: str, value: Any) -> str:
     return base64.b64encode(signature).decode("ascii")
 
 
+def sign_bytes(private_key_b64: str, value: bytes) -> str:
+    if not isinstance(value, bytes):
+        raise ValueError("Signed value must be bytes.")
+    return base64.b64encode(_private_key_from_b64(private_key_b64).sign(value)).decode("ascii")
+
+
+def public_key_b64_from_private(private_key_b64: str) -> str:
+    public = _private_key_from_b64(private_key_b64).public_key().public_bytes(
+        Encoding.Raw, PublicFormat.Raw
+    )
+    return base64.b64encode(public).decode("ascii")
+
+
 def verify_json(public_key_b64: str, value: Any, signature_b64: str) -> None:
     public_key = _public_key_from_b64(public_key_b64)
     signature = _decode_base64(signature_b64, "Invalid Ed25519 signature.")
     try:
         public_key.verify(signature, canonical_json(value))
+    except InvalidSignature as error:
+        raise ValueError("Invalid Ed25519 signature.") from error
+
+
+def verify_bytes(public_key_b64: str, value: bytes, signature_b64: str) -> None:
+    if not isinstance(value, bytes):
+        raise ValueError("Signed value must be bytes.")
+    public_key = _public_key_from_b64(public_key_b64)
+    signature = _decode_base64(signature_b64, "Invalid Ed25519 signature.")
+    if len(signature) != 64:
+        raise ValueError("Invalid Ed25519 signature.")
+    try:
+        public_key.verify(signature, value)
     except InvalidSignature as error:
         raise ValueError("Invalid Ed25519 signature.") from error
 

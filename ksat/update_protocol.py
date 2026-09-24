@@ -138,6 +138,7 @@ class ClientUpdateManifest(ProtocolModel):
 @dataclass(frozen=True, slots=True)
 class VerifiedClientUpdate:
     manifest: ClientUpdateManifest
+    bundle_path: Path
     bundle_sha256: str
     bundle_size: int
     authenticode_identity: Any
@@ -220,6 +221,7 @@ def parse_client_update(
     bundle_bytes = bundle_path.read_bytes()
     return VerifiedClientUpdate(
         manifest=manifest,
+        bundle_path=bundle_path.resolve(),
         bundle_sha256=hashlib.sha256(bundle_bytes).hexdigest(),
         bundle_size=len(bundle_bytes),
         authenticode_identity=identity,

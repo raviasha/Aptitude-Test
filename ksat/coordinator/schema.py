@@ -102,6 +102,32 @@ def migrate_distributed_schema(connection: sqlite3.Connection) -> None:
           setting_value TEXT NOT NULL,
           updated_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS client_update_releases (
+          release_id TEXT PRIMARY KEY,
+          client_version TEXT NOT NULL UNIQUE,
+          state TEXT NOT NULL CHECK(state IN ('uploaded','pilot','published','withdrawn')),
+          manifest_json TEXT NOT NULL,
+          bundle_filename TEXT NOT NULL,
+          bundle_sha256 TEXT NOT NULL,
+          bundle_size INTEGER NOT NULL,
+          pilot_device_id TEXT,
+          created_at TEXT NOT NULL,
+          published_at TEXT,
+          withdrawn_at TEXT,
+          FOREIGN KEY(pilot_device_id) REFERENCES devices(device_id)
+        );
+        CREATE TABLE IF NOT EXISTS client_update_device_status (
+          release_id TEXT NOT NULL,
+          device_id TEXT NOT NULL,
+          stage TEXT NOT NULL,
+          installed_version TEXT NOT NULL,
+          diagnostic_code TEXT,
+          attempt_id TEXT NOT NULL,
+          reported_at TEXT NOT NULL,
+          PRIMARY KEY(release_id, device_id),
+          FOREIGN KEY(release_id) REFERENCES client_update_releases(release_id),
+          FOREIGN KEY(device_id) REFERENCES devices(device_id)
+        );
         CREATE TABLE IF NOT EXISTS load_test_runs (
           namespace TEXT PRIMARY KEY,
           ownership_sha256 TEXT NOT NULL,
@@ -141,3 +167,5 @@ def migrate_distributed_schema(connection: sqlite3.Connection) -> None:
     connection.execute("CREATE INDEX IF NOT EXISTS idx_attempts_release_student ON attempts(release_id, student_id)")
     connection.execute("CREATE INDEX IF NOT EXISTS idx_audit_events_attempt ON audit_events(attempt_id)")
     connection.execute("CREATE INDEX IF NOT EXISTS idx_audit_events_test ON audit_events(test_id)")
+    connection.execute("CREATE INDEX IF NOT EXISTS idx_client_update_release_state ON client_update_releases(state)")
+    connection.execute("CREATE INDEX IF NOT EXISTS idx_client_update_status_device ON client_update_device_status(device_id)")

@@ -11,6 +11,7 @@ from pathlib import Path
 
 from ksat.client.identity import DeviceIdentityStore, derive_state_integrity_key
 from ksat.client.store import ClientStore
+from ksat.client.install_guard import installed_version
 from ksat.client.updater import HealthVerifier, Updater
 from ksat.update_protocol import load_update_public_key
 from ksat.windows_authenticode import verify_authenticode
@@ -24,6 +25,15 @@ def _digest(path: Path) -> str:
     paths = [path] if path.is_file() else sorted(item for item in path.rglob("*") if item.is_file())
     for item in paths:
         digest.update(item.relative_to(path.parent).as_posix().encode("utf-8")); digest.update(item.read_bytes())
+    return digest.hexdigest()
+
+
+def configuration_digest(data: Path) -> str:
+    digest = hashlib.sha256()
+    for name in ("client-config.json", "coordinator-url.json"):
+        path = data / name
+        digest.update(name.encode("ascii"))
+        digest.update(path.read_bytes() if path.exists() else b"<absent>")
     return digest.hexdigest()
 
 
@@ -51,21 +61,24 @@ def main(argv=None) -> int:
     data=Path(program_data).resolve()/"KSAT Client"; updates=data/"updates"
     identity_path=data/"identity"; config_path=data/"client-config.json"; state_path=data/"state"
     database_path=state_path/"client.sqlite3"
-    before=(_digest(identity_path),_digest(config_path),_digest(database_path))
+    before=(_digest(identity_path),configuration_digest(data),_digest(database_path))
     def version_probe():
-        with urllib.request.urlopen("http://127.0.0.1:8765/api/build",timeout=5) as response:
+        with urllib.request.urlopen("http://127.0.0.1:8010/api/build",timeout=5) as response:
             import json
             return json.loads(response.read().decode("utf-8"))
     def store_probe():
-        identity=DeviceIdentityStore(identity_path).load_or_create()
-        store=ClientStore(state_path/"client.sqlite3",integrity_key=derive_state_integrity_key(identity),integrity_anchor_path=identity_path/"state-anchor.json")
-        try: store.migration_summary(); return True
-        finally: store.close()
+        identity=DeviceIdentityStore(identity_path).load_existing()
+        return ClientStore.inspect_replacement_safety(state_path/"client.sqlite3",
+            integrity_key=derive_state_integrity_key(identity),
+            integrity_anchor_path=identity_path/"state-anchor.json") is None
+    version = installed_version(Path(program_data))
+    if version is None:
+        raise ValueError("The installed client version could not be established.")
     updater=Updater(
         updates,load_update_public_key(_BUNDLE_ROOT/"update-release-public.json"),verify_authenticode,
         WindowsServices(),WindowsInstallers(),HealthVerifier(version_probe,store_probe),
-        installed_version="2.1.0",identity_digest=before[0],config_digest=before[1],state_digest=before[2],
-        current_digest_probe=lambda:(_digest(identity_path),_digest(config_path),_digest(database_path)),
+        installed_version=version,identity_digest=before[0],config_digest=before[1],state_digest=before[2],
+        current_digest_probe=lambda:(_digest(identity_path),configuration_digest(data),_digest(database_path)),
     )
     return 0 if updater.run(args.request).success else 1
 

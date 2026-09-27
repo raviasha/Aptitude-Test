@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import shutil
 import tempfile
@@ -81,8 +82,8 @@ class Updater:
             raise ValueError("Client update path is outside protected storage.")
         return candidate
 
-    def _journal(self, stage: str, diagnostic_code: str | None = None) -> None:
-        data = canonical_json({"stage":stage,"diagnostic_code":diagnostic_code})
+    def _journal(self, stage: str, diagnostic_code: str | None = None, **context) -> None:
+        data = canonical_json({"stage":stage,"diagnostic_code":diagnostic_code, **context})
         descriptor, name = tempfile.mkstemp(prefix=".update-journal-", dir=self.root)
         temporary = Path(name)
         try:
@@ -130,10 +131,10 @@ class Updater:
         if not self.last_known_good_path.is_file():
             return False
         try:
-            self._journal("rollback_installing")
             self.authenticode_verifier(self.last_known_good_path,publisher)
+            self._journal("rollback_installing", rollback_version=self.installed_version,
+                rollback_sha256=hashlib.sha256(self.last_known_good_path.read_bytes()).hexdigest())
             self.installers.run(self.last_known_good_path,_INSTALL_ARGS,300)
-            self.services.start(_SERVICE,30)
             self._verify_health(self.installed_version)
             self._journal("rolled_back")
             return True
@@ -146,12 +147,10 @@ class Updater:
         installer=self._extract_installer(verified)
         diagnostic=None
         try:
-            self._journal("stopping_service")
-            self.services.stop(_SERVICE,30)
+            # The signed installer's guard owns stop/start, after a race-safe
+            # active-work check. Never quiesce the service ahead of that check.
             self._journal("installing")
             self.installers.run(installer,_INSTALL_ARGS,300)
-            self._journal("starting_service")
-            self.services.start(_SERVICE,30)
             self._journal("health_check")
             self._verify_health(value["target_version"])
             self.last_known_good_path.parent.mkdir(parents=True,exist_ok=True)

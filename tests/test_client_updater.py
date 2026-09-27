@@ -6,6 +6,7 @@ import unittest
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 from ksat.client.updater import HealthVerifier, Updater
 from ksat.crypto import generate_ed25519_keypair
@@ -34,6 +35,35 @@ class Health:
         return True
 
 class ClientUpdaterTests(unittest.TestCase):
+    def test_rollback_permission_expires_when_journal_or_cached_bytes_change(self):
+        from client_install_guard import authorized_rollback
+        with tempfile.TemporaryDirectory() as directory:
+            data = Path(directory)
+            updates = data / "KSAT Client/updates"
+            cached = updates / "last-known-good/KSATClientSetup-2.1.1.exe"
+            cached.parent.mkdir(parents=True)
+            cached.write_bytes(b"signed lab installer")
+            stage = data / "stage"
+            stage.mkdir()
+            (stage / "install-context.json").write_bytes(canonical_json({"installer": str(cached)}))
+            journal = updates / "update-journal.json"
+            journal.write_bytes(canonical_json({"stage": "rollback_installing", "rollback_version": "2.1.1",
+                "rollback_sha256": hashlib.sha256(cached.read_bytes()).hexdigest()}))
+            with patch("client_install_guard.require_protected_directory"):
+                self.assertTrue(authorized_rollback(data, stage, "2.1.1"))
+                self.assertFalse(authorized_rollback(data, stage, "2.1.0"))
+                cached.write_bytes(b"changed")
+                self.assertFalse(authorized_rollback(data, stage, "2.1.1"))
+
+    def test_runtime_url_is_included_in_update_preservation_digest(self):
+        from client_updater import configuration_digest
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "client-config.json").write_bytes(b"seed")
+            before = configuration_digest(root)
+            (root / "coordinator-url.json").write_bytes(b"effective server")
+            self.assertNotEqual(before, configuration_digest(root))
+
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory(); self.root=Path(self.temp.name)/"updates"; self.root.mkdir()
         installer=Path(self.temp.name)/"setup.exe"; installer.write_bytes(b"signed installer")
@@ -52,7 +82,9 @@ class ClientUpdaterTests(unittest.TestCase):
         self.assertTrue(result.success)
         self.assertEqual(["/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART"],self.installers.calls[0][1])
         self.assertTrue(self.updater.last_known_good_path.is_file())
-        self.assertEqual(["stop","start"],[item[0] for item in self.services.calls])
+        # The guarded installer owns quiescing; stopping here would bypass its
+        # active-attempt/pending-submission checks before it can reject safely.
+        self.assertEqual([], self.services.calls)
 
     def test_failure_runs_last_known_good_and_reports_rollback(self):
         self.updater.last_known_good_path.parent.mkdir(parents=True,exist_ok=True)
@@ -62,6 +94,35 @@ class ClientUpdaterTests(unittest.TestCase):
         self.assertFalse(result.success)
         self.assertTrue(result.rolled_back)
         self.assertEqual("update_install_failed",result.diagnostic_code)
+
+    def test_rollback_journal_binds_only_exact_cached_installer(self):
+        self.updater.last_known_good_path.parent.mkdir(parents=True, exist_ok=True)
+        self.updater.last_known_good_path.write_bytes(b"old signed installer")
+        previous_run = self.installers.run
+        observed = []
+        def run(path, args, timeout):
+            if Path(path) == self.updater.last_known_good_path:
+                observed.append(json.loads(self.updater.journal_path.read_bytes()))
+            return previous_run(path, args, timeout)
+        self.installers.run = run
+        self.installers.fail = True
+        self.updater.run(self.request)
+        self.assertEqual(hashlib.sha256(b"old signed installer").hexdigest(), observed[0]["rollback_sha256"])
+        self.assertEqual("2.0.0", observed[0]["rollback_version"])
+        self.assertNotIn("rollback_sha256", json.loads(self.updater.journal_path.read_bytes()))
+
+    def test_identical_generic_update_preserves_two_lab_profiles(self):
+        for label, url in (("a", "https://lab-a:8443"), ("b", "https://lab-b:8443")):
+            with self.subTest(label=label):
+                client = Path(self.temp.name) / label
+                client.mkdir()
+                config = client / "client-config.json"
+                identity = client / "device-key.bin"
+                config.write_bytes(canonical_json({"coordinator_base_url": url}))
+                identity.write_bytes(label.encode() * 32)
+                before = (config.read_bytes(), identity.read_bytes())
+                self.assertTrue(self.updater.run(self.request).success)
+                self.assertEqual(before, (config.read_bytes(), identity.read_bytes()))
 
     def test_refuses_request_or_bundle_outside_protected_root(self):
         outside=Path(self.temp.name)/"outside.json"; outside.write_bytes(self.request.read_bytes())

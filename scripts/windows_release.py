@@ -41,7 +41,9 @@ from ksat.update_protocol import parse_client_update
 from scripts.build_client_update import build_client_update
 
 
-APP_VERSION = "2.1.0"
+COORDINATOR_VERSION = "2.1.0"
+CLIENT_VERSION = "2.1.1"
+APP_VERSION = COORDINATOR_VERSION  # Backwards-compatible coordinator tooling.
 LAB_SIGNING_PUBLISHER = "CN=KSAT LAB RELEASE SIGNING"
 _FORBIDDEN_INPUT_NAMES = {
     "aptitude.db",
@@ -441,7 +443,7 @@ class ReleaseLayout:
 
     @property
     def client_installer(self) -> Path:
-        return self.release_dir / f"KSATClientSetup-{APP_VERSION}.exe"
+        return self.release_dir / f"KSATClientSetup-{CLIENT_VERSION}.exe"
 
     @property
     def coordinator_release_executable(self) -> Path:
@@ -449,7 +451,7 @@ class ReleaseLayout:
 
     @property
     def client_release_executable(self) -> Path:
-        return self.release_dir / f"KSATClient-{APP_VERSION}.exe"
+        return self.release_dir / f"KSATClient-{CLIENT_VERSION}.exe"
 
     @property
     def hash_manifest(self) -> Path:
@@ -457,17 +459,17 @@ class ReleaseLayout:
 
     @property
     def test_hash_manifest(self) -> Path:
-        return self.release_dir / f"SHA256SUMS-{APP_VERSION}-TEST-ONLY.txt"
+        return self.release_dir / f"SHA256SUMS-{CLIENT_VERSION}-TEST-ONLY.txt"
 
     @property
     def test_client_update(self) -> Path:
         return self.release_dir / (
-            f"KSATClientUpdate-{APP_VERSION}-TEST-ONLY.ksat-client-update"
+            f"KSATClientUpdate-{CLIENT_VERSION}-TEST-ONLY.ksat-client-update"
         )
 
     @property
     def client_update(self) -> Path:
-        return self.release_dir / f"KSATClientUpdate-{APP_VERSION}.ksat-client-update"
+        return self.release_dir / f"KSATClientUpdate-{CLIENT_VERSION}.ksat-client-update"
 
     @property
     def lab_trust_certificate(self) -> Path:
@@ -488,7 +490,7 @@ def create_test_client_update_bundle(
     """Create the non-distributable bundle exercised by the acceptance build."""
     return build_client_update(
         installer=layout.client_installer,
-        version=APP_VERSION,
+        version=CLIENT_VERSION,
         minimum_source_version="2.0.0",
         publisher=publisher,
         private_key_file=private_key_file,
@@ -508,7 +510,7 @@ def create_lab_client_update_bundle(
     """Create the signed bundle distributed by a private KSAT lab."""
     return build_client_update(
         installer=layout.client_installer,
-        version=APP_VERSION,
+        version=CLIENT_VERSION,
         minimum_source_version="2.0.0",
         publisher=publisher,
         private_key_file=private_key_file,
@@ -655,18 +657,20 @@ def smoke_coordinator_command(
 
 
 def _version_resource(product_name: str, executable_name: str) -> str:
+    version = COORDINATOR_VERSION if executable_name == "KSATCoordinator.exe" else CLIENT_VERSION
+    parts = tuple(int(part) for part in version.split(".")) + (0,)
     return f"""# UTF-8
 VSVersionInfo(
-  ffi=FixedFileInfo(filevers=(2,1,0,0), prodvers=(2,1,0,0), mask=0x3f,
+  ffi=FixedFileInfo(filevers={parts}, prodvers={parts}, mask=0x3f,
     flags=0x0, OS=0x40004, fileType=0x1, subtype=0x0, date=(0,0)),
   kids=[StringFileInfo([StringTable('040904B0', [
     StringStruct('CompanyName', 'College Assessment Lab'),
     StringStruct('FileDescription', '{product_name}'),
-    StringStruct('FileVersion', '{APP_VERSION}'),
+    StringStruct('FileVersion', '{version}'),
     StringStruct('InternalName', '{executable_name}'),
     StringStruct('OriginalFilename', '{executable_name}'),
     StringStruct('ProductName', '{product_name}'),
-    StringStruct('ProductVersion', '{APP_VERSION}')
+    StringStruct('ProductVersion', '{version}')
   ])]), VarFileInfo([VarStruct('Translation', [1033, 1200])])]
 )
 """

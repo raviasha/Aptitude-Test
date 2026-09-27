@@ -1,12 +1,24 @@
 import tempfile
+import os
+import sys
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from ksat.windows_authenticode import AuthenticodeIdentity, verify_authenticode
+from ksat.windows_authenticode import AuthenticodeIdentity, verify_authenticode, _read_identity
 
 
 class WindowsAuthenticodeTests(unittest.TestCase):
+    @unittest.skipUnless(sys.platform == "win32", "Windows Authenticode required")
+    def test_native_identity_reader_handles_inherited_powershell_module_path(self):
+        executable = Path(os.environ["SystemRoot"]) / "System32/WindowsPowerShell/v1.0/powershell.exe"
+        # A caller may inherit pwsh 7 module paths ahead of Windows PowerShell's.
+        # Run the actual signed-file reader, without importing/changing any trust.
+        identity = _read_identity(executable)
+        self.assertIn("Microsoft", identity.publisher)
+        self.assertRegex(identity.thumbprint, r"^[0-9A-F]{40}$")
+        self.assertLess(identity.not_before, identity.not_after)
+
     def setUp(self):
         self.temporary_directory = tempfile.TemporaryDirectory()
         self.path = Path(self.temporary_directory.name) / "setup.exe"

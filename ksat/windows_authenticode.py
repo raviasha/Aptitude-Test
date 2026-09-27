@@ -65,6 +65,7 @@ def _read_identity(path: Path) -> AuthenticodeIdentity:
         raise ValueError("Authenticode verification requires Windows.")
     script = r"""
 $ErrorActionPreference='Stop'
+Import-Module (Join-Path $PSHOME 'Modules/Microsoft.PowerShell.Security/Microsoft.PowerShell.Security.psd1') -ErrorAction Stop
 $s=Get-AuthenticodeSignature -LiteralPath $env:KSAT_AUTHENTICODE_FILE
 if ($null -eq $s.SignerCertificate) { throw 'missing signer certificate' }
 [ordered]@{

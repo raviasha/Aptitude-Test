@@ -2,7 +2,7 @@
 
 Date: 27 September 2026
 
-Status: Proposed specification for user review; implementation has not started.
+Status: Approved by the user on 27 September 2026; implementation has not started.
 
 ## Purpose and agreed workflow
 

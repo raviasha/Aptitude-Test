@@ -123,8 +123,8 @@ The binaries in `release/` were checked against the generated SHA-256 manifest.
 They replace the previous client-server test builds at the existing download
 paths; the prior binaries remain in Git history.
 
-- [Lab Client test installer](../release/KSATClientSetup-2.0.0.exe)
-- [Faculty Coordinator test installer](../release/KSATCoordinatorSetup-2.0.0.exe)
+- [Lab Client test installer](../release/archive/KSATClientSetup-2.0.0.exe)
+- [Faculty Coordinator test installer](../release/archive/KSATCoordinatorSetup-2.0.0.exe)
 - [Artifact checksums](../release/SHA256SUMS.txt)
 
 These files use an ephemeral certificate marked **NOT FOR PRODUCTION**. No

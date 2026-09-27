@@ -1,147 +1,31 @@
-# KSAT release files
+# Current KSAT release files
 
-## Lab Package Builder 1.0.0 — client 2.1.1
-
-[Download KSATLabPackageBuilder-1.0.0.exe](https://github.com/raviasha/Aptitude-Test/releases/download/lab-package-builder-v1.0.0/KSATLabPackageBuilder-1.0.0.exe) creates a signed, preconfigured client installer
-for each lab on the designated packaging PC. Follow the
-[builder guide](../docs/lab-package-builder.md) and
-[pilot acceptance checklist](../docs/lab-package-builder-acceptance.md).
-Verify [KSATLabPackageBuilder-1.0.0.sha256](KSATLabPackageBuilder-1.0.0.sha256).
-The large EXE is a GitHub Release asset, not a Git repository blob. Pilot testing
-is still required before whole-lab deployment.
-Only the generated lab client EXE goes to student PCs. No Coordinator rebuild
-or replacement is required for this feature; the older files below remain intact.
-
-## KSAT 2.1 private-lab release — 24 September 2026
-
-The 2.1 Coordinator and Client files are signed by the persistent private-lab
-publisher `CN=KSAT LAB RELEASE SIGNING`. Install
-`KSATLabReleaseSigning.cer` with `Install-KSATLabReleaseTrust.ps1` before running
-the coordinator installer; the hostname bootstrap installs the same pinned
-certificate on each client. Verify every file against `SHA256SUMS.txt`.
-
-Use [the sequential lab upgrade guide](../docs/ksat-2.1-lab-upgrade.md). Future
-client updates use `KSATClientUpdate-2.1.0.ksat-client-update` through Faculty's
-**Client updates** page.
-
-| Product | Installer | Standalone executable |
-| --- | --- | --- |
-| Lab Client 2.1 | [KSATClientSetup-2.1.0.exe](KSATClientSetup-2.1.0.exe) | [KSATClient-2.1.0.exe](KSATClient-2.1.0.exe) |
-| Faculty Coordinator 2.1 | [KSATCoordinatorSetup-2.1.0.exe](KSATCoordinatorSetup-2.1.0.exe) | [KSATCoordinator-2.1.0.exe](KSATCoordinator-2.1.0.exe) |
-
-# Earlier test builds — Coordinator update 17 September 2026
-
-## Ubuntu graphical installers — 18 September 2026
-
-- [Ubuntu 18.04 amd64](KSATClient-Ubuntu-18.04-amd64.deb)
-- [Ubuntu 22.04 amd64](KSATClient-Ubuntu-22.04-amd64.deb)
-
-Package revision `2.0.0+ubuntu2`: install the matching `.deb` through Ubuntu's
-graphical package installer, then open **KSAT Client Setup** from Applications.
-Choose the server HTTPS address, `coordinator-ca.pem`, and `coordinator-public.json`,
-approve the administrator password prompt, and click **Open KSAT**. No terminal
-commands are needed for installation or first setup. Standard Ubuntu desktop
-dependencies may require internet access. This updates only the Ubuntu clients;
-the Windows installers and server-only 1.3.4 installer are unchanged.
-
-Read the [graphical installation guide](../docs/ubuntu-client-installation.md)
-and [verification/remaining acceptance checks](../docs/ubuntu-gui-build-verification.md).
-The adjacent `.sha256` and `.build-info.json` files identify these pilot packages.
-
-## Coordinator DHCP startup fix — 17 September 2026
-
-The Coordinator installer and standalone executable in this folder now allow
-DHCP/adapter IP changes when the configured hostname and existing certificate
-remain valid. They no longer require the certificate's issuance-time LAN IPs
-to exactly equal the current adapter addresses. Hostname, signature, expiry,
-private-key matching, and loopback certificate checks remain enabled.
-
-**Update only the server:** close the Coordinator and run
-[KSATCoordinatorSetup-2.0.0.exe](KSATCoordinatorSetup-2.0.0.exe) over the existing
-installation. Do not uninstall or delete ProgramData. Windows and Ubuntu client
-binaries are unchanged. Clients should use the stable hostname, which must
-resolve to the server's current IP. Literal-IP connections are not automatically
-updated or newly covered by the certificate.
-
-If ProgramData was already deleted, stop the server, preserve its newly created
-data folder separately, and restore the complete original `KSAT Coordinator`
-backup before starting this updated version. Do not merge old and new security
-files. The executable update cannot reconstruct deleted accounts or keys.
-
-See [DHCP update verification and recovery](coordinator-dhcp-update.md) and
-[coordinator-only checksums](COORDINATOR-DHCP-SHA256SUMS.txt). These remain
-**test-signed pilot binaries**, not institution-signed production releases.
-The older complete-package ZIP linked below does not include this DHCP fix;
-use the Coordinator installer directly from this folder.
-
-**TEST-SIGNED — NOT FOR PRODUCTION**
-
-These Lab Client and Faculty Coordinator builds include the exam-integrity
-hardening update, the faculty exam-timer correction, and the refreshed faculty
-workspace. They are intended for isolated testing and supervised lab
-acceptance. Their ephemeral signing certificate is explicitly marked
-`KSAT TEST SIGNING IDENTITY - NOT FOR PRODUCTION`; Windows does not trust it as
-a production publisher. Institution signing and physical Windows acceptance
-are still required before production rollout.
+Use this folder for the **2.1.0 Coordinator/standard Client** and the **Lab Package Builder 1.0.0** (which creates preconfigured **2.1.1 clients**).
 
 ## Downloads
 
-[Download the complete test package](https://github.com/raviasha/Aptitude-Test/releases/tag/v2.0.0-test-20260910-faculty-timer)
-for both installers, both standalone executables, the installation and user guides, and
-checksums. Question banks are distributed separately.
+| Purpose | Download |
+| --- | --- |
+| Install/update the faculty server | [KSATCoordinatorSetup-2.1.0.exe](KSATCoordinatorSetup-2.1.0.exe) |
+| Install the standard client manually | [KSATClientSetup-2.1.0.exe](KSATClientSetup-2.1.0.exe) |
+| Create one preconfigured client installer per lab | [KSATLabPackageBuilder-1.0.0.exe](https://github.com/raviasha/Aptitude-Test/releases/download/lab-package-builder-v1.0.0/KSATLabPackageBuilder-1.0.0.exe) |
 
-| Product | Installer | Standalone executable |
-| --- | --- | --- |
-| Lab Client | [KSATClientSetup-2.0.0.exe](KSATClientSetup-2.0.0.exe) | [KSATClient-2.0.0.exe](KSATClient-2.0.0.exe) |
-| Faculty Coordinator | [KSATCoordinatorSetup-2.0.0.exe](KSATCoordinatorSetup-2.0.0.exe) | [KSATCoordinator-2.0.0.exe](KSATCoordinator-2.0.0.exe) |
+Run the builder on the designated packaging PC. Distribute its generated lab installer to student PCs, not the builder itself. The builder EXE is a GitHub Release asset because of its size; its download link and [checksum](KSATLabPackageBuilder-1.0.0.sha256) remain here. Pilot on one or two PCs before whole-lab deployment.
 
-Two-page quick installation guide: [PDF](KSAT_Quick_Installation_Guide.pdf)
-or [Word](KSAT_Quick_Installation_Guide.docx). It covers server selection, checks
-from two student PCs, installation, question banks, and a short pilot. It assumes
-departments receive the correct files through the supplied Google Drive folder.
+## Supporting files
 
-Two-page user guide: [PDF](KSAT_Quick_User_Guide.pdf) or
-[Word](KSAT_Quick_User_Guide.docx). One page covers faculty operations, including
-extensions and results; the other covers students taking and submitting a test.
+- Standalone executables: [Coordinator 2.1.0](KSATCoordinator-2.1.0.exe) and [Client 2.1.0](KSATClient-2.1.0.exe). Normally use the installers above.
+- Existing central-update bundle: [KSATClientUpdate-2.1.0.ksat-client-update](KSATClientUpdate-2.1.0.ksat-client-update). This is the older 2.1.0 bundle, **not** an update for builder-installed 2.1.1 clients.
+- Private-lab publisher trust: [certificate](KSATLabReleaseSigning.cer) and [trust installation script](Install-KSATLabReleaseTrust.ps1), for the standard 2.1.0 workflow. Generated lab installers handle their bundled public trust themselves.
+- [2.1.0 checksums](SHA256SUMS.txt) and [builder checksum](KSATLabPackageBuilder-1.0.0.sha256).
 
-[Checksums](SHA256SUMS.txt) remain available for maintainers. Compatibility
-metadata remains 2.0.0; the date and checksums identify this update. Apply updates between
-assessments. The faculty timer correction requires only the Coordinator update
-if clients already have the 10 September integrity update. The Client was
-rebuilt for a complete distribution; its behavior is unchanged by the timer fix.
-Install both products for a new lab or when upgrading from an older client.
+## Instructions
 
-## Changes and verification
+- [Standard 2.1.0 lab setup and upgrade](../docs/ksat-2.1-lab-upgrade.md)
+- [Create a lab-specific client installer](../docs/lab-package-builder.md)
+- [Install the generated client on student PCs](../docs/lab-client-installation.md)
+- [Builder verification and remaining pilot checks](../docs/lab-package-builder-acceptance.md)
 
-- Immediate exam gating on observable focus, visibility, or fullscreen loss.
-- Durable retries with persistent event IDs, including concurrent browser tabs.
-- An independent local-service watchdog that records monitoring interruptions.
-- Updated Faculty result and CSV labels.
-- Faculty now shows exam time left, a range for different student deadlines,
-  and whole-assessment minutes added, separately from the start window.
-  Extensions appear immediately after the action and survive page refresh.
-- Timer synchronization ignores responses for replaced pages and prevents
-  overlapping background requests from restoring an older timer value.
-- Refreshed the faculty workspace with clearer navigation, responsive layout,
-  searchable question-bank management, and ZIP-only question-bank importing.
-- Coordinator upgrades safely adopt a matching legacy KSAT firewall rule when
-  its ownership marker is missing, while still rejecting unrelated rules.
-- Updated the faculty identity to Prof R Ravi Shankar and improved login
-  branding and spacing around the institutional header.
-- 545 distributed tests passed before the final polling adjustment; 97 focused
-  and legacy checks passed on the final source, including its polling regression.
-- Both products passed executable smoke checks, test-signature verification,
-  recursive installer payload inspection, and SHA-256 verification. The smoke
-  confirmed coordinator TLS, a loopback-only client, and equivalent application
-  payloads between the elevated Coordinator and its automated smoke probe.
+## Older releases
 
-The unchanged Windows client was built from source revision
-`a3220fa0bd3542c5484fef5fdc6827d4215af945`. The Coordinator now includes the
-17 September DHCP fix described above; see its separate verification notes.
-
-Browser-only checks cannot guarantee every Windows virtual-desktop switch.
-See [coverage, remaining gaps, and physical acceptance steps](../docs/exam-integrity-hardening.md)
-for the limits and native-monitor/kiosk recommendation. See
-[the build and deployment guide](../WINDOWS_EXE_BUILD.md) for production signing.
-
-Publishing these test files does not install or deploy them to any lab computer.
+Previous Windows 1.3.x/2.0.0 installers, Ubuntu 2.0 pilot packages, and their older guides and verification records are preserved in [archive/](archive/README.md). They are historical downloads, not recommended for a new current-version installation.

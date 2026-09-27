@@ -35,6 +35,19 @@ from ksat.coordinator.process_lock import CoordinatorLockHeld, CoordinatorProces
 
 
 class WindowsEntrypointTests(unittest.TestCase):
+    def test_invalid_public_ca_is_rejected_before_creating_client_data(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            security = load_or_create_coordinator_security(root / "server", hostname="lab.example.edu")
+            ca = security.ca_certificate_path
+            ca.write_bytes(ca.read_bytes() + b"-----BEGIN PRIVATE KEY-----\n")
+            with self.assertRaisesRegex(ValueError, "public trust bundle is invalid"):
+                install_client_configuration(
+                    root / "data", base_url="https://lab.example.edu:8443", ca_source=ca,
+                    metadata_source=security.public_export_dir / "coordinator-public.json",
+                )
+            self.assertFalse((root / "data").exists())
+
     def test_client_updater_has_a_separate_required_request_entrypoint(self):
         with self.assertRaises(SystemExit):
             client_updater_module.main([])

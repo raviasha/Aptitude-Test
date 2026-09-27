@@ -9,6 +9,7 @@ import binascii
 import hashlib
 import ipaddress
 import json
+from ksat.public_trust import normalize_coordinator_base_url, validate_ca, validate_public_bundle
 import math
 import os
 import re
@@ -36,10 +37,6 @@ from starlette.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
-from cryptography import x509
-from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import padding, rsa
-from cryptography.x509.oid import NameOID
 
 from ksat.client.coordinator import (
     ContentVerificationError,
@@ -56,7 +53,6 @@ from ksat.client.store import (
     ClientStore,
 )
 from ksat.coordinator.process_lock import CoordinatorProcessLock
-from ksat.coordinator.tls import COORDINATOR_SIGNING_KEY_OID
 from ksat.update_protocol import load_update_public_key
 from ksat.windows_authenticode import verify_authenticode
 
@@ -154,51 +150,7 @@ class CoordinatorConfigurationBody(_StrictBody):
 
 
 def _normalize_coordinator_base_url(value: str) -> str:
-    message = "Client configuration is invalid."
-    if not isinstance(value, str) or value != value.strip() or not value:
-        raise ValueError(message)
-    if any(character.isspace() for character in value) or "\\" in value:
-        raise ValueError(message)
-    try:
-        parsed = urlsplit(value)
-        hostname = parsed.hostname
-        port = parsed.port
-    except (TypeError, ValueError) as error:
-        raise ValueError(message) from error
-    if (
-        parsed.scheme != "https"
-        or not hostname
-        or parsed.username is not None
-        or parsed.password is not None
-        or parsed.query
-        or parsed.fragment
-        or parsed.path not in {"", "/"}
-        or port is not None and not 1 <= port <= 65535
-    ):
-        raise ValueError(message)
-    try:
-        hostname.encode("ascii")
-    except UnicodeEncodeError as error:
-        raise ValueError(message) from error
-    normalized_host = hostname.lower()
-    try:
-        address = ipaddress.ip_address(normalized_host)
-    except ValueError:
-        if (
-            len(normalized_host) > 253
-            or not re.fullmatch(
-                r"(?=.{1,253}\Z)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))*",
-                normalized_host,
-            )
-        ):
-            raise ValueError(message)
-        authority = normalized_host
-    else:
-        authority = f"[{address.compressed}]" if address.version == 6 else address.compressed
-    if port is not None:
-        authority += f":{port}"
-    return f"https://{authority}"
-
+    return normalize_coordinator_base_url(value)
 
 def _normalize_loopback_host(value: str) -> tuple[str, int] | None:
     if (
@@ -284,68 +236,10 @@ class ClientConfig:
 
 def _validate_production_trust(config: ClientConfig) -> None:
     try:
-        ca_bytes = Path(config.trusted_ca_path).read_bytes()
-        public_key = base64.b64decode(
-            config.coordinator_signing_public_key_b64.encode("ascii"), validate=True
-        )
-        ca_certificate = x509.load_pem_x509_certificate(ca_bytes)
-        constraints_extension = ca_certificate.extensions.get_extension_for_class(x509.BasicConstraints)
-        usage_extension = ca_certificate.extensions.get_extension_for_class(x509.KeyUsage)
-        subject_key_extension = ca_certificate.extensions.get_extension_for_class(x509.SubjectKeyIdentifier)
-        linked_extension = ca_certificate.extensions.get_extension_for_oid(COORDINATOR_SIGNING_KEY_OID)
-    except (OSError, ValueError, x509.ExtensionNotFound) as error:
+        validate_ca(Path(config.trusted_ca_path).read_bytes(),
+                    config.coordinator_signing_public_key_b64, now=datetime.now(timezone.utc))
+    except (OSError, ValueError) as error:
         raise ValueError("Client configuration is invalid.") from error
-    public = ca_certificate.public_key()
-    now = datetime.now(timezone.utc)
-    expected_subject = x509.Name(
-        [x509.NameAttribute(NameOID.COMMON_NAME, "KSAT Coordinator Local CA")]
-    )
-    constraints = constraints_extension.value
-    usages = usage_extension.value
-    expected_oids = {
-        x509.ExtensionOID.BASIC_CONSTRAINTS,
-        x509.ExtensionOID.KEY_USAGE,
-        x509.ExtensionOID.SUBJECT_KEY_IDENTIFIER,
-        COORDINATOR_SIGNING_KEY_OID,
-    }
-    if (
-        ca_certificate.public_bytes(serialization.Encoding.PEM) != ca_bytes
-        or not isinstance(public, rsa.RSAPublicKey)
-        or public.key_size < 3072
-        or ca_certificate.subject != expected_subject
-        or ca_certificate.issuer != expected_subject
-        or ca_certificate.serial_number <= 0
-        or ca_certificate.signature_hash_algorithm.name != "sha256"
-        or not ca_certificate.not_valid_before_utc <= now <= ca_certificate.not_valid_after_utc
-        or {extension.oid for extension in ca_certificate.extensions} != expected_oids
-        or not constraints_extension.critical
-        or not usage_extension.critical
-        or subject_key_extension.critical
-        or linked_extension.critical
-        or not constraints.ca
-        or constraints.path_length != 0
-        or not usages.digital_signature
-        or usages.content_commitment
-        or usages.key_encipherment
-        or usages.data_encipherment
-        or usages.key_agreement
-        or not usages.key_cert_sign
-        or not usages.crl_sign
-        or subject_key_extension.value.digest
-        != x509.SubjectKeyIdentifier.from_public_key(public).digest
-        or linked_extension.value.value != public_key
-    ):
-        raise ValueError("Client configuration is invalid.")
-    try:
-        public.verify(
-            ca_certificate.signature,
-            ca_certificate.tbs_certificate_bytes,
-            padding.PKCS1v15(),
-            ca_certificate.signature_hash_algorithm,
-        )
-    except Exception as error:
-        raise ValueError("Client configuration is invalid.") from error
-
 
 class ClientConfigStore:
     """Strict machine-wide configuration with atomic, durable replacement."""
@@ -624,58 +518,9 @@ def install_client_configuration(
         metadata_bytes = metadata_source.read_bytes()
     except OSError as error:
         raise ValueError("Coordinator public trust bundle is invalid.") from error
-    if not ca_bytes or len(ca_bytes) > 256 * 1024 or len(metadata_bytes) > 64 * 1024:
-        raise ValueError("Coordinator public trust bundle is invalid.")
-
-    def pairs(items):
-        result = {}
-        for key, value in items:
-            if key in result:
-                raise ValueError
-            result[key] = value
-        return result
-
-    try:
-        metadata = json.loads(
-            metadata_bytes.decode("utf-8"),
-            object_pairs_hook=pairs,
-            parse_constant=lambda _: (_ for _ in ()).throw(ValueError()),
-        )
-    except (UnicodeError, json.JSONDecodeError, TypeError, ValueError) as error:
-        raise ValueError("Coordinator public trust bundle is invalid.") from error
-    expected = {
-        "ca_sha256",
-        "coordinator_url",
-        "hostname",
-        "port",
-        "signing_public_key_b64",
-        "signing_public_key_sha256",
-        "version",
-    }
-    if not isinstance(metadata, dict) or set(metadata) != expected:
-        raise ValueError("Coordinator public trust bundle is invalid.")
-    normalized_url = _normalize_coordinator_base_url(base_url)
-    if (
-        metadata.get("version") != "2.1.0"
-        or metadata.get("coordinator_url") != normalized_url
-        or metadata.get("ca_sha256") != hashlib.sha256(ca_bytes).hexdigest()
-        or type(metadata.get("port")) is not int
-        or not isinstance(metadata.get("hostname"), str)
-        or not isinstance(metadata.get("signing_public_key_b64"), str)
-        or not isinstance(metadata.get("signing_public_key_sha256"), str)
-    ):
-        raise ValueError("Coordinator public trust bundle is invalid.")
-    try:
-        signing_raw = base64.b64decode(
-            metadata["signing_public_key_b64"].encode("ascii"), validate=True
-        )
-    except (UnicodeEncodeError, binascii.Error, ValueError) as error:
-        raise ValueError("Coordinator public trust bundle is invalid.") from error
-    if (
-        len(signing_raw) != 32
-        or metadata["signing_public_key_sha256"] != hashlib.sha256(signing_raw).hexdigest()
-    ):
-        raise ValueError("Coordinator public trust bundle is invalid.")
+    bundle = validate_public_bundle(base_url, ca_bytes, metadata_bytes, now=datetime.now(timezone.utc))
+    normalized_url = bundle.base_url
+    metadata = json.loads(bundle.metadata_json)
 
     client_dir = Path(program_data).resolve() / "KSAT Client"
     if os.path.lexists(client_dir) and (client_dir.is_symlink() or not client_dir.is_dir()):

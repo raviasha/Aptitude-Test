@@ -24,10 +24,11 @@ import tempfile
 import threading
 import time
 import uuid
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import wraps
+from ksat.client.install_guard import MaintenanceGate, MaintenanceBusy
 from pathlib import Path
 from typing import Any, Literal, Mapping, Sequence
 from urllib.parse import urlsplit
@@ -595,6 +596,11 @@ class ClientServices:
     lifecycle_lock: ClientProcessLock | None = None
     update_manager: ClientUpdateManager | None = None
     updater_launcher: Any | None = None
+    maintenance_data_dir: Path | None = None
+
+
+def _maintenance_section(services: ClientServices):
+    return MaintenanceGate(services.maintenance_data_dir) if services.maintenance_data_dir is not None else nullcontext()
 
 
 def _diagnostic_reference() -> str:
@@ -707,6 +713,14 @@ class _ClientContext:
             self._stop_started_services()
 
     def _check_client_update(self, recovered: Any | None) -> None:
+        try:
+            with _maintenance_section(self.services):
+                self._check_client_update_locked(recovered)
+        except MaintenanceBusy:
+            # An installer owns replacement; do not schedule a second updater.
+            return
+
+    def _check_client_update_locked(self, recovered: Any | None) -> None:
         manager = self.services.update_manager if self.services is not None else None
         if manager is None or getattr(self.identity, "device_id", None) is None:
             return
@@ -1280,12 +1294,13 @@ def _load_production_services() -> ClientServices:
     if not program_data:
         raise ValueError("ProgramData is unavailable.")
     data_dir = Path(program_data) / "KSAT Client"
-    lifecycle_lock = ClientProcessLock(data_dir / "state").acquire()
-    try:
-        return _load_locked_production_services(data_dir, lifecycle_lock)
-    except BaseException:
-        lifecycle_lock.release()
-        raise
+    with MaintenanceGate(data_dir):
+        lifecycle_lock = ClientProcessLock(data_dir / "state").acquire()
+        try:
+            return _load_locked_production_services(data_dir, lifecycle_lock)
+        except BaseException:
+            lifecycle_lock.release()
+            raise
 
 
 def _load_locked_production_services(
@@ -1365,6 +1380,7 @@ def _load_locked_production_services(
         lifecycle_lock=lifecycle_lock,
         update_manager=update_manager,
         updater_launcher=updater_launcher,
+        maintenance_data_dir=data_dir,
     )
 
 
@@ -1476,6 +1492,17 @@ def create_client_app(services: ClientServices | None = None) -> FastAPI:
             async with coordinator_operation_lock:
                 return await handler(*args, **kwargs)
 
+        return guarded
+
+    def maintenance_operation(handler):
+        @wraps(handler)
+        async def guarded(*args, **kwargs):
+            try:
+                with _maintenance_section(require_services()):
+                    return await handler(*args, **kwargs)
+            except MaintenanceBusy as error:
+                raise ClientApiProblem("client_installation_in_progress",
+                                       "A client installation is in progress. Please wait.", 409) from error
         return guarded
 
     @asynccontextmanager
@@ -1733,6 +1760,7 @@ def create_client_app(services: ClientServices | None = None) -> FastAPI:
         return {"version": _CLIENT_VERSION}
 
     @app.post("/api/update/retry")
+    @maintenance_operation
     async def retry_client_update():
         current = require_services()
         manager = current.update_manager
@@ -2168,6 +2196,7 @@ def create_client_app(services: ClientServices | None = None) -> FastAPI:
 
     @app.post("/api/assessments/{release_id}/start")
     @coordinator_operation
+    @maintenance_operation
     async def start(release_id: str, body: ConfirmBody):
         release_id = _strict_uuid(release_id, "Release identifier")
         if not body.confirmed:

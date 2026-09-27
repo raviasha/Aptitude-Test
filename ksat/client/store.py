@@ -10,6 +10,7 @@ import json
 import math
 import os
 import re
+import shutil
 import sqlite3
 import tempfile
 import threading
@@ -419,6 +420,65 @@ class ClientStore:
             self.connection.close()
             self._closed = True
             raise
+
+    @classmethod
+    def inspect_replacement_safety(cls, database_path: Path, *, integrity_key: bytes,
+                                   integrity_anchor_path: Path) -> str | None:
+        """Validate existing authenticated state without schema/anchor repair.
+
+        Deliberately bypass the writable constructor. A torn anchor needs normal
+        client recovery, never an installer-side attempt to repair student work.
+        """
+        path = Path(database_path).resolve(strict=True)
+        anchor = Path(integrity_anchor_path).resolve(strict=True)
+        wal = Path(str(path) + "-wal")
+        sources = (path, wal, anchor)
+
+        def fingerprints():
+            return tuple(hashlib.sha256(p.read_bytes()).digest() if p.exists() else None for p in sources)
+
+        before = fingerprints()
+        # Use the already protected state directory, never a shared Windows Temp
+        # directory. SQLite may modify sidecars only in this disposable copy.
+        with tempfile.TemporaryDirectory(prefix=".install-inspection-", dir=path.parent) as directory:
+            snapshot = Path(directory)
+            shutil.copyfile(path, snapshot / path.name)
+            if wal.exists():
+                shutil.copyfile(wal, snapshot / wal.name)
+            shutil.copyfile(anchor, snapshot / "anchor.json")
+            copied = tuple(hashlib.sha256(p.read_bytes()).digest() if p.exists() else None
+                           for p in (snapshot / path.name, snapshot / wal.name, snapshot / "anchor.json"))
+            if copied != before or fingerprints() != before:
+                raise ValueError("Client state changed during installation inspection; retry when idle.")
+            reader = cls.__new__(cls)
+            reader.database_path = snapshot / path.name
+            reader._integrity_key = integrity_key
+            reader._integrity_anchor_path = snapshot / "anchor.json"
+            reader._lock = threading.RLock()
+            reader._closed = False
+            reader._anchor_recovery_required = False
+            reader.connection = sqlite3.connect(reader.database_path, timeout=2)
+            reader.connection.row_factory = sqlite3.Row
+            try:
+                reader.connection.execute("PRAGMA query_only=ON")
+                reader.connection.execute("BEGIN")
+                if reader.connection.execute("PRAGMA user_version").fetchone()[0] != _AUTHENTICATED_SCHEMA_VERSION:
+                    raise ValueError(_STATE_INTEGRITY_ERROR)
+                reader._validated_journal_chain(reader.connection)
+                reader._verify_current_authenticated_state(reader.connection)
+                states = [row[0] for row in reader.connection.execute("SELECT state FROM local_attempts")]
+                pending = reader.connection.execute("SELECT 1 FROM submission_outbox LIMIT 1").fetchone()
+                if fingerprints() != before:
+                    raise ValueError("Client state changed during installation inspection; retry when idle.")
+                if "in_progress" in states:
+                    return "active_attempt"
+                if "sealed_pending" in states or pending:
+                    return "pending_submission"
+                if any(state != "acknowledged" for state in states):
+                    raise ValueError(_STATE_INTEGRITY_ERROR)
+                return None
+            finally:
+                reader.close()
 
     def _inspect_database_generation(self) -> _DatabaseGeneration:
         version = self.connection.execute("PRAGMA user_version").fetchone()[0]

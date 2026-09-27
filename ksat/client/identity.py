@@ -434,6 +434,13 @@ class DeviceIdentityStore:
                 return winner
             return identity
 
+    def load_existing(self) -> DeviceIdentity:
+        """Read only; installation inspection must never generate/recover a key."""
+        identity = self._load_existing()
+        if identity is None:
+            raise ValueError("Protected device identity is missing.")
+        return identity
+
     def save_enrollment(
         self, device_id: str, coordinator_public_key_b64: str
     ) -> DeviceIdentity:

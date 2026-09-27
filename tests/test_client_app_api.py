@@ -324,6 +324,16 @@ class FakeOutbox:
 
 
 class ClientAppApiTests(unittest.TestCase):
+    def test_attempt_start_refused_during_installation_lease(self):
+        from ksat.client.install_guard import MaintenanceGate
+        self.services.maintenance_data_dir = self.root
+        (self.root / "state").mkdir(exist_ok=True)
+        with MaintenanceGate(self.root):
+            response = self.client.post(f"/api/assessments/{RELEASE_ID}/start",
+                                        json={"confirmed": True}, headers=self.mutation_headers)
+        self.assertEqual(409, response.status_code)
+        self.assertEqual("client_installation_in_progress", response.json()["problem"]["code"])
+
     def setUp(self):
         from client_app import ClientServices, create_client_app
 

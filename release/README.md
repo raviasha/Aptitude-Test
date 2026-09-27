@@ -1,5 +1,17 @@
 # KSAT release files
 
+## Lab Package Builder 1.0.0 — client 2.1.1
+
+[Download KSATLabPackageBuilder-1.0.0.exe](https://github.com/raviasha/Aptitude-Test/releases/download/lab-package-builder-v1.0.0/KSATLabPackageBuilder-1.0.0.exe) creates a signed, preconfigured client installer
+for each lab on the designated packaging PC. Follow the
+[builder guide](../docs/lab-package-builder.md) and
+[pilot acceptance checklist](../docs/lab-package-builder-acceptance.md).
+Verify [KSATLabPackageBuilder-1.0.0.sha256](KSATLabPackageBuilder-1.0.0.sha256).
+The large EXE is a GitHub Release asset, not a Git repository blob. Pilot testing
+is still required before whole-lab deployment.
+Only the generated lab client EXE goes to student PCs. No Coordinator rebuild
+or replacement is required for this feature; the older files below remain intact.
+
 ## KSAT 2.1 private-lab release — 24 September 2026
 
 The 2.1 Coordinator and Client files are signed by the persistent private-lab

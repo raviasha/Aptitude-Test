@@ -1,5 +1,23 @@
 # KSAT 2.1 Windows build and deployment guide
 
+## Preconfigured lab package builder
+
+For the separate Builder 1.0.0 / Client 2.1.1 workflow, see
+[the administrator guide](docs/lab-package-builder.md). The operator needs no
+Python or repository checkout. Maintainers assemble only verified public payloads:
+
+```powershell
+python scripts/build_lab_package_builder.py --payload-root <approved-payload> --output-dir <new-output> --signtool <signtool.exe>
+```
+
+The approved payload contains signed client/updater/guard 2.1.1 executables,
+`publisher.cer`, `update-release-public.json`, the fixed `KSATClient.iss` and its
+hash manifest. It contains no lab configuration or private key. The script
+freezes Tk, signs from the pinned Windows-store identity, recursively inspects
+the result and publishes an EXE plus checksum without overwriting earlier output.
+See the [acceptance record](docs/lab-package-builder-acceptance.md) before rollout.
+The Coordinator remains 2.1.0; do not globally change protocol/metadata versions.
+
 KSAT 2.1 has two products. Install **KSAT Faculty Coordinator** on the faculty/server computer and **KSAT Lab Client** on each lab computer. The client always serves its UI on `127.0.0.1:8010`; only coordinator API traffic crosses the private lab network.
 
 ## Build prerequisites

@@ -22,7 +22,7 @@ _PRIVATE = re.compile(rb"-----BEGIN [A-Z ]*PRIVATE KEY-----")
 
 def pyinstaller_payload_manifest(path: Path) -> dict[str, str]:
     # Reuse the release gate that recursively checks CArchive, PYZ and nested ZIPs.
-    from scripts.windows_release import pyinstaller_payload_manifest as inspect
+    from ksat.archive_inspection import pyinstaller_payload_manifest as inspect
     return inspect(path)
 
 

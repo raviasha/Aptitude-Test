@@ -193,6 +193,7 @@ class ClientInstallGuardTests(unittest.TestCase):
         (stage / "lab-profile.json").write_bytes(encode_profile(self.profile))
         (stage / "coordinator-ca.pem").write_bytes(self.profile.trust.ca_pem)
         (stage / "coordinator-public.json").write_bytes(self.profile.trust.metadata_json)
+        (stage / "publisher.cer").write_bytes((Path(__file__).resolve().parents[1] / "release/KSATLabReleaseSigning.cer").read_bytes())
         service = FakeService(running=True)
         alive = iter([True, False])
         result = run_guard_session(self.program_data, stage, lambda: next(alive, False), service=service)

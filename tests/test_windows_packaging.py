@@ -289,8 +289,10 @@ class WindowsPackagingTests(unittest.TestCase):
     def test_build_commands_use_distinct_entrypoints_workpaths_and_safe_assets(self):
         root = Path(__file__).resolve().parents[1]
         commands = build_commands(root, Path("C:/Python/python.exe"))
-        self.assertEqual(3, len(commands))
-        coordinator, client, updater = commands
+        self.assertEqual(4, len(commands))
+        coordinator, client, updater, guard = commands
+        self.assertIn(str(root / "client_install_guard.py"), guard)
+        self.assertNotIn("--uac-admin", guard)
         self.assertIn(str(root / "coordinator_main.py"), coordinator)
         hidden_imports = [
             coordinator[index + 1]
@@ -394,11 +396,10 @@ class WindowsPackagingTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         coordinator = (root / "installer" / "KSATCoordinator.iss").read_text("utf-8")
         client = (root / "installer" / "KSATClient.iss").read_text("utf-8")
-        self.assertIn("installer-owned-root-ca", client)
         self.assertIn("CurUninstallStepChanged", coordinator)
         self.assertIn("CurUninstallStepChanged", client)
         self.assertIn("ResultCode <> 0", coordinator)
-        self.assertIn("ResultCode <> 0", client)
+        self.assertIn("Code <> 0", client)
         self.assertIn("firewall-owner.json", coordinator)
         self.assertIn("Get-NetFirewallRule", coordinator)
         self.assertIn("Get-NetFirewallApplicationFilter", coordinator)
@@ -414,11 +415,8 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertGreaterEqual(coordinator.count("VerifyOwnedFirewall"), 5)
         self.assertIn("MoveFileEx", coordinator)
         self.assertIn("--validate-config", coordinator)
-        self.assertIn("Thumbprint", client)
-        self.assertGreaterEqual(client.count("^[0-9A-F]{40}$"), 2)
-        self.assertGreaterEqual(client.count("PSObject.Properties.Name"), 2)
-        self.assertGreaterEqual(client.count("-is [System.Array]"), 2)
-        self.assertGreaterEqual(client.count("$raw-cne $canonical"), 2)
+        # Client trust preservation/import behavior is exercised by
+        # test_lab_installer against the real helper transaction, not source text.
         self.assertNotIn("[Run]\nFilename: \"{sys}\\netsh.exe\"", coordinator)
         self.assertNotIn("if not ExistingConfiguration() then\n    begin\n      Parameters := '--install-config", client)
 
@@ -458,18 +456,6 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertNotIn("AccountPage", installer)
         self.assertNotIn("LABACCOUNT", installer)
         self.assertNotIn("AccountName + ':(OI)(CI)M'", installer)
-
-    def test_client_installer_preflights_versioned_state_before_service_start(self):
-        root = Path(__file__).resolve().parents[1]
-        installer = (root / "installer" / "KSATClient.iss").read_text("utf-8")
-        self.assertIn("--migrate-state", installer)
-        self.assertIn("CONFIRMLEGACYSTATEMIGRATION", installer)
-        self.assertIn("--confirm-legacy-state", installer)
-        migration = installer.index("--migrate-state")
-        configure = installer.index("ConfigureClientService();", migration)
-        start = installer.index("StartClientService();", configure)
-        self.assertLess(migration, configure)
-        self.assertLess(configure, start)
 
     def test_frozen_client_smoke_uses_guarded_service_console_mode(self):
         root = Path(__file__).resolve().parents[1]

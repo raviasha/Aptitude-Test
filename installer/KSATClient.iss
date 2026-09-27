@@ -1,32 +1,50 @@
-#define AppName "KSAT Lab Client"
-#define AppVersion "2.1.0"
-#define AppPublisher "College Assessment Lab"
-#define AppExeName "KSATClient.exe"
+#ifndef KSAT_LAB_MODE
+  #define KSAT_LAB_MODE "0"
+#endif
+#ifndef KSAT_CLIENT_VERSION
+  #define KSAT_CLIENT_VERSION "2.1.1"
+#endif
+#ifndef KSAT_PAYLOAD_DIR
+  #define KSAT_PAYLOAD_DIR SourcePath + "..\dist"
+#endif
+#ifndef KSAT_OUTPUT_DIR
+  #define KSAT_OUTPUT_DIR SourcePath + "..\release"
+#endif
+#define AppVersion KSAT_CLIENT_VERSION
+#define GuardHash GetSHA256OfFile(KSAT_PAYLOAD_DIR + "\KSATClientInstallGuard.exe")
+#define PublisherHash GetSHA256OfFile(KSAT_PAYLOAD_DIR + "\publisher.cer")
 
 [Setup]
 AppId={{F08E1406-AD96-445E-9940-5D54AC2181AE}
-AppName={#AppName}
+AppName=KSAT Lab Client
 AppVersion={#AppVersion}
-AppPublisher={#AppPublisher}
-UninstallDisplayName={#AppName} {#AppVersion}
+AppPublisher=College Assessment Lab
 DefaultDirName={autopf}\KSAT Client
 DefaultGroupName=KSAT
 DisableProgramGroupPage=yes
-OutputDir=..\release
-OutputBaseFilename=KSATClientSetup-2.1.0
+OutputDir={#KSAT_OUTPUT_DIR}
+OutputBaseFilename=KSATClientSetup-{#AppVersion}
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
 PrivilegesRequired=admin
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-CloseApplications=yes
+CloseApplications=no
 RestartIfNeededByRun=no
 SetupLogging=yes
 
 [Files]
-Source: "..\dist\KSATClient.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\dist\KSATClientUpdater.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#KSAT_PAYLOAD_DIR}\KSATClient.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#KSAT_PAYLOAD_DIR}\KSATClientUpdater.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#KSAT_PAYLOAD_DIR}\KSATClientInstallGuard.exe"; Flags: dontcopy
+Source: "{#KSAT_PAYLOAD_DIR}\publisher.cer"; Flags: dontcopy
+#if Int(KSAT_LAB_MODE) == 1
+Source: "{#KSAT_PAYLOAD_DIR}\lab-profile.json"; Flags: dontcopy
+Source: "{#KSAT_PAYLOAD_DIR}\coordinator-ca.pem"; Flags: dontcopy
+Source: "{#KSAT_PAYLOAD_DIR}\coordinator-public.json"; Flags: dontcopy
+Source: "{#KSAT_PAYLOAD_DIR}\lab-summary.ini"; Flags: dontcopy
+#endif
 
 [Dirs]
 Name: "{commonappdata}\KSAT Client"; Permissions: admins-full system-full users-readexec
@@ -37,257 +55,224 @@ Name: "{commonappdata}\KSAT Client\packs"; Permissions: admins-full system-full
 Name: "{commonappdata}\KSAT Client\updates"; Permissions: admins-full system-full
 
 [Icons]
-Name: "{group}\KSAT Lab Client"; Filename: "{app}\{#AppExeName}"; Parameters: "--open-client"; WorkingDir: "{app}"
-Name: "{autodesktop}\KSAT Lab Client"; Filename: "{app}\{#AppExeName}"; Parameters: "--open-client"; WorkingDir: "{app}"
+Name: "{group}\KSAT Lab Client"; Filename: "{app}\KSATClient.exe"; Parameters: "--open-client"; WorkingDir: "{app}"
+Name: "{autodesktop}\KSAT Lab Client"; Filename: "{app}\KSATClient.exe"; Parameters: "--open-client"; WorkingDir: "{app}"
 
 [Run]
-Filename: "{app}\{#AppExeName}"; Parameters: "--open-client"; Description: "Open KSAT Lab Client"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\KSATClient.exe"; Parameters: "--open-client"; Description: "Open KSAT Lab Client"; Flags: nowait postinstall skipifsilent
 
 [Code]
 var
   UrlPage: TInputQueryWizardPage;
   TrustPage: TInputFileWizardPage;
-  HadExistingConfiguration: Boolean;
+  Stage: String;
+  GuardStarted, GuardCommitted, HadExistingConfiguration: Boolean;
 
-function ConfigPath(): String;
-begin Result := ExpandConstant('{commonappdata}\KSAT Client\client-config.json'); end;
-function OwnedCaMarker(): String;
-begin Result := ExpandConstant('{commonappdata}\KSAT Client\trust\installer-owned-root-ca.json'); end;
-function InstalledCaPath(): String;
-begin Result := ExpandConstant('{commonappdata}\KSAT Client\trust\coordinator-ca.pem'); end;
+function GetCurrentProcessId(): LongWord;
+external 'GetCurrentProcessId@kernel32.dll stdcall';
+
+function PSQuote(Value: String): String;
+begin
+  StringChangeEx(Value, '''', '''''', True);
+  Result := '''' + Value + '''';
+end;
+
+procedure PowerShell(Script: String);
+var Code: Integer;
+begin
+  if (not Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+    '-NoProfile -NonInteractive -Command "' + Script + '"', '', SW_HIDE, ewWaitUntilTerminated, Code)) or (Code <> 0) then
+    RaiseException('The administrator setup operation failed. See the setup log.');
+end;
+
 function ExistingConfiguration(): Boolean;
-begin Result := FileExists(ConfigPath()); end;
+begin Result := FileExists(ExpandConstant('{commonappdata}\KSAT Client\client-config.json')); end;
 
-procedure StopClientService(); forward;
+procedure StageResource(Name, Hash: String);
+begin
+  ExtractTemporaryFile(Name);
+  if not FileCopy(ExpandConstant('{tmp}\') + Name, Stage + '\' + Name, True) then
+    RaiseException('Unable to stage installer resource.');
+  if CompareText(GetSHA256OfFile(Stage + '\' + Name), Hash) <> 0 then
+    RaiseException('Installer resource integrity check failed.');
+end;
 
 procedure InitializeWizard();
+var Page: TOutputMsgWizardPage; Summary: String;
 begin
   HadExistingConfiguration := ExistingConfiguration();
-  UrlPage := CreateInputQueryPage(wpSelectDir, 'Coordinator address',
-    'Enter the coordinator HTTPS address.',
-    'This value is saved on the computer. Later changes require an Administrator.');
+#if Int(KSAT_LAB_MODE) == 1
+  ExtractTemporaryFile('lab-summary.ini');
+  Summary := ExpandConstant('{tmp}\lab-summary.ini');
+  Page := CreateOutputMsgPage(wpSelectDir, 'Your lab client', 'Ready for this lab',
+    'Lab: ' + GetIniString('Lab', 'Name', '', Summary) + #13#10 +
+    'Coordinator: ' + GetIniString('Lab', 'URL', '', Summary) + #13#10 +
+    'Client version: {#AppVersion}' + #13#10#13#10 +
+    'Setup will configure the connection and public certificate trust. Existing student records are preserved.');
+#else
+  UrlPage := CreateInputQueryPage(wpSelectDir, 'Coordinator address', 'Enter the coordinator HTTPS address.',
+    'Later changes require an Administrator.');
   UrlPage.Add('HTTPS URL:', False); UrlPage.Values[0] := ExpandConstant('{param:COORDINATORURL|}');
-  TrustPage := CreateInputFilePage(UrlPage.ID, 'Coordinator public trust',
-    'Select both files exported by the faculty coordinator.',
-    'The installer validates the CA hash and protocol-signing key before saving configuration.');
+  TrustPage := CreateInputFilePage(UrlPage.ID, 'Coordinator public trust', 'Select both coordinator export files.',
+    'The CA and protocol signing key are validated before saving configuration.');
   TrustPage.Add('Coordinator CA file:', 'PEM files|*.pem|All files|*.*', '.pem');
   TrustPage.Add('Coordinator metadata file:', 'JSON files|*.json|All files|*.*', '.json');
   TrustPage.Values[0] := ExpandConstant('{param:CAFILE|}');
   TrustPage.Values[1] := ExpandConstant('{param:METADATAFILE|}');
+#endif
 end;
 
 function ShouldSkipPage(PageID: Integer): Boolean;
 begin
+  Result := False;
+#if Int(KSAT_LAB_MODE) == 0
   Result := ExistingConfiguration() and ((PageID = UrlPage.ID) or (PageID = TrustPage.ID));
+#endif
 end;
 
-function NextButtonClick(CurPageID: Integer): Boolean;
+function GuardState(): String;
+begin Result := GetIniString('Guard', 'State', '', Stage + '\status.ini'); end;
+
+procedure WaitForGuard(Expected: String);
+var N: Integer; State, Code: String;
 begin
-  Result := True;
-  if (CurPageID = UrlPage.ID) and (Pos('https://', Lowercase(Trim(UrlPage.Values[0]))) <> 1) then
-  begin MsgBox('Enter an HTTPS coordinator URL.', mbError, MB_OK); Result := False; end;
-  if (CurPageID = TrustPage.ID) and
-     ((not FileExists(TrustPage.Values[0])) or (not FileExists(TrustPage.Values[1]))) then
-  begin MsgBox('Select the coordinator-ca.pem and coordinator-public.json files.', mbError, MB_OK); Result := False; end;
+  for N := 1 to 1200 do begin
+    State := GuardState();
+    if State = Expected then exit;
+    if (State = 'blocked') or (State = 'aborted') then begin
+      Code := GetIniString('Guard', 'Diagnostic', '', Stage + '\status.ini');
+      RaiseException('Installation stopped safely (' + Code + '). Finish tests and uploads first. ' +
+        'For a running 2.1.0 client, ask the administrator to stop the KSAT service. ' +
+        'If this is the wrong lab package, use the package for the existing coordinator.');
+    end;
+    Sleep(100);
+  end;
+  RaiseException('The installation safety check timed out. No assessment should be interrupted.');
+end;
+
+procedure GuardCommand(Action: String);
+begin
+  if not SaveStringToFile(Stage + '\control-next.json', '{"action":"' + Action + '"}', False) then
+    RaiseException('Unable to control installation safety guard.');
+  PowerShell('$s=' + PSQuote(Stage + '\control-next.json') + ';$d=' + PSQuote(Stage + '\control.json') +
+    ';if([IO.File]::Exists($d)){[IO.File]::Replace($s,$d,$null)}else{[IO.File]::Move($s,$d)}');
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
+var Code: Integer; Parent, Token, Script: String;
 begin
   Result := '';
-  if WizardSilent() and (not ExistingConfiguration()) and
-    ((Trim(UrlPage.Values[0]) = '') or (not FileExists(TrustPage.Values[0])) or
-     (not FileExists(TrustPage.Values[1]))) then
-    Result := 'A first silent install requires /COORDINATORURL=, /CAFILE=, and /METADATAFILE=.';
-  if Result = '' then StopClientService();
+  try
+#if Int(KSAT_LAB_MODE) == 0
+    if (not ExistingConfiguration()) and ((Pos('https://', Lowercase(Trim(UrlPage.Values[0]))) <> 1) or
+        (not FileExists(TrustPage.Values[0])) or (not FileExists(TrustPage.Values[1]))) then
+      RaiseException('A first installation requires an HTTPS URL and both coordinator public files.');
+#endif
+    Parent := ExpandConstant('{commonappdata}\KSAT Installer Staging');
+    Token := Lowercase(GetSHA256OfString(ExpandConstant('{tmp}') + IntToStr(GetCurrentProcessId())));
+    Stage := Parent + '\' + Copy(Token, 1, 32);
+    Script := '$ErrorActionPreference=''Stop'';' +
+      'Import-Module (Join-Path $PSHOME ''Modules/Microsoft.PowerShell.Security/Microsoft.PowerShell.Security.psd1'');' +
+      '$parent=' + PSQuote(Parent) + ';$stage=' + PSQuote(Stage) + ';' +
+      'if(Test-Path -LiteralPath $stage){throw ''stage collision''};' +
+      'foreach($p in @($parent,$stage)){' +
+      '$cursor=$p;while($cursor){if((Test-Path -LiteralPath $cursor)-and((Get-Item -Force -LiteralPath $cursor).Attributes-band 1024)){throw ''reparse point''};$cursor=Split-Path -Parent $cursor};' +
+      '[IO.Directory]::CreateDirectory($p)|Out-Null;' +
+      '$acl=[Security.AccessControl.DirectorySecurity]::new();$acl.SetAccessRuleProtection($true,$false);' +
+      '$acl.SetOwner([Security.Principal.SecurityIdentifier]::new(''S-1-5-32-544''));' +
+      'foreach($sid in @(''S-1-5-18'',''S-1-5-32-544'')){' +
+      '$acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]::new($sid),''FullControl'',''ContainerInherit,ObjectInherit'',''None'',''Allow''))};' +
+      'Set-Acl -LiteralPath $p -AclObject $acl}';
+    PowerShell(Script);
+    StageResource('KSATClientInstallGuard.exe', '{#GuardHash}');
+    StageResource('publisher.cer', '{#PublisherHash}');
+#if Int(KSAT_LAB_MODE) == 1
+    StageResource('lab-profile.json', '{#GetSHA256OfFile(KSAT_PAYLOAD_DIR + "\lab-profile.json")}');
+    StageResource('coordinator-ca.pem', '{#GetSHA256OfFile(KSAT_PAYLOAD_DIR + "\coordinator-ca.pem")}');
+    StageResource('coordinator-public.json', '{#GetSHA256OfFile(KSAT_PAYLOAD_DIR + "\coordinator-public.json")}');
+#else
+    if not ExistingConfiguration() then begin
+      if not FileCopy(TrustPage.Values[0], Stage + '\coordinator-ca.pem', True) then RaiseException('CA copy failed.');
+      if not FileCopy(TrustPage.Values[1], Stage + '\coordinator-public.json', True) then RaiseException('Metadata copy failed.');
+      SaveStringToFile(Stage + '\coordinator-url.txt', UTF8Encode(UrlPage.Values[0]), False);
+    end;
+#endif
+    PowerShell('[IO.File]::WriteAllText(' + PSQuote(Stage + '\install-context.json') +
+      ',(@{installer=' + PSQuote(ExpandConstant('{srcexe}')) + '}|ConvertTo-Json -Compress),[Text.UTF8Encoding]::new($false))');
+    if not Exec(Stage + '\KSATClientInstallGuard.exe', '--stage "' + Stage + '" --installer-pid ' +
+      IntToStr(GetCurrentProcessId()), Stage, SW_HIDE, ewNoWait, Code) then RaiseException('Unable to start installation guard.');
+    GuardStarted := True;
+    WaitForGuard('ready');
+  except
+    Result := GetExceptionMessage();
+  end;
+end;
+
+procedure ServiceCommand(Args: String);
+var Code: Integer;
+begin
+  if (not Exec(ExpandConstant('{sys}\sc.exe'), Args, '', SW_HIDE, ewWaitUntilTerminated, Code)) or (Code <> 0) then
+    RaiseException('The KSAT client service could not be configured.');
 end;
 
 procedure ProtectAuthorityDirectory(PathName: String);
-var ResultCode: Integer; Parameters: String;
+var Code: Integer;
 begin
-  Parameters := '"' + PathName + '" /inheritance:r /grant:r ' +
-    '"*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" ' +
-    '"NT SERVICE\KSATLabClientAuthority:(OI)(CI)M"';
-  if (not Exec(ExpandConstant('{sys}\icacls.exe'), Parameters, '', SW_HIDE,
-    ewWaitUntilTerminated, ResultCode)) or (ResultCode <> 0) then
-    RaiseException('The LocalSystem client-service data permissions could not be applied.');
-end;
-
-function ServiceExists(): Boolean;
-var ResultCode: Integer;
-begin
-  Result := Exec(ExpandConstant('{sys}\sc.exe'), 'query "KSATLabClientAuthority"',
-    '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
-end;
-
-procedure StopClientService();
-var ResultCode: Integer;
-begin
-  if ServiceExists() then
-    Exec(ExpandConstant('{sys}\sc.exe'), 'stop "KSATLabClientAuthority"',
-      '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-end;
-
-procedure ConfigureClientService();
-var ResultCode: Integer; Parameters, ImagePath: String;
-begin
-  ImagePath := ExpandConstant('{app}\{#AppExeName}');
-  if ServiceExists() then
-    Parameters := 'config "KSATLabClientAuthority" binPath= "\"' + ImagePath +
-      '\" --windows-service" start= auto obj= LocalSystem DisplayName= "KSAT Lab Client Authority"'
-  else
-    Parameters := 'create "KSATLabClientAuthority" binPath= "\"' + ImagePath +
-      '\" --windows-service" start= auto obj= LocalSystem DisplayName= "KSAT Lab Client Authority"';
-  if (not Exec(ExpandConstant('{sys}\sc.exe'), Parameters, '', SW_HIDE,
-    ewWaitUntilTerminated, ResultCode)) or (ResultCode <> 0) then
-    RaiseException('The LocalSystem client service could not be configured.');
-  if (not Exec(ExpandConstant('{sys}\sc.exe'), 'sidtype "KSATLabClientAuthority" unrestricted',
-    '', SW_HIDE, ewWaitUntilTerminated, ResultCode)) or (ResultCode <> 0) then
-    RaiseException('The client service SID could not be enabled.');
-end;
-
-procedure StartClientService();
-var ResultCode: Integer;
-begin
-  if (not Exec(ExpandConstant('{sys}\sc.exe'), 'start "KSATLabClientAuthority"',
-    '', SW_HIDE, ewWaitUntilTerminated, ResultCode)) or (ResultCode <> 0) then
-    RaiseException('The LocalSystem client service could not be started.');
+  if (not Exec(ExpandConstant('{sys}\icacls.exe'), '"' + PathName + '" /inheritance:r /grant:r ' +
+    '"*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" "NT SERVICE\KSATLabClientAuthority:(OI)(CI)M"',
+    '', SW_HIDE, ewWaitUntilTerminated, Code)) or (Code <> 0) then RaiseException('Client data protection failed.');
+  if (not Exec(ExpandConstant('{sys}\icacls.exe'), '"' + PathName + '" /setowner "*S-1-5-32-544"',
+    '', SW_HIDE, ewWaitUntilTerminated, Code)) or (Code <> 0) then RaiseException('Client data ownership failed.');
 end;
 
 procedure SeedLastKnownGood();
-var ResultCode: Integer; Script, Parameters: String;
 begin
-  Script := '$ErrorActionPreference=''Stop'';$s=Get-AuthenticodeSignature -LiteralPath ''' +
-    ExpandConstant('{srcexe}') + ''';if($s.Status-ne ''Valid'' -or $null-eq $s.SignerCertificate){throw ''invalid installer signature''};' +
-    '$d=''' + ExpandConstant('{commonappdata}\KSAT Client\updates\last-known-good') + ''';' +
-    'New-Item -ItemType Directory -Force -Path $d|Out-Null;' +
-    'Copy-Item -LiteralPath ''' + ExpandConstant('{srcexe}') + ''' -Destination ($d+''\KSATClientSetup-{#AppVersion}.exe'') -Force';
-  Parameters := '-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "' + Script + '"';
-  if (not Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'), Parameters,
-    '', SW_HIDE, ewWaitUntilTerminated, ResultCode)) or (ResultCode <> 0) then
-    RaiseException('The signed rollback installer could not be preserved.');
-end;
-
-procedure MigrateClientState();
-var ResultCode: Integer; Parameters, Confirmation: String;
-begin
-  Confirmation := Trim(ExpandConstant('{param:CONFIRMLEGACYSTATEMIGRATION|0}'));
-  if (Confirmation <> '0') and (Confirmation <> '1') then
-    RaiseException('/CONFIRMLEGACYSTATEMIGRATION must be 0 or 1.');
-  Parameters := '--migrate-state';
-  if Confirmation = '1' then
-    Parameters := Parameters + ' --confirm-legacy-state';
-  if (not Exec(ExpandConstant('{app}\{#AppExeName}'), Parameters,
-    ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, ResultCode)) or
-    (ResultCode <> 0) then
-    RaiseException('Client state requires administrator-reviewed migration.');
-end;
-
-procedure DeleteClientService();
-var ResultCode: Integer;
-begin
-  StopClientService();
-  if ServiceExists() and
-    ((not Exec(ExpandConstant('{sys}\sc.exe'), 'delete "KSATLabClientAuthority"',
-      '', SW_HIDE, ewWaitUntilTerminated, ResultCode)) or (ResultCode <> 0)) then
-    RaiseException('The LocalSystem client service could not be removed.');
-end;
-
-procedure EnsureRootCa();
-var ResultCode: Integer; Script, Parameters: String;
-begin
-  if not FileExists(InstalledCaPath()) then RaiseException('The installed coordinator CA file is missing.');
-  Script :=
-    '$ErrorActionPreference=''Stop'';' +
-    '$p=''' + InstalledCaPath() + ''';$m=''' + OwnedCaMarker() + ''';' +
-    '$c=New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($p);' +
-    '$t=$c.Thumbprint.ToUpperInvariant();$owned=@();' +
-    'if(Test-Path -LiteralPath $m){$raw=Get-Content -Raw -LiteralPath $m;' +
-    '$j=$raw|ConvertFrom-Json;' +
-    '$names=@($j.PSObject.Properties.Name);' +
-    'if(($names.Count-ne 1)-or($names[0]-ne ''Thumbprints'')){throw ''invalid CA ownership marker''};' +
-    'if(-not($j.Thumbprints-is [System.Array])){throw ''invalid CA ownership marker''};' +
-    'if(@($j.Thumbprints|Where-Object{$_-isnot [string]}).Count-ne 0){throw ''invalid CA ownership marker''};' +
-    '$owned=@($j.Thumbprints|ForEach-Object{$_.ToString().ToUpperInvariant()});' +
-    'if((@($owned|Where-Object{$_-notmatch ''^[0-9A-F]{40}$''}).Count-ne 0)-or' +
-    '(@($owned|Sort-Object -Unique).Count-ne $owned.Count)){throw ''invalid CA ownership marker''};' +
-    '$canonical=@{Thumbprints=@($owned)}|ConvertTo-Json -Compress;' +
-    'if($raw-cne $canonical){throw ''invalid CA ownership marker''}};' +
-    '$s=New-Object System.Security.Cryptography.X509Certificates.X509Store(''Root'',''LocalMachine'');' +
-    '$added=$false;try{$s.Open(''ReadWrite'');' +
-    '$found=@($s.Certificates|Where-Object{$_.Thumbprint.ToUpperInvariant()-eq $t}).Count-gt 0;' +
-    'if(-not $found){$s.Add($c);$added=$true};' +
-    '$verified=@($s.Certificates|Where-Object{$_.Thumbprint.ToUpperInvariant()-eq $t}).Count-gt 0;' +
-    'if(-not $verified){throw ''CA store verification failed''};' +
-    'if($added -and $owned -notcontains $t){$owned+=@($t)};' +
-    'if($added){$tmp=$m+''.''+[Guid]::NewGuid().ToString(''N'')+''.tmp'';' +
-    '@{Thumbprints=@($owned|Sort-Object -Unique)}|ConvertTo-Json -Compress|' +
-    'Set-Content -LiteralPath $tmp -Encoding Ascii -NoNewline;' +
-    'Move-Item -LiteralPath $tmp -Destination $m -Force}}' +
-    'catch{if($added){@($s.Certificates|Where-Object{$_.Thumbprint.ToUpperInvariant()-eq $t})|' +
-    'ForEach-Object{$s.Remove($_)}};throw}finally{$s.Close()}';
-  Parameters := '-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "' + Script + '"';
-  if (not Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'), Parameters,
-    '', SW_HIDE, ewWaitUntilTerminated, ResultCode)) or (ResultCode <> 0) then
-    RaiseException('The coordinator CA could not be installed or verified in Local Machine Trusted Root.');
-end;
-
-procedure RemoveOwnedRootCas();
-var ResultCode: Integer; Script, Parameters: String;
-begin
-  if not FileExists(OwnedCaMarker()) then exit;
-  Script :=
-    '$ErrorActionPreference=''Stop'';$m=''' + OwnedCaMarker() + ''';' +
-    '$raw=Get-Content -Raw -LiteralPath $m;$j=$raw|ConvertFrom-Json;' +
-    '$names=@($j.PSObject.Properties.Name);' +
-    'if(($names.Count-ne 1)-or($names[0]-ne ''Thumbprints'')){throw ''invalid CA ownership marker''};' +
-    'if(-not($j.Thumbprints-is [System.Array])){throw ''invalid CA ownership marker''};' +
-    'if(@($j.Thumbprints|Where-Object{$_-isnot [string]}).Count-ne 0){throw ''invalid CA ownership marker''};' +
-    '$owned=@($j.Thumbprints|ForEach-Object{$_.ToString().ToUpperInvariant()});' +
-    'if((@($owned|Where-Object{$_-notmatch ''^[0-9A-F]{40}$''}).Count-ne 0)-or' +
-    '(@($owned|Sort-Object -Unique).Count-ne $owned.Count)){throw ''invalid CA ownership marker''};' +
-    '$canonical=@{Thumbprints=@($owned)}|ConvertTo-Json -Compress;' +
-    'if($raw-cne $canonical){throw ''invalid CA ownership marker''};' +
-    '$s=New-Object System.Security.Cryptography.X509Certificates.X509Store(''Root'',''LocalMachine'');' +
-    'try{$s.Open(''ReadWrite'');foreach($t in $owned){' +
-    '@($s.Certificates|Where-Object{$_.Thumbprint.ToUpperInvariant()-eq $t})|' +
-    'ForEach-Object{$s.Remove($_)}}}finally{$s.Close()};Remove-Item -LiteralPath $m -Force';
-  Parameters := '-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "' + Script + '"';
-  if (not Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'), Parameters,
-    '', SW_HIDE, ewWaitUntilTerminated, ResultCode)) or (ResultCode <> 0) then
-    RaiseException('The installer-owned coordinator CA could not be removed.');
+  PowerShell('$ErrorActionPreference=''Stop'';Import-Module (Join-Path $PSHOME ''Modules/Microsoft.PowerShell.Security/Microsoft.PowerShell.Security.psd1'');' +
+    '$src=' + PSQuote(ExpandConstant('{srcexe}')) + ';$s=Get-AuthenticodeSignature -LiteralPath $src;' +
+    'if($s.Status-ne ''Valid'' -or $s.SignerCertificate.Thumbprint-ne ''13AE2A6440C33E074FC9C99FB35E5A1CFD9BE908''){throw ''invalid installer signature''};' +
+    '$d=' + PSQuote(ExpandConstant('{commonappdata}\KSAT Client\updates\last-known-good')) + ';' +
+    '[IO.Directory]::CreateDirectory($d)|Out-Null;Copy-Item -LiteralPath $src -Destination ($d+''\KSATClientSetup-{#AppVersion}.exe'')');
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
-var ResultCode: Integer; Parameters: String;
+var Code: Integer; ImagePath, Verb: String;
 begin
   if CurStep = ssPostInstall then begin
-    StopClientService();
-    if not ExistingConfiguration() then begin
-      Parameters := '--install-config --base-url "' + UrlPage.Values[0] +
-        '" --ca "' + TrustPage.Values[0] + '" --metadata "' + TrustPage.Values[1] + '"';
-      if (not Exec(ExpandConstant('{app}\{#AppExeName}'), Parameters,
-        ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, ResultCode)) or (ResultCode <> 0) then
-        RaiseException('The coordinator trust bundle could not be validated and saved.');
-    end;
-    if (not Exec(ExpandConstant('{app}\{#AppExeName}'), '--validate-config',
-      ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, ResultCode)) or (ResultCode <> 0) then
-      RaiseException('The installed coordinator trust configuration is invalid.');
-    MigrateClientState();
-    EnsureRootCa();
-    ConfigureClientService();
+    GuardCommand('configure'); WaitForGuard('configured');
+    ImagePath := ExpandConstant('{app}\KSATClient.exe');
+    if Exec(ExpandConstant('{sys}\sc.exe'), 'query KSATLabClientAuthority', '', SW_HIDE, ewWaitUntilTerminated, Code) and (Code = 0) then Verb := 'config' else Verb := 'create';
+    ServiceCommand(Verb + ' KSATLabClientAuthority binPath= "\"' + ImagePath + '\" --windows-service" start= auto obj= LocalSystem DisplayName= "KSAT Lab Client Authority"');
+    ServiceCommand('sidtype KSATLabClientAuthority unrestricted');
     ProtectAuthorityDirectory(ExpandConstant('{commonappdata}\KSAT Client\identity'));
     ProtectAuthorityDirectory(ExpandConstant('{commonappdata}\KSAT Client\state'));
     ProtectAuthorityDirectory(ExpandConstant('{commonappdata}\KSAT Client\packs'));
     ProtectAuthorityDirectory(ExpandConstant('{commonappdata}\KSAT Client\updates'));
     if not HadExistingConfiguration then SeedLastKnownGood();
-    StartClientService();
+    GuardCommand('commit'); WaitForGuard('committed'); GuardCommitted := True;
+    ServiceCommand('start KSATLabClientAuthority');
+    PowerShell('$ErrorActionPreference=''Stop'';$ok=$false;for($i=0;$i-lt 60;$i++){try{' +
+      '$r=Invoke-RestMethod -Uri ''http://127.0.0.1:8010/api/build'' -TimeoutSec 2;' +
+      'if($r.version-eq ''{#AppVersion}''){$ok=$true;break}}catch{};Start-Sleep -Milliseconds 500};' +
+      'if(-not $ok){throw ''client local health check failed''}');
+    WizardForm.FinishedLabel.Caption := 'KSAT client is installed. Open KSAT to check coordinator connectivity. ' +
+      'If the coordinator is offline, reconnect and retry; do not reinstall or remove student data.';
   end;
 end;
 
+procedure DeinitializeSetup();
+begin
+  if GuardStarted and (not GuardCommitted) then begin
+    try GuardCommand('abort'); except Log('Unable to signal guard; parent-exit recovery will run.'); end;
+  end;
+  { Retain exact protected stage for parent-exit recovery and diagnostics. }
+end;
+
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var Code: Integer;
 begin
   if CurUninstallStep = usUninstall then begin
-    DeleteClientService();
-    RemoveOwnedRootCas();
+    Exec(ExpandConstant('{sys}\sc.exe'), 'stop KSATLabClientAuthority', '', SW_HIDE, ewWaitUntilTerminated, Code);
+    Exec(ExpandConstant('{sys}\sc.exe'), 'delete KSATLabClientAuthority', '', SW_HIDE, ewWaitUntilTerminated, Code);
+    { Preserve records and public trust which other KSAT products may share. }
   end;
 end;

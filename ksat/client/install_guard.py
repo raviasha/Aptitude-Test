@@ -57,7 +57,7 @@ def reject_links(path: Path) -> None:
                 raise ValueError("Installation paths must not contain links or reparse points.")
 
 
-def inspect_installation(program_data: Path, profile: LabProfile, target_version: str) -> InstallCheck:
+def inspect_installation(program_data: Path, profile: LabProfile, target_version: str, *, rollback_authorized=False) -> InstallCheck:
     version = None
     try:
         decode_profile(encode_profile(profile), now=datetime.now(timezone.utc))
@@ -71,7 +71,7 @@ def inspect_installation(program_data: Path, profile: LabProfile, target_version
         config_path = root / "client-config.json"
         if not config_path.exists():
             # The lease may have created its protected lock but no client data.
-            if all(p.relative_to(root).as_posix() in {"state", "state/.maintenance.lock"} for p in root.rglob("*")):
+            if all(p.relative_to(root).as_posix() in {"state", "state/.maintenance.lock", "state/.client.lock"} for p in root.rglob("*")):
                 return InstallCheck("fresh", None, None)
             return InstallCheck("blocked", None, "partial_installation")
         from client_app import ClientConfigStore, ClientRuntimeConfigStore, _validate_production_trust
@@ -84,7 +84,7 @@ def inspect_installation(program_data: Path, profile: LabProfile, target_version
         version = installed_version(program_data)
         if version is None:
             return InstallCheck("blocked", None, "unknown_installed_version")
-        if version_tuple(version) > target:
+        if version_tuple(version) > target and not rollback_authorized:
             return InstallCheck("blocked", version, "downgrade_refused")
         identity = DeviceIdentityStore(root / "identity").load_existing()
         if (identity.device_id is not None
@@ -178,10 +178,10 @@ class InstallationLease:
         self.gate.__enter__()
         return self
 
-    def prepare(self, profile: LabProfile, target_version: str) -> InstallCheck:
+    def prepare(self, profile: LabProfile, target_version: str, *, rollback_authorized=False) -> InstallCheck:
         if self.closed or self.gate.lock is None or self.prepared:
             raise RuntimeError("Installation lease is not available.")
-        check = inspect_installation(self.program_data, profile, target_version)
+        check = inspect_installation(self.program_data, profile, target_version, rollback_authorized=rollback_authorized)
         if check.state == "blocked":
             return check
         self.was_running = self.service.is_running()
@@ -194,7 +194,7 @@ class InstallationLease:
                 self.service.stop()
             from client_app import ClientProcessLock
             self.lifecycle = ClientProcessLock(self.root / "state").acquire()
-            checked = inspect_installation(self.program_data, profile, target_version)
+            checked = inspect_installation(self.program_data, profile, target_version, rollback_authorized=rollback_authorized)
             if checked.state == "blocked":
                 self.abort()
                 return checked

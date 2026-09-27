@@ -617,7 +617,9 @@ def build_commands(root: Path, python: Path) -> list[list[str]]:
     updater = _common_pyinstaller(root, python, "KSATClientUpdater", "updater")
     updater.extend(_add_data(public_key_resource, "."))
     updater.extend(["--uac-admin", str(root / "client_updater.py")])
-    return [coordinator, client, updater]
+    guard = _common_pyinstaller(root, python, "KSATClientInstallGuard", "install-guard")
+    guard.append(str(root / "client_install_guard.py"))
+    return [coordinator, client, updater, guard]
 
 
 def smoke_coordinator_command(
@@ -681,6 +683,9 @@ def write_version_resources(layout: ReleaseLayout) -> None:
     )
     (layout.build_dir / "KSATClientUpdater.version.txt").write_text(
         _version_resource("KSAT Lab Client Updater", "KSATClientUpdater.exe"), encoding="utf-8"
+    )
+    (layout.build_dir / "KSATClientInstallGuard.version.txt").write_text(
+        _version_resource("KSAT Client Installation Guard", "KSATClientInstallGuard.exe"), encoding="utf-8"
     )
 
 

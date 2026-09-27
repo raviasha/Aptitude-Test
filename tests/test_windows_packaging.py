@@ -178,6 +178,7 @@ class WindowsPackagingTests(unittest.TestCase):
             layout.coordinator_executable.write_bytes(b"MZcoordinator")
             layout.client_executable.write_bytes(b"MZclient")
             layout.updater_executable.write_bytes(b"MZupdater")
+            (layout.dist_dir / "KSATClientInstallGuard.exe").write_bytes(b"MZguard")
             events = []
 
             def fake_sign(path, _config):
@@ -189,7 +190,8 @@ class WindowsPackagingTests(unittest.TestCase):
                 environ={"KSAT_RELEASE_TEST_SIGNING": "1"},
             )
             publish_signed_executables(layout, config, signer=fake_sign)
-            self.assertEqual(["KSATCoordinator.exe", "KSATClient.exe", "KSATClientUpdater.exe"], events)
+            self.assertEqual(["KSATCoordinator.exe", "KSATClient.exe", "KSATClientUpdater.exe", "KSATClientInstallGuard.exe"], events)
+            self.assertEqual(b"MZguard-signed", (layout.dist_dir / "KSATClientInstallGuard.exe").read_bytes())
             self.assertEqual(
                 layout.coordinator_executable.read_bytes(),
                 layout.coordinator_release_executable.read_bytes(),

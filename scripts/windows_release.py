@@ -438,6 +438,10 @@ class ReleaseLayout:
         return self.dist_dir / "KSATClientUpdater.exe"
 
     @property
+    def guard_executable(self) -> Path:
+        return self.dist_dir / "KSATClientInstallGuard.exe"
+
+    @property
     def coordinator_installer(self) -> Path:
         return self.release_dir / f"KSATCoordinatorSetup-{APP_VERSION}.exe"
 
@@ -730,7 +734,7 @@ def publish_signed_executables(
     signer=sign_and_verify_artifact,
 ) -> None:
     signing = _require_signing(signing)
-    for executable in (layout.coordinator_executable, layout.client_executable, layout.updater_executable):
+    for executable in (layout.coordinator_executable, layout.client_executable, layout.updater_executable, layout.guard_executable):
         if not executable.is_file() or executable.stat().st_size <= 0:
             raise RuntimeError(f"Expected executable was not built: {executable}")
         signer(executable, signing)
@@ -749,9 +753,9 @@ def build_executables(
     inspect_release_inputs(layout.root)
     layout.dist_dir.mkdir(parents=True, exist_ok=True)
     layout.build_dir.mkdir(parents=True, exist_ok=True)
-    for name in ("coordinator", "client", "updater"):
+    for name in ("coordinator", "client", "updater", "install-guard"):
         _safe_remove_tree(layout.build_dir / name, layout.root)
-    for executable in (layout.coordinator_executable, layout.client_executable, layout.updater_executable):
+    for executable in (layout.coordinator_executable, layout.client_executable, layout.updater_executable, layout.guard_executable):
         try:
             executable.unlink()
         except FileNotFoundError:
@@ -801,6 +805,15 @@ def compile_installers(
     signing = _require_signing(signing)
     layout = ReleaseLayout(root)
     layout.release_dir.mkdir(parents=True, exist_ok=True)
+    # Export public material only, from the already selected signing identity.
+    _key, certificate, _chain = pkcs12.load_key_and_certificates(
+        signing.pfx_path.read_bytes(), signing.password.encode("utf-8")
+    )
+    if (certificate is None or certificate.subject.rfc4514_string() != signing.expected_publisher
+            or certificate.fingerprint(hashes.SHA1()).hex().upper() != signing.expected_thumbprint):
+        raise SigningConfigurationError("Installer publisher certificate does not match signing identity.")
+    layout.dist_dir.mkdir(parents=True, exist_ok=True)
+    (layout.dist_dir / "publisher.cer").write_bytes(certificate.public_bytes(serialization.Encoding.DER))
     for path in (layout.coordinator_installer, layout.client_installer):
         try:
             path.unlink()
@@ -810,7 +823,11 @@ def compile_installers(
         layout.root / "installer" / "KSATCoordinator.iss",
         layout.root / "installer" / "KSATClient.iss",
     ):
-        subprocess.run([str(iscc), str(script)], cwd=layout.root, check=True)
+        definitions = []
+        if script.name == "KSATClient.iss":
+            definitions = [f"/DKSAT_BUNDLE_PUBLISHER_TRUST={int(signing.lab_identity)}",
+                f"/DKSAT_PUBLISHER_THUMBPRINT={signing.expected_thumbprint}"]
+        subprocess.run([str(iscc), *definitions, str(script)], cwd=layout.root, check=True)
     for path in (layout.coordinator_installer, layout.client_installer):
         if not path.is_file() or path.stat().st_size <= 0:
             raise RuntimeError(f"Expected installer was not built: {path}")
@@ -1160,6 +1177,7 @@ def inspect_artifacts(
         layout.coordinator_executable,
         layout.client_executable,
         layout.updater_executable,
+        layout.guard_executable,
         layout.coordinator_release_executable,
         layout.client_release_executable,
         layout.coordinator_installer,
@@ -1182,13 +1200,14 @@ def inspect_artifacts(
         manifest = pyinstaller_payload_manifest(executable)
         if not _manifest_has_update_key(manifest):
             raise ValueError(f"Public update verification key is missing: {executable.name}")
+    pyinstaller_payload_manifest(layout.guard_executable)
     extractor = Path(innoextract).resolve() if innoextract is not None else discover_innoextract()
     if extractor is None or not extractor.is_file():
         raise FileNotFoundError("innoextract is required for deep installer inspection.")
     _inspect_installer(layout.coordinator_installer, layout.coordinator_executable, extractor)
     _inspect_installer(
         layout.client_installer, layout.client_executable, extractor,
-        (layout.updater_executable,),
+        (layout.updater_executable, layout.guard_executable),
     )
     update_bundle = (
         layout.test_client_update

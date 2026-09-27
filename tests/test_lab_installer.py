@@ -124,12 +124,12 @@ class CompiledInstallerTests(unittest.TestCase):
             for name in ("lab-profile.json", "coordinator-ca.pem", "coordinator-public.json"):
                 (payload / name).write_bytes(b"compile fixture: " + name.encode())
             (payload / "lab-summary.ini").write_text("[Lab]\nName=Test Lab\nURL=https://lab.example.edu:8443\n", encoding="utf-16")
-            for mode in (0, 1):
-                with self.subTest(mode=mode):
-                    output = work / str(mode)
+            for mode, bundled_trust in ((0, 1), (1, 1), (0, 0)):
+                with self.subTest(mode=mode, bundled_trust=bundled_trust):
+                    output = work / f"{mode}-{bundled_trust}"
                     result = subprocess.run([os.environ["KSAT_ISCC"], f"/DKSAT_LAB_MODE={mode}",
                         f"/DKSAT_PAYLOAD_DIR={payload}", f"/DKSAT_OUTPUT_DIR={output}",
-                        "/DKSAT_CLIENT_VERSION=2.1.1", str(root / "installer/KSATClient.iss")],
+                        "/DKSAT_CLIENT_VERSION=2.1.1", f"/DKSAT_BUNDLE_PUBLISHER_TRUST={bundled_trust}", str(root / "installer/KSATClient.iss")],
                         capture_output=True, text=True, timeout=120)
                     self.assertEqual(0, result.returncode, result.stdout + result.stderr)
                     exe = output / "KSATClientSetup-2.1.1.exe"
@@ -139,6 +139,9 @@ class CompiledInstallerTests(unittest.TestCase):
                         capture_output=True, text=True, timeout=60)
                     self.assertEqual(0, result.returncode, result.stderr)
                     contents = {p.name: p.read_bytes() for p in extracted.rglob("*") if p.is_file()}
-                    for name in ("KSATClient.exe", "KSATClientUpdater.exe", "KSATClientInstallGuard.exe", "publisher.cer"):
+                    for name in ("KSATClient.exe", "KSATClientUpdater.exe", "KSATClientInstallGuard.exe"):
                         self.assertEqual((payload / name).read_bytes(), contents[name])
+                    self.assertEqual(bool(bundled_trust), "publisher.cer" in contents)
+                    if bundled_trust:
+                        self.assertEqual((payload / "publisher.cer").read_bytes(), contents["publisher.cer"])
                     self.assertEqual(bool(mode), "lab-profile.json" in contents)

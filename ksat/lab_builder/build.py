@@ -165,6 +165,7 @@ def build_lab_installer(request: BuildRequest, *, cancel: threading.Event,
             check_cancel()
             if digest(artifact) != before:
                 raise ValueError("Installer changed before publication.")
+            check_cancel()
             publish_no_replace(artifact, installer)
             published_receipt = False  # EXE + receipt are now the completed transaction.
             progress(BuildEvent("complete", f"Installer created. SHA-256: {before}"))

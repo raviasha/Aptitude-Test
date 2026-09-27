@@ -4,6 +4,7 @@ import tempfile
 import threading
 import json
 import unittest
+from types import SimpleNamespace
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -216,6 +217,35 @@ class ClientInstallGuardTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             run_guard_session(self.program_data, stage, lambda: True, service=service)
         self.assertEqual([], service.actions)
+
+    def test_slow_live_installer_keeps_lease_until_parent_exits(self):
+        from client_install_guard import run_guard_session
+        self.install()
+        stage = self.program_data / "stage"
+        stage.mkdir()
+        service = FakeService(running=True)
+        polls = []
+
+        def parent_alive():
+            polls.append(True)
+            if len(polls) == 3:
+                self.assertFalse(service.running)
+                with self.assertRaises(MaintenanceBusy):
+                    with MaintenanceGate(self.root):
+                        pass
+                return False
+            return True
+
+        clock_ticks = iter([0, 601, 602])
+        with patch("client_install_guard.time", SimpleNamespace(
+                monotonic=lambda: next(clock_ticks, 603), sleep=lambda _: None)):
+            result = run_guard_session(self.program_data, stage, parent_alive,
+                service=service, profile=self.profile)
+        self.assertEqual(3, len(polls), "Live installer must retain exclusion after ten minutes")
+        self.assertEqual(1, result)
+        self.assertEqual(["stop", "start"], service.actions)
+        with MaintenanceGate(self.root):
+            pass
 
 
 class FakeService:

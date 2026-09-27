@@ -4,6 +4,12 @@
 #ifndef KSAT_CLIENT_VERSION
   #define KSAT_CLIENT_VERSION "2.1.1"
 #endif
+#ifndef KSAT_BUNDLE_PUBLISHER_TRUST
+  #define KSAT_BUNDLE_PUBLISHER_TRUST "1"
+#endif
+#ifndef KSAT_PUBLISHER_THUMBPRINT
+  #define KSAT_PUBLISHER_THUMBPRINT "13AE2A6440C33E074FC9C99FB35E5A1CFD9BE908"
+#endif
 #ifndef KSAT_PAYLOAD_DIR
   #define KSAT_PAYLOAD_DIR SourcePath + "..\dist"
 #endif
@@ -12,7 +18,9 @@
 #endif
 #define AppVersion KSAT_CLIENT_VERSION
 #define GuardHash GetSHA256OfFile(KSAT_PAYLOAD_DIR + "\KSATClientInstallGuard.exe")
-#define PublisherHash GetSHA256OfFile(KSAT_PAYLOAD_DIR + "\publisher.cer")
+#if Int(KSAT_BUNDLE_PUBLISHER_TRUST) == 1
+  #define PublisherHash GetSHA256OfFile(KSAT_PAYLOAD_DIR + "\publisher.cer")
+#endif
 
 [Setup]
 AppId={{F08E1406-AD96-445E-9940-5D54AC2181AE}
@@ -38,7 +46,9 @@ SetupLogging=yes
 Source: "{#KSAT_PAYLOAD_DIR}\KSATClient.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#KSAT_PAYLOAD_DIR}\KSATClientUpdater.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#KSAT_PAYLOAD_DIR}\KSATClientInstallGuard.exe"; Flags: dontcopy
+#if Int(KSAT_BUNDLE_PUBLISHER_TRUST) == 1
 Source: "{#KSAT_PAYLOAD_DIR}\publisher.cer"; Flags: dontcopy
+#endif
 #if Int(KSAT_LAB_MODE) == 1
 Source: "{#KSAT_PAYLOAD_DIR}\lab-profile.json"; Flags: dontcopy
 Source: "{#KSAT_PAYLOAD_DIR}\coordinator-ca.pem"; Flags: dontcopy
@@ -185,7 +195,9 @@ begin
       'Set-Acl -LiteralPath $p -AclObject $acl}';
     PowerShell(Script);
     StageResource('KSATClientInstallGuard.exe', '{#GuardHash}');
+#if Int(KSAT_BUNDLE_PUBLISHER_TRUST) == 1
     StageResource('publisher.cer', '{#PublisherHash}');
+#endif
 #if Int(KSAT_LAB_MODE) == 1
     StageResource('lab-profile.json', '{#GetSHA256OfFile(KSAT_PAYLOAD_DIR + "\lab-profile.json")}');
     StageResource('coordinator-ca.pem', '{#GetSHA256OfFile(KSAT_PAYLOAD_DIR + "\coordinator-ca.pem")}');
@@ -229,7 +241,7 @@ procedure SeedLastKnownGood();
 begin
   PowerShell('$ErrorActionPreference=''Stop'';Import-Module (Join-Path $PSHOME ''Modules/Microsoft.PowerShell.Security/Microsoft.PowerShell.Security.psd1'');' +
     '$src=' + PSQuote(ExpandConstant('{srcexe}')) + ';$s=Get-AuthenticodeSignature -LiteralPath $src;' +
-    'if($s.Status-ne ''Valid'' -or $s.SignerCertificate.Thumbprint-ne ''13AE2A6440C33E074FC9C99FB35E5A1CFD9BE908''){throw ''invalid installer signature''};' +
+    'if($s.Status-ne ''Valid'' -or $s.SignerCertificate.Thumbprint-ne ''{#KSAT_PUBLISHER_THUMBPRINT}''){throw ''invalid installer signature''};' +
     '$d=' + PSQuote(ExpandConstant('{commonappdata}\KSAT Client\updates\last-known-good')) + ';' +
     '[IO.Directory]::CreateDirectory($d)|Out-Null;Copy-Item -LiteralPath $src -Destination ($d+''\KSATClientSetup-{#AppVersion}.exe'')');
 end;

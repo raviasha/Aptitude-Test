@@ -23,7 +23,7 @@ Open `KSATLabPackageBuilder-1.0.0.exe`. Under **One-time setup**, confirm the th
 4. Click **Test connection** when the packaging PC can reach the lab. The check verifies TLS and the compatible Coordinator version; it does not enrol a device or create a student account.
 5. If building away from the lab, explicitly select the offline acknowledgement. Public-file validation still runs. An offline package does not prove the lab clients can resolve/reach the server.
 6. Click **Validate and Create Installer**. Wait through validation, compilation, signing and inspection. Cancellation waits safely for a bounded tool operation and prevents publication.
-7. Keep the generated `.json` receipt and checksum. Distribute **only** `KSATClientSetup-<lab-name>-2.1.1.exe` to student PCs in that lab. Existing output files are never overwritten.
+7. Keep the generated `.json` receipt, which contains the installer checksum. Distribute **only** `KSATClientSetup-<lab-name>-2.1.1.exe` to student PCs in that lab. Existing output files are never overwritten.
 
 The generated EXE includes the public connection profile and publisher certificate. It does not include device identities, student records, databases, cached tests, passwords or private keys. The final installer signature covers its configuration as well as its client binaries.
 
@@ -43,6 +43,7 @@ After the 2.1.1 bootstrap, subsequent compatible generic signed central updates 
 - **Verification failed:** check the compatible innoextract build. No unsigned/unverified output is reported as successful.
 - **Connection unverified:** check server hostname uniqueness, DNS, network profile/firewall and clock. Do not substitute a rotating IP address in a hostname-bound profile.
 - **Installation blocked:** finish active tests and pending uploads. For old running clients see the legacy note in the installation guide. Corrupt/legacy state needs IT review, not deletion.
+- **Installation appears stuck:** do not manually restart the client service while setup is still running. The safety lock intentionally lasts until setup commits, cancels or exits. Have IT close the stalled installer before retrying.
 
 Private-lab signatures can still cause a first-launch Windows/SmartScreen warning. Installing trust inside the EXE cannot retroactively make its first launch trusted. IT should verify the download channel, signer and checksum. A successful signature is not antivirus clearance; do not disable protection to make a build/install succeed.
 

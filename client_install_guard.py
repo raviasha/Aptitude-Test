@@ -227,7 +227,7 @@ def _status(stage: Path, state: str, diagnostic: str | None = None):
 
 
 def run_guard_session(program_data: Path, stage: Path, parent_alive, *, service=None,
-                      timeout: float = 600, profile=None) -> int:
+                      profile=None) -> int:
     profile = profile or load_install_profile(stage, program_data)
     if not parent_alive():
         raise ValueError("The parent installer is no longer running.")
@@ -239,8 +239,9 @@ def run_guard_session(program_data: Path, stage: Path, parent_alive, *, service=
             return 1
         _status(stage, "ready")
         configured = False
-        deadline = time.monotonic() + timeout
-        while parent_alive() and time.monotonic() < deadline:
+        # A slow/suspended installer may still replace files. Only its explicit
+        # terminal command or process exit can release exclusion, never a clock.
+        while parent_alive():
             control = stage / "control.json"
             if control.exists():
                 command = strict_json(bounded_read(control, 1024), 1024)

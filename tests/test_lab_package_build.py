@@ -83,6 +83,20 @@ class LabBuildTests(unittest.TestCase):
             with self.assertRaises(InterruptedError): self.build()
         self.assertEqual([], list(self.output.iterdir()))
 
+    def test_cancellation_during_final_hash_cannot_publish(self):
+        from ksat.lab_builder.build import digest
+
+        def cancel_at_final_hash(path):
+            result = digest(path)
+            if path.name == "KSATClientSetup-2.1.1.exe" and list(self.output.glob("*.json")):
+                self.cancel.set()
+            return result
+
+        with patch("ksat.lab_builder.build.digest", side_effect=cancel_at_final_hash):
+            with self.assertRaises(InterruptedError):
+                self.build()
+        self.assertEqual([], list(self.output.iterdir()))
+
     def test_unicode_and_shell_paths_are_data(self):
         self.build()
         self.assertTrue(any(str(self.output) in arg for arg in self.commands[0]))

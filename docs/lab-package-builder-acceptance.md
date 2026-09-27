@@ -1,6 +1,6 @@
 # Lab Package Builder acceptance record
 
-Status: signed builder packaging verified; independent review/final regression check pending. **Not yet approved for whole-lab deployment**.
+Status: independent review completed; all three Important findings fixed and final signed artifacts verified. **Pilot release only: not yet approved for whole-lab deployment**.
 
 ## Verified so far
 
@@ -9,15 +9,35 @@ Status: signed builder packaging verified; independent review/final regression c
 - Client, updater and guard frozen and signed as 2.1.1. Coordinator/wire metadata remain 2.1.0.
 - Generic and lab Inno 6.7.3 installers compiled and extracted from disposable signed fixtures without installing them.
 - Real lab pipeline compiled, signed and inspected an installer using disposable public Coordinator inputs; all embedded bytes matched approved resources.
-- Native smoke installer SHA-256: `2e9cbbe7c6f396179dcc4a81f9d035244b74f4354ff493d66b42bfae49ba6190`. This is a test-profile artifact, not a real-lab installer for distribution.
+- Final native smoke installer SHA-256: `a8ae7341a706e32b67aa1423110c3e7dffa544767f2c795f09a56f3d86264c40`. This is a test-profile artifact, not a real-lab installer for distribution.
 
-- Builder SHA-256: `500ddc9d5f38440e3ba1c4f7b449b4e98d67babdcc70a746a115422d4baa778f`.
-- Builder size: 139,364,800 bytes; version 1.0.0; bundled client version 2.1.1.
+- Final builder SHA-256: `3f18d5e68f50af78882eedab8f67d09b31728ac4a3f09cb1a64bad86e3a10638`.
+- Final builder size: 139,367,024 bytes; version 1.0.0; bundled client version 2.1.1.
 - Authenticode publisher: `CN=KSAT LAB RELEASE SIGNING`; thumbprint `13AE2A6440C33E074FC9C99FB35E5A1CFD9BE908`.
 - Frozen Tk/Tcl runtime, exact embedded resource allowlist/hashes, executable signatures and decompressed private-state scan passed.
-- Full suite: 716 passed, 32 skipped, 547 subtests passed, 35 deprecation warnings. Follow-up scanner/release/payload tests: 10 passed and 4 subtests passed. Final regression run and independent review pending.
+- Final post-review suite: **724 passed, 32 skipped, 548 subtests passed**, 33 deprecation warnings in 414.87 seconds. Command: `python -m pytest tests -q`, with `KSAT_NODE`, `KSAT_ISCC` and `KSAT_INNOEXTRACT` set to the native tools. No test failures. Native compilation/extraction includes private-lab and standard signing modes.
+- Final standalone EXE launch smoke: responsive `KSAT Lab Package Builder` window opened and closed normally, without starting from Python or the repository entrypoint. This is not a visual-layout or per-lab workflow acceptance test.
 
 The GitHub Release asset carries the binary; `release/KSATLabPackageBuilder-1.0.0.sha256` records its checksum. No disposable test-profile installer is distributed as a real-lab installer.
+
+## Independent review
+
+The reviewer found no Critical issues, no deferred Minor issues and no out-of-scope behaviors declined for judgment. Three Important findings were reproduced and fixed:
+
+- A slow live installer now retains its process-owned maintenance lock until an explicit terminal command or parent exit; elapsed time cannot restart the client mid-replacement.
+- The standard release pipeline now signs and inspects the guard, stages the selected public publisher certificate, and preserves generic non-private/test signing without importing the private-lab root. Last-known-good seeding uses the selected signer pin.
+- Cancellation during the final file hash is checked before atomic EXE publication; the incomplete receipt is removed.
+
+Regression tests were observed failing before the fixes. Focused verification passed: 71 tests and 4 subtests; native private-lab/generic signing-mode verification passed in the final suite. No second reviewer pass was substituted for these tests.
+
+## Implementation decisions
+
+- Reused protected process-owned byte-range locks and Windows service control rather than a second mutex/custom IPC system; potential cost is compatibility/recovery rework.
+- Inspected authenticated temporary database copies to avoid modifying original SQLite sidecars; potential cost is extra disk I/O and conservative retries.
+- Used a signed public INI summary derived from the validated profile; a display mismatch could mislead, so output-byte inspection also verifies it.
+- Retained shared public trust after uninstall rather than risk breaking another product; unused certificates may require IT cleanup.
+- Blocked legacy version-1 or corrupt state for explicit administrator migration rather than silently rewriting it; potential cost is an extra IT step.
+- Published the large binary as a GitHub Release asset, with source/checksum/guides on the feature branch; the download location differs from older repository binaries, and `main` is unchanged.
 
 ## Not run — required pilot checks
 

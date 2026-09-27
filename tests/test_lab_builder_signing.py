@@ -1,4 +1,7 @@
 import json
+import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -7,10 +10,43 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from ksat.lab_builder.signing import SignerSelection, inspect_signer, sign_from_store, PUBLISHER, THUMBPRINT
+from ksat.lab_builder.signing import _INSPECT_SCRIPT
 from ksat.windows_authenticode import AuthenticodeIdentity
 
 
 class LabSignerTests(unittest.TestCase):
+    @unittest.skipUnless(sys.platform == "win32", "Windows certificate provider required")
+    def test_native_certificate_metadata_reports_code_signing_usage(self):
+        certificate = Path(__file__).resolve().parents[1] / "release" / "KSATLabReleaseSigning.cer"
+        # Substitute only the certificate lookup with the shipped PUBLIC fixture.
+        script = _INSPECT_SCRIPT.replace(
+            "$c=Get-Item -LiteralPath $path",
+            "$c=[Security.Cryptography.X509Certificates.X509Certificate2]::new($env:KSAT_TEST_PUBLIC_CERT)",
+        )
+        result = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+            env=dict(os.environ, KSAT_TEST_PUBLIC_CERT=str(certificate)), shell=False,
+            capture_output=True, text=True, timeout=30,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+        metadata = json.loads(result.stdout)
+        self.assertEqual(["1.3.6.1.5.5.7.3.3"], metadata["eku"])
+        self.assertFalse(metadata["has_private_key"])
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows certificate provider required")
+    def test_fresh_powershell_can_lookup_certificate_store(self):
+        # Read-only native boundary check: no real private key or certificate import.
+        result = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", _INSPECT_SCRIPT],
+            env=dict(os.environ, KSAT_SIGN_STORE="CurrentUser", KSAT_SIGN_THUMBPRINT="0" * 40),
+            shell=False, capture_output=True, text=True, timeout=30,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        self.assertNotEqual(0, result.returncode)
+        self.assertNotIn("DriveNotFound", result.stderr)
+        self.assertIn("ItemNotFound", result.stderr)
+
     def setUp(self):
         self.selection = SignerSelection("CurrentUser", THUMBPRINT, PUBLISHER, None, True)
         self.now = datetime.now(timezone.utc)

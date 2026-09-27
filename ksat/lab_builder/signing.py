@@ -42,13 +42,15 @@ class SignerSelection:
 
 _INSPECT_SCRIPT = r"""
 $ErrorActionPreference='Stop'
+Import-Module (Join-Path $PSHOME 'Modules/Microsoft.PowerShell.Security/Microsoft.PowerShell.Security.psd1') -ErrorAction Stop
 $path='Cert:\'+$env:KSAT_SIGN_STORE+'\My\'+$env:KSAT_SIGN_THUMBPRINT
 $c=Get-Item -LiteralPath $path
 [ordered]@{
  publisher=$c.Subject; thumbprint=$c.Thumbprint; has_private_key=$c.HasPrivateKey;
  not_before=$c.NotBefore.ToUniversalTime().ToString('o');
  not_after=$c.NotAfter.ToUniversalTime().ToString('o');
- eku=@($c.EnhancedKeyUsageList | ForEach-Object { $_.ObjectId.Value })
+ eku=@($c.Extensions | Where-Object { $_.Oid.Value -eq '2.5.29.37' } |
+       ForEach-Object { $_.EnhancedKeyUsages } | ForEach-Object { $_.Value })
 } | ConvertTo-Json -Compress
 """
 

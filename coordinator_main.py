@@ -64,6 +64,8 @@ class CoordinatorRuntimeSettings:
         object.__setattr__(self, "hostname", hostname)
         if type(self.port) is not int or not 1 <= self.port <= 65535:
             raise ValueError("Coordinator port is invalid.")
+        if not isinstance(self.bind_host, str):
+            raise ValueError("Coordinator bind host is invalid.")
         if self.bind_host != "0.0.0.0":
             try:
                 bind = ipaddress.ip_address(self.bind_host)
@@ -154,7 +156,7 @@ def _load_runtime_settings(data_dir: Path) -> CoordinatorRuntimeSettings | None:
     if (
         not isinstance(value, dict)
         or set(value) != {"bind_host", "hostname", "interactive", "port", "version"}
-        or value.get("version") != APP_VERSION
+        or value.get("version") not in ("2.0.0", APP_VERSION)
         or type(value.get("interactive")) is not bool
     ):
         raise ValueError("Coordinator runtime configuration is invalid.")
@@ -171,7 +173,7 @@ def _load_runtime_settings(data_dir: Path) -> CoordinatorRuntimeSettings | None:
             "hostname": settings.hostname,
             "interactive": settings.interactive,
             "port": settings.port,
-            "version": APP_VERSION,
+            "version": value["version"],
         },
         sort_keys=True,
         separators=(",", ":"),
@@ -179,6 +181,53 @@ def _load_runtime_settings(data_dir: Path) -> CoordinatorRuntimeSettings | None:
     if raw != expected:
         raise ValueError("Coordinator runtime configuration is invalid.")
     return settings
+
+
+def _migrate_runtime_settings(data_dir: Path) -> None:
+    """Upgrade the known identical 2.0.0 schema while the process lock is held.
+
+    Loading remains read-only. Both installer validation and normal startup
+    perform migration under exclusive ownership, before opening application data.
+    """
+    settings = _load_runtime_settings(data_dir)
+    if settings is None:
+        return
+    path = _runtime_config_path(data_dir)
+    original = path.read_bytes()
+    value = json.loads(original)
+    if value["version"] == APP_VERSION:
+        return
+    backup = path.with_name("coordinator-runtime.pre-2.1.0.json.bak")
+    try:
+        with backup.open("xb") as stream:
+            stream.write(original)
+            stream.flush()
+            os.fsync(stream.fileno())
+    except FileExistsError:
+        if backup.is_symlink() or backup.read_bytes() != original:
+            raise ValueError("Coordinator runtime migration backup differs; preserve it for administrator review.")
+    value["version"] = APP_VERSION
+    raw = json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    _write_runtime_bytes(path, raw)
+    if _load_runtime_settings(data_dir) != settings:
+        raise ValueError("Coordinator runtime migration verification failed.")
+
+
+def _write_runtime_bytes(path: Path, raw: bytes) -> None:
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=".coordinator-runtime.", suffix=".tmp", dir=path.parent
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(raw)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        with path.open("rb+") as stream:
+            os.fsync(stream.fileno())
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def save_runtime_settings(
@@ -210,27 +259,11 @@ def save_runtime_settings(
     ).encode("utf-8")
     data_dir.mkdir(parents=True, exist_ok=True)
     path = _runtime_config_path(data_dir)
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix=".coordinator-runtime.", suffix=".tmp", dir=data_dir
-    )
-    temporary = Path(temporary_name)
-    try:
-        with os.fdopen(descriptor, "wb") as stream:
-            stream.write(raw)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
-        with path.open("rb+") as stream:
-            os.fsync(stream.fileno())
-        loaded = _load_runtime_settings(data_dir)
-        if loaded != settings:
-            raise ValueError("Coordinator runtime configuration is invalid.")
-        return loaded
-    finally:
-        try:
-            temporary.unlink()
-        except FileNotFoundError:
-            pass
+    _write_runtime_bytes(path, raw)
+    loaded = _load_runtime_settings(data_dir)
+    if loaded != settings:
+        raise ValueError("Coordinator runtime configuration is invalid.")
+    return loaded
 
 
 def _load_faculty_application():
@@ -263,6 +296,7 @@ def run_coordinator(
         )
     }
     try:
+        _migrate_runtime_settings(runtime.data_dir)
         security = security_loader(
             runtime.data_dir,
             hostname=runtime.hostname,
@@ -355,6 +389,8 @@ def main(
         runtime = CoordinatorRuntimeSettings.from_environment(values)
         if not _runtime_config_path(runtime.data_dir).is_file():
             raise ValueError("Coordinator runtime configuration is missing.")
+        with lock_factory(runtime.data_dir):
+            _migrate_runtime_settings(runtime.data_dir)
         return 0
     if arguments.confirm_renewal:
         parser.error("--confirm-renewal requires --renew-certificate")

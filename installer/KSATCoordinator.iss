@@ -3,6 +3,7 @@
 #define AppPublisher "College Assessment Lab"
 #define AppExeName "KSATCoordinator.exe"
 #define FirewallRule "KSAT Faculty Coordinator 2.1.0"
+#define LegacyFirewallRule "KSAT Faculty Coordinator 2.0.0"
 
 [Setup]
 AppId={{6A30525E-E010-4B63-B5E9-1AEFDF47A6DC}
@@ -174,11 +175,17 @@ begin
     '"profile":"private","enabled":true}';
 end;
 
-function OwnerPort(Raw: String; var StoredPort: String): Boolean;
+function OwnerPort(Raw: String; var StoredPort, StoredRule: String): Boolean;
 var ExpectedPrefix, ExpectedSuffix: String; Dummy: Integer;
 begin
+  StoredRule := '{#FirewallRule}';
   ExpectedPrefix := '{"program":"' + JsonEscape(ExpandConstant('{app}\{#AppExeName}')) +
-    '","rule_name":"{#FirewallRule}","port":';
+    '","rule_name":"' + StoredRule + '","port":';
+  if Pos(ExpectedPrefix, Raw) <> 1 then begin
+    StoredRule := '{#LegacyFirewallRule}';
+    ExpectedPrefix := '{"program":"' + JsonEscape(ExpandConstant('{app}\{#AppExeName}')) +
+      '","rule_name":"' + StoredRule + '","port":';
+  end;
   ExpectedSuffix := ',"direction":"inbound","action":"allow",' +
     '"protocol":"tcp","profile":"private","enabled":true}';
   Result := (Pos(ExpectedPrefix, Raw) = 1) and
@@ -190,11 +197,11 @@ begin
   Result := TryParsePort(StoredPort, Dummy);
 end;
 
-procedure VerifyOwnedFirewall(StoredPort: String);
+procedure VerifyOwnedFirewall(RuleName, StoredPort: String);
 var Script, Parameters: String; ResultCode: Integer;
 begin
   Script := '$ErrorActionPreference=''Stop'';' +
-    '$name=''{#FirewallRule}'';$program=''' +
+    '$name=''' + RuleName + ''';$program=''' +
     ExpandConstant('{app}\{#AppExeName}') + ''';$port=''' + StoredPort + ''';' +
     '$rules=@(Get-NetFirewallRule -DisplayName $name -ErrorAction Stop);' +
     'if($rules.Count-ne 1){exit 41};$rule=$rules[0];' +
@@ -239,10 +246,10 @@ begin
   else if ResultCode = 1 then Result := FirewallRuleStateCompatible;
 end;
 
-procedure VerifyFirewallAbsent();
+procedure VerifyFirewallAbsent(RuleName: String);
 var Script, Parameters: String; ResultCode: Integer;
 begin
-  Script := '$r=@(Get-NetFirewallRule -DisplayName ''{#FirewallRule}'' ' +
+  Script := '$r=@(Get-NetFirewallRule -DisplayName ''' + RuleName + ''' ' +
     '-ErrorAction SilentlyContinue);if($r.Count-ne 0){exit 45}';
   Parameters := '-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "' + Script + '"';
   if (not Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'), Parameters,
@@ -264,25 +271,25 @@ begin
 end;
 
 procedure DeleteOwnedFirewall(ForUpgrade: Boolean);
-var Raw: AnsiString; StoredPort, Parameters: String; ResultCode: Integer;
+var Raw: AnsiString; StoredPort, StoredRule, Parameters: String; ResultCode: Integer;
 begin
   if not FileExists(FirewallOwnerPath()) then exit;
   if not LoadStringFromFile(FirewallOwnerPath(), Raw) then
     RaiseException('The firewall ownership record could not be read.');
-  if not OwnerPort(String(Raw), StoredPort) then
+  if not OwnerPort(String(Raw), StoredPort, StoredRule) then
     RaiseException('The firewall ownership record is invalid.');
-  VerifyOwnedFirewall(StoredPort);
-  Parameters := 'advfirewall firewall delete rule name="{#FirewallRule}" program="' +
+  VerifyOwnedFirewall(StoredRule, StoredPort);
+  Parameters := 'advfirewall firewall delete rule name="' + StoredRule + '" program="' +
     ExpandConstant('{app}\{#AppExeName}') + '"';
   if (not Exec(ExpandConstant('{sys}\netsh.exe'), Parameters, '', SW_HIDE,
     ewWaitUntilTerminated, ResultCode)) or (ResultCode <> 0) then
     RaiseException('The installer-owned coordinator firewall rule could not be removed.');
-  VerifyFirewallAbsent();
+  VerifyFirewallAbsent(StoredRule);
   if not ForUpgrade then DeleteFile(FirewallOwnerPath());
 end;
 
 procedure ConfigureOwnedFirewall(PortValue: String);
-var Parameters, PreviousMetadata, PreviousPort: String; Raw: AnsiString;
+var Parameters, PreviousMetadata, PreviousPort, PreviousRule: String; Raw: AnsiString;
     ResultCode, RestoreCode, FirewallState: Integer; HadMarker: Boolean;
 begin
   HadMarker := FileExists(FirewallOwnerPath()); PreviousMetadata := '';
@@ -290,22 +297,24 @@ begin
     if not LoadStringFromFile(FirewallOwnerPath(), Raw) then
       RaiseException('The firewall ownership record could not be read.');
     PreviousMetadata := String(Raw);
-    if not OwnerPort(PreviousMetadata, PreviousPort) then
+    if not OwnerPort(PreviousMetadata, PreviousPort, PreviousRule) then
       RaiseException('The firewall ownership record is invalid.');
-    VerifyOwnedFirewall(PreviousPort);
-    Parameters := 'advfirewall firewall set rule name="{#FirewallRule}" program="' +
-      ExpandConstant('{app}\{#AppExeName}') + '" new localport=' + PortValue +
+    VerifyOwnedFirewall(PreviousRule, PreviousPort);
+    { Never overwrite or adopt a second rule during a legacy rename. }
+    if PreviousRule <> '{#FirewallRule}' then VerifyFirewallAbsent('{#FirewallRule}')
+    else VerifyFirewallAbsent('{#LegacyFirewallRule}');
+    Parameters := 'advfirewall firewall set rule name="' + PreviousRule + '" program="' +
+      ExpandConstant('{app}\{#AppExeName}') + '" new name="{#FirewallRule}" localport=' + PortValue +
       ' profile=private enable=yes';
     if (not Exec(ExpandConstant('{sys}\netsh.exe'), Parameters, '', SW_HIDE,
       ewWaitUntilTerminated, ResultCode)) or (ResultCode <> 0) then
       RaiseException('The installer-owned coordinator firewall rule could not be updated.');
-    VerifyOwnedFirewall(PortValue);
   end else begin
     FirewallState := ExistingFirewallRuleState(PortValue);
     if FirewallState = FirewallRuleStateConflict then
       RaiseException('A firewall rule with the KSAT name exists but is not compatible with this Coordinator.');
     if FirewallState = FirewallRuleStateCompatible then begin
-      VerifyOwnedFirewall(PortValue);
+      VerifyOwnedFirewall('{#FirewallRule}', PortValue);
     end else begin
     Parameters := 'advfirewall firewall add rule name="{#FirewallRule}" dir=in action=allow ' +
       'protocol=TCP localport=' + PortValue + ' profile=private program="' +
@@ -313,27 +322,30 @@ begin
     if (not Exec(ExpandConstant('{sys}\netsh.exe'), Parameters, '', SW_HIDE,
       ewWaitUntilTerminated, ResultCode)) or (ResultCode <> 0) then
       RaiseException('The private-profile coordinator firewall rule could not be created.');
-    VerifyOwnedFirewall(PortValue);
     end;
   end;
   try
+    VerifyOwnedFirewall('{#FirewallRule}', PortValue);
+    if HadMarker and (PreviousRule <> '{#FirewallRule}') then VerifyFirewallAbsent(PreviousRule);
     SaveFirewallMetadataAtomically(OwnedFirewallMetadata(PortValue));
   except
   begin
     if HadMarker then begin
       Parameters := 'advfirewall firewall set rule name="{#FirewallRule}" program="' +
-        ExpandConstant('{app}\{#AppExeName}') + '" new localport=' + PreviousPort +
+        ExpandConstant('{app}\{#AppExeName}') + '" new name="' + PreviousRule + '" localport=' + PreviousPort +
         ' profile=private enable=yes';
       if (not Exec(ExpandConstant('{sys}\netsh.exe'), Parameters, '', SW_HIDE,
         ewWaitUntilTerminated, RestoreCode)) or (RestoreCode <> 0) then
         RaiseException('The firewall ownership record and rollback both failed.');
-      VerifyOwnedFirewall(PreviousPort);
+      VerifyOwnedFirewall(PreviousRule, PreviousPort);
+      if PreviousRule <> '{#FirewallRule}' then VerifyFirewallAbsent('{#FirewallRule}');
     end else if FirewallState = FirewallRuleStateAbsent then begin
       Parameters := 'advfirewall firewall delete rule name="{#FirewallRule}" program="' +
         ExpandConstant('{app}\{#AppExeName}') + '"';
       if (not Exec(ExpandConstant('{sys}\netsh.exe'), Parameters, '', SW_HIDE,
         ewWaitUntilTerminated, RestoreCode)) or (RestoreCode <> 0) then
         RaiseException('The new firewall rule was created but its ownership record and rollback both failed.');
+      VerifyFirewallAbsent('{#FirewallRule}');
     end;
     RaiseException('The firewall ownership record could not be saved.');
   end;

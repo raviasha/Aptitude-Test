@@ -13,6 +13,7 @@ from typing import Callable
 from datetime import datetime, timezone
 
 from ksat.client.install_guard import reject_links
+from ksat.lab_builder import BUILDER_VERSION
 from ksat.lab_builder.payload import ApprovedPayload, verify_payload
 from ksat.lab_builder.profile import LabProfile, decode_profile, encode_profile
 from ksat.lab_builder.signing import SignerSelection, sign_from_store
@@ -156,7 +157,7 @@ def build_lab_installer(request: BuildRequest, *, cancel: threading.Event,
             if digest(artifact) != before:
                 raise ValueError("Installer changed during verification.")
             metadata = work / "receipt.json"
-            metadata.write_bytes(canonical_json({"builder_version": "1.0.0", "client_version": request.payload.client_version,
+            metadata.write_bytes(canonical_json({"builder_version": BUILDER_VERSION, "client_version": request.payload.client_version,
                 "profile_sha256": request.profile.sha256, "signer_thumbprint": request.signer.thumbprint,
                 "installer_sha256": before}))
             check_cancel()

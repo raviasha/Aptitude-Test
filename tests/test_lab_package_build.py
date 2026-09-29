@@ -1,4 +1,5 @@
 import hashlib
+import json
 import shutil
 import tempfile
 import threading
@@ -70,6 +71,8 @@ class LabBuildTests(unittest.TestCase):
         self.assertEqual(["validation", "compilation", "signing", "verification", "complete"], [e.stage for e in self.events])
         self.assertEqual(hashlib.sha256(result.installer.read_bytes()).hexdigest(), result.sha256)
         self.assertTrue(result.receipt.is_file())
+        from ksat.lab_builder import BUILDER_VERSION
+        self.assertEqual(BUILDER_VERSION, json.loads(result.receipt.read_bytes())["builder_version"])
 
     def test_output_collision_never_overwrites(self):
         path = self.output / "KSATClientSetup-lab-one-2.1.1.exe"

@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
+from ksat.lab_builder import BUILDER_VERSION
 from ksat.lab_builder.build import BuildEvent, BuildTools, build_lab_installer
 from ksat.lab_builder.profile import make_lab_profile
 from ksat.lab_builder.signing import SignerSelection
@@ -143,4 +144,4 @@ class BuilderController:
         return result
 
     def diagnostic_preview(self):
-        return canonical_json({"builder_version": "1.0.0", "events": self.history[-20:]}).decode("ascii")
+        return canonical_json({"builder_version": BUILDER_VERSION, "events": self.history[-20:]}).decode("ascii")

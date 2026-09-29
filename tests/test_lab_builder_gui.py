@@ -42,6 +42,10 @@ class BuilderControllerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "acknowledge"):
             self.controller.start_build(request, offline_acknowledged=False)
 
+    def test_diagnostics_report_current_builder_version(self):
+        from ksat.lab_builder import BUILDER_VERSION
+        self.assertEqual(BUILDER_VERSION, json.loads(self.controller.diagnostic_preview())["builder_version"])
+
     def test_duplicate_build_rejected_and_cancel_is_cooperative(self):
         entered, release = threading.Event(), threading.Event()
         def build(request, *, cancel, progress):

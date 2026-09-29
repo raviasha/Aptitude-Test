@@ -2,7 +2,19 @@
 
 Status: independent review completed; all three Important findings fixed and final signed artifacts verified. **Pilot release only: not yet approved for whole-lab deployment**.
 
-## Verified so far
+## Builder 1.0.1 — simplified designated-PC workflow (2026-09-29)
+
+- Main screen contains only server URL, CA PEM and public metadata JSON. Advanced controls are collapsed by default. Lab name is derived from the hostname; the default output is a unique folder under `Downloads\KSAT Lab Installers`.
+- Missing saved tool paths are repaired through discovery. This packaging PC's signer/extractor and their dependencies are provisioned under `C:\Users\ravis\KSAT Build Tools`, outside temporary and app-virtualized directories. Its signing key stays in the Windows certificate store.
+- Create checks the signer and TLS connection automatically; offline builds still require explicit acknowledgment. No client or Coordinator binary was rebuilt. The approved 2.1.1 client resources were recovered from the hash/signature-verified 1.0.0 Builder and revalidated unchanged.
+- Independent review found no Critical or Important issues. Its Minor finding—old version numbers in receipts/diagnostics—was reproduced in failing tests, corrected to use the shared version constant, and verified passing.
+- Real GUI preparation and native compile/sign/extract pipeline passed with a disposable offline test profile, automatically detected tools and hostname-derived name. Receipt reports 1.0.1. Disposable smoke installer SHA-256: `f6e8cd1a5ea03fc943cda34377702648d911313d0a0fddb06d60f6937ce69c53`. This test-profile installer is not distributed.
+- Signed Builder SHA-256: `4f8c7a5994d35c1156ceeca337ff4a1a9dc5fba855ae2781380e888d9c15546b`; size **139,372,744 bytes**; EXE version **1.0.1**; publisher/pin unchanged. Frozen Tk/Tcl resources, embedded public-resource allowlist/hashes, recursive private-state scan and Authenticode verification passed.
+- Frozen code objects for the Builder package, GUI, setup, build pipeline and controller match the final source after normalizing source filenames.
+- Final unchanged-source regression run: **758 passed, 34 skipped, 587 subtests passed**, 35 deprecation warnings, 615.93 seconds. Command: `python -m pytest tests -q`, with native Node, Inno Setup and innoextract paths configured. No failures. The earlier run overlapped the final tool-discovery/fixture edits and is not the release acceptance result.
+- The actual signed EXE was opened for desktop inspection: three inputs, readable layout at this PC's current scaling, successful bundled-client verification, Advanced expansion/collapse, and all three automatically populated tool paths were confirmed. The verification copy closed normally; the user's older open Builder was left untouched. This does not cover every display scaling or a physical student-PC installation.
+
+## Historical 1.0.0 verification
 
 - Shared strict public-profile validation, publisher pinning and Windows-store signing.
 - Machine trust installed with explicit administrator approval on the designated packaging PC; exact publisher identity independently verified.
@@ -37,11 +49,11 @@ Regression tests were observed failing before the fixes. Focused verification pa
 - Used a signed public INI summary derived from the validated profile; a display mismatch could mislead, so output-byte inspection also verifies it.
 - Retained shared public trust after uninstall rather than risk breaking another product; unused certificates may require IT cleanup.
 - Blocked legacy version-1 or corrupt state for explicit administrator migration rather than silently rewriting it; potential cost is an extra IT step.
-- Published the large binary as a GitHub Release asset, with source/checksum/guides on the feature branch; the download location differs from older repository binaries, and `main` is unchanged.
+- Originally published the large 1.0.0 binary as a GitHub Release asset, with source/checksum/guides on the feature branch. That work has since been integrated into `main`; current downloads are linked from `release/README.md`.
 
 ## Not run — required pilot checks
 
-Native desktop automation and disposable lab PCs were not available in this execution environment. Do not infer these results from unit tests or successful compilation:
+The 1.0.1 desktop check above does not replace these remaining lab acceptance checks. Disposable lab PCs were not available. Do not infer these results from unit tests or successful compilation:
 
 - GUI walkthrough at 100%, 150% and 200% scaling, long paths, keyboard-only navigation and invalid bundles.
 - Generate two distinct real-lab packages through the GUI.

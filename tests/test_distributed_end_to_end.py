@@ -9,6 +9,71 @@ from unittest.mock import patch
 
 
 class DistributedEndToEndTests(unittest.TestCase):
+    def test_fixture_stop_waits_for_owned_server_children(self):
+        import subprocess
+        import sys
+        import psutil
+        from scripts.load_distributed_assessment import _Fixture
+
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            os.environ, {"KSAT_LOAD_TEST": "1"}, clear=False
+        ):
+            fixture = _Fixture(Path(directory), 1, 1, real_https=True)
+            launcher = (
+                "import subprocess,sys,time; "
+                "child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)']); "
+                "print(child.pid,flush=True); time.sleep(60)"
+            )
+            process = subprocess.Popen([sys.executable, "-c", launcher],
+                                       stdout=subprocess.PIPE, text=True)
+            fixture.server_process = process
+            children = []
+            try:
+                self.assertTrue(process.stdout.readline().strip().isdigit())
+                children = psutil.Process(process.pid).children(recursive=True)
+                self.assertTrue(children)
+                fixture.stop_coordinator()
+                _, alive = psutil.wait_procs(children, timeout=1)
+                self.assertEqual([], [child.pid for child in alive])
+                self.assertIsNone(fixture.server_process)
+            finally:
+                # Only clean up the descendants of the launcher this test owns.
+                for child in children:
+                    try:
+                        child.kill()
+                    except psutil.NoSuchProcess:
+                        pass
+                psutil.wait_procs(children, timeout=5)
+                if process.poll() is None:
+                    process.kill()
+                process.wait(timeout=5)
+                process.stdout.close()
+
+    def test_https_fixture_restart_keeps_due_upload_until_explicit_drain(self):
+        from ksat.client.outbox import OutboxWorker
+        from scripts.load_distributed_assessment import _Fixture
+
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            os.environ, {"KSAT_LOAD_TEST": "1"}, clear=False
+        ), _Fixture(Path(directory), 1, 1, real_https=True) as fixture:
+            machine = fixture.make_machine(0)
+            try:
+                machine.runtime.answer(fixture.question_ids[0], "A")
+                machine.runtime.submit()
+                machine.clock.advance(2)
+                # Force the fastest legal worker schedule: drain before start()
+                # returns. The load fixture must never launch that scheduler.
+                with patch.object(OutboxWorker, "start", lambda worker: worker.process_due_once()):
+                    machine.restart(fixture.transport)
+                self.assertEqual("sealed_pending", machine.store.load_attempt(machine.attempt_id).state)
+                self.assertEqual((0, 0), fixture.submission_counts())
+                self.assertEqual(1, machine.outbox.process_due_once())
+                self.assertEqual("acknowledged", machine.store.load_attempt(machine.attempt_id).state)
+                self.assertEqual((1, 1), fixture.submission_counts())
+            finally:
+                machine.close()
+                self.assertEqual(0, fixture.cleanup()["residual_rows"])
+
     def test_closed_review_scores_locally_before_upload_then_matches_server_over_https(self):
         import app
         from ksat.coordinator.releases import prepare_release

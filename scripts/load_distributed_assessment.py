@@ -234,6 +234,19 @@ class _MutableClock:
         self.offset += timedelta(seconds=seconds)
 
 
+class _ManuallyDrivenOutbox(OutboxWorker):
+    """Keep load-fixture uploads behind the gate's explicit drain/barrier.
+
+    Client lifespan calls start() before the fixture can stop background work.
+    Starting a real thread there races recovery and can acknowledge a queued
+    attempt before the outage/review assertions. Delivery, retries and receipt
+    validation still use the unmodified production process_due_once().
+    """
+
+    def start(self) -> None:
+        pass
+
+
 class _RouteTransport:
     """Synchronous HTTPX adapter around the real coordinator ASGI routes."""
 
@@ -338,7 +351,7 @@ class _ClientMachine:
             self.store = services.store
             self.coordinator = services.coordinator
             self.runtime = services.runtime
-            self.outbox = OutboxWorker(
+            self.outbox = _ManuallyDrivenOutbox(
                 self.store,
                 self.coordinator,
                 self.clock,
@@ -372,7 +385,7 @@ class _ClientMachine:
         recovered = self.runtime.recover()
         if recovered is None or recovered.attempt_id != self.attempt_id:
             raise RuntimeError("Client restart did not recover its exact local attempt.")
-        self.outbox = OutboxWorker(
+        self.outbox = _ManuallyDrivenOutbox(
             self.store, self.coordinator, self.clock, random_source=lambda: 0.5
         )
 
@@ -580,12 +593,29 @@ class _Fixture:
             self.server_peak_rss = max(self.server_peak_rss, rss)
         except (psutil.Error, OSError):
             pass
-        self.server_process.terminate()
+        # On Windows a venv Python launcher owns a second interpreter. Waiting
+        # only for the launcher can leave that child holding TLS/SQLite files.
+        # Capture only this fixture's descendants before stopping their parent.
         try:
-            self.server_process.wait(timeout=10.0)
-        except subprocess.TimeoutExpired:
-            self.server_process.kill()
-            self.server_process.wait(timeout=5.0)
+            parent = psutil.Process(self.server_process.pid)
+            owned = [parent, *parent.children(recursive=True)]
+        except psutil.NoSuchProcess:
+            owned = []
+        for process in reversed(owned):
+            try:
+                process.terminate()
+            except psutil.NoSuchProcess:
+                pass
+        _, alive = psutil.wait_procs(owned, timeout=10.0)
+        for process in alive:
+            try:
+                process.kill()
+            except psutil.NoSuchProcess:
+                pass
+        _, alive = psutil.wait_procs(alive, timeout=5.0)
+        if alive:
+            raise RuntimeError("Disposable HTTPS coordinator children did not stop.")
+        self.server_process.wait(timeout=5.0)
         self.server_process = None
 
     def sample_server_resources(self) -> tuple[float, int]:
@@ -799,7 +829,7 @@ class _Fixture:
                 store=store,
                 coordinator=coordinator,
                 runtime=runtime,
-                outbox=OutboxWorker(store, coordinator, clock, random_source=lambda: 0.5),
+                outbox=_ManuallyDrivenOutbox(store, coordinator, clock, random_source=lambda: 0.5),
                 clock=clock,
                 student_id=self.student_ids[index],
                 content_hash=entry.content_hash,
@@ -848,7 +878,7 @@ class _Fixture:
             services.coordinator.download_pack(entry, destination)
             services.runtime.prepare(entry.descriptor, destination)
             clock = _MutableClock()
-            services.outbox = OutboxWorker(
+            services.outbox = _ManuallyDrivenOutbox(
                 services.store,
                 services.coordinator,
                 clock,
@@ -1140,7 +1170,7 @@ class _ExternalFixture:
             services.coordinator.download_pack(entry, destination)
             services.runtime.prepare(entry.descriptor, destination)
             clock = _MutableClock()
-            services.outbox = OutboxWorker(
+            services.outbox = _ManuallyDrivenOutbox(
                 services.store, services.coordinator, clock, random_source=lambda: 0.5
             )
             client_application = create_client_app(services)

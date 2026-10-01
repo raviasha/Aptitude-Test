@@ -164,8 +164,10 @@ procedure GuardCommand(Action: String);
 begin
   if not SaveStringToFile(Stage + '\control-next.json', '{"action":"' + Action + '"}', False) then
     RaiseException('Unable to control installation safety guard.');
+  { Windows PowerShell converts $null to an empty string for .NET string arguments.
+    Preserve a real null backup path so the atomic replacement can complete. }
   PowerShell('$s=' + PSQuote(Stage + '\control-next.json') + ';$d=' + PSQuote(Stage + '\control.json') +
-    ';if([IO.File]::Exists($d)){[IO.File]::Replace($s,$d,$null)}else{[IO.File]::Move($s,$d)}');
+    ';if([IO.File]::Exists($d)){[IO.File]::Replace($s,$d,[NullString]::Value)}else{[IO.File]::Move($s,$d)}');
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;

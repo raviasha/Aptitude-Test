@@ -71,10 +71,10 @@ def main(argv=None):
         resources = work / "lab-payload"
         assemble_builder_resources(args.payload_root, resources)
         (work / "builder.version.txt").write_text("""VSVersionInfo(
-ffi=FixedFileInfo(filevers=(1,0,1,0),prodvers=(1,0,1,0),mask=0x3f,flags=0,OS=0x40004,fileType=1,subtype=0,date=(0,0)),
+ffi=FixedFileInfo(filevers=(1,0,2,0),prodvers=(1,0,2,0),mask=0x3f,flags=0,OS=0x40004,fileType=1,subtype=0,date=(0,0)),
 kids=[StringFileInfo([StringTable('040904B0',[
-StringStruct('FileDescription','KSAT Lab Package Builder'),StringStruct('FileVersion','1.0.1'),
-StringStruct('ProductName','KSAT Lab Package Builder'),StringStruct('ProductVersion','1.0.1')])]),
+StringStruct('FileDescription','KSAT Lab Package Builder'),StringStruct('FileVersion','1.0.2'),
+StringStruct('ProductName','KSAT Lab Package Builder'),StringStruct('ProductVersion','1.0.2')])]),
 VarFileInfo([VarStruct('Translation',[1033,1200])])])
 """, encoding="utf-8")
         subprocess.run(builder_command(ROOT, Path(sys.executable), work, resources), cwd=ROOT, check=True, timeout=600)

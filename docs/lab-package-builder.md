@@ -1,4 +1,4 @@
-# KSAT Lab Package Builder 1.0.1
+# KSAT Lab Package Builder 1.0.2
 
 This separate Windows application creates one signed, preconfigured client installer per lab. It contains the approved **2.1.1 client**, updater and installation guard. The Coordinator stays at **2.1.0**. Python and the repository are not required to run the builder.
 
@@ -13,7 +13,7 @@ Required tools:
 - [innoextract](https://github.com/dscharrer/innoextract) with support for the installed Inno 6.7 compiler. An older stable extractor may not support this format.
 - The authorized code-signing identity in Windows **CurrentUser\My** or **LocalMachine\My**, with accessible private key and the approved public trust installed. Provisioning is an IT operation, not a per-lab input. Do not email/upload a PFX, password or private key.
 
-Open `KSATLabPackageBuilder-1.0.1.exe` on this PC using the Windows account that has the signing key. The builder detects the installed tools automatically and repairs saved paths when their old locations no longer exist. You do not need to select the compiler, signer or extractor for each lab. **Advanced** is collapsed by default; use its **Check setup** or tool overrides only for troubleshooting.
+Open `KSATLabPackageBuilder-1.0.2.exe` on this PC using the Windows account that has the signing key. The builder detects the installed tools automatically and repairs saved paths when their old locations no longer exist. You do not need to select the compiler, signer or extractor for each lab. **Advanced** is collapsed by default; use its **Check setup** or tool overrides only for troubleshooting.
 
 The current private-lab publisher is `CN=KSAT LAB RELEASE SIGNING`, thumbprint `13AE2A6440C33E074FC9C99FB35E5A1CFD9BE908`. The builder cannot silently switch to a different key. It remembers tool and certificate selections only, not lab connection files. This is a designated-PC workflow, not a portable signing setup: copying the builder to another PC does not copy its signing key. No signing files need to be put on Google Drive.
 
@@ -39,6 +39,7 @@ After the 2.1.1 bootstrap, subsequent compatible generic signed central updates 
 
 ## Troubleshooting
 
+- **Administrator setup operation failed with a package from Builder 1.0.0/1.0.1:** Builder 1.0.2 corrects the installer safety-helper handoff on Windows PowerShell. Recreate the lab installer with the same three connection inputs in a new output folder. Close the failed setup before running the new package on a pilot PC; do not uninstall or delete KSAT data. The client application remains 2.1.1 and the Coordinator remains 2.1.0. Already-created installers are not repaired by downloading a new builder.
 - **Public files or URL invalid:** select both exports from the same Coordinator and confirm URL/port and PC clock. Do not weaken certificate validation.
 - **Signing setup incomplete:** use the designated PC, correct certificate store and SignTool path; ask IT to restore access to the existing authorized identity.
 - **Packaging PC is missing a tool:** the message names the component. Expand **Advanced** and select its installed location, or ask IT to restore it. The server connection files are not the cause of this error. Keep the extraction tool and its DLL in a permanent tools folder, not a temporary download folder.

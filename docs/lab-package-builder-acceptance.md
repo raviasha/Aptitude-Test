@@ -1,6 +1,22 @@
 # Lab Package Builder acceptance record
 
-Status: independent review completed; all three Important findings fixed and final signed artifacts verified. **Pilot release only: not yet approved for whole-lab deployment**.
+Status: Builder **1.0.2** corrects the installer handoff failure found during the client pilot. **Pilot release only: physical elevated installation and the student workflow still need lab verification before whole-lab deployment**.
+
+## Builder 1.0.2 — installer control handoff (2026-10-01)
+
+- A real client upgrade log showed administrative access, successful file replacement, then a generic post-install exception and a failed abort notification. The exact `GuardCommand` PowerShell fragment reproduced the failure locally: `$null` became an empty .NET string backup path in `File.Replace`, causing "The path is not of a legal form."
+- The fix supplies `[NullString]::Value` while retaining atomic replacement and all maintenance-lock, active-test, pending-upload and trust checks. It applies to both completion and cancellation; no permissions, certificates, profiles or student databases are reset.
+- New regression tests compile the actual shipped Pascal procedures into an unprivileged disposable Inno harness. Both configure-to-commit and configure-to-abort failed before the fix and passed after it. An independent reviewer reran these and the builder release tests: **5 passed**, no review findings.
+- Native installer verification: **39 passed, 3 subtests passed** in 260.86 seconds (`test_lab_installer.py` plus `test_installer_control_handoff.py`, with Inno/extractor paths configured). This includes generic and lab modes and the existing trust-bundling variants.
+- Reused signed client/updater/guard executables remain **2.1.1**. The only approved payload resource hash changed is `KSATClient.iss`; the public keys are unchanged. The refreshed manifest, recursive private-state scan, frozen payload allowlist/exact bytes and Authenticode publisher pin were verified. No Coordinator rebuild or central-update bundle was produced.
+- Builder EXE: **139,373,728 bytes**, file version **1.0.2**, SHA-256 `927ce98d37f03cc58955fe580cb009bf7d946fedd9e2b4bb7e6872837b402657`.
+- Corrected generic client installer: **104,790,752 bytes**, version **2.1.1**, SHA-256 `ba147b37ed6180f3d14d38cc3da9e505de2b7887c0053094243a41c645729344`. Every extracted file matched the approved payload. Both released EXEs use the unchanged pinned private-lab signer.
+- A disposable lab profile passed native compile/sign/extract and receipt checks (Builder 1.0.2/client 2.1.1). Its test-only installer hash is `de23e427aafb3678d76c43e714491fdf74de7b9590cde844f85be68c9b8ea11d`; it is not distributed as a real-lab installer. No elevated KSAT install was run on this packaging PC.
+- Bare repository-wide `pytest -q` cannot collect the separate question-bank tooling in this build environment: missing `pdfplumber`, `pypdf`, `jsonschema`, plus colliding `test_build` module names. The ten collection errors are in `python_vision_calibration/tests/{test_baseline,test_cli}.py`, `textbook_chapters/tests/{test_build,test_chapter02,test_chapter03,test_chapter04,test_vision_pipeline}.py`, and `scripts/{test_compile_logical_recovery_results,test_generate_v2_marker_overrides,test_run_logical_boundary_recovery}.py`. These unrelated tools/dependencies were not modified for this installer release.
+- The first application-only run stopped progressing at 57% and was terminated without a pass/fail verdict; it was rerun with verbose progress, a 90-second stack-dump diagnostic and native installer tools enabled.
+- Final application verification: **760 passed, 34 skipped, 587 subtests passed**, 41 deprecation warnings in 945.67 seconds. Command: `python -m pytest tests -v -o faulthandler_timeout=90`, with `KSAT_ISCC` and `KSAT_INNOEXTRACT` set. Exit status 0; no failures. This is the completed release test run, not the interrupted run above.
+
+Use the new Builder to regenerate each lab package with the same server URL and public files. Close the failed installer before retrying on one pilot PC. Existing generated EXEs are unchanged; do not uninstall or delete ProgramData. The physical-lab checks below still apply.
 
 ## Builder 1.0.1 — simplified designated-PC workflow (2026-09-29)
 

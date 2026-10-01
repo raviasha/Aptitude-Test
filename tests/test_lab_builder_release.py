@@ -38,5 +38,5 @@ class BuilderReleaseTests(unittest.TestCase):
         self.assertIn("--onefile", args)
         self.assertIn("--windowed", args)
         self.assertIn("tkinter", args)
-        self.assertIn("KSATLabPackageBuilder-1.0.1", args)
+        self.assertIn("KSATLabPackageBuilder-1.0.2", args)
         self.assertEqual(str(root / "lab_package_builder.py"), args[-1])

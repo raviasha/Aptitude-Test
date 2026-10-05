@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
+from ksat.client.transport import HostnameFallbackTransport
 from ksat.lab_builder import BUILDER_VERSION
 from ksat.lab_builder.build import BuildEvent, BuildTools, build_lab_installer
 from ksat.lab_builder.profile import make_lab_profile
@@ -83,8 +84,11 @@ class BuilderController:
         self.verified_profile = None
         try:
             context = ssl.create_default_context(cadata=profile.trust.ca_pem.decode("ascii"))
+            transport = self.transport
+            if transport is None:
+                transport = HostnameFallbackTransport(httpx.URL(profile.trust.base_url).host, verify=context)
             with httpx.Client(verify=context, timeout=5, follow_redirects=False, trust_env=False,
-                              transport=self.transport) as client:
+                              transport=transport) as client:
                 with client.stream("GET", profile.trust.base_url + "/api/build") as response:
                     if response.status_code != 200:
                         return False

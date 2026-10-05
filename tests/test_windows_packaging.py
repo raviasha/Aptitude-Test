@@ -229,26 +229,26 @@ class WindowsPackagingTests(unittest.TestCase):
                 layout.coordinator_release_executable.name,
             )
             self.assertEqual(
-                "KSATClient-2.1.1.exe", layout.client_release_executable.name
+                "KSATClient-2.1.2.exe", layout.client_release_executable.name
             )
             self.assertEqual(
                 "KSATCoordinatorSetup-2.1.0.exe", layout.coordinator_installer.name
             )
-            self.assertEqual("KSATClientSetup-2.1.1.exe", layout.client_installer.name)
+            self.assertEqual("KSATClientSetup-2.1.2.exe", layout.client_installer.name)
             self.assertEqual(
-                "KSATClientUpdate-2.1.1-TEST-ONLY.ksat-client-update",
+                "KSATClientUpdate-2.1.2-TEST-ONLY.ksat-client-update",
                 layout.test_client_update.name,
             )
             self.assertEqual("SHA256SUMS.txt", layout.hash_manifest.name)
             self.assertEqual(
-                "KSATClientUpdate-2.1.1.ksat-client-update",
+                "KSATClientUpdate-2.1.2.ksat-client-update",
                 layout.client_update.name,
             )
             self.assertEqual(
                 "KSATLabReleaseSigning.cer", layout.lab_trust_certificate.name
             )
             self.assertEqual(
-                "SHA256SUMS-2.1.1-TEST-ONLY.txt", layout.test_hash_manifest.name
+                "SHA256SUMS-2.1.2-TEST-ONLY.txt", layout.test_hash_manifest.name
             )
 
     def test_test_update_bundle_uses_matching_ephemeral_update_key(self):

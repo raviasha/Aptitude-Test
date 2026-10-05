@@ -23,6 +23,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from pydantic import Field, ValidationError, model_validator
 
 from ksat.client.identity import DeviceIdentity
+from ksat.client.transport import HostnameFallbackTransport
 from ksat.crypto import verify_json
 from ksat.protocol import (
     AssessmentReviewGrant,
@@ -306,7 +307,15 @@ class CoordinatorClient:
                 or _is_reparse(metadata)
             ):
                 raise ValueError("Trusted coordinator CA file is unsafe.")
-            client_options["verify"] = ssl.create_default_context(cafile=str(resolved_ca))
+            context = ssl.create_default_context(cafile=str(resolved_ca))
+            client_options["verify"] = context
+            if url.host.endswith(".local"):
+                # Link-local coordinator traffic is direct lab HTTPS. Preserve
+                # CA/name checks even when Windows resolves only the short name.
+                client_options["transport"] = HostnameFallbackTransport(
+                    url.host, verify=context, limits=client_options["limits"],
+                )
+                client_options["trust_env"] = False
         else:
             client_options["transport"] = transport
         self._client = httpx.Client(**client_options)

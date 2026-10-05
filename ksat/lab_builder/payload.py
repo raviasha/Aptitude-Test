@@ -14,7 +14,7 @@ from ksat.lab_builder.signing import PUBLISHER, THUMBPRINT
 from ksat.public_trust import strict_json
 from ksat.windows_authenticode import verify_authenticode
 
-CLIENT_VERSION = "2.1.1"
+CLIENT_VERSION = "2.1.2"
 REQUIRED_FILES = frozenset({"KSATClient.exe", "KSATClientUpdater.exe", "KSATClientInstallGuard.exe",
                             "publisher.cer", "update-release-public.json", "KSATClient.iss"})
 _PRIVATE = re.compile(rb"-----BEGIN [A-Z ]*PRIVATE KEY-----")

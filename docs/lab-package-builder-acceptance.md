@@ -1,6 +1,20 @@
 # Lab Package Builder acceptance record
 
-Status: Builder **2.1.2** packages Client **2.1.2** with the hostname-resolution fallback described below. **Pilot release only: physical elevated installation and the student workflow still need lab verification before whole-lab deployment**.
+Status: Builder **2.1.3** packages Client **2.1.3** with browser-controlled client lifetime and the retained hostname-resolution fallback. **User-approved pilot/prerelease only: physical elevated installation and standard-user launch/close/reopen still need lab verification before whole-lab deployment**. Coordinator remains 2.1.0.
+
+## Builder 2.1.3 / Client 2.1.3 — browser lifecycle (2026-10-06)
+
+- Opening the shortcut starts the protected client service on demand; closing the final KSAT tab starts a grace period, then saves the attempt, clears the login and safely stops the service. Durable pending results and existing exam deadlines are preserved. Uploads and updates resume on the next launch, not while fully closed. See the [behavior and required one-PC pilot](client-window-lifecycle.md).
+- This session has no administrator access for a real installed-service pilot. The user explicitly approved publication as a pilot/prerelease after signed-build and isolated executable checks. No service installation, live student-data modification or new central-update bundle is claimed.
+- Release-version tests failed against the prior 2.1.2 pins before the version change. The focused payload/release/package/launcher suite then passed **49 tests and 12 subtests** in 17.60 seconds.
+- Final 2.1.3 application verification: `python -m pytest tests -v -o faulthandler_timeout=90`, with native Inno/extractor paths enabled, passed **810 tests and 596 subtests**, with **34 skipped** and 37 existing deprecation warnings, in **796.25 seconds** (exit 0). No production source changed after this run or the signed builds.
+- Generic installer: **104,898,952 bytes**, SHA-256 `86d3374c682ea42fe038284f1264a0c604d3b12f055b551f5861d7623cca7b27`. Native compilation and extraction verified all four embedded resources against the approved payload.
+- Builder: **139,520,648 bytes**, SHA-256 `6ba57b4b956cb0aa6c84a71f15778b9d7ba38e51730d9f16d4af372c30a45f2a`. Frozen version, exact embedded payload allowlist/hashes, recursive private-state inspection and signatures passed. The builder and bundled client both report 2.1.3.
+- A disposable lab package passed native compile/sign/extract and receipt verification, with both receipt versions equal to 2.1.3. Test-only installer SHA-256: `ba2a2f6f97f459f98bbcd0772ae8b6b455fc725988f5e334605e7229a1e16dcd`. This synthetic-lab package is not distributed.
+- Both EXEs use the unchanged `CN=KSAT LAB RELEASE SIGNING` publisher, thumbprint `13AE2A6440C33E074FC9C99FB35E5A1CFD9BE908`. Only public certificate/update-key resources were recovered from the hash- and signature-verified previous builder; the private signing key stayed in this PC's Windows certificate store.
+- The actual signed client executable's lifecycle, launcher, service-permission, runtime, outbox and connection code objects match source; embedded browser JavaScript matches exactly. It passed two isolated startup/restart checks against a disposable TLS Coordinator 2.1.0, accepted authenticated WebSocket presence, retained configuration bytes and listened only on IPv4 loopback. These console-mode checks do not substitute for the Windows service permission/shutdown pilot. The initial smoke harness had a token-regex escaping typo; correcting that harness passed without a product change.
+- Coordinator installer SHA-256 remains `6a06aee788f5bbee01dee399506b6190fbb6af5d4ec61429917e561d5f4e7ddb`; previous 2.1.2 assets are retained. Use the same URL and two public connection files in Builder 2.1.3 to generate a new lab installer. Previously generated EXEs do not update themselves.
+- Bare repository-wide pytest again reproduced the same **10 unrelated question-bank collection errors** in 4.11 seconds (missing PDF/schema dependencies and duplicate test-module names), listed in the older acceptance record below. These were not silently counted as passing application tests.
 
 ## Builder 2.1.2 / Client 2.1.2 — hostname fallback (2026-10-05)
 

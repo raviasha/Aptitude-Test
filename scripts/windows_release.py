@@ -42,7 +42,7 @@ from scripts.build_client_update import build_client_update
 
 
 COORDINATOR_VERSION = "2.1.0"
-CLIENT_VERSION = "2.1.2"
+CLIENT_VERSION = "2.1.3"
 APP_VERSION = COORDINATOR_VERSION  # Backwards-compatible coordinator tooling.
 LAB_SIGNING_PUBLISHER = "CN=KSAT LAB RELEASE SIGNING"
 _FORBIDDEN_INPUT_NAMES = {

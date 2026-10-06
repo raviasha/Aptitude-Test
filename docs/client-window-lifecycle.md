@@ -1,8 +1,10 @@
 # Client window lifecycle — release acceptance
 
-This change is local source work, not a published replacement for Client/Builder
-2.1.2. The coordinator and connection files are unchanged. Build a new version
-and a matching builder only after release approval; never overwrite 2.1.2 assets.
+Client and Lab Package Builder **2.1.3** are the pilot/prerelease packages for
+this change. Coordinator 2.1.0 and the connection files are unchanged. Previous
+2.1.2 assets are retained, not overwritten. The user approved pilot publication
+after signed-build and isolated checks; a real administrator/standard-user
+installation test on one lab PC is still required before wider deployment.
 
 ## Expected operation
 
@@ -88,7 +90,19 @@ Missing packages are `pdfplumber`, `pypdf` and `jsonschema`; the textbook build
 test also collides with another collected `test_build` module. These unrelated
 tools were not changed or installed for the client lifecycle task.
 
-## Required one-PC Windows pilot before release
+## Signed 2.1.3 pilot packaging verification
+
+The final 2.1.3 source-version run on 2026-10-06 passed **810 tests and 596
+subtests**, with **34 skipped** and 37 existing deprecation warnings, in 796.25
+seconds (exit 0). Native installer tools were enabled. Both signed release EXEs,
+the embedded payload, a disposable generated lab installer and the actual signed
+client's isolated startup/restart were verified. The latter uses console mode,
+not an installed Windows service. See the [artifact hashes and verification
+record](lab-package-builder-acceptance.md). The physical pilot below is still
+outstanding; publication was explicitly approved as a prerelease, not as proof
+that these physical checks passed.
+
+## Required one-PC Windows pilot before wider deployment
 
 Use a spare lab PC or disposable VM, not a live exam PC. Keep its old signed
 installer and an administrator-made backup of the existing client data. Do not

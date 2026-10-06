@@ -35,7 +35,7 @@ class LabPayloadTests(unittest.TestCase):
 
     def write_manifest(self):
         files = {name: hashlib.sha256((self.root / name).read_bytes()).hexdigest() for name in REQUIRED_FILES}
-        self.manifest = dict(format_version=1, client_version="2.1.2", files=files,
+        self.manifest = dict(format_version=1, client_version="2.1.3", files=files,
                              publisher=PUBLISHER, thumbprint=THUMBPRINT)
         (self.root / "payload-manifest.json").write_text(json.dumps(self.manifest))
 

@@ -52,8 +52,22 @@ closed; they resume after the next launch.
 - Native generic/lab installer compile/extract and handoff tests run with
   `KSAT_ISCC` and `KSAT_INNOEXTRACT` configured.
 
-The exact final suite counts are recorded in the implementation handoff. Bare
-repository-wide pytest also collects unrelated question-bank tool tests; its
+Final verification on 2026-10-06 at source commit `d5aefb8`:
+
+- `python -m pytest tests -v -o faulthandler_timeout=90`: **810 passed,
+  34 skipped, 596 subtests passed**, 37 existing deprecation warnings,
+  795.50 seconds. Native Inno/extractor paths were enabled.
+- Launcher/installer/packaging gate: **108 passed**, 7 subtests.
+- Final review regression/real-transport gate: **12 passed**, 5 subtests.
+- One independent source review at `3dd848e` found two Important issues: delayed
+  request-body admission and shutdown-monitor error cleanup. Both were reproduced
+  with failing tests, fixed in `d5aefb8`, and verified by the full run above. No
+  Critical/Minor findings or declined-to-judge items. There was no second review.
+- A preliminary run had one disposable HTTPS fixture-startup timeout (805 passes).
+  That outage test passed both alone and in the final full run; no production
+  workaround was added for the fixture timeout.
+
+Bare repository-wide pytest also collects unrelated question-bank tool tests; its
 pre-existing missing PDF/schema dependencies and duplicate module names must be
 reported separately, not mistaken for passing application tests.
 

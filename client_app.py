@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Any, Literal, Mapping, Sequence
 from urllib.parse import urlsplit
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from starlette.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
@@ -46,6 +46,7 @@ from ksat.client.coordinator import (
 )
 from ksat.client.identity import DeviceIdentityStore, derive_state_integrity_key
 from ksat.client.outbox import OutboxWorker
+from ksat.client.lifecycle import BrowserLifetime
 from ksat.client.runtime import AssessmentRuntime, SystemClock
 from ksat.client.updates import ClientUpdateManager
 from ksat.client.store import (
@@ -65,6 +66,7 @@ _CLIENT_STATIC = _ROOT / "static" / "client"
 _SHARED_STATIC = _ROOT / "static"
 _MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 _MAX_REQUEST_BYTES = 64 * 1024
+_WINDOW_UPLOAD_GRACE_SECONDS = 10
 _DIAGNOSTIC = re.compile(r"^KSAT-[A-Z0-9]{10}$")
 _LOOPBACK_ORIGIN = re.compile(
     r"\Ahttp://(?P<authority>(?:localhost|127\.0\.0\.1|\[::1\])"
@@ -747,6 +749,24 @@ class _ClientContext:
         self._stop_outbox()
         if prefetch_stopped:
             self._close_owned_resources()
+
+    def finish_window_close(self) -> None:
+        """Drain producers and in-flight upload before releasing protected storage.
+
+        Do not substitute a timeout/daemon exit for a durable worker completion.
+        This runs off the ASGI event loop while the maintenance lease is held.
+        """
+        with self._prefetch_state_lock:
+            self._prefetch_shutdown_requested = True
+        while not self._quiesce_prefetch():
+            time.sleep(0.1)
+        while not self._stop_control_thread():
+            time.sleep(0.1)
+        if self.services is not None:
+            self.services.outbox.stop(timeout_seconds=None)
+            self._outbox_stop_called = True
+            self._outbox_started = False
+        # Lifespan teardown closes the store after all ASGI requests have drained.
 
     def _stop_started_services(self) -> None:
         if self.services is None:
@@ -1481,9 +1501,11 @@ def _map_coordinator_problem(error: CoordinatorProblem) -> ClientApiProblem:
     )
 
 
-def create_client_app(services: ClientServices | None = None) -> FastAPI:
+def create_client_app(services: ClientServices | None = None, *, lifetime=None, request_shutdown=None) -> FastAPI:
     context = _ClientContext(services)
     coordinator_operation_lock = asyncio.Lock()
+    inflight_mutations = 0
+    close_gate = None
 
     def coordinator_operation(handler):
         """Keep session changes and service replacement ordered across awaits."""
@@ -1522,22 +1544,73 @@ def create_client_app(services: ClientServices | None = None) -> FastAPI:
                     context.startup_problem = context.problem("corrupt_local_attempt", status=409)
 
         monitor = asyncio.create_task(monitor_attempt())
+        async def monitor_browser():
+            nonlocal close_gate
+            while True:
+                await asyncio.sleep(0.25)
+                if not lifetime.ready_to_close() or inflight_mutations:
+                    continue
+                async with coordinator_operation_lock:
+                    if not lifetime.ready_to_close() or inflight_mutations:
+                        continue
+                    gate = _maintenance_section(context.services) if context.services else nullcontext()
+                    try:
+                        gate.__enter__()
+                    except MaintenanceBusy:
+                        continue
+                    try:
+                        current = context.services
+                        if current and current.runtime and current.store.active_attempt() is not None:
+                            context.observe_snapshot(current.runtime.checkpoint_for_close())
+                        if not lifetime.begin_close(maintenance_busy=False):
+                            gate.__exit__(None, None, None)
+                            continue
+                    except (ValueError, KeyError, RuntimeError, OSError, sqlite3.Error):
+                        gate.__exit__(None, None, None)
+                        context.startup_problem = context.problem('corrupt_local_attempt', status=409)
+                        continue
+                    close_gate = gate  # Held until lifespan has drained and closed storage.
+                    if current:
+                        current.coordinator.logout()
+                        current.outbox.wake()
+                    deadline = time.monotonic() + _WINDOW_UPLOAD_GRACE_SECONDS
+                    while current and current.store.pending_submissions() and time.monotonic() < deadline:
+                        await asyncio.sleep(0.25)
+                    await run_in_threadpool(context.finish_window_close)
+                    request_shutdown()
+                    return
+
+        browser_monitor = asyncio.create_task(monitor_browser()) if lifetime is not None and request_shutdown else None
         try:
             yield
         finally:
+            if browser_monitor is not None:
+                if lifetime.closing:
+                    await browser_monitor
+                else:
+                    browser_monitor.cancel()
+                    try:
+                        await browser_monitor
+                    except asyncio.CancelledError:
+                        pass
             monitor.cancel()
             try:
                 await monitor
             except asyncio.CancelledError:
                 pass
             async with coordinator_operation_lock:
-                context.shutdown()
+                try:
+                    context.shutdown()
+                finally:
+                    if close_gate is not None:
+                        close_gate.__exit__(None, None, None)
 
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.client_context = context
 
     @app.middleware("http")
     async def loopback_boundary(request: Request, call_next):
+        nonlocal inflight_mutations
         host = _normalize_loopback_host(request.headers.get("host", ""))
         if host is None:
             response = JSONResponse(
@@ -1564,6 +1637,8 @@ def create_client_app(services: ClientServices | None = None) -> FastAPI:
                 }},
                 status_code=403,
             )
+        elif lifetime is not None and lifetime.closing and request.url.path not in ('/', '/api/build', '/api/lifecycle/launch'):
+            response = JSONResponse({'problem': {'code': 'client_closing', 'message': 'KSAT is closing. Reopen the KSAT shortcut.', 'retryable': True}}, status_code=503)
         else:
             if request.method in _MUTATING_METHODS:
                 content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
@@ -1588,11 +1663,18 @@ def create_client_app(services: ClientServices | None = None) -> FastAPI:
                             }}, status_code=413,
                         )
                     else:
-                        response = await call_next(request)
+                        inflight_mutations += 1
+                        try:
+                            response = await call_next(request)
+                        finally:
+                            inflight_mutations -= 1
             else:
                 response = await call_next(request)
         if "Content-Security-Policy" not in response.headers:
-            response.headers["Content-Security-Policy"] = _CSP
+            response.headers["Content-Security-Policy"] = (
+                _CSP.replace("connect-src 'self';", f"connect-src 'self' ws://{request.headers['host']};")
+                if host is not None else _CSP
+            )
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Referrer-Policy"] = "no-referrer"
@@ -1758,6 +1840,38 @@ def create_client_app(services: ClientServices | None = None) -> FastAPI:
     @app.get("/api/build")
     async def client_build():
         return {"version": _CLIENT_VERSION}
+
+    @app.post('/api/lifecycle/launch')
+    async def reserve_browser_launch(body: _StrictBody):
+        if lifetime is None:
+            return {'state': 'ready', 'protocol': 1}
+        if not lifetime.reserve_launch():
+            raise ClientApiProblem('client_closing', 'KSAT is closing. Please reopen the shortcut.', 409, retryable=True)
+        return {'state': 'ready', 'protocol': 1}
+
+    @app.websocket('/api/lifecycle/presence')
+    async def browser_presence(socket: WebSocket):
+        host = _normalize_loopback_host(socket.headers.get('host', ''))
+        protocols = socket.scope.get('subprotocols', [])
+        if (host is None or not _origin_matches_loopback_host(socket.headers.get('origin', ''), host)
+                or len(protocols) != 2 or protocols[0] != 'ksat-presence'
+                or not secrets.compare_digest(protocols[1], context.csrf_token)):
+            await socket.close(code=1008)
+            return
+        connection_id = secrets.token_hex(16)
+        if lifetime is not None and not lifetime.connect(connection_id):
+            await socket.close(code=1013)
+            return
+        try:
+            await socket.accept(subprotocol='ksat-presence')
+            await socket.send_json({'state': 'connected'})
+            while True:
+                await socket.receive_text()
+        except WebSocketDisconnect:
+            pass
+        finally:
+            if lifetime is not None:
+                lifetime.disconnect(connection_id)
 
     @app.post("/api/update/retry")
     @maintenance_operation
@@ -2597,7 +2711,7 @@ def main(
 
             server = uvicorn.Server(
                 uvicorn.Config(
-                    create_client_app(),
+                    create_client_app(lifetime=BrowserLifetime(), request_shutdown=stop_event.set),
                     host=host,
                     port=port,
                     log_level="warning",

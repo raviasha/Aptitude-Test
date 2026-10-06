@@ -78,6 +78,18 @@ class StartBarrierClock(FakeClock):
 
 
 class ClientRuntimeTests(unittest.TestCase):
+    def test_window_close_checkpoint_preserves_answer_and_deadline_on_reopen(self):
+        self._prepare_and_start()
+        self.runtime.answer(7, 'A')
+        self.clock.advance(12)
+        closed = self.runtime.checkpoint_for_close()
+        self.assertEqual(1788, closed.remaining_seconds)
+        self.assertEqual(1788, self.store.load_attempt(self.attempt_id).remaining_seconds)
+        self.clock.advance(30)
+        reopened = AssessmentRuntime(self.store, self.identity, self.clock).recover()
+        self.assertEqual(1758, reopened.remaining_seconds)
+        self.assertEqual('A', reopened.responses[7])
+
     def setUp(self):
         self.temporary_directory = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary_directory.name)

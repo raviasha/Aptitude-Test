@@ -12,6 +12,13 @@ INDEX = ROOT / "static" / "client" / "index.html"
 
 
 class ClientUiContractTests(unittest.TestCase):
+    def test_presence_lifecycle(self):
+        node = shutil.which('node')
+        if not node:
+            self.skipTest('Node.js unavailable')
+        result = subprocess.run([node, str(ROOT / 'tests/client_presence_test.js'), str(SCRIPT)], capture_output=True, text=True)
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+
     def test_mandatory_update_copy_and_retry_policy_are_fixed_locally(self):
         result = self._run_node(
             """

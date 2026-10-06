@@ -102,6 +102,11 @@ async function boot(initialState = 'waiting_or_ready', routes = {}, savedStorage
     async exitFullscreen() { document.fullscreenElement = null; },
   };
   const window = {
+    location: {host: '127.0.0.1:8010'},
+    WebSocket: class {
+      constructor() { setImmediate(() => this.onmessage?.({data: '{"state":"connected"}'})); }
+      close() { this.onclose?.({code: 1000}); }
+    },
     sessionStorage: { getItem: () => 'true', setItem() {} },
     localStorage: {
       get length() { return savedStorage.size; },

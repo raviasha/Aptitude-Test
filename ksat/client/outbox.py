@@ -48,8 +48,8 @@ class OutboxWorker:
             )
             self._thread.start()
 
-    def stop(self, timeout_seconds: float = 5.0) -> None:
-        if (
+    def stop(self, timeout_seconds: float | None = 5.0) -> None:
+        if timeout_seconds is not None and (
             not isinstance(timeout_seconds, (int, float))
             or isinstance(timeout_seconds, bool)
             or not math.isfinite(timeout_seconds)
@@ -61,7 +61,7 @@ class OutboxWorker:
             thread = self._thread
             self._condition.notify_all()
         if thread is not None and thread is not threading.current_thread():
-            thread.join(float(timeout_seconds))
+            thread.join(None if timeout_seconds is None else float(timeout_seconds))
         with self._condition:
             if self._thread is thread and thread is not None and not thread.is_alive():
                 self._thread = None

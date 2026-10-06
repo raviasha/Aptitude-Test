@@ -486,6 +486,18 @@ class AssessmentRuntime:
     def tick(self) -> AttemptSnapshot:
         return self.snapshot()
 
+    def checkpoint_for_close(self) -> AttemptSnapshot:
+        """Persist remaining time before orderly process exit, without submitting."""
+        with self._lock:
+            snapshot = self.snapshot()  # Includes missed heartbeat and normal expiry.
+            if snapshot.state == "in_progress":
+                record = self._current_record()
+                self.store.update_timer_checkpoint(
+                    record.attempt_id, snapshot.remaining_seconds,
+                    last_wall_time=self._trusted_now(record),
+                )
+            return snapshot
+
     def submit(self, *, cause: SubmissionCause = "manual_confirmed") -> AttemptSnapshot:
         with self._lock:
             record = self._current_record()

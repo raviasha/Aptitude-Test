@@ -44,6 +44,33 @@ class FakeCoordinator:
 
 
 class ClientOutboxTests(unittest.TestCase):
+    def test_graceful_close_waits_for_inflight_lost_response_without_erasing_retry(self):
+        entered, release, stopped = threading.Event(), threading.Event(), threading.Event()
+        class LostResponse:
+            def submit_bundle(_self, bundle):
+                entered.set()
+                release.wait(5)
+                raise ConnectionError('response lost after server received bundle')
+        worker = self.make_worker(LostResponse())
+        worker.start()
+        self.assertTrue(entered.wait(2))
+        def close():
+            worker.stop(timeout_seconds=None)
+            stopped.set()
+        thread = threading.Thread(target=close)
+        thread.start()
+        try:
+            self.assertFalse(stopped.wait(0.1))
+        finally:
+            release.set()
+            thread.join(3)
+            worker.stop()
+        self.assertTrue(stopped.is_set())
+        self.assertEqual(1, len(self.store.pending_submissions()))
+        self.clock.advance(2)
+        self.assertEqual(1, self.make_worker(FakeCoordinator([self.receipt])).process_due_once())
+        self.assertEqual([], self.store.pending_submissions())
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.database = Path(self.temp.name) / "client.db"

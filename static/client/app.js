@@ -205,7 +205,48 @@ function reviewAssetUrl(attemptId, reference) {
   return source ? source.replace('/api/attempts/', '/api/reviews/') : null;
 }
 
+function createBrowserPresence({ openSocket, schedule, cancel, onReady, onUnavailable }) {
+  let socket = null, timer = null, suspended = false, retries = 0;
+  function start() {
+    suspended = false;
+    if (socket || timer) return;
+    let candidate;
+    try { candidate = openSocket(); }
+    catch (_error) { onUnavailable(); return; }
+    socket = candidate;
+    candidate.onmessage = event => {
+      if (socket !== candidate || suspended) return;
+      try {
+        if (JSON.parse(event.data).state !== 'connected') return;
+      } catch (_error) { return; }
+      retries = 0;
+      onReady();
+    };
+    candidate.onclose = event => {
+      if (socket !== candidate) return;
+      socket = null;
+      if (suspended) return;
+      if (event.code === 1008 || event.code === 1013 || ++retries > 3) {
+        onUnavailable();
+        return;
+      }
+      timer = schedule(() => { timer = null; start(); }, 1000);
+    };
+    candidate.onerror = () => {}; // close event owns retry and UI reporting.
+  }
+  function suspend() {
+    suspended = true;
+    if (timer) cancel(timer);
+    timer = null;
+    const old = socket;
+    socket = null;
+    if (old) old.close();
+  }
+  return { start, suspend };
+}
+
 const exported = {
+  createBrowserPresence,
   acknowledgedReviewStatus,
   assetUrl,
   beginBrowserSession,
@@ -1454,11 +1495,11 @@ if (typeof document !== 'undefined') {
   });
   window.addEventListener('blur', () => observeIntegrityLoss('focus_lost'));
   window.addEventListener('focus', () => { checkIntegrityState(); monitorIntegrity(); });
-  window.addEventListener('pagehide', () => { stopPolling(); observeIntegrityLoss('browser_page_hidden'); });
-  window.addEventListener('pageshow', () => { ui.integrityFaults.delete('browser_page_hidden'); monitorIntegrity(); });
+  window.addEventListener('pagehide', () => { stopPolling(); observeIntegrityLoss('browser_page_hidden'); presence.suspend(); });
+  window.addEventListener('pageshow', () => { ui.integrityFaults.delete('browser_page_hidden'); monitorIntegrity(); presence.start(); });
   document.addEventListener('freeze', () => observeIntegrityLoss('browser_frozen'));
   document.addEventListener('resume', () => { ui.integrityFaults.delete('browser_frozen'); monitorIntegrity(); });
-  window.addEventListener('online', monitorIntegrity);
+  window.addEventListener('online', () => { monitorIntegrity(); presence.start(); });
   document.addEventListener('contextmenu', (event) => {
     if (ui.attempt && canEdit(ui.state)) event.preventDefault();
   });
@@ -1476,5 +1517,18 @@ if (typeof document !== 'undefined') {
     else ui.integrityFaults.delete('fullscreen_exited');
   });
 
-  refreshState();
+  const presence = createBrowserPresence({
+    openSocket: () => new window.WebSocket(`ws://${window.location.host}/api/lifecycle/presence`, ['ksat-presence', csrf]),
+    schedule: (callback, delay) => window.setTimeout(callback, delay),
+    cancel: handle => window.clearTimeout(handle),
+    onReady: () => refreshState(),
+    onUnavailable: () => {
+      stopPolling();
+      setSafeText(elements.statusTitle, 'KSAT needs to reopen');
+      setSafeText(elements.statusCopy, 'Close this tab and open the KSAT shortcut again. Your saved answers are retained.');
+      elements.statusPanel.hidden = false;
+      elements.assessmentPanel.hidden = true;
+    },
+  });
+  presence.start();
 }

@@ -125,3 +125,75 @@ class ClientLifecycleApiTests(unittest.TestCase):
         release.set()
         thread.join(3)
         self.assertTrue(self.stopped.wait(3))
+
+    def test_slow_body_cannot_mutate_after_close_commits(self):
+        from starlette.requests import Request
+        from starlette.concurrency import run_in_threadpool
+        waiting, release = threading.Event(), threading.Event()
+        changes, responses = [], []
+        original_body = Request.body
+
+        async def delayed_body(request):
+            if request.url.path == '/test-late-mutation':
+                waiting.set()
+                await run_in_threadpool(release.wait, 5)
+            return await original_body(request)
+
+        async def mutate():
+            changes.append(True)
+            return {'ok': True}
+
+        self.app.post('/test-late-mutation')(mutate)
+        with patch.object(Request, 'body', delayed_body):
+            thread = threading.Thread(target=lambda: responses.append(self.client.post(
+                '/test-late-mutation', json={}, headers=self.headers)))
+            thread.start()
+            try:
+                self.assertTrue(waiting.wait(2))
+                self.now = 121
+                self.assertTrue(self.stopped.wait(3))
+            finally:
+                release.set()
+                thread.join(5)
+        self.assertEqual([], changes)
+        self.assertEqual(503, responses[0].status_code)
+
+    def test_storage_error_after_close_still_requests_safe_shutdown(self):
+        import sqlite3
+        original = self.store.pending_submissions
+        def pending(**kwargs):
+            if self.life.closing:
+                raise sqlite3.OperationalError('storage unavailable')
+            return original(**kwargs)
+        with patch.object(self.store, 'pending_submissions', pending):
+            self.now = 121
+            self.assertTrue(self.stopped.wait(3))
+        self.assertIsNone(self.coord.session)
+
+    def test_transient_final_drain_error_retries_before_stopping(self):
+        context = self.app.state.client_context
+        original = context.finish_window_close
+        attempts = []
+        def drain():
+            attempts.append(True)
+            if len(attempts) == 1:
+                raise OSError('transient cleanup failure')
+            original()
+        with patch.object(context, 'finish_window_close', drain):
+            self.now = 121
+            self.assertTrue(self.stopped.wait(4))
+        self.assertGreaterEqual(len(attempts), 2)
+
+    def test_maintenance_acquisition_error_does_not_kill_monitor(self):
+        from ksat.client.install_guard import MaintenanceGate
+        original = MaintenanceGate.__enter__
+        attempts = []
+        def enter(gate):
+            attempts.append(True)
+            if len(attempts) == 1:
+                raise OSError('transient lock failure')
+            return original(gate)
+        with patch.object(MaintenanceGate, '__enter__', enter):
+            self.now = 121
+            self.assertTrue(self.stopped.wait(4))
+        self.assertGreaterEqual(len(attempts), 2)

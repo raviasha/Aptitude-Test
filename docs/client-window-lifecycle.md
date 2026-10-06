@@ -22,6 +22,9 @@ to upload. It then waits for any in-flight upload to finish before closing stora
 and the service. Unacknowledged results remain durably queued for the next launch.
 A stalled operating-system/network request can delay actual exit; data safety
 takes precedence over forcibly killing the process.
+Transient drain failures are retried; a permanent failure requires administrator
+diagnosis. Optional upload-status checks may fail without preventing safe drain
+and shutdown. A request body arriving after closure commits is rejected.
 
 Opening KSAT during committed shutdown waits for completion and restarts the
 service. If startup cannot finish within 120 seconds, the launcher shows a readable
@@ -53,6 +56,23 @@ The exact final suite counts are recorded in the implementation handoff. Bare
 repository-wide pytest also collects unrelated question-bank tool tests; its
 pre-existing missing PDF/schema dependencies and duplicate module names must be
 reported separately, not mistaken for passing application tests.
+
+The repository-wide collection failures reproduced on 2026-10-06 are:
+
+- `data-engineering/python_vision_calibration/tests/test_baseline.py`
+- `data-engineering/python_vision_calibration/tests/test_cli.py`
+- `data-engineering/textbook_chapters/tests/test_build.py`
+- `data-engineering/textbook_chapters/tests/test_chapter02.py`
+- `data-engineering/textbook_chapters/tests/test_chapter03.py`
+- `data-engineering/textbook_chapters/tests/test_chapter04.py`
+- `data-engineering/textbook_chapters/tests/test_vision_pipeline.py`
+- `scripts/test_compile_logical_recovery_results.py`
+- `scripts/test_generate_v2_marker_overrides.py`
+- `scripts/test_run_logical_boundary_recovery.py`
+
+Missing packages are `pdfplumber`, `pypdf` and `jsonschema`; the textbook build
+test also collides with another collected `test_build` module. These unrelated
+tools were not changed or installed for the client lifecycle task.
 
 ## Required one-PC Windows pilot before release
 

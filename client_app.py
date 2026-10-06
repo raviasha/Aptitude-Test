@@ -1558,6 +1558,9 @@ def create_client_app(services: ClientServices | None = None, *, lifetime=None, 
                         gate.__enter__()
                     except MaintenanceBusy:
                         continue
+                    except Exception:
+                        context.startup_problem = context.problem('local_action_failed', status=503)
+                        continue
                     try:
                         current = context.services
                         if current and current.runtime and current.store.active_attempt() is not None:
@@ -1570,13 +1573,27 @@ def create_client_app(services: ClientServices | None = None, *, lifetime=None, 
                         context.startup_problem = context.problem('corrupt_local_attempt', status=409)
                         continue
                     close_gate = gate  # Held until lifespan has drained and closed storage.
-                    if current:
-                        current.coordinator.logout()
-                        current.outbox.wake()
-                    deadline = time.monotonic() + _WINDOW_UPLOAD_GRACE_SECONDS
-                    while current and current.store.pending_submissions() and time.monotonic() < deadline:
-                        await asyncio.sleep(0.25)
-                    await run_in_threadpool(context.finish_window_close)
+                    try:
+                        if current:
+                            current.coordinator.logout()
+                            current.outbox.wake()
+                        deadline = time.monotonic() + _WINDOW_UPLOAD_GRACE_SECONDS
+                        while current and current.store.pending_submissions() and time.monotonic() < deadline:
+                            await asyncio.sleep(0.25)
+                    except Exception:
+                        # The extra upload opportunity is optional. A storage or
+                        # network failure must not strand an irreversible close.
+                        context.startup_problem = context.problem('local_action_failed', status=503)
+                    while True:
+                        try:
+                            await run_in_threadpool(context.finish_window_close)
+                            break
+                        except Exception:
+                            # Never release protected storage under live workers.
+                            # Retry failed drains; the bounded launcher explains
+                            # the delay if a persistent failure prevents exit.
+                            context.startup_problem = context.problem('local_action_failed', status=503)
+                            await asyncio.sleep(1)
                     request_shutdown()
                     return
 
@@ -1584,26 +1601,27 @@ def create_client_app(services: ClientServices | None = None, *, lifetime=None, 
         try:
             yield
         finally:
-            if browser_monitor is not None:
-                if lifetime.closing:
-                    await browser_monitor
-                else:
-                    browser_monitor.cancel()
+            try:
+                if browser_monitor is not None:
+                    if not lifetime.closing:
+                        browser_monitor.cancel()
                     try:
                         await browser_monitor
                     except asyncio.CancelledError:
                         pass
-            monitor.cancel()
-            try:
-                await monitor
-            except asyncio.CancelledError:
-                pass
-            async with coordinator_operation_lock:
+            finally:
+                monitor.cancel()
                 try:
-                    context.shutdown()
+                    await monitor
+                except asyncio.CancelledError:
+                    pass
                 finally:
-                    if close_gate is not None:
-                        close_gate.__exit__(None, None, None)
+                    async with coordinator_operation_lock:
+                        try:
+                            context.shutdown()
+                        finally:
+                            if close_gate is not None:
+                                close_gate.__exit__(None, None, None)
 
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.client_context = context
@@ -1662,6 +1680,10 @@ def create_client_app(services: ClientServices | None = None, *, lifetime=None, 
                                 "diagnostic_reference": _diagnostic_reference(),
                             }}, status_code=413,
                         )
+                    elif lifetime is not None and lifetime.closing and request.url.path != '/api/lifecycle/launch':
+                        # Reading a body yields: closure may have committed since
+                        # the initial check. Recheck atomically before admission.
+                        response = JSONResponse({'problem': {'code': 'client_closing', 'message': 'KSAT is closing. Reopen the KSAT shortcut.', 'retryable': True}}, status_code=503)
                     else:
                         inflight_mutations += 1
                         try:

@@ -433,6 +433,7 @@ class WindowsEntrypointTests(unittest.TestCase):
             ["--open-client"],
             environ={},
             browser_opener=lambda url: opened.append(url),
+            client_starter=lambda: None,
             uvicorn_runner=lambda *_args, **_kwargs: uvicorn_runs.append(True),
         )
         self.assertEqual(0, result)

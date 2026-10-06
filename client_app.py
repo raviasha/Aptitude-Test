@@ -2620,6 +2620,8 @@ def main(
     administrator_check: Any = _is_windows_administrator,
     windows_service_runner: Any | None = None,
     browser_opener: Any | None = None,
+    client_starter: Any | None = None,
+    launcher_error: Any | None = None,
 ) -> int:
     parser = argparse.ArgumentParser(prog="KSATClient")
     parser.add_argument("--install-config", action="store_true")
@@ -2630,6 +2632,7 @@ def main(
     parser.add_argument("--windows-service", action="store_true")
     parser.add_argument("--service-console", action="store_true")
     parser.add_argument("--open-client", action="store_true")
+    parser.add_argument("--configure-launcher-access", action="store_true")
     parser.add_argument("--base-url")
     parser.add_argument("--ca", type=Path)
     parser.add_argument("--metadata", type=Path)
@@ -2643,6 +2646,7 @@ def main(
         arguments.windows_service,
         arguments.service_console,
         arguments.open_client,
+        arguments.configure_launcher_access,
     )
     if sum(bool(value) for value in operations) > 1:
         parser.error("client operations are separate")
@@ -2699,6 +2703,12 @@ def main(
         return 0
     if any(value is not None for value in (arguments.base_url, arguments.ca, arguments.metadata)):
         parser.error("configuration arguments require --install-config or --update-config")
+    if arguments.configure_launcher_access:
+        if not administrator_check():
+            raise PermissionError("Administrator authorization is required.")
+        from ksat.client.service_access import configure_launcher_access
+        configure_launcher_access()
+        return 0
     host, port = production_bind(dict(values))
     if arguments.windows_service:
         if windows_service_runner is None:
@@ -2729,6 +2739,12 @@ def main(
         windows_service_runner("KSATLabClientAuthority", service_target)
         return 0
     if arguments.open_client or not any(operations):
+        from ksat.client.launcher import LauncherError, ensure_client_running, show_launcher_error
+        try:
+            (client_starter or ensure_client_running)()
+        except LauncherError as exc:
+            (launcher_error or show_launcher_error)(str(exc))
+            return 1
         if browser_opener is None:
             import webbrowser
 

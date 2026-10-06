@@ -255,8 +255,10 @@ begin
     GuardCommand('configure'); WaitForGuard('configured');
     ImagePath := ExpandConstant('{app}\KSATClient.exe');
     if Exec(ExpandConstant('{sys}\sc.exe'), 'query KSATLabClientAuthority', '', SW_HIDE, ewWaitUntilTerminated, Code) and (Code = 0) then Verb := 'config' else Verb := 'create';
-    ServiceCommand(Verb + ' KSATLabClientAuthority binPath= "\"' + ImagePath + '\" --windows-service" start= auto obj= LocalSystem DisplayName= "KSAT Lab Client Authority"');
+    ServiceCommand(Verb + ' KSATLabClientAuthority binPath= "\"' + ImagePath + '\" --windows-service" start= demand obj= LocalSystem DisplayName= "KSAT Lab Client Authority"');
     ServiceCommand('sidtype KSATLabClientAuthority unrestricted');
+    if not Exec(ImagePath, '--configure-launcher-access', '', SW_HIDE, ewWaitUntilTerminated, Code) or (Code <> 0) then
+      RaiseException('Unable to grant KSAT launcher start access. See the setup log.');
     ProtectAuthorityDirectory(ExpandConstant('{commonappdata}\KSAT Client\identity'));
     ProtectAuthorityDirectory(ExpandConstant('{commonappdata}\KSAT Client\state'));
     ProtectAuthorityDirectory(ExpandConstant('{commonappdata}\KSAT Client\packs'));

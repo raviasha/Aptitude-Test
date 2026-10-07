@@ -15,6 +15,89 @@ import client_install_guard as helper
 
 
 class LabInstallerTests(ClientInstallGuardTests):
+    def test_actual_helper_allows_prior_release_upgrade_and_current_reinstall(self):
+        # Catch stale helper targets even when installer labels/resources are new.
+        self.install()
+        before = self.bytes()
+        for installed in ("2.1.2", "2.1.3", "2.1.4"):
+            with self.subTest(installed=installed), patch(
+                    "ksat.client.install_guard.installed_version", return_value=installed):
+                stage = self.program_data / installed
+                stage.mkdir()
+                service = FakeService(running=True)
+                alive = iter([True, False])
+                helper.run_guard_session(self.program_data, stage,
+                    lambda: next(alive, False), service=service, profile=self.profile)
+                status = json.loads((stage / "status.json").read_bytes())
+                self.assertEqual("aborted", status["state"], status)
+                self.assertEqual(["stop", "start"], service.actions)
+                self.assertEqual(before, self.bytes())
+
+    def test_actual_helper_refuses_newer_installed_version_without_changes(self):
+        self.install()
+        before = self.bytes()
+        stage = self.program_data / "newer"
+        stage.mkdir()
+        service = FakeService(running=True)
+        with patch("ksat.client.install_guard.installed_version", return_value="9.0.0"):
+            helper.run_guard_session(self.program_data, stage, lambda: True,
+                service=service, profile=self.profile)
+        self.assertEqual("downgrade_refused", json.loads((stage / "status.json").read_bytes())["diagnostic_code"])
+        self.assertEqual([], service.actions)
+        self.assertEqual(before, self.bytes())
+
+    def _assert_current_upgrade_preserves_pending_work(self, submit, reason):
+        self.prepare_attempt(submit=submit)
+        before = self.bytes()
+        stage = self.program_data / "pending-work"
+        stage.mkdir()
+        service = FakeService(running=True)
+        with patch("ksat.client.install_guard.installed_version", return_value="2.1.3"):
+            helper.run_guard_session(self.program_data, stage, lambda: True,
+                service=service, profile=self.profile)
+        self.assertEqual(reason, json.loads((stage / "status.json").read_bytes())["diagnostic_code"])
+        self.assertEqual([], service.actions)
+        self.assertEqual(before, self.bytes())
+
+    def test_current_upgrade_keeps_active_attempt_protected(self):
+        self._assert_current_upgrade_preserves_pending_work(False, "active_attempt")
+
+    def test_current_upgrade_keeps_pending_submission_protected(self):
+        self._assert_current_upgrade_preserves_pending_work(True, "pending_submission")
+
+    def test_two_labs_fresh_install_independently_and_cross_lab_upgrade_is_blocked(self):
+        from ksat.coordinator.tls import load_or_create_coordinator_security
+        from ksat.public_trust import validate_public_bundle
+        from ksat.lab_builder.profile import make_lab_profile
+        from client_app import ClientConfigStore
+        profiles = []
+        for number in (1, 2):
+            name = f"lab{number}.example.edu"
+            security = load_or_create_coordinator_security(self.program_data / f"server{number}", hostname=name)
+            trust = validate_public_bundle(f"https://{name}:8443", security.ca_certificate_pem,
+                (security.public_export_dir / "coordinator-public.json").read_bytes(), now=datetime.now(timezone.utc))
+            profile = make_lab_profile(f"Lab {number}", trust)
+            profiles.append(profile)
+            data = self.program_data / f"pc{number}"
+            stage = self.program_data / f"stage{number}"
+            stage.mkdir()
+            helper.configure_installation(data, stage, profile, fresh=True, stores=MemoryTrust())
+            config = ClientConfigStore(data / "KSAT Client/client-config.json").load()
+            self.assertEqual(f"https://{name}:8443", config.coordinator_base_url)
+            self.assertEqual(trust.ca_pem, Path(config.trusted_ca_path).read_bytes())
+            self.assertEqual(trust.signing_public_key_b64, config.coordinator_signing_public_key_b64)
+        self.assertNotEqual(profiles[0].trust.ca_sha256, profiles[1].trust.ca_sha256)
+        data = self.program_data / "pc1"
+        before = {p.relative_to(data): p.read_bytes() for p in data.rglob("*") if p.is_file() and not p.name.endswith(".lock")}
+        stage = self.program_data / "cross-lab"
+        stage.mkdir()
+        service = FakeService(running=True)
+        helper.run_guard_session(data, stage, lambda: True, service=service, profile=profiles[1])
+        self.assertEqual("different_server", json.loads((stage / "status.json").read_bytes())["diagnostic_code"])
+        self.assertEqual([], service.actions)
+        after = {p.relative_to(data): p.read_bytes() for p in data.rglob("*") if p.is_file() and not p.name.endswith(".lock")}
+        self.assertEqual(before, after)
+
     def stage(self):
         stage = self.program_data / "KSAT Installer Staging" / ("a" * 32)
         stage.mkdir(parents=True)

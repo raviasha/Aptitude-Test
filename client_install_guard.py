@@ -25,7 +25,7 @@ from ksat.lab_builder.profile import decode_profile, encode_profile, make_lab_pr
 from ksat.lab_builder.signing import PUBLISHER, THUMBPRINT
 from ksat.public_trust import canonical_json, strict_json, validate_public_bundle
 
-TARGET_VERSION = "2.1.1"
+from ksat.client.version import CLIENT_VERSION as TARGET_VERSION
 
 
 def publisher_certificate(stage: Path) -> bytes:

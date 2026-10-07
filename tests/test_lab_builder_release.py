@@ -6,6 +6,31 @@ from ksat.lab_builder.payload import load_approved_payload, REQUIRED_FILES
 
 
 class BuilderReleaseTests(unittest.TestCase):
+    def test_windows_version_resource_follows_builder_release(self):
+        from unittest.mock import patch
+        from PyInstaller.utils.win32.versioninfo import load_version_info_from_text_file
+        from scripts.build_lab_package_builder import builder_version_resource
+        with patch("scripts.build_lab_package_builder.BUILDER_VERSION", "9.8.7"):
+            resource = Path(self.temp.name) / "version.txt"
+            resource.write_text(builder_version_resource(), encoding="utf-8")
+        info = load_version_info_from_text_file(resource)
+        self.assertEqual((9 << 16) | 8, info.ffi.fileVersionMS)
+        self.assertEqual(7 << 16, info.ffi.fileVersionLS)
+        strings = {entry.name: entry.val for entry in info.kids[0].kids[0].kids}
+        self.assertEqual("9.8.7", strings["FileVersion"])
+        self.assertEqual("9.8.7", strings["ProductVersion"])
+
+    def test_upgrade_guard_targets_the_same_release_as_client_and_builder(self):
+        from client_app import _CLIENT_VERSION
+        from client_install_guard import TARGET_VERSION
+        from scripts.windows_release import CLIENT_VERSION
+        from ksat.lab_builder import BUILDER_VERSION
+        from ksat.lab_builder.payload import CLIENT_VERSION as PAYLOAD_VERSION
+        self.assertEqual(_CLIENT_VERSION, TARGET_VERSION)
+        self.assertEqual(_CLIENT_VERSION, CLIENT_VERSION)
+        self.assertEqual(_CLIENT_VERSION, BUILDER_VERSION)
+        self.assertEqual(_CLIENT_VERSION, PAYLOAD_VERSION)
+
     def setUp(self):
         self.fixture = fixtures.LabPayloadTests()
         self.fixture.setUp()
@@ -19,7 +44,7 @@ class BuilderReleaseTests(unittest.TestCase):
         manifest = assemble_builder_resources(self.fixture.root, self.destination)
         self.assertEqual("payload-manifest.json", manifest.name)
         self.assertEqual(REQUIRED_FILES | {"payload-manifest.json"}, {p.name for p in self.destination.iterdir()})
-        self.assertEqual("2.1.3", load_approved_payload(self.destination).client_version)
+        self.assertEqual("2.1.4", load_approved_payload(self.destination).client_version)
         self.assertEqual((self.fixture.root / "update-release-public.json").read_bytes(), (self.destination / "update-release-public.json").read_bytes())
 
     def test_private_input_and_existing_output_are_rejected(self):
@@ -38,5 +63,5 @@ class BuilderReleaseTests(unittest.TestCase):
         self.assertIn("--onefile", args)
         self.assertIn("--windowed", args)
         self.assertIn("tkinter", args)
-        self.assertIn("KSATLabPackageBuilder-2.1.3", args)
+        self.assertIn("KSATLabPackageBuilder-2.1.4", args)
         self.assertEqual(str(root / "lab_package_builder.py"), args[-1])

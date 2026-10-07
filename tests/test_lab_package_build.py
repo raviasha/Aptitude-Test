@@ -53,7 +53,7 @@ class LabBuildTests(unittest.TestCase):
             self.source = Path(next(a.split("=", 1)[1] for a in args if a.startswith("/DKSAT_PAYLOAD_DIR=")))
             out = Path(next(a.split("=", 1)[1] for a in args if a.startswith("/DKSAT_OUTPUT_DIR=")))
             out.mkdir(exist_ok=True)
-            (out / "KSATClientSetup-2.1.3.exe").write_bytes(b"MZ fixture installer")
+            (out / "KSATClientSetup-2.1.4.exe").write_bytes(b"MZ fixture installer")
             return "Compiler engine version: Inno Setup 6.7.3"
         from ksat.lab_builder.build import INSTALLER_FILES
         destination = Path(args[args.index("--output-dir") + 1])
@@ -75,7 +75,7 @@ class LabBuildTests(unittest.TestCase):
         self.assertEqual(BUILDER_VERSION, json.loads(result.receipt.read_bytes())["builder_version"])
 
     def test_output_collision_never_overwrites(self):
-        path = self.output / "KSATClientSetup-lab-one-2.1.3.exe"
+        path = self.output / "KSATClientSetup-lab-one-2.1.4.exe"
         path.write_bytes(b"keep")
         with self.assertRaises(FileExistsError): self.build()
         self.assertEqual(b"keep", path.read_bytes())
@@ -91,7 +91,7 @@ class LabBuildTests(unittest.TestCase):
 
         def cancel_at_final_hash(path):
             result = digest(path)
-            if path.name == "KSATClientSetup-2.1.3.exe" and list(self.output.glob("*.json")):
+            if path.name == "KSATClientSetup-2.1.4.exe" and list(self.output.glob("*.json")):
                 self.cancel.set()
             return result
 

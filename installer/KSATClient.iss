@@ -2,7 +2,7 @@
   #define KSAT_LAB_MODE "0"
 #endif
 #ifndef KSAT_CLIENT_VERSION
-  #define KSAT_CLIENT_VERSION "2.1.3"
+  #define KSAT_CLIENT_VERSION "2.1.4"
 #endif
 #ifndef KSAT_BUNDLE_PUBLISHER_TRUST
   #define KSAT_BUNDLE_PUBLISHER_TRUST "1"

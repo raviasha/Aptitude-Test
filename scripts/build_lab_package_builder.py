@@ -54,6 +54,17 @@ def verify_frozen_builder(path: Path, resources: Path):
     load_approved_payload(resources)
 
 
+def builder_version_resource() -> str:
+    version = tuple(int(part) for part in BUILDER_VERSION.split(".")) + (0,)
+    return f"""VSVersionInfo(
+ffi=FixedFileInfo(filevers={version!r},prodvers={version!r},mask=0x3f,flags=0,OS=0x40004,fileType=1,subtype=0,date=(0,0)),
+kids=[StringFileInfo([StringTable('040904B0',[
+StringStruct('FileDescription','KSAT Lab Package Builder'),StringStruct('FileVersion','{BUILDER_VERSION}'),
+StringStruct('ProductName','KSAT Lab Package Builder'),StringStruct('ProductVersion','{BUILDER_VERSION}')])]),
+VarFileInfo([VarStruct('Translation',[1033,1200])])])
+"""
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--payload-root", type=Path, required=True)
@@ -70,13 +81,7 @@ def main(argv=None):
         work = Path(temporary)
         resources = work / "lab-payload"
         assemble_builder_resources(args.payload_root, resources)
-        (work / "builder.version.txt").write_text("""VSVersionInfo(
-ffi=FixedFileInfo(filevers=(2,1,3,0),prodvers=(2,1,3,0),mask=0x3f,flags=0,OS=0x40004,fileType=1,subtype=0,date=(0,0)),
-kids=[StringFileInfo([StringTable('040904B0',[
-StringStruct('FileDescription','KSAT Lab Package Builder'),StringStruct('FileVersion','2.1.3'),
-StringStruct('ProductName','KSAT Lab Package Builder'),StringStruct('ProductVersion','2.1.3')])]),
-VarFileInfo([VarStruct('Translation',[1033,1200])])])
-""", encoding="utf-8")
+        (work / "builder.version.txt").write_text(builder_version_resource(), encoding="utf-8")
         subprocess.run(builder_command(ROOT, Path(sys.executable), work, resources), cwd=ROOT, check=True, timeout=600)
         artifact = work / "dist" / name
         sign_from_store(artifact, SignerSelection("CurrentUser", THUMBPRINT, PUBLISHER, None, True), args.signtool)

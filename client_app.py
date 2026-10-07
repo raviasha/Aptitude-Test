@@ -61,7 +61,7 @@ from ksat.windows_authenticode import verify_authenticode
 
 _ROOT = Path(__file__).resolve().parent
 _BUNDLE_ROOT = Path(getattr(sys, "_MEIPASS", _ROOT))
-_CLIENT_VERSION = "2.1.3"
+from ksat.client.version import CLIENT_VERSION as _CLIENT_VERSION
 _CLIENT_STATIC = _ROOT / "static" / "client"
 _SHARED_STATIC = _ROOT / "static"
 _MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})

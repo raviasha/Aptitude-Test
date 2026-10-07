@@ -1,5 +1,16 @@
 # Current KSAT release files
 
+## Coordinator update — 7 October 2026
+
+[Download the updated Coordinator installer](coordinator-2026-10-07/KSATCoordinatorSetup-2.1.0.exe)
+for multi-ZIP chapter import and completed results retained in CSV after deleting
+tests. This dated build supersedes earlier Coordinator downloads below for these
+features; the compatible product version remains 2.1.0. No client update is needed.
+
+[Upgrade and usage guide](../docs/coordinator-bulk-import-results-2026-10-07.md) ·
+[Checksums](coordinator-2026-10-07/SHA256SUMS.txt) ·
+[All 39 quantitative chapters in one ZIP](../question-banks/latest/textbook-downloads/quantitative-aptitude-chapters-01-39.zip)
+
 The newest **pilot/prerelease** is **Client 2.1.5 and Lab Package Builder 2.1.5**. Coordinator remains **2.1.0**. Test one lab PC before wider deployment; the real administrator/standard-user installation pilot is still required.
 
 ## 2.1.5 pilot downloads — upgrade clients with saved pending uploads

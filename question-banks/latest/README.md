@@ -4,6 +4,13 @@ Use this folder to choose a chapter package. Selected from GitHub main on **7 Oc
 
 ## Quantitative aptitude — upload these to KSAT
 
+**[Download all 39 chapters in one master ZIP](textbook-downloads/quantitative-aptitude-chapters-01-39.zip)**.
+Extract the master ZIP once, open its `chapters` folder, then select all chapter ZIPs
+in Coordinator → Question banks and click Import. Keep the individual chapter ZIPs
+zipped. Multiple-file selection requires a Coordinator build containing the bulk
+upload change; older installed versions still import one chapter at a time.
+The master ZIP is a download container, not itself an importable bank.
+
 39 chapter question banks. Download the desired ZIP from `quantitative-aptitude`, then upload it through Faculty → Question banks. These are the published all-vision packages (their internal manifest format is version 3). Chapters 36–39 include the source-visual updates published on 24 September 2026. Filenames retain their original `text_only` suffix even where reviewed visual assets are included.
 
 Use these in preference to the older `_complete`, `_hybrid`, and candidate alternatives elsewhere in the repository. Candidate packages have not been selected merely because their names contain a higher version number.
@@ -52,6 +59,9 @@ Use these in preference to the older `_complete`, `_hybrid`, and candidate alter
 
 ## New reasoning textbook — source pages only
 
+[Download both reasoning source archives together](textbook-downloads/new-reasoning-chapters-01-02-SOURCE-PAGES-ONLY.zip).
+This download is for reference/extraction work only, not Coordinator import.
+
 Correction to the earlier chat description: these two archives have format version 1 and contain page images plus a manifest. They are **not V2/V3 question banks and cannot be used as extracted KSAT assessment banks**. Question/answer extraction and verification are still required. They are included here only to identify the latest source archives for the newly chosen textbook, A New Approach to Reasoning.
 
 | Chapter | Download | Source pages |
@@ -67,3 +77,6 @@ The previous reasoning textbook's archives are not part of this selection. Exist
 
 When a chapter package is updated, refresh its copy here and its selection entry together, so this folder continues to identify the current version.
 
+After refreshing chapter files and selection hashes, rebuild the master downloads
+with `python scripts/build_textbook_downloads.py`. The builder checks the hashes
+and preserves each enclosed chapter ZIP byte-for-byte.

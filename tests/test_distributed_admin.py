@@ -1,4 +1,6 @@
 import base64
+import csv
+import io
 import json
 import tempfile
 import threading
@@ -640,6 +642,140 @@ class DistributedAdminTests(unittest.TestCase):
                 ),
             )
         self.assertFalse(pack.exists())
+
+    def seed_export_result(self):
+        with app.db() as connection:
+            connection.execute(
+                "UPDATE attempts SET status='submitted',submitted_at=?,score=2,percentage=66.7 WHERE attempt_id=?",
+                ("2026-10-07T10:00:00+00:00", self.attempt_id),
+            )
+            questions = connection.execute("SELECT question_id FROM questions WHERE bank_id=? ORDER BY question_id", (self.bank_id,)).fetchall()
+            for index, question in enumerate(questions):
+                connection.execute(
+                    "INSERT INTO responses (attempt_id,question_id,selected_answer,correct,category,chapter,question_order) VALUES (?,?,'A',?,'Quantitative Aptitude','Arithmetic',?)",
+                    (self.attempt_id, question[0], int(index < 2), index),
+                )
+            connection.execute("INSERT INTO exam_violations (attempt_id,violation_type,occurred_at) VALUES (?,'visibility_hidden','2026-10-07T09:59:00+00:00')", (self.attempt_id,))
+            connection.execute("INSERT INTO submissions VALUES (?,?,?,?,'{}')", (self.attempt_id, "a" * 64, '{"sealed":"evidence"}', app.now()))
+
+    def exported_results(self):
+        response = self.client.get('/api/admin/export')
+        self.assertEqual(200, response.status_code)
+        self.assertEqual('attachment; filename=aptitude-results.csv', response.headers['content-disposition'])
+        return list(csv.DictReader(io.StringIO(response.text)))
+
+    def test_test_and_bank_deletion_preserve_complete_csv_row_after_schema_reload(self):
+        self.seed_export_result()
+        before = self.exported_results()
+        self.assertEqual(1, len(before))
+        self.assertEqual('66.7', before[0]['Quantitative'])
+        self.assertEqual('1', before[0]['Violation Count'])
+        for path in (f'/api/admin/tests/{self.test_id}', f'/api/admin/question-banks/{self.bank_id}'):
+            response = self.client.delete(path, headers={'X-KSAT-CSRF': self.csrf_token})
+            self.assertEqual(200, response.status_code, response.text)
+            app.ensure_schema()
+            self.assertEqual(before, self.exported_results())
+
+    def test_bank_deletion_preserves_submitted_csv_and_removes_submission(self):
+        self.seed_export_result()
+        before = self.exported_results()
+        response = self.client.delete(f'/api/admin/question-banks/{self.bank_id}', headers={'X-KSAT-CSRF': self.csrf_token})
+        self.assertEqual(200, response.status_code, response.text)
+        self.assertEqual(before, self.exported_results())
+        with app.db() as connection:
+            self.assertEqual(0, connection.execute('SELECT COUNT(*) FROM submissions').fetchone()[0])
+
+    def test_failed_delete_rolls_back_archive_before_successful_retry(self):
+        self.seed_export_result()
+        before = self.exported_results()
+        for path in (f'/api/admin/tests/{self.test_id}', f'/api/admin/question-banks/{self.bank_id}'):
+            with patch('app._commit_artifact_deletion', side_effect=sqlite3.OperationalError('commit failure')):
+                with self.assertRaises(sqlite3.OperationalError):
+                    self.client.delete(path, headers={'X-KSAT-CSRF': self.csrf_token})
+            self.assertEqual(before, self.exported_results())
+            with app.db() as connection:
+                self.assertEqual(0, connection.execute('SELECT COUNT(*) FROM archived_results').fetchone()[0])
+        response = self.client.delete(f'/api/admin/tests/{self.test_id}', headers={'X-KSAT-CSRF': self.csrf_token})
+        self.assertEqual(200, response.status_code)
+        self.assertEqual(before, self.exported_results())
+
+    def test_bank_deletion_retains_surviving_test_result_once_then_test_delete_is_idempotent(self):
+        self.seed_export_result()
+        before = self.exported_results()
+        with app.db() as connection:
+            connection.execute('UPDATE tests SET bank_id=NULL WHERE test_id=?', (self.test_id,))
+        for path in (f'/api/admin/question-banks/{self.bank_id}', f'/api/admin/tests/{self.test_id}'):
+            response = self.client.delete(path, headers={'X-KSAT-CSRF': self.csrf_token})
+            self.assertEqual(200, response.status_code, response.text)
+            self.assertEqual(before, self.exported_results())
+        repeated = self.client.delete(f'/api/admin/tests/{self.test_id}', headers={'X-KSAT-CSRF': self.csrf_token})
+        self.assertEqual(404, repeated.status_code)
+        self.assertEqual(before, self.exported_results())
+
+    def test_archive_excludes_unsubmitted_voided_and_practice_attempts(self):
+        self.seed_export_result()
+        with app.db() as connection:
+            for index, status in enumerate(('in_progress', 'voided')):
+                connection.execute(
+                    'INSERT INTO attempts (attempt_id,student_id,test_id,started_at,status,total_questions) VALUES (?,?,?,?,?,3)',
+                    (f'other-{index}', 'S1', self.test_id, app.now(), status),
+                )
+            practice_id = connection.execute(
+                "INSERT INTO tests (test_name,composition,bank_id,created_at,mode) VALUES ('Practice','[]',?,?,'practice')",
+                (self.bank_id, app.now()),
+            ).lastrowid
+            connection.execute(
+                "INSERT INTO attempts (attempt_id,student_id,test_id,started_at,status,total_questions) VALUES ('practice','S2',?,?,'submitted',3)",
+                (practice_id, app.now()),
+            )
+            connection.execute(
+                """INSERT INTO responses (attempt_id,question_id,selected_answer,correct,category,chapter,question_order)
+                   SELECT 'practice',question_id,selected_answer,correct,category,chapter,question_order
+                   FROM responses WHERE attempt_id=?""", (self.attempt_id,),
+            )
+        before = self.exported_results()
+        response = self.client.delete(f'/api/admin/question-banks/{self.bank_id}', headers={'X-KSAT-CSRF': self.csrf_token})
+        self.assertEqual(200, response.status_code, response.text)
+        self.assertEqual(1, len(before))
+        self.assertEqual(before, self.exported_results())
+
+    def test_submitted_result_without_response_rows_is_retained(self):
+        with app.db() as connection:
+            connection.execute("UPDATE attempts SET status='submitted',submitted_at=? WHERE attempt_id=?", (app.now(), self.attempt_id))
+        before = self.exported_results()
+        self.assertEqual(1, len(before))
+        self.assertEqual('', before[0]['Quantitative'])
+        response = self.client.delete(f'/api/admin/tests/{self.test_id}', headers={'X-KSAT-CSRF': self.csrf_token})
+        self.assertEqual(200, response.status_code)
+        self.assertEqual(before, self.exported_results())
+
+    def test_live_and_archived_results_are_combined_without_collapsing_identical_attempts(self):
+        self.seed_export_result()
+        with app.db() as connection:
+            other_test = connection.execute(
+                "INSERT INTO tests (test_name,composition,created_at,mode) VALUES ('Distributed Set','[]',?,'faculty')", (app.now(),),
+            ).lastrowid
+            connection.execute(
+                """INSERT INTO attempts (attempt_id,student_id,test_id,started_at,submitted_at,status,total_questions,score,percentage)
+                   SELECT 'second-attempt',student_id,?,started_at,submitted_at,status,total_questions,score,percentage
+                   FROM attempts WHERE attempt_id=?""", (other_test, self.attempt_id),
+            )
+            connection.execute(
+                """INSERT INTO responses (attempt_id,question_id,selected_answer,correct,category,chapter,question_order)
+                   SELECT 'second-attempt',question_id,selected_answer,correct,category,chapter,question_order
+                   FROM responses WHERE attempt_id=?""", (self.attempt_id,),
+            )
+            connection.execute(
+                """INSERT INTO exam_violations (attempt_id,violation_type,occurred_at)
+                   SELECT 'second-attempt',violation_type,occurred_at FROM exam_violations WHERE attempt_id=?""", (self.attempt_id,),
+            )
+        before = self.exported_results()
+        self.assertEqual(2, len(before))
+        self.assertEqual(before[0], before[1])
+        for test_id in (self.test_id, other_test):
+            response = self.client.delete(f'/api/admin/tests/{test_id}', headers={'X-KSAT-CSRF': self.csrf_token})
+            self.assertEqual(200, response.status_code)
+            self.assertEqual(before, self.exported_results())
 
     def test_question_bank_delete_leaves_durable_gc_record_when_purge_fails(self):
         from ksat.coordinator.artifacts import recover_artifact_quarantine

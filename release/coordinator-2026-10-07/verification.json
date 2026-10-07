@@ -1,0 +1,16 @@
+{
+  "build_date": "2026-10-07",
+  "version": "2.1.0",
+  "publisher": "CN=KSAT LAB RELEASE SIGNING",
+  "thumbprint": "13AE2A6440C33E074FC9C99FB35E5A1CFD9BE908",
+  "authenticode_exe_and_installer": "Valid",
+  "frozen_https_startup": "passed on disposable data",
+  "uac_payload_equivalence": "verified",
+  "installer_payload": "verified using innoextract670 after PATH extractor proved incompatible",
+  "client_binaries_rebuilt": false,
+  "admin_regression_tests": "30 passed",
+  "additional_archive_hostname_handoff_tests": "19 passed",
+  "bulk_import_node_test": "passed",
+  "faculty_browser_checks": "passed including mixed-success bulk uploads and mobile layout",
+  "physical_lab_upgrade_pilot": "not performed"
+}

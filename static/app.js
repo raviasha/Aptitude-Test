@@ -559,24 +559,51 @@ async function clientUpdates() {
   document.querySelector('#client-update-upload').addEventListener('submit',async event => { event.preventDefault(); const status=document.querySelector('#client-update-upload-status'); status.textContent='Verifying signatures and release contents…'; status.classList.remove('update-error'); try { await api('/api/admin/client-updates/upload',{method:'POST',body:new FormData(event.currentTarget)}); notify('Client update uploaded.'); clientUpdates(); } catch(error) { status.textContent=error.message; status.classList.add('update-error'); /* Keep this error visible until the next submission. */ } });
 }
 
+let bankImportResults = [];
+let bankImportBusy = false;
+
+async function importBankFiles(files, replaceExisting, send = api, progress = () => {}) {
+  const results = [];
+  for (const [index, file] of Array.from(files).entries()) {
+    progress(index + 1, files.length, file.name);
+    try {
+      const payload = new FormData();
+      payload.append('package_file', file, file.name);
+      payload.append('replace_existing', String(replaceExisting));
+      const bank = await send('/api/admin/question-banks/import-package', {method:'POST', body:payload});
+      results.push({filename:file.name, ok:true, message:`${bank.bank_name}: ${bank.question_count} questions imported.`});
+    } catch (error) {
+      results.push({filename:file.name, ok:false, message:error.message || 'Import failed.'});
+    }
+  }
+  return results;
+}
+
+function bankImportReport(results) {
+  if (!results.length) return '';
+  const success = results.filter(result => result.ok).length;
+  return `<h3>Import results: ${success} succeeded, ${results.length-success} failed</h3>${success < results.length ? '<p>Retry only the failed files after checking their errors.</p>' : ''}<ul>${results.map(result => `<li><strong>${esc(result.filename)}</strong> — ${result.ok ? 'Imported' : 'Failed'}: ${esc(result.message)}</li>`).join('')}</ul>`;
+}
+
 async function questionBanks() {
   const library = await api('/api/admin/question-banks');
   const questionCount = library.banks.reduce((total, bank) => total + Number(bank.question_count || 0), 0);
   layout('Question banks', 'Everything you need to build a great assessment, organised in one place.', `
     <section class="bank-upload card">
-      <div class="upload-intro"><p class="eyebrow">Grow your library</p><h2>One ZIP. Ready to teach.</h2><p>Upload a question-bank ZIP to add its questions, answers and solutions to your library.</p><div class="upload-note">${facultyIcon('banks')}<span>Keep the package zipped.<br/>We’ll check its contents when you import.</span></div></div>
+      <div class="upload-intro"><p class="eyebrow">Grow your library</p><h2>Import chapters together.</h2><p>Select one or more chapter ZIPs. Each chapter becomes a separate question bank.</p><div class="upload-note">${facultyIcon('banks')}<span>Downloaded a textbook master ZIP? Extract it once, then select the chapter ZIPs inside. Keep those chapter ZIPs zipped.</span></div></div>
       <form id="upload-package">
         <label class="zip-dropzone" id="zip-dropzone">
           <span class="upload-icon">${facultyIcon('upload')}</span>
-          <strong id="zip-filename">Choose a ZIP or drop it here</strong>
+          <strong id="zip-filename">Choose chapter ZIPs or drop them here</strong>
           <span id="zip-file-detail">Question-bank packages · .zip only</span>
           <span class="browse-file">Browse files</span>
-          <input name="package_file" type="file" accept=".zip,application/zip" aria-label="Question-bank ZIP" aria-describedby="zip-file-detail upload-status" required />
+          <input name="package_file" type="file" accept=".zip,application/zip" aria-label="Question-bank ZIP" aria-describedby="zip-file-detail upload-status" multiple required />
         </label>
         <label><input type="checkbox" name="replace_existing" value="true" /> Update an existing unused bank with the same name</label>
         <div class="upload-submit"><span id="upload-status" role="status" aria-live="polite">Select a package to get started.</span><button class="primary" disabled>Import question bank ${facultyIcon('arrow')}</button></div>
       </form>
     </section>
+    <section id="bank-import-results" class="card" style="overflow-wrap:anywhere" ${bankImportResults.length ? '' : 'hidden'}>${bankImportReport(bankImportResults)}</section>
     <section class="card bank-library">
       <div class="library-heading"><div><p class="eyebrow">Your library</p><h2>Available question banks <span class="count-pill">${library.banks.length}</span></h2><p class="muted">${questionCount.toLocaleString()} questions across your imported banks</p></div><label class="bank-search">${facultyIcon('search')}<span class="sr-only">Search question banks</span><input id="bank-search" type="search" placeholder="Search question banks…" /></label></div>
       <div class="table-scroll"><table><thead><tr><th>Question bank</th><th>Questions</th><th>Used in</th><th>Imported</th><th><span class="sr-only">Actions</span></th></tr></thead><tbody>${library.banks.map(item => `<tr data-bank-row data-bank-search="${esc(item.bank_name.toLocaleLowerCase())}"><td><div class="bank-name"><span class="bank-icon">${facultyIcon('banks')}</span><strong>${esc(item.bank_name)}</strong></div></td><td><span class="question-count">${Number(item.question_count).toLocaleString()}</span></td><td>${item.test_count ? `<span class="usage-badge">${item.test_count} test${item.test_count === 1 ? '' : 's'}</span>` : '<span class="muted">Not used yet</span>'}</td><td>${date(item.imported_at)}</td><td><button class="danger small" data-delete-bank="${item.bank_id}" data-bank-name="${esc(item.bank_name)}" data-test-count="${item.test_count || 0}" aria-label="Delete ${esc(item.bank_name)}">Delete</button></td></tr>`).join('')}</tbody></table></div>
@@ -599,54 +626,61 @@ async function questionBanks() {
   const dropzone = document.querySelector('#zip-dropzone');
   let uploading = false;
   const selectFile = () => {
-    const file = input.files[0];
-    const valid = !!file && /\.zip$/i.test(file.name);
-    submit.disabled = !valid || uploading;
-    document.querySelector('#zip-filename').textContent = file?.name || 'Choose a ZIP or drop it here';
-    document.querySelector('#zip-file-detail').textContent = file ? `${(file.size / 1024 / 1024).toFixed(2)} MB · ${valid ? 'ZIP package selected' : 'Unsupported file type'}` : 'Question-bank packages · .zip only';
-    status.textContent = file ? (valid ? 'Ready to import.' : 'Please choose a .zip question-bank package.') : 'Select a package to get started.';
-    status.classList.toggle('upload-error', !!file && !valid);
+    const files = Array.from(input.files);
+    const valid = files.length > 0 && files.every(file => /\.zip$/i.test(file.name));
+    submit.disabled = !valid || uploading || bankImportBusy;
+    document.querySelector('#zip-filename').textContent = files.length === 1 ? files[0].name : files.length ? `${files.length} chapter ZIPs selected` : 'Choose chapter ZIPs or drop them here';
+    document.querySelector('#zip-file-detail').textContent = files.length ? `${(files.reduce((sum,file) => sum+file.size,0) / 1024 / 1024).toFixed(2)} MB total · ${valid ? 'ZIP packages selected' : 'Unsupported file type'}` : 'Question-bank packages · .zip only';
+    status.textContent = bankImportBusy ? 'An import is running. Keep this page open; reopen Question banks afterwards to see the results.' : files.length ? (valid ? 'Ready to import.' : 'Please choose a .zip question-bank package for every file.') : 'Select packages to get started.';
+    status.classList.toggle('upload-error', files.length > 0 && !valid);
     dropzone.classList.toggle('has-file', valid);
   };
   input.addEventListener('change', selectFile);
+  selectFile();
   dropzone.addEventListener('dragover', event => { event.preventDefault(); if (!uploading) dropzone.classList.add('dragging'); });
   dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragging'));
   dropzone.addEventListener('drop', event => {
     event.preventDefault(); dropzone.classList.remove('dragging');
     if (uploading) return;
-    if (event.dataTransfer.files.length !== 1) { status.textContent = 'Choose one ZIP package at a time.'; return; }
+    if (!event.dataTransfer.files.length) return;
     input.files = event.dataTransfer.files;
     selectFile();
   });
   form.addEventListener('submit', async event => {
     event.preventDefault();
-    if (uploading) return;
+    if (uploading || bankImportBusy) return;
     selectFile();
     if (submit.disabled) return;
-    const payload = new FormData(form);
-    uploading = true; input.disabled = true; submit.disabled = true;
+    const files = Array.from(input.files);
+    const replace = form.elements.replace_existing;
+    const replaceExisting = replace.checked;
+    uploading = true; bankImportBusy = true; input.disabled = true; submit.disabled = true; replace.disabled = true;
     form.setAttribute('aria-busy', 'true');
     submit.textContent = 'Importing…';
     status.textContent = 'Uploading and checking your package. Please keep this page open.';
-    let result;
-    try {
-      result = await api('/api/admin/question-banks/import-package', {method:'POST', body:payload});
-    } catch (error) {
+    bankImportResults = await importBankFiles(files, replaceExisting, api, (index,total,name) => {
+      status.textContent = `Importing ${index} of ${total}: ${name}. Please keep this page open.`;
+    });
+    bankImportBusy = false; replace.disabled = false;
+    const succeeded = bankImportResults.filter(result => result.ok).length;
+    notify(`${succeeded} chapter(s) imported; ${files.length-succeeded} failed.`, succeeded !== files.length);
+    if (!form.isConnected) return;
+    const report = document.querySelector('#bank-import-results');
+    report.hidden = false; report.innerHTML = bankImportReport(bankImportResults);
+    if (!succeeded) {
       uploading = false; input.disabled = false; submit.disabled = false;
       form.setAttribute('aria-busy', 'false');
       submit.innerHTML = `Try import again ${facultyIcon('arrow')}`;
-      status.textContent = error.message; status.classList.add('upload-error');
+      status.textContent = bankImportResults.map(result => `${result.filename}: ${result.message}`).join(' '); status.classList.add('upload-error');
       return;
     }
-    notify(`${result.bank_name}: ${result.question_count} questions imported.`);
-    if (!form.isConnected) return;
     status.textContent = 'Imported successfully. Refreshing your library…';
     try { await questionBanks(); }
-    catch (_) { status.textContent = 'Your bank was imported. Reopen Question banks to refresh the library.'; }
+    catch (_) { status.textContent = 'Imports finished. Reopen Question banks to refresh the library; retry only the failed files listed below.'; }
   });
   document.querySelectorAll('[data-delete-bank]').forEach(button => button.addEventListener('click', async () => {
     const testCount = Number(button.dataset.testCount || 0);
-    const dependentWarning = testCount ? ` This will also permanently delete ${testCount} dependent test(s), every attempt and response, and all result history.` : '';
+    const dependentWarning = testCount ? ` This will also delete ${testCount} dependent test(s), attempts and responses. Completed results will remain in the CSV export.` : '';
     if (!confirm(`Delete “${button.dataset.bankName}” and its questions/visuals?${dependentWarning} This cannot be undone.`)) return;
     try {
       const result = await api(`/api/admin/question-banks/${button.dataset.deleteBank}`, {method:'DELETE'});
@@ -699,7 +733,7 @@ async function tests() {
   document.querySelectorAll('[data-device-state]').forEach(button => button.addEventListener('click', async () => { const action=button.dataset.deviceState; const reason=prompt(`Reason to ${action} this device:`); if (reason===null || !confirm(`${action==='revoke'?'Revoke':'Reactivate'} this lab computer now?`)) return; try { await api(`/api/admin/devices/${encodeURIComponent(button.dataset.deviceId)}/${action}`, {method:'POST',body:{reason}}); notify(`Device ${action}d.`); tests(); } catch(error) { notify(error.message,true); } }));
   document.querySelectorAll('[data-delete-test]').forEach(button => button.addEventListener('click', async () => {
     const attemptCount = Number(button.dataset.attemptCount || 0);
-    const historyWarning = attemptCount ? ` This will also delete ${attemptCount} attempt(s), responses, results, and violation records.` : '';
+    const historyWarning = attemptCount ? ` This will also delete ${attemptCount} attempt(s), responses and violation records. Completed results will remain in the CSV export.` : '';
     if (!confirm(`Delete “${button.dataset.testName}”?${historyWarning} This cannot be undone.`)) return;
     try { const result = await api(`/api/admin/tests/${button.dataset.deleteTest}`, {method:'DELETE'}); notify(`${result.test_name} deleted.`); tests(); }
     catch(error) { notify(error.message,true); }
@@ -728,5 +762,5 @@ async function students() {
 }
 
 async function boot() { try { const result=await api('/api/me'); state.user=result.user; state.csrfToken=result.csrf_token || null; state.user ? home() : loginScreen(); } catch { loginScreen(); } }
-if (typeof module !== 'undefined' && module.exports) module.exports = {mathText, mathEsc, questionContentMarkup, facultyLaunchAction, facultyTimingMarkup, tickFacultyTimers, syncFacultyTimers, createFacultyTimerSync, eligiblePilotDevices, clientUpdateStatusLabel, canPublishClientUpdate};
+if (typeof module !== 'undefined' && module.exports) module.exports = {mathText, mathEsc, questionContentMarkup, facultyLaunchAction, facultyTimingMarkup, tickFacultyTimers, syncFacultyTimers, createFacultyTimerSync, eligiblePilotDevices, clientUpdateStatusLabel, canPublishClientUpdate, importBankFiles, bankImportReport};
 if (typeof document !== 'undefined') boot();

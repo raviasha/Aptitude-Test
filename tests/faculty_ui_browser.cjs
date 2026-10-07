@@ -47,7 +47,7 @@ async function run() {
       else if (pathname === '/api/admin/question-banks') data = {banks};
       else if (pathname === '/api/admin/question-banks/import-package') {
         if (holdUpload) await holdUpload;
-        if (uploadFails) { await route.fulfill({status:400,json:{detail:'The ZIP does not contain a valid question-bank manifest.'}}); return; }
+        if (uploadFails || request.postData().includes('filename="broken.zip"')) { await route.fulfill({status:400,json:{detail:'The ZIP does not contain a valid question-bank manifest.'}}); return; }
         banks = [...banks, {bank_id:99,bank_name:'New algebra bank',question_count:20,test_count:0,imported_at:'2026-09-11T10:00:00Z'}];
         data = banks[banks.length-1];
       }
@@ -142,6 +142,22 @@ async function run() {
     await page.getByRole('heading', {name:'Your library starts here'}).waitFor();
     assert.equal(await file.count(),1);
     assert.equal(calls.filter(call => call.path.endsWith('/import-package')).length, importCount + 1);
+    holdUpload = null;
+    assert.equal(await file.evaluate(element => element.multiple),true);
+    await page.locator('#zip-dropzone').evaluate(element => {
+      const dataTransfer = new DataTransfer();
+      for (const name of ['first.zip','broken.zip','last.zip']) dataTransfer.items.add(new File(['fixture'],name,{type:'application/zip'}));
+      element.dispatchEvent(new DragEvent('drop',{bubbles:true,cancelable:true,dataTransfer}));
+    });
+    await page.getByRole('checkbox', {name:'Update an existing unused bank with the same name'}).check();
+    await page.getByRole('button', {name:'Import question bank'}).click();
+    await page.getByRole('heading', {name:'Import results: 2 succeeded, 1 failed'}).waitFor();
+    const batchCalls = calls.filter(call => call.path.endsWith('/import-package')).slice(-3);
+    assert.deepEqual(batchCalls.map(call => /filename="([^"]+)"/.exec(call.body)[1]),['first.zip','broken.zip','last.zip']);
+    assert.ok(batchCalls.every(call => /name="replace_existing"\r\n\r\ntrue/.test(call.body)));
+    assert.match(await page.locator('#bank-import-results').innerText(),/broken.zip.*Failed/);
+    assert.equal(await file.evaluate(element => element.files.length),0,'successful files must not be left selected for retry');
+    await page.screenshot({path:path.join(output,'bulk-import-results.png'),fullPage:true});
     await page.getByRole('button', {name:'Sign out',exact:true}).click();
     await page.getByRole('heading', {name:'Sign in',exact:true}).waitFor();
     assert.equal(await page.locator('.faculty-shell').count(),0);

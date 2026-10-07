@@ -1133,6 +1133,9 @@ def ensure_schema() -> None:
               violation_type TEXT NOT NULL, occurred_at TEXT NOT NULL,
               FOREIGN KEY(attempt_id) REFERENCES attempts(attempt_id)
             );
+            CREATE TABLE IF NOT EXISTS archived_results (
+              attempt_id TEXT PRIMARY KEY, row_json TEXT NOT NULL
+            );
             CREATE INDEX IF NOT EXISTS idx_attempts_student ON attempts(student_id);
             CREATE INDEX IF NOT EXISTS idx_responses_attempt ON responses(attempt_id);
             """
@@ -3028,6 +3031,15 @@ def delete_question_bank(bank_id: int, request: Request) -> Dict[str, Any]:
             ],
         )
         operation.stage()
+        archive_result_rows(connection, {
+            row[0] for row in connection.execute(
+                """SELECT attempt_id FROM attempts WHERE test_id IN
+                     (SELECT test_id FROM tests WHERE bank_id = ?)
+                   UNION SELECT attempt_id FROM responses WHERE question_id IN
+                     (SELECT question_id FROM questions WHERE bank_id = ?)""",
+                (bank_id, bank_id),
+            )
+        })
         connection.execute(
             """DELETE FROM exam_violations
                WHERE attempt_id IN (
@@ -3046,6 +3058,12 @@ def delete_question_bank(bank_id: int, request: Request) -> Dict[str, Any]:
                )
                OR question_id IN (SELECT question_id FROM questions WHERE bank_id = ?)""",
             (bank_id, bank_id),
+        )
+        connection.execute(
+            """DELETE FROM submissions WHERE attempt_id IN
+               (SELECT attempt_id FROM attempts WHERE test_id IN
+                (SELECT test_id FROM tests WHERE bank_id = ?))""",
+            (bank_id,),
         )
         connection.execute(
             "DELETE FROM attempts WHERE test_id IN (SELECT test_id FROM tests WHERE bank_id = ?)",
@@ -3605,6 +3623,7 @@ def delete_test(test_id: int, request: Request) -> Dict[str, Any]:
             for row in connection.execute("SELECT attempt_id FROM attempts WHERE test_id = ?", (test_id,)).fetchall()
         ]
         if attempt_ids:
+            archive_result_rows(connection, set(attempt_ids))
             placeholders = ",".join("?" for _ in attempt_ids)
             connection.execute(f"DELETE FROM exam_violations WHERE attempt_id IN ({placeholders})", attempt_ids)
             connection.execute(f"DELETE FROM responses WHERE attempt_id IN ({placeholders})", attempt_ids)
@@ -3871,37 +3890,33 @@ def extend_test_duration(test_id: int, payload: DurationExtensionPayload, reques
     return {"extended": True, "minutes": payload.minutes, "attempts_extended": len(attempts)}
 
 
-@app.get("/api/admin/export")
-def export_results(request: Request) -> StreamingResponse:
-    require_user(request, "admin")
-    with db() as connection:
-        result = connection.execute(
-            """SELECT a.attempt_id, s.student_id, s.name, t.test_name, a.submitted_at, a.submission_cause, a.score, a.total_questions, a.percentage,
-                 ROUND(AVG(CASE WHEN r.category = 'Quantitative Aptitude' THEN r.correct END) * 100, 1) AS quantitative,
-                 ROUND(AVG(CASE WHEN r.category = 'Logical Reasoning' THEN r.correct END) * 100, 1) AS logical,
-                 ROUND(AVG(CASE WHEN r.category = 'Data Interpretation' THEN r.correct END) * 100, 1) AS data_interpretation,
-                 ROUND(AVG(CASE WHEN r.category = 'Verbal Ability' THEN r.correct END) * 100, 1) AS verbal,
-                 ROUND(AVG(CASE WHEN r.category = 'Coding / Computational Thinking' THEN r.correct END) * 100, 1) AS coding
-               FROM attempts a JOIN students s ON s.student_id = a.student_id JOIN tests t ON t.test_id = a.test_id
-               JOIN responses r ON r.attempt_id = a.attempt_id
+def live_result_rows(connection: sqlite3.Connection) -> Dict[str, Dict[str, Any]]:
+    """Build the same complete CSV rows for export and deletion snapshots."""
+    result = connection.execute(
+        """SELECT a.attempt_id, s.student_id, s.name, t.test_name, a.submitted_at, a.submission_cause, a.score, a.total_questions, a.percentage,
+             ROUND(AVG(CASE WHEN r.category = 'Quantitative Aptitude' THEN r.correct END) * 100, 1) AS quantitative,
+             ROUND(AVG(CASE WHEN r.category = 'Logical Reasoning' THEN r.correct END) * 100, 1) AS logical,
+             ROUND(AVG(CASE WHEN r.category = 'Data Interpretation' THEN r.correct END) * 100, 1) AS data_interpretation,
+             ROUND(AVG(CASE WHEN r.category = 'Verbal Ability' THEN r.correct END) * 100, 1) AS verbal,
+             ROUND(AVG(CASE WHEN r.category = 'Coding / Computational Thinking' THEN r.correct END) * 100, 1) AS coding
+           FROM attempts a JOIN students s ON s.student_id = a.student_id JOIN tests t ON t.test_id = a.test_id
+           LEFT JOIN responses r ON r.attempt_id = a.attempt_id
+           WHERE a.status = 'submitted' AND t.mode = 'faculty'
+           GROUP BY a.attempt_id ORDER BY a.submitted_at DESC"""
+    ).fetchall()
+    violations_by_attempt: Dict[str, List[sqlite3.Row]] = {}
+    if result:
+        violation_rows = connection.execute(
+            """SELECT ev.attempt_id, ev.violation_type, ev.occurred_at
+               FROM exam_violations ev
+               JOIN attempts a ON a.attempt_id = ev.attempt_id
+               JOIN tests t ON t.test_id = a.test_id
                WHERE a.status = 'submitted' AND t.mode = 'faculty'
-               GROUP BY a.attempt_id ORDER BY a.submitted_at DESC"""
+               ORDER BY ev.occurred_at, ev.violation_id"""
         ).fetchall()
-        violations_by_attempt: Dict[str, List[sqlite3.Row]] = {}
-        if result:
-            violation_rows = connection.execute(
-                """SELECT ev.attempt_id, ev.violation_type, ev.occurred_at
-                   FROM exam_violations ev
-                   JOIN attempts a ON a.attempt_id = ev.attempt_id
-                   JOIN tests t ON t.test_id = a.test_id
-                   WHERE a.status = 'submitted' AND t.mode = 'faculty'
-                   ORDER BY ev.occurred_at, ev.violation_id"""
-            ).fetchall()
-            for violation in violation_rows:
-                violations_by_attempt.setdefault(violation["attempt_id"], []).append(violation)
-    output = io.StringIO()
-    writer = csv.DictWriter(output, fieldnames=["Student ID", "Student Name", "Test", "Date", "Submission Cause", "Overall Score", "Total Questions", "Percentage", "Quantitative", "Logical Reasoning", "Data Interpretation", "Verbal Ability", "Coding", "Violation Count", "Violations"])
-    writer.writeheader()
+        for violation in violation_rows:
+            violations_by_attempt.setdefault(violation["attempt_id"], []).append(violation)
+    rows: Dict[str, Dict[str, Any]] = {}
     for item in result:
         incidents = [
             incident
@@ -3914,7 +3929,40 @@ def export_results(request: Request) -> StreamingResponse:
             for incident in incidents
             for detail in incident["details"]
         )
-        writer.writerow({"Student ID": item["student_id"], "Student Name": item["name"], "Test": item["test_name"], "Date": item["submitted_at"], "Submission Cause": item["submission_cause"] or "sealed_recovery", "Overall Score": item["score"], "Total Questions": item["total_questions"], "Percentage": item["percentage"], "Quantitative": item["quantitative"], "Logical Reasoning": item["logical"], "Data Interpretation": item["data_interpretation"], "Verbal Ability": item["verbal"], "Coding": item["coding"], "Violation Count": sum(len(incident["details"]) for incident in incidents), "Violations": violation_details})
+        rows[item["attempt_id"]] = {"Student ID": item["student_id"], "Student Name": item["name"], "Test": item["test_name"], "Date": item["submitted_at"], "Submission Cause": item["submission_cause"] or "sealed_recovery", "Overall Score": item["score"], "Total Questions": item["total_questions"], "Percentage": item["percentage"], "Quantitative": item["quantitative"], "Logical Reasoning": item["logical"], "Data Interpretation": item["data_interpretation"], "Verbal Ability": item["verbal"], "Coding": item["coding"], "Violation Count": sum(len(incident["details"]) for incident in incidents), "Violations": violation_details}
+    return rows
+
+
+def archive_result_rows(connection: sqlite3.Connection, attempt_ids: set[str]) -> None:
+    """Snapshot results inside the caller's deletion transaction, without live-row dependencies."""
+    if not attempt_ids:
+        return
+    connection.executemany(
+        "INSERT INTO archived_results (attempt_id, row_json) VALUES (?, ?) ON CONFLICT(attempt_id) DO NOTHING",
+        [
+            (attempt_id, json.dumps(row, ensure_ascii=False))
+            for attempt_id, row in live_result_rows(connection).items()
+            if attempt_id in attempt_ids
+        ],
+    )
+
+
+@app.get("/api/admin/export")
+def export_results(request: Request) -> StreamingResponse:
+    require_user(request, "admin")
+    with db() as connection:
+        # Keep live and archived reads in one snapshot during concurrent deletion.
+        connection.execute("BEGIN")
+        rows = live_result_rows(connection)
+        # An archived snapshot wins if bank deletion also affected a surviving test.
+        rows.update({
+            item["attempt_id"]: json.loads(item["row_json"])
+            for item in connection.execute("SELECT attempt_id, row_json FROM archived_results")
+        })
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=["Student ID", "Student Name", "Test", "Date", "Submission Cause", "Overall Score", "Total Questions", "Percentage", "Quantitative", "Logical Reasoning", "Data Interpretation", "Verbal Ability", "Coding", "Violation Count", "Violations"])
+    writer.writeheader()
+    writer.writerows(sorted(rows.values(), key=lambda row: row["Date"] or "", reverse=True))
     return StreamingResponse(iter([output.getvalue()]), media_type="text/csv", headers={"Content-Disposition": "attachment; filename=aptitude-results.csv"})
 
 

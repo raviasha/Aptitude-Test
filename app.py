@@ -777,6 +777,7 @@ def create_attempt_from_questions(
                VALUES (?, ?, ?, ?, ?)""",
             (attempt_id, question["question_id"], question["category"], question["chapter"], index),
         )
+    question_books.record_test_sources(connection, test_id)
     return attempt_id
 
 
@@ -1576,10 +1577,7 @@ def save_question_package(
             if existing:
                 new_bank = False
                 bank_id = existing["bank_id"]
-                has_assessment = connection.execute(
-                    "SELECT 1 FROM tests WHERE bank_id = ? LIMIT 1",
-                    (bank_id,),
-                ).fetchone()
+                has_assessment = question_books.dependent_test_ids(connection, bank_id)
                 has_history = connection.execute(
                     """SELECT 1 FROM responses r
                        JOIN questions q ON q.question_id = r.question_id
@@ -3108,7 +3106,10 @@ def list_question_banks(request: Request) -> Dict[str, Any]:
                LEFT JOIN questions q ON q.bank_id = b.bank_id
                GROUP BY b.bank_id ORDER BY b.imported_at DESC"""
         ).fetchall()
-    return {"banks": rows(banks)}
+        result = rows(banks)
+        for bank in result:
+            bank["test_count"] = len(question_books.dependent_test_ids(connection, bank["bank_id"]))
+    return {"banks": result}
 
 
 @app.delete("/api/admin/question-banks/{bank_id}")
@@ -3122,99 +3123,34 @@ def delete_question_bank(bank_id: int, request: Request) -> Dict[str, Any]:
         if not bank:
             raise HTTPException(404, "Question bank not found.")
 
+        affected = question_books.dependent_test_ids(connection, bank_id)
+        # Resolve once under the write lock; reuse for counts, archival and cleanup.
+        connection.execute("CREATE TEMP TABLE affected_bank_tests(test_id INTEGER PRIMARY KEY)")
+        connection.executemany("INSERT INTO affected_bank_tests VALUES (?)", [(t,) for t in affected])
+        test_set = "SELECT test_id FROM affected_bank_tests"
+        attempt_set = f"SELECT attempt_id FROM attempts WHERE test_id IN ({test_set})"
+        release_set = f"SELECT release_id FROM assessment_releases WHERE test_id IN ({test_set})"
         deleted_counts = {
-            "tests": connection.execute(
-                "SELECT COUNT(*) AS count FROM tests WHERE bank_id = ?", (bank_id,)
-            ).fetchone()["count"],
-            "attempts": connection.execute(
-                """SELECT COUNT(*) AS count FROM attempts
-                   WHERE test_id IN (SELECT test_id FROM tests WHERE bank_id = ?)""",
-                (bank_id,),
-            ).fetchone()["count"],
-            "responses": connection.execute(
-                """SELECT COUNT(*) AS count FROM responses
-                   WHERE attempt_id IN (
-                     SELECT a.attempt_id FROM attempts a
-                     JOIN tests t ON t.test_id = a.test_id
-                     WHERE t.bank_id = ?
-                   )
-                   OR question_id IN (SELECT question_id FROM questions WHERE bank_id = ?)""",
-                (bank_id, bank_id),
-            ).fetchone()["count"],
-            "questions": connection.execute(
-                "SELECT COUNT(*) AS count FROM questions WHERE bank_id = ?", (bank_id,)
-            ).fetchone()["count"],
-            "stimuli": connection.execute(
-                "SELECT COUNT(*) AS count FROM stimuli WHERE bank_id = ?", (bank_id,)
-            ).fetchone()["count"],
+            "tests": len(affected),
+            "attempts": connection.execute(f"SELECT COUNT(*) FROM attempts WHERE test_id IN ({test_set})").fetchone()[0],
+            "responses": connection.execute(f"SELECT COUNT(*) FROM responses WHERE attempt_id IN ({attempt_set})").fetchone()[0],
+            "questions": connection.execute("SELECT COUNT(*) FROM questions WHERE bank_id=?", (bank_id,)).fetchone()[0],
+            "stimuli": connection.execute("SELECT COUNT(*) FROM stimuli WHERE bank_id=?", (bank_id,)).fetchone()[0],
         }
-        release_pack_filenames = [
-            row["content_pack_filename"]
-            for row in connection.execute(
-                "SELECT content_pack_filename FROM assessment_releases WHERE test_id IN (SELECT test_id FROM tests WHERE bank_id = ?)",
-                (bank_id,),
-            ).fetchall()
-        ]
-        operation = ArtifactQuarantine(
-            DATA_DIR,
-            owner_kind="question_bank",
-            owner_id=bank_id,
-            artifacts=[
-                question_assets_dir() / str(bank_id),
-                *(
-                    assessment_packs_dir() / Path(filename).name
-                    for filename in release_pack_filenames
-                ),
-            ],
-        )
+        filenames = [r[0] for r in connection.execute(
+            f"SELECT content_pack_filename FROM assessment_releases WHERE test_id IN ({test_set})")]
+        operation = ArtifactQuarantine(DATA_DIR, owner_kind="question_bank", owner_id=bank_id,
+            artifacts=[question_assets_dir() / str(bank_id),
+                       *(assessment_packs_dir() / Path(name).name for name in filenames)])
         operation.stage()
-        archive_result_rows(connection, {
-            row[0] for row in connection.execute(
-                """SELECT attempt_id FROM attempts WHERE test_id IN
-                     (SELECT test_id FROM tests WHERE bank_id = ?)
-                   UNION SELECT attempt_id FROM responses WHERE question_id IN
-                     (SELECT question_id FROM questions WHERE bank_id = ?)""",
-                (bank_id, bank_id),
-            )
-        })
-        connection.execute(
-            """DELETE FROM exam_violations
-               WHERE attempt_id IN (
-                 SELECT a.attempt_id FROM attempts a
-                 JOIN tests t ON t.test_id = a.test_id
-                 WHERE t.bank_id = ?
-               )""",
-            (bank_id,),
-        )
-        connection.execute(
-            """DELETE FROM responses
-               WHERE attempt_id IN (
-                 SELECT a.attempt_id FROM attempts a
-                 JOIN tests t ON t.test_id = a.test_id
-                 WHERE t.bank_id = ?
-               )
-               OR question_id IN (SELECT question_id FROM questions WHERE bank_id = ?)""",
-            (bank_id, bank_id),
-        )
-        connection.execute(
-            """DELETE FROM submissions WHERE attempt_id IN
-               (SELECT attempt_id FROM attempts WHERE test_id IN
-                (SELECT test_id FROM tests WHERE bank_id = ?))""",
-            (bank_id,),
-        )
-        connection.execute(
-            "DELETE FROM attempts WHERE test_id IN (SELECT test_id FROM tests WHERE bank_id = ?)",
-            (bank_id,),
-        )
-        connection.execute(
-            "DELETE FROM release_questions WHERE release_id IN (SELECT release_id FROM assessment_releases WHERE test_id IN (SELECT test_id FROM tests WHERE bank_id = ?))",
-            (bank_id,),
-        )
-        connection.execute(
-            "DELETE FROM assessment_releases WHERE test_id IN (SELECT test_id FROM tests WHERE bank_id = ?)",
-            (bank_id,),
-        )
-        connection.execute("DELETE FROM tests WHERE bank_id = ?", (bank_id,))
+        archive_result_rows(connection, {r[0] for r in connection.execute(attempt_set)})
+        for table in ("exam_violations", "responses", "submissions"):
+            connection.execute(f"DELETE FROM {table} WHERE attempt_id IN ({attempt_set})")
+        connection.execute(f"DELETE FROM attempts WHERE test_id IN ({test_set})")
+        connection.execute(f"DELETE FROM release_questions WHERE release_id IN ({release_set})")
+        connection.execute(f"DELETE FROM assessment_releases WHERE test_id IN ({test_set})")
+        connection.execute(f"DELETE FROM test_source_banks WHERE test_id IN ({test_set})")
+        connection.execute(f"DELETE FROM tests WHERE test_id IN ({test_set})")
         connection.execute("DELETE FROM stimuli WHERE bank_id = ?", (bank_id,))
         connection.execute("DELETE FROM questions WHERE bank_id = ?", (bank_id,))
         connection.execute("DELETE FROM question_banks WHERE bank_id = ?", (bank_id,))

@@ -36,6 +36,11 @@ def record_test_sources(connection: sqlite3.Connection, test_id: int) -> None:
                            [(test_id, bank_id) for bank_id in source_bank_ids(connection, test_id)])
 
 
+def dependent_test_ids(connection: sqlite3.Connection, bank_id: int) -> list[int]:
+    return [r[0] for r in connection.execute("SELECT test_id FROM tests").fetchall()
+            if bank_id in source_bank_ids(connection, r[0])]
+
+
 def ensure_book_schema(connection: sqlite3.Connection) -> None:
     connection.execute("""CREATE TABLE IF NOT EXISTS books (
         book_id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, title_key TEXT NOT NULL UNIQUE)""")

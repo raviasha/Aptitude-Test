@@ -498,6 +498,9 @@ class DistributedAdminTests(unittest.TestCase):
             ("POST", "/api/admin/question-banks/import-from-folder"),
             ("PATCH", "/api/admin/questions/{question_id}/active"),
             ("POST", "/api/admin/tests"),
+            ("POST", "/api/admin/tests/preview"),
+            ("POST", "/api/admin/books/assign"),
+            ("PATCH", "/api/admin/books/{book_id}"),
             ("POST", "/api/admin/tests/{test_id}/duplicate"),
             ("POST", "/api/admin/attempts/{attempt_id}/void"),
             ("POST", "/api/admin/attempts/{attempt_id}/extend"),
@@ -534,6 +537,7 @@ class DistributedAdminTests(unittest.TestCase):
             "student_id": "NO-SUCH-STUDENT",
             "device_id": str(uuid.uuid4()),
             "bank_id": "999999",
+            "book_id": "999999",
             "question_id": "999999",
             "test_id": "999999",
             "attempt_id": str(uuid.uuid4()),
@@ -699,15 +703,15 @@ class DistributedAdminTests(unittest.TestCase):
         self.assertEqual(200, response.status_code)
         self.assertEqual(before, self.exported_results())
 
-    def test_bank_deletion_retains_surviving_test_result_once_then_test_delete_is_idempotent(self):
+    def test_bank_deletion_finds_response_source_without_anchor_and_retains_csv_once(self):
         self.seed_export_result()
         before = self.exported_results()
         with app.db() as connection:
             connection.execute('UPDATE tests SET bank_id=NULL WHERE test_id=?', (self.test_id,))
-        for path in (f'/api/admin/question-banks/{self.bank_id}', f'/api/admin/tests/{self.test_id}'):
-            response = self.client.delete(path, headers={'X-KSAT-CSRF': self.csrf_token})
-            self.assertEqual(200, response.status_code, response.text)
-            self.assertEqual(before, self.exported_results())
+        response = self.client.delete(f'/api/admin/question-banks/{self.bank_id}', headers={'X-KSAT-CSRF': self.csrf_token})
+        self.assertEqual(200, response.status_code, response.text)
+        self.assertEqual(1, response.json()["deleted_counts"]["tests"])
+        self.assertEqual(before, self.exported_results())
         repeated = self.client.delete(f'/api/admin/tests/{self.test_id}', headers={'X-KSAT-CSRF': self.csrf_token})
         self.assertEqual(404, repeated.status_code)
         self.assertEqual(before, self.exported_results())

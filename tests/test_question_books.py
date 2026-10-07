@@ -66,3 +66,30 @@ class QuestionBooksTests(BookFixture):
         self.assertEqual(response.status_code, 200, response.text)
         banks = self.client.get("/api/admin/question-banks").json()["banks"]
         self.assertEqual(next(b for b in banks if b["bank_name"] == "Book import")["book_title"], "Reasoning")
+
+    def test_invalid_title_and_rename_collision_are_atomic(self):
+        a,b=self.bank("A"),self.bank("B")
+        for title in ["", " " * 3, "x" * 201, "Bad\nTitle"]:
+            response=self.post("/api/admin/books/assign",{"bank_ids":[a],"book_title":title})
+            self.assertEqual(response.status_code,400,response.text)
+        one=self.post("/api/admin/books/assign",{"bank_ids":[a],"book_title":"One"}).json()
+        two=self.post("/api/admin/books/assign",{"bank_ids":[b],"book_title":"Two"}).json()
+        response=self.client.patch(f"/api/admin/books/{two['book_id']}",json={"title":"ONE"},headers=self.headers)
+        self.assertEqual(response.status_code,400,response.text)
+        self.assertEqual(len(self.client.get("/api/admin/books").json()["books"]),2)
+
+    def test_old_response_source_is_backfilled_without_rewriting_results(self):
+        a,b=self.bank("A",1),self.bank("B",1)
+        with app.db() as db:
+            test=db.execute("INSERT INTO tests(test_name,composition,bank_id,created_at) VALUES ('Old','[]',?,?)",(a,app.now())).lastrowid
+            db.execute("INSERT INTO students VALUES ('S1','Old Student','hash','C','A',?)",(app.now(),))
+            db.execute("""INSERT INTO attempts(attempt_id,student_id,test_id,started_at,total_questions)
+                VALUES ('old','S1',?,?,1)""",(test,app.now()))
+            question=db.execute("SELECT * FROM questions WHERE bank_id=?",(b,)).fetchone()
+            db.execute("""INSERT INTO responses(attempt_id,question_id,category,chapter,question_order)
+                VALUES ('old',?,'Category B','Arithmetic',1)""",(question["question_id"],))
+        app.ensure_schema()
+        app.ensure_schema()
+        with app.db() as db:
+            self.assertEqual([r[0] for r in db.execute("SELECT bank_id FROM test_source_banks WHERE test_id=? ORDER BY bank_id",(test,))],[a,b])
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM responses WHERE attempt_id='old'").fetchone()[0],1)

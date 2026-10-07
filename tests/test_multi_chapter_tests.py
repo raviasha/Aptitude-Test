@@ -101,3 +101,28 @@ class MultiChapterTests(BookFixture):
         with app.db() as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM test_source_banks WHERE test_id=?",
                 (created["test_id"],)).fetchone()[0],3)
+
+    def test_same_passage_and_source_keys_keep_distinct_bank_media_and_answers(self):
+        ids,body=self.setup_selection(counts=(1,1,1),total=3)
+        with app.db() as db:
+            for bank in ids:
+                folder=app.question_assets_dir()/str(bank)
+                folder.mkdir()
+                (folder/"chart.svg").write_text('<svg xmlns="http://www.w3.org/2000/svg"><text>'+str(bank)+'</text></svg>')
+                db.execute("""INSERT INTO stimuli(bank_id,stimulus_id,stimulus_type,title,alt_text,asset_filename,content_json,created_at)
+                    VALUES (?,'shared','image','Chart','Unique chart','chart.svg','{}',?)""",(bank,app.now()))
+                db.execute("UPDATE questions SET stimulus_id='shared',correct_answer=? WHERE bank_id=?",
+                           ("B" if bank==ids[1] else "A",bank))
+            rules=[{"scope":"chapter","bank_id":b,"chapter":"Arithmetic","quantity":1} for b in ids]
+            selected=app.sample_questions(db,ids[0],rules,["Easy"])
+            public,assets=app.public_release_material(db,selected)
+            self.assertEqual(len({q.stimulus.id for q in public}),3)
+            self.assertEqual(len(assets),3)
+            self.assertEqual(len({q.question_id for q in public}),3)
+        created=self.post("/api/admin/tests",body)
+        self.assertEqual(created.status_code,200,created.text)
+        with app.db() as db:
+            frozen=db.execute("""SELECT q.bank_id,r.correct_answer FROM release_questions r
+                JOIN questions q ON q.question_id=r.question_id WHERE r.release_id=? ORDER BY q.bank_id""",
+                (created.json()["release_id"],)).fetchall()
+            self.assertEqual([r["correct_answer"] for r in frozen],["A","B","A"])

@@ -136,3 +136,21 @@ For browser tests, set `$env:NODE_PATH='C:/Users/ravis/.cache/codex-runtimes/cod
 ## Execution choice
 
 Recommended: native execution in this session, task-by-task, followed by an independent whole-branch review. These five tasks share `app.py` and source identity contracts, so sequential implementation avoids overlapping changes. Subagent-driven implementation with review after each task remains an option. Await the user's plan review and execution choice before product changes.
+
+## Execution record — 2026-10-08
+
+The user approved native execution. All five implementation deliverables are complete:
+
+- [x] Book metadata, assignment/rename and backward-compatible import metadata.
+- [x] Balanced chapter allocation and server-owned preview.
+- [x] Combined-test creation, duplication, source-aware sampling and release compatibility.
+- [x] Dependency-aware bank replacement/deletion and archived CSV protection.
+- [x] Book-grouped chapter checkboxes, manual mode, responsive UI and browser verification.
+- [x] Independent read-only review and focused regression tests for its findings.
+- [x] Final application suite: 834 passed, 48 skipped, 595 subtests passed.
+- [x] Additional root application/import/media/package tests: 84 passed.
+- [x] Extended faculty browser fixture and bulk-import JavaScript checks passed.
+
+The detailed task checklists above are the original execution instructions, retained as the design record. Actual test evidence, review decisions and the ten unrelated extraction-suite collection errors are recorded in `docs/book-chapter-tests-verification.md`.
+
+No build, merge, push, publication or live installation has been performed. The feature branch remains available for the next authorized release step.

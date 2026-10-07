@@ -100,4 +100,4 @@ Use disposable databases and browser fixtures, never the running lab's ProgramDa
 
 No changes to exam timing, independent per-student question draws, automatic content deduplication, textbook ZIP contents, client update delivery, or the historical results CSV schema. No GitHub publication or installation is performed merely by approving this specification.
 
-Status: written specification approved by the user on 2026-10-07; implementation and native execution plan subsequently approved. Implementation is undergoing final regression verification. The post-commit cleanup clarification above records the independent-review decision.
+Status: written specification approved by the user on 2026-10-07; implementation and native execution plan subsequently approved. Source implementation and application regression verification completed on 2026-10-08. See `docs/book-chapter-tests-verification.md` for counts and repository-wide collection limitations. The post-commit cleanup clarification above records the independent-review decision.

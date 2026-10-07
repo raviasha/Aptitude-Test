@@ -177,6 +177,7 @@ async function run() {
     assert.equal(await page.getByLabel('Test name',{exact:true}).inputValue(),'Across books');
     await page.getByRole('button',{name:'Refresh allocation'}).click();
     await page.waitForFunction(()=>!document.querySelector('#create-test').disabled);
+    await page.waitForFunction(()=>!document.querySelector('#toast').classList.contains('show'));
     await page.evaluate(()=>window.scrollTo(0,0));
     await page.screenshot({path:path.join(output,'balanced-chapters-desktop.png'),fullPage:true});
     await page.setViewportSize({width:390,height:844});

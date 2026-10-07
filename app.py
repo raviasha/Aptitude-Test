@@ -56,7 +56,7 @@ from ksat.coordinator.routes import (
     warm_pack_registry,
 )
 from ksat.coordinator.process_lock import CoordinatorProcessLock
-from ksat.coordinator import question_books
+from ksat.coordinator import question_books, question_selection
 from ksat.coordinator.schema import migrate_distributed_schema
 from ksat.coordinator.submissions import (
     INVALID_ANSWER_STATE,
@@ -379,6 +379,17 @@ class BookAssignmentPayload(BaseModel):
 
 class BookTitlePayload(BaseModel):
     title: str
+
+
+class ChapterChoice(BaseModel):
+    bank_id: int = Field(strict=True, gt=0)
+    chapter: str = Field(min_length=1, max_length=120)
+
+
+class ChapterPreviewPayload(BaseModel):
+    chapters: List[ChapterChoice] = Field(min_length=1, max_length=500)
+    total_questions: int = Field(strict=True, ge=1, le=500)
+    difficulties: List[str] = Field(default_factory=lambda: list(QUESTION_DIFFICULTIES))
 
 
 class ExamViolationPayload(BaseModel):
@@ -2995,6 +3006,25 @@ def list_books(request: Request) -> Dict[str, Any]:
     require_user(request, "admin")
     with db() as connection:
         return {"books": rows(connection.execute("SELECT book_id,title FROM books ORDER BY title_key"))}
+
+
+@app.get("/api/admin/chapter-catalogue")
+def get_chapter_catalogue(request: Request) -> Dict[str, Any]:
+    require_user(request, "admin")
+    with db() as connection:
+        return {"chapters": question_selection.chapter_catalogue(connection)}
+
+
+@app.post("/api/admin/tests/preview")
+def preview_chapter_test(payload: ChapterPreviewPayload, request: Request) -> Dict[str, Any]:
+    require_user(request, "admin")
+    try:
+        with db() as connection:
+            return question_selection.preview_selection(connection,
+                [c.model_dump() for c in payload.chapters], payload.total_questions,
+                normalize_difficulties(payload.difficulties))
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
 
 
 @app.post("/api/admin/books/assign")

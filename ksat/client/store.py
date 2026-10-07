@@ -423,7 +423,8 @@ class ClientStore:
 
     @classmethod
     def inspect_replacement_safety(cls, database_path: Path, *, integrity_key: bytes,
-                                   integrity_anchor_path: Path) -> str | None:
+                                   integrity_anchor_path: Path,
+                                   allow_pending_submissions: bool = False) -> str | None:
         """Validate existing authenticated state without schema/anchor repair.
 
         Deliberately bypass the writable constructor. A torn anchor needs normal
@@ -472,10 +473,10 @@ class ClientStore:
                     raise ValueError("Client state changed during installation inspection; retry when idle.")
                 if "in_progress" in states:
                     return "active_attempt"
-                if "sealed_pending" in states or pending:
-                    return "pending_submission"
-                if any(state != "acknowledged" for state in states):
+                if any(state not in {"in_progress", "sealed_pending", "acknowledged"} for state in states):
                     raise ValueError(_STATE_INTEGRITY_ERROR)
+                if ("sealed_pending" in states or pending) and not allow_pending_submissions:
+                    return "pending_submission"
                 return None
             finally:
                 reader.close()

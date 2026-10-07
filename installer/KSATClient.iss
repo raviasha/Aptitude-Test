@@ -2,7 +2,7 @@
   #define KSAT_LAB_MODE "0"
 #endif
 #ifndef KSAT_CLIENT_VERSION
-  #define KSAT_CLIENT_VERSION "2.1.4"
+  #define KSAT_CLIENT_VERSION "2.1.5"
 #endif
 #ifndef KSAT_BUNDLE_PUBLISHER_TRUST
   #define KSAT_BUNDLE_PUBLISHER_TRUST "1"
@@ -171,7 +171,7 @@ begin
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
-var Code: Integer; Parent, Token, Script: String;
+var Code: Integer; Parent, Token, Script, InteractiveInstall: String;
 begin
   Result := '';
   try
@@ -211,8 +211,11 @@ begin
       SaveStringToFile(Stage + '\coordinator-url.txt', UTF8Encode(UrlPage.Values[0]), False);
     end;
 #endif
+    InteractiveInstall := '$false';
+    if not WizardSilent then InteractiveInstall := '$true';
     PowerShell('[IO.File]::WriteAllText(' + PSQuote(Stage + '\install-context.json') +
-      ',(@{installer=' + PSQuote(ExpandConstant('{srcexe}')) + '}|ConvertTo-Json -Compress),[Text.UTF8Encoding]::new($false))');
+      ',(@{installer=' + PSQuote(ExpandConstant('{srcexe}')) + ';interactive_install=' + InteractiveInstall +
+      '}|ConvertTo-Json -Compress),[Text.UTF8Encoding]::new($false))');
     if not Exec(Stage + '\KSATClientInstallGuard.exe', '--stage "' + Stage + '" --installer-pid ' +
       IntToStr(GetCurrentProcessId()), Stage, SW_HIDE, ewNoWait, Code) then RaiseException('Unable to start installation guard.');
     GuardStarted := True;

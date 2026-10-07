@@ -44,7 +44,7 @@ class BuilderReleaseTests(unittest.TestCase):
         manifest = assemble_builder_resources(self.fixture.root, self.destination)
         self.assertEqual("payload-manifest.json", manifest.name)
         self.assertEqual(REQUIRED_FILES | {"payload-manifest.json"}, {p.name for p in self.destination.iterdir()})
-        self.assertEqual("2.1.4", load_approved_payload(self.destination).client_version)
+        self.assertEqual("2.1.5", load_approved_payload(self.destination).client_version)
         self.assertEqual((self.fixture.root / "update-release-public.json").read_bytes(), (self.destination / "update-release-public.json").read_bytes())
 
     def test_private_input_and_existing_output_are_rejected(self):
@@ -63,5 +63,5 @@ class BuilderReleaseTests(unittest.TestCase):
         self.assertIn("--onefile", args)
         self.assertIn("--windowed", args)
         self.assertIn("tkinter", args)
-        self.assertIn("KSATLabPackageBuilder-2.1.4", args)
+        self.assertIn("KSATLabPackageBuilder-2.1.5", args)
         self.assertEqual(str(root / "lab_package_builder.py"), args[-1])

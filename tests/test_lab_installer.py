@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from tests.test_client_install_guard import ClientInstallGuardTests, FakeService
@@ -19,7 +20,7 @@ class LabInstallerTests(ClientInstallGuardTests):
         # Catch stale helper targets even when installer labels/resources are new.
         self.install()
         before = self.bytes()
-        for installed in ("2.1.2", "2.1.3", "2.1.4"):
+        for installed in ("2.1.2", "2.1.3", "2.1.4", "2.1.5"):
             with self.subTest(installed=installed), patch(
                     "ksat.client.install_guard.installed_version", return_value=installed):
                 stage = self.program_data / installed
@@ -65,6 +66,70 @@ class LabInstallerTests(ClientInstallGuardTests):
     def test_current_upgrade_keeps_pending_submission_protected(self):
         self._assert_current_upgrade_preserves_pending_work(True, "pending_submission")
 
+    def test_interactive_upgrade_preserves_pending_submission_through_configure(self):
+        # A missing interactive policy at either lease check must fail this flow.
+        self.prepare_attempt(submit=True)
+        before = self.bytes()
+        stage = self.stage()
+        (stage / "install-context.json").write_text('{"interactive_install":true}')
+        service = FakeService(running=True)
+        def parent_alive():
+            status = json.loads((stage / "status.json").read_bytes()) if (stage / "status.json").exists() else {}
+            action = "commit" if status.get("state") == "configured" else "configure"
+            (stage / "control.json").write_text(json.dumps({"action": action}))
+            return True
+        with patch("client_install_guard.WindowsTrustStore", return_value=MemoryTrust()):
+            result = helper.run_guard_session(self.program_data, stage, parent_alive,
+                service=service, profile=self.profile)
+        self.assertEqual(0, result)
+        self.assertEqual("committed", json.loads((stage / "status.json").read_bytes())["state"])
+        after = self.bytes()
+        self.assertEqual(before, {key: after[key] for key in before})
+        # The installer exception must not weaken unattended update deferral.
+        self.assertEqual("pending_submission", self.inspect().diagnostic_code)
+
+    def test_interactive_upgrade_still_blocks_active_attempt(self):
+        self.prepare_attempt()
+        stage = self.stage()
+        (stage / "install-context.json").write_text('{"interactive_install":true}')
+        before = self.bytes()
+        helper.run_guard_session(self.program_data, stage, lambda: True,
+            service=FakeService(), profile=self.profile)
+        self.assertEqual("active_attempt", json.loads((stage / "status.json").read_bytes())["diagnostic_code"])
+        self.assertEqual(before, self.bytes())
+
+    def test_interactive_upgrade_still_blocks_damaged_pending_state(self):
+        self.prepare_attempt(submit=True)
+        (self.root / "identity/state-anchor.json").write_bytes(b"{}")
+        stage = self.stage()
+        (stage / "install-context.json").write_text('{"interactive_install":true}')
+        before = self.bytes()
+        helper.run_guard_session(self.program_data, stage, lambda: True,
+            service=FakeService(), profile=self.profile)
+        self.assertEqual("unreadable_state", json.loads((stage / "status.json").read_bytes())["diagnostic_code"])
+        self.assertEqual(before, self.bytes())
+
+    @unittest.skipUnless(os.name == "nt", "Windows helper entrypoint")
+    def test_helper_entrypoint_only_allows_explicit_interactive_pending_upgrade(self):
+        self.prepare_attempt(submit=True)
+        stage = self.stage()
+        before = self.bytes()
+        for value, expected in ((True, "aborted"), (False, "blocked"), ("true", "blocked"), (1, "blocked"), (None, "blocked")):
+            with self.subTest(value=value):
+                (stage / "install-context.json").write_text(json.dumps({"interactive_install": value}))
+                alive = iter([True, False])
+                parent = SimpleNamespace(pid=123, is_running=lambda: next(alive, False))
+                process = SimpleNamespace(parents=lambda: [parent])
+                # Only host privilege/SCM/parent-process boundaries are replaced.
+                with patch.dict(os.environ, {"ProgramData": str(self.program_data)}), \
+                     patch.object(helper.ctypes, "windll", SimpleNamespace(shell32=SimpleNamespace(IsUserAnAdmin=lambda: True)), create=True), \
+                     patch.object(helper.psutil, "Process", side_effect=lambda pid=None: parent if pid else process), \
+                     patch.object(helper, "require_protected_directory"), \
+                     patch("ksat.client.install_guard.WindowsClientService", return_value=FakeService(running=True)):
+                    helper.main(["--stage", str(stage), "--installer-pid", "123"])
+                self.assertEqual(expected, json.loads((stage / "status.json").read_bytes())["state"])
+                self.assertEqual(before, self.bytes())
+
     def test_two_labs_fresh_install_independently_and_cross_lab_upgrade_is_blocked(self):
         from ksat.coordinator.tls import load_or_create_coordinator_security
         from ksat.public_trust import validate_public_bundle
@@ -91,6 +156,7 @@ class LabInstallerTests(ClientInstallGuardTests):
         before = {p.relative_to(data): p.read_bytes() for p in data.rglob("*") if p.is_file() and not p.name.endswith(".lock")}
         stage = self.program_data / "cross-lab"
         stage.mkdir()
+        (stage / "install-context.json").write_text('{"interactive_install":true}')
         service = FakeService(running=True)
         helper.run_guard_session(data, stage, lambda: True, service=service, profile=profiles[1])
         self.assertEqual("different_server", json.loads((stage / "status.json").read_bytes())["diagnostic_code"])

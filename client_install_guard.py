@@ -226,6 +226,19 @@ def _status(stage: Path, state: str, diagnostic: str | None = None):
         temporary.unlink(missing_ok=True)
 
 
+def interactive_installation(stage: Path) -> bool:
+    """Only an explicit boolean from the protected installer stage opts in.
+
+    Old/missing context and silent/updater installs retain the strict policy.
+    This never permits deletion, relinking to another server or integrity repair.
+    """
+    try:
+        context = strict_json(bounded_read(stage / "install-context.json", 8192), 8192)
+        return isinstance(context, dict) and context.get("interactive_install") is True
+    except (OSError, ValueError):
+        return False
+
+
 def run_guard_session(program_data: Path, stage: Path, parent_alive, *, service=None,
                       profile=None) -> int:
     profile = profile or load_install_profile(stage, program_data)
@@ -233,7 +246,8 @@ def run_guard_session(program_data: Path, stage: Path, parent_alive, *, service=
         raise ValueError("The parent installer is no longer running.")
     with InstallationLease(program_data, service=service) as lease:
         rollback = authorized_rollback(program_data, stage, TARGET_VERSION)
-        check = lease.prepare(profile, TARGET_VERSION, rollback_authorized=rollback)
+        check = lease.prepare(profile, TARGET_VERSION, rollback_authorized=rollback,
+                              allow_pending_submissions=interactive_installation(stage))
         if check.state == "blocked":
             _status(stage, "blocked", check.diagnostic_code)
             return 1
@@ -282,7 +296,8 @@ def main(argv=None) -> int:
     try:
         profile = load_install_profile(stage, program_data)
         check = inspect_installation(program_data, profile, TARGET_VERSION,
-            rollback_authorized=authorized_rollback(program_data, stage, TARGET_VERSION))
+            rollback_authorized=authorized_rollback(program_data, stage, TARGET_VERSION),
+            allow_pending_submissions=interactive_installation(stage))
         if check.state == "blocked":
             _status(stage, "blocked", check.diagnostic_code)
             return 1

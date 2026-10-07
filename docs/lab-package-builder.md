@@ -1,6 +1,6 @@
-# KSAT Lab Package Builder 2.1.4
+# KSAT Lab Package Builder 2.1.5
 
-This separate Windows application creates one signed, preconfigured client installer per lab. It contains the approved **2.1.4 client**, updater and installation guard. The Coordinator stays at **2.1.0**. Python and the repository are not required to run the builder. This pilot release adds automatic service start from the shortcut and safe shutdown after closing the last KSAT tab. It retains the certificate-preserving hostname fallback from 2.1.2. See the [lifecycle pilot checklist](client-window-lifecycle.md).
+This separate Windows application creates one signed, preconfigured client installer per lab. It contains the approved **2.1.5 client**, updater and installation guard. The Coordinator stays at **2.1.0**. Python and the repository are not required to run the builder. This pilot allows interactive upgrades with saved pending submissions, preserving their queue. It retains on-demand service start, safe last-tab shutdown and the certificate-preserving hostname fallback. See the [lifecycle pilot checklist](client-window-lifecycle.md).
 
 ## One-time setup on the packaging PC
 
@@ -13,9 +13,9 @@ Required tools:
 - [innoextract](https://github.com/dscharrer/innoextract) with support for the installed Inno 6.7 compiler. An older stable extractor may not support this format.
 - The authorized code-signing identity in Windows **CurrentUser\My** or **LocalMachine\My**, with accessible private key and the approved public trust installed. Provisioning is an IT operation, not a per-lab input. Do not email/upload a PFX, password or private key.
 
-Open `KSATLabPackageBuilder-2.1.4.exe` on this PC using the Windows account that has the signing key. The builder detects the installed tools automatically and repairs saved paths when their old locations no longer exist. You do not need to select the compiler, signer or extractor for each lab. **Advanced** is collapsed by default; use its **Check setup** or tool overrides only for troubleshooting.
+Open `KSATLabPackageBuilder-2.1.5.exe` on this PC using the Windows account that has the signing key. The builder detects the installed tools automatically and repairs saved paths when their old locations no longer exist. You do not need to select the compiler, signer or extractor for each lab. **Advanced** is collapsed by default; use its **Check setup** or tool overrides only for troubleshooting.
 
-Starting with this release, the builder version matches its bundled client version: **2.1.4 creates 2.1.4 clients** for any lab. Changing the lab URL/files does not change the software version. Old builders and previously generated installers do not update automatically. The earlier unpublished 1.0.3 build has been superseded by this matching-number release.
+The builder version matches its bundled client version: **2.1.5 creates 2.1.5 clients** for any lab. Changing the lab URL/files does not change the software version. Old builders and previously generated installers do not update automatically.
 
 The current private-lab publisher is `CN=KSAT LAB RELEASE SIGNING`, thumbprint `13AE2A6440C33E074FC9C99FB35E5A1CFD9BE908`. The builder cannot silently switch to a different key. It remembers tool and certificate selections only, not lab connection files. This is a designated-PC workflow, not a portable signing setup: copying the builder to another PC does not copy its signing key. No signing files need to be put on Google Drive.
 
@@ -27,7 +27,7 @@ The current private-lab publisher is `CN=KSAT LAB RELEASE SIGNING`, thumbprint `
 4. Click **Create Client Installer**. The builder automatically checks the signing setup, TLS connection and compatible Coordinator version, then compiles, signs and inspects the installer. It does not enrol a device or create a student account. **Test connection** remains an optional separate check.
 5. By default, the lab name comes from the server hostname and each build gets a new folder under `Downloads\KSAT Lab Installers`. The completed screen shows the full output path; click **Open output folder**. To change the name or choose an existing local output folder, expand **Advanced** before building.
 6. If this PC cannot reach the lab, explicitly select **Build offline** under **Advanced** before creating the installer. Public-file validation and signing still run. An offline package does not prove the lab clients can resolve/reach the server. Cancellation waits safely for the current bounded operation and prevents publication.
-7. Keep the generated `.json` receipt, which contains the installer checksum and builder version. Distribute **only** `KSATClientSetup-<lab-name>-2.1.4.exe` to student PCs in that lab. Existing output files are never overwritten.
+7. Keep the generated `.json` receipt, which contains the installer checksum and builder version. Distribute **only** `KSATClientSetup-<lab-name>-2.1.5.exe` to student PCs in that lab. Existing output files are never overwritten.
 
 The generated EXE includes the public connection profile and publisher certificate. It does not include device identities, student records, databases, cached tests, passwords or private keys. The final installer signature covers its configuration as well as its client binaries.
 
@@ -35,7 +35,7 @@ The generated EXE includes the public connection profile and publisher certifica
 
 Follow [the student-PC installation guide](lab-client-installation.md). Test one or two disposable/pilot PCs before a whole-lab rollout; see [the acceptance record](lab-package-builder-acceptance.md).
 
-Same-server upgrades retain existing client settings and device data. A different effective URL, CA or protocol key stops installation; this builder does not migrate a client to a different Coordinator. Active tests and unacknowledged uploads prevent replacement. Normal downgrades are refused; the central updater's protected recovery journal authorizes only its exact cached rollback installer.
+Same-server upgrades retain existing client settings and device data. A different effective URL, CA or protocol key stops installation; this builder does not migrate a client to a different Coordinator. Active tests prevent replacement. Interactive 2.1.5 installation allows pending submissions and preserves their queue; silent/unattended installation continues to defer pending submissions. Normal downgrades are refused; the central updater's protected recovery journal authorizes only its exact cached rollback installer.
 
 After the 2.1.1 bootstrap, subsequent compatible generic signed central updates remain lab-neutral and preserve the lab settings. You do not need to recreate every lab installer for each future update. This tool does not publish a central update or update the Coordinator.
 
@@ -48,7 +48,7 @@ After the 2.1.1 bootstrap, subsequent compatible generic signed central updates 
 - **Compilation failed:** use Inno 6.7.3 and check free space and output permissions.
 - **Verification failed:** check the compatible innoextract build. No unsigned/unverified output is reported as successful.
 - **Connection unverified:** check server hostname uniqueness, DNS, network profile/firewall and clock. Do not substitute a rotating IP address in a hostname-bound profile.
-- **Installation blocked:** finish active tests and pending uploads. For old running clients see the legacy note in the installation guide. Corrupt/legacy state needs IT review, not deletion.
+- **Installation blocked:** finish active tests. Pending uploads block silent installation only; use the interactive 2.1.5 installer if the old client cannot upload. For old running clients see the legacy note in the installation guide. Corrupt/legacy state needs IT review, not deletion.
 - **Installation appears stuck:** do not manually restart the client service while setup is still running. The safety lock intentionally lasts until setup commits, cancels or exits. Have IT close the stalled installer before retrying.
 
 Private-lab signatures can still cause a first-launch Windows/SmartScreen warning. Installing trust inside the EXE cannot retroactively make its first launch trusted. IT should verify the download channel, signer and checksum. A successful signature is not antivirus clearance; do not disable protection to make a build/install succeed.

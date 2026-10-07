@@ -1,8 +1,22 @@
 # Current KSAT release files
 
-The newest **pilot/prerelease** is **Client 2.1.4 and Lab Package Builder 2.1.4**. Coordinator remains **2.1.0**. Test one lab PC before wider deployment; the real administrator/standard-user installation pilot is still required.
+The newest **pilot/prerelease** is **Client 2.1.5 and Lab Package Builder 2.1.5**. Coordinator remains **2.1.0**. Test one lab PC before wider deployment; the real administrator/standard-user installation pilot is still required.
 
-## 2.1.4 pilot downloads — corrected upgrade check
+## 2.1.5 pilot downloads — upgrade clients with saved pending uploads
+
+| Purpose | Download |
+| --- | --- |
+| Upgrade an existing client, retaining its server configuration and saved data | [KSATClientSetup-2.1.5.exe](https://github.com/raviasha/Aptitude-Test/releases/download/client-v2.1.5/KSATClientSetup-2.1.5.exe) |
+| Create a preconfigured **2.1.5 client** installer for your lab | [KSATLabPackageBuilder-2.1.5.exe](https://github.com/raviasha/Aptitude-Test/releases/download/client-v2.1.5/KSATLabPackageBuilder-2.1.5.exe) |
+| Install/update the faculty server (unchanged) | [KSATCoordinatorSetup-2.1.0.exe](KSATCoordinatorSetup-2.1.0.exe) |
+
+**Interactive installation no longer stops solely for `pending_submission`.** Finish active tests, then run the new installer normally (not silently). Saved answers, queued uploads, device identity and server settings remain intact. Do not uninstall or delete ProgramData. Reopen KSAT afterward to resume eligible upload retries; this update does not itself resolve network failures or faculty-intervention submissions.
+
+Silent/unattended installations still defer pending uploads. Active tests, damaged state, different-server packages and true downgrades remain blocked. Use Builder 2.1.5 with each lab's URL and two public connection files to regenerate its installer. Old generated EXEs do not update automatically. Coordinator stays running; no new central-update bundle is included.
+
+[Installation instructions](../docs/lab-client-installation.md) · [Verification and pilot limits](../docs/lab-package-builder-acceptance.md) · [Client checksum](KSATClientSetup-2.1.5.sha256) · [Builder checksum](KSATLabPackageBuilder-2.1.5.sha256)
+
+## Previous 2.1.4 pilot downloads — corrected upgrade check
 
 | Purpose | Download |
 | --- | --- |

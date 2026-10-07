@@ -57,7 +57,8 @@ def reject_links(path: Path) -> None:
                 raise ValueError("Installation paths must not contain links or reparse points.")
 
 
-def inspect_installation(program_data: Path, profile: LabProfile, target_version: str, *, rollback_authorized=False) -> InstallCheck:
+def inspect_installation(program_data: Path, profile: LabProfile, target_version: str, *, rollback_authorized=False,
+                         allow_pending_submissions=False) -> InstallCheck:
     version = None
     try:
         decode_profile(encode_profile(profile), now=datetime.now(timezone.utc))
@@ -92,7 +93,8 @@ def inspect_installation(program_data: Path, profile: LabProfile, target_version
             raise ValueError("Existing enrollment does not match the coordinator.")
         reason = ClientStore.inspect_replacement_safety(
             root / "state" / "client.sqlite3", integrity_key=derive_state_integrity_key(identity),
-            integrity_anchor_path=root / "identity" / "state-anchor.json")
+            integrity_anchor_path=root / "identity" / "state-anchor.json",
+            allow_pending_submissions=allow_pending_submissions)
         return InstallCheck("blocked" if reason else "same_server", version, reason)
     except (ValueError, OSError, RuntimeError, sqlite3.Error):
         return InstallCheck("blocked", version, "unreadable_state")
@@ -178,10 +180,12 @@ class InstallationLease:
         self.gate.__enter__()
         return self
 
-    def prepare(self, profile: LabProfile, target_version: str, *, rollback_authorized=False) -> InstallCheck:
+    def prepare(self, profile: LabProfile, target_version: str, *, rollback_authorized=False,
+                allow_pending_submissions=False) -> InstallCheck:
         if self.closed or self.gate.lock is None or self.prepared:
             raise RuntimeError("Installation lease is not available.")
-        check = inspect_installation(self.program_data, profile, target_version, rollback_authorized=rollback_authorized)
+        check = inspect_installation(self.program_data, profile, target_version, rollback_authorized=rollback_authorized,
+                                     allow_pending_submissions=allow_pending_submissions)
         if check.state == "blocked":
             return check
         self.was_running = self.service.is_running()
@@ -194,7 +198,8 @@ class InstallationLease:
                 self.service.stop()
             from client_app import ClientProcessLock
             self.lifecycle = ClientProcessLock(self.root / "state").acquire()
-            checked = inspect_installation(self.program_data, profile, target_version, rollback_authorized=rollback_authorized)
+            checked = inspect_installation(self.program_data, profile, target_version, rollback_authorized=rollback_authorized,
+                                           allow_pending_submissions=allow_pending_submissions)
             if checked.state == "blocked":
                 self.abort()
                 return checked

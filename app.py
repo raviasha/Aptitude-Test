@@ -357,9 +357,18 @@ class SelectionRule(BaseModel):
     quantity: int = Field(ge=0, le=MAX_ASSESSMENT_QUESTIONS)
 
 
+class ChapterChoice(BaseModel):
+    bank_id: int = Field(strict=True, gt=0)
+    chapter: str = Field(min_length=1, max_length=120)
+
+
 class TestPayload(BaseModel):
     test_name: str
-    bank_id: int
+    bank_id: Optional[int] = None
+    selection_mode: Literal["manual", "balanced"] = "manual"
+    chapters: List[ChapterChoice] = Field(default_factory=list, max_length=500)
+    total_questions: Optional[int] = Field(default=None, strict=True, ge=1, le=500)
+    preview_token: Optional[str] = Field(default=None, max_length=64)
     selection_rules: List[SelectionRule] = Field(default_factory=list)
     composition: Dict[str, int] = Field(default_factory=dict)
     difficulties: List[str] = Field(default_factory=lambda: list(QUESTION_DIFFICULTIES))
@@ -379,11 +388,6 @@ class BookAssignmentPayload(BaseModel):
 
 class BookTitlePayload(BaseModel):
     title: str
-
-
-class ChapterChoice(BaseModel):
-    bank_id: int = Field(strict=True, gt=0)
-    chapter: str = Field(min_length=1, max_length=120)
 
 
 class ChapterPreviewPayload(BaseModel):
@@ -565,6 +569,24 @@ def normalize_selection_rules(
     composition: Optional[Dict[str, int]] = None,
 ) -> List[Dict[str, Any]]:
     """Normalize v2 leaf rules and the legacy category-count mapping."""
+    chapter_rules = [r for r in selection_rules if isinstance(r, dict) and "scope" in r]
+    if chapter_rules:
+        if len(chapter_rules) != len(selection_rules) or composition:
+            raise HTTPException(400, "Do not mix chapter allocations and manual rules.")
+        result = []
+        seen = set()
+        for rule in chapter_rules:
+            bank, chapter, quantity = rule.get("bank_id"), rule.get("chapter"), rule.get("quantity")
+            if (rule["scope"] != "chapter" or type(bank) is not int or bank <= 0
+                or not isinstance(chapter, str) or not chapter.strip() or len(chapter) > 120
+                or type(quantity) is not int or quantity <= 0):
+                raise HTTPException(400, "Invalid saved chapter allocation.")
+            key = (bank, chapter)
+            if key in seen:
+                raise HTTPException(400, "Repeated chapter allocation.")
+            seen.add(key)
+            result.append({"bank_id": bank, "chapter": chapter, "quantity": quantity, "scope": "chapter"})
+        return result
     merged: Dict[tuple[str, str], int] = {}
     raw_rules: List[Any] = list(selection_rules or [])
     if not raw_rules and composition:
@@ -658,6 +680,16 @@ def validate_selection_rules(
         raise HTTPException(400, f"Choose no more than {maximum} questions.")
     selected_difficulties = normalize_difficulties(difficulties)
     placeholders = ",".join("?" for _ in selected_difficulties)
+    if rules and rules[0].get("scope") == "chapter":
+        for rule in rules:
+            available = connection.execute(
+                f"""SELECT COUNT(*) FROM questions WHERE bank_id=? AND active=1
+                    AND COALESCE(NULLIF(chapter,''),?)=? AND difficulty IN ({placeholders})""",
+                (rule["bank_id"], UNCATEGORIZED_CHAPTER, rule["chapter"], *selected_difficulties)
+            ).fetchone()[0]
+            if available < rule["quantity"]:
+                raise HTTPException(400, f"Not enough active questions in {rule['chapter']}: need {rule['quantity']}, have {available}.")
+        return rules
     availability = {
         (row["category"], row["chapter"]): row["count"]
         for row in connection.execute(
@@ -688,14 +720,21 @@ def sample_questions(
     selected: List[sqlite3.Row] = []
     selected_ids: set[int] = set()
     for rule in rules:
+        source_bank = rule.get("bank_id", bank_id)
+        chapter_scope = rule.get("scope") == "chapter"
+        category_clause = "" if chapter_scope else " AND category = ?"
+        params = [UNCATEGORIZED_CHAPTER, source_bank]
+        if not chapter_scope:
+            params.append(rule["category"])
+        params.extend([*selected_difficulties, UNCATEGORIZED_CHAPTER, rule["chapter"]])
         pool = connection.execute(
-            f"""SELECT question_id, source_key, question_text, correct_answer,
+            f"""SELECT question_id, bank_id, source_key, question_text, correct_answer,
                       solution_steps, explanation, category,
                       COALESCE(NULLIF(chapter, ''), ?) AS chapter, stimulus_id
                FROM questions
-               WHERE bank_id = ? AND active = 1 AND category = ? AND difficulty IN ({placeholders})
+               WHERE bank_id = ? AND active = 1 {category_clause} AND difficulty IN ({placeholders})
                   AND COALESCE(NULLIF(chapter, ''), ?) = ?""",
-            (UNCATEGORIZED_CHAPTER, bank_id, rule["category"], *selected_difficulties, UNCATEGORIZED_CHAPTER, rule["chapter"]),
+            params,
         ).fetchall()
         available = [question for question in pool if question["question_id"] not in selected_ids]
         chosen = random.sample(available, rule["quantity"])
@@ -704,7 +743,7 @@ def sample_questions(
 
     grouped: Dict[str, List[sqlite3.Row]] = {}
     for question in selected:
-        group_key = f"stimulus:{question['stimulus_id']}" if question["stimulus_id"] else f"question:{question['question_id']}"
+        group_key = f"stimulus:{question['bank_id']}:{question['stimulus_id']}" if question["stimulus_id"] else f"question:{question['question_id']}"
         grouped.setdefault(group_key, []).append(question)
     question_groups = list(grouped.values())
     random.shuffle(question_groups)
@@ -1849,6 +1888,7 @@ def public_release_material(
 ) -> tuple[list[PublicQuestion], dict[str, bytes]]:
     """Snapshot public question content and embed its display-only assets."""
     assets: dict[str, bytes] = {}
+    mixed_sources = len({q["bank_id"] for q in selected if "bank_id" in q.keys()}) > 1
 
     def embedded_asset(bank_id: int, stored_filename: str) -> str:
         safe_filename = Path(stored_filename).name
@@ -1900,7 +1940,7 @@ def public_release_material(
         stimulus: dict[str, Any] | None = None
         if row["stimulus_id"] and row["stimulus_type"]:
             stimulus = {
-                "id": row["stimulus_id"],
+                "id": f"bank:{row['bank_id']}:{row['stimulus_id']}" if mixed_sources else row["stimulus_id"],
                 "type": row["stimulus_type"],
                 "title": row["stimulus_title"],
                 "alt_text": row["alt_text"],
@@ -1974,6 +2014,7 @@ def prepare_faculty_release(
         difficulties,
     )
     selected = sample_questions(connection, test["bank_id"], rules, difficulties)
+    question_books.record_test_sources(connection, test["test_id"])
     questions, assets = public_release_material(connection, selected)
     config = app.state.coordinator_config
     release = prepare_release(
@@ -3382,6 +3423,13 @@ def list_tests(request: Request) -> Dict[str, Any]:
         eligible_count = connection.execute("SELECT COUNT(*) FROM students").fetchone()[0]
         observed_at = datetime.now(timezone.utc)
         for test in tests:
+            test["source_banks"] = [
+                dict(connection.execute("""SELECT b.bank_id,b.bank_name,b.book_id,bk.title AS book_title
+                    FROM question_banks b LEFT JOIN books bk ON bk.book_id=b.book_id WHERE b.bank_id=?""",
+                    (source_id,)).fetchone())
+                for source_id in question_books.source_bank_ids(connection, test["test_id"])
+            ]
+            test["source_summary"] = "; ".join(b["bank_name"] for b in test["source_banks"])
             has_submitted_attempt = bool(test.pop("has_submitted_attempt"))
             test["release_used"] = bool(test["release_used"])
             test["release_state"] = test.get("release_state") or (
@@ -3458,7 +3506,13 @@ def list_tests(request: Request) -> Dict[str, Any]:
 @app.post("/api/admin/tests")
 def create_test(payload: TestPayload, request: Request) -> Dict[str, Any]:
     require_user(request, "admin")
-    rules = normalize_selection_rules(payload.selection_rules, payload.composition)
+    balanced = payload.selection_mode == "balanced"
+    incompatible = {"bank_id", "selection_rules", "composition"} if balanced else {"chapters", "total_questions", "preview_token"}
+    if payload.model_fields_set & incompatible:
+        raise HTTPException(400, "Choose either balanced chapters or manual single-bank selection.")
+    if balanced and (not payload.chapters or payload.total_questions is None or not payload.preview_token):
+        raise HTTPException(400, "Preview the chapter allocation before creating the test.")
+    rules = [] if balanced else normalize_selection_rules(payload.selection_rules, payload.composition)
     difficulties = normalize_difficulties(payload.difficulties)
     if not payload.test_name.strip():
         raise HTTPException(400, "Provide a test name.")
@@ -3466,13 +3520,26 @@ def create_test(payload: TestPayload, request: Request) -> Dict[str, Any]:
     created_artifact_paths: list[Path] = []
     try:
         with db() as connection:
-            rules = validate_selection_rules(connection, payload.bank_id, rules, MAX_ASSESSMENT_QUESTIONS, difficulties)
-            bank = connection.execute("SELECT bank_name FROM question_banks WHERE bank_id = ?", (payload.bank_id,)).fetchone()
+            connection.execute("BEGIN IMMEDIATE")
+            bank_id = payload.bank_id
+            if balanced:
+                try:
+                    preview = question_selection.preview_selection(connection,
+                        [c.model_dump() for c in payload.chapters], payload.total_questions, difficulties)
+                except ValueError as error:
+                    raise HTTPException(409, f"Refresh the chapter preview: {error}") from error
+                if not secrets.compare_digest(preview["preview_token"], payload.preview_token):
+                    raise HTTPException(409, "Chapter availability changed. Refresh the preview before creating the test.")
+                rules = [{"bank_id": a["bank_id"], "chapter": a["chapter"], "quantity": a["quantity"], "scope": "chapter"}
+                         for a in preview["allocations"]]
+                bank_id = rules[0]["bank_id"]
+            rules = validate_selection_rules(connection, bank_id, rules, MAX_ASSESSMENT_QUESTIONS, difficulties)
+            bank = connection.execute("SELECT bank_name FROM question_banks WHERE bank_id = ?", (bank_id,)).fetchone()
             if not bank:
                 raise HTTPException(404, "Choose an imported question bank.")
             test_id = connection.execute(
                 "INSERT INTO tests (test_name, composition, bank_id, created_at, difficulties) VALUES (?, ?, ?, ?, ?)",
-                (payload.test_name.strip(), json.dumps(rules), payload.bank_id, now(), json.dumps(difficulties)),
+                (payload.test_name.strip(), json.dumps(rules), bank_id, now(), json.dumps(difficulties)),
             ).lastrowid
             test = connection.execute("SELECT * FROM tests WHERE test_id = ?", (test_id,)).fetchone()
             created_release = prepare_faculty_release(

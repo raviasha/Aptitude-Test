@@ -1,5 +1,13 @@
 # Standalone question banks
 
+## Start here: current chapter downloads
+
+Use **[latest chapter downloads](latest/README.md)** for one selected published ZIP
+per quantitative chapter (1–39), including the updated visual packages for 36–39.
+The guide also identifies the two new reasoning source-page archives separately:
+those contain page images, not importable question banks. Older alternatives below
+remain available for reference; use the latest folder when choosing downloads.
+
 Files in this folder are published separately on GitHub and are not included in
 `Aptitude-Lab-Setup.exe`. The installer contains only the example pair from the
 repository's `templates` folder.

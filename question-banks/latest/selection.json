@@ -1,0 +1,333 @@
+{
+  "selected_on": "2026-10-07",
+  "packages": [
+    {
+      "path": "quantitative-aptitude/ch01_number_system_all_vision_text_only.zip",
+      "source": "question-banks/ch01_number_system_all_vision_text_only.zip",
+      "sha256": "4514afe7347f9d68c867f8534fc9f8c9e9d9953610df11568efcaf92e05ac931",
+      "questions": 378,
+      "pages": 0,
+      "source_commit": "eaec027 2026-08-30"
+    },
+    {
+      "path": "quantitative-aptitude/ch02_hcf_lcm_all_vision_text_only.zip",
+      "source": "question-banks/ch02_hcf_lcm_all_vision_text_only.zip",
+      "sha256": "1bffb151248a30841a3a5067cc27347e5a568dbe60e01058dfbfb6bfe7428dea",
+      "questions": 130,
+      "pages": 0,
+      "source_commit": "eaec027 2026-08-30"
+    },
+    {
+      "path": "quantitative-aptitude/ch03_decimal_fractions_all_vision_text_only.zip",
+      "source": "question-banks/ch03_decimal_fractions_all_vision_text_only.zip",
+      "sha256": "8f421989e08bf5c9d70ef27dbb07e79e4d8826d13a84c47754379fb9c7916fab",
+      "questions": 206,
+      "pages": 0,
+      "source_commit": "eaec027 2026-08-30"
+    },
+    {
+      "path": "quantitative-aptitude/ch04_simplification_all_vision_text_only.zip",
+      "source": "question-banks/ch04_simplification_all_vision_text_only.zip",
+      "sha256": "92220f14094e5b9a1011f3c9ffdd607e566048184561dd9ce7c907ff1b346d83",
+      "questions": 545,
+      "pages": 0,
+      "source_commit": "eaec027 2026-08-30"
+    },
+    {
+      "path": "quantitative-aptitude/ch05_square_roots_cube_roots_all_vision_text_only.zip",
+      "source": "question-banks/ch05_square_roots_cube_roots_all_vision_text_only.zip",
+      "sha256": "44fe39fffb4cfae78bd74557fc7cc3be5d7a98070c0d061174a1317c56e7ab34",
+      "questions": 188,
+      "pages": 0,
+      "source_commit": "eaec027 2026-08-30"
+    },
+    {
+      "path": "quantitative-aptitude/ch06_average_all_vision_text_only.zip",
+      "source": "question-banks/ch06_average_all_vision_text_only.zip",
+      "sha256": "32863d84e899e356d93761432dc475f2603d39656e8f16d58d30b288c81ae09d",
+      "questions": 161,
+      "pages": 0,
+      "source_commit": "9865f8f 2026-08-31"
+    },
+    {
+      "path": "quantitative-aptitude/ch07_problems_on_numbers_all_vision_text_only.zip",
+      "source": "question-banks/ch07_problems_on_numbers_all_vision_text_only.zip",
+      "sha256": "0940281bca5ff45b4af5566660b444a4ffb508b9adcfe0c5ac97c5527c3ef1d4",
+      "questions": 133,
+      "pages": 0,
+      "source_commit": "9865f8f 2026-08-31"
+    },
+    {
+      "path": "quantitative-aptitude/ch08_problems_on_ages_all_vision_text_only.zip",
+      "source": "question-banks/ch08_problems_on_ages_all_vision_text_only.zip",
+      "sha256": "2999d7446859c8960a77ddbce6ce9be1f86544e7937409629607875eae45aa41",
+      "questions": 73,
+      "pages": 0,
+      "source_commit": "9865f8f 2026-08-31"
+    },
+    {
+      "path": "quantitative-aptitude/ch09_surds_indices_all_vision_text_only.zip",
+      "source": "question-banks/ch09_surds_indices_all_vision_text_only.zip",
+      "sha256": "6bcca4b1d410384702cebd0dadc67b6964938e277531414d8f1671f30b704d62",
+      "questions": 122,
+      "pages": 0,
+      "source_commit": "9865f8f 2026-08-31"
+    },
+    {
+      "path": "quantitative-aptitude/ch10_logarithms_all_vision_text_only.zip",
+      "source": "question-banks/ch10_logarithms_all_vision_text_only.zip",
+      "sha256": "63eab162899d9b1dcc3f240c8c276df2129d86c18f4aa7f310f4bacd4ecb443b",
+      "questions": 92,
+      "pages": 0,
+      "source_commit": "9865f8f 2026-08-31"
+    },
+    {
+      "path": "quantitative-aptitude/ch11_percentage_all_vision_text_only.zip",
+      "source": "question-banks/ch11_percentage_all_vision_text_only.zip",
+      "sha256": "ecc99062b835180e0b40891a440c66a3e9ee264fe1d21d0aea1b3c2cb48a5599",
+      "questions": 372,
+      "pages": 0,
+      "source_commit": "af96459 2026-08-31"
+    },
+    {
+      "path": "quantitative-aptitude/ch12_profit_loss_all_vision_text_only.zip",
+      "source": "question-banks/ch12_profit_loss_all_vision_text_only.zip",
+      "sha256": "cf0b4ef66c176977403087262bd7d963e33f29dfc4fc1804348832f4d4b14bac",
+      "questions": 292,
+      "pages": 0,
+      "source_commit": "af96459 2026-08-31"
+    },
+    {
+      "path": "quantitative-aptitude/ch13_ratio_proportion_all_vision_text_only.zip",
+      "source": "question-banks/ch13_ratio_proportion_all_vision_text_only.zip",
+      "sha256": "ba34749c213719bc986239069d4293947659cfff84514fb9beed76ecd2147f5a",
+      "questions": 255,
+      "pages": 0,
+      "source_commit": "af96459 2026-08-31"
+    },
+    {
+      "path": "quantitative-aptitude/ch14_partnership_all_vision_text_only.zip",
+      "source": "question-banks/ch14_partnership_all_vision_text_only.zip",
+      "sha256": "09032abddab20924eb77d68f7b1dcc3a3c3fe94c7cdb76f43dee3f048a5facf1",
+      "questions": 64,
+      "pages": 0,
+      "source_commit": "7f9e396 2026-08-31"
+    },
+    {
+      "path": "quantitative-aptitude/ch15_chain_rule_all_vision_text_only.zip",
+      "source": "question-banks/ch15_chain_rule_all_vision_text_only.zip",
+      "sha256": "5e810d05afed8bb3436769236bb6712d6b72d9223f651491bae0454941848a39",
+      "questions": 82,
+      "pages": 0,
+      "source_commit": "7f9e396 2026-08-31"
+    },
+    {
+      "path": "quantitative-aptitude/ch16_pipes_cisterns_all_vision_text_only.zip",
+      "source": "question-banks/ch16_pipes_cisterns_all_vision_text_only.zip",
+      "sha256": "1a63961783ff851b6d4c7bbe04c1ffd55c56d52a383af0522195859962860668",
+      "questions": 54,
+      "pages": 0,
+      "source_commit": "b182fa0 2026-09-10"
+    },
+    {
+      "path": "quantitative-aptitude/ch17_time_work_all_vision_text_only.zip",
+      "source": "question-banks/ch17_time_work_all_vision_text_only.zip",
+      "sha256": "a66f9616eee0c3486b61b20881947e071332455b2c09c004f8b2882e7f02cd70",
+      "questions": 133,
+      "pages": 0,
+      "source_commit": "b182fa0 2026-09-10"
+    },
+    {
+      "path": "quantitative-aptitude/ch18_time_distance_all_vision_text_only.zip",
+      "source": "question-banks/ch18_time_distance_all_vision_text_only.zip",
+      "sha256": "d71a091a6f74771935373ad3c3e9714d374e659b3ebbda2e0d33f7208f8f55df",
+      "questions": 191,
+      "pages": 0,
+      "source_commit": "b182fa0 2026-09-10"
+    },
+    {
+      "path": "quantitative-aptitude/ch19_boats_streams_all_vision_text_only.zip",
+      "source": "question-banks/ch19_boats_streams_all_vision_text_only.zip",
+      "sha256": "56dd3c04cb9b46487374cc56de0c4dc18a82e2f1657d67ca659213b3ad99bdf1",
+      "questions": 36,
+      "pages": 0,
+      "source_commit": "b182fa0 2026-09-10"
+    },
+    {
+      "path": "quantitative-aptitude/ch20_problems_on_trains_all_vision_text_only.zip",
+      "source": "question-banks/ch20_problems_on_trains_all_vision_text_only.zip",
+      "sha256": "bf2b459738815f510d5b0f783843ad56d059ed26a6f71b0d4b8263340b5dfec4",
+      "questions": 74,
+      "pages": 0,
+      "source_commit": "b182fa0 2026-09-10"
+    },
+    {
+      "path": "quantitative-aptitude/ch21_alligation_mixture_all_vision_text_only.zip",
+      "source": "question-banks/ch21_alligation_mixture_all_vision_text_only.zip",
+      "sha256": "9f6612586557443ccf631327dda01de1dc315e1adb56d00b6570e6f32c46470d",
+      "questions": 26,
+      "pages": 0,
+      "source_commit": "b182fa0 2026-09-10"
+    },
+    {
+      "path": "quantitative-aptitude/ch22_simple_interest_all_vision_text_only.zip",
+      "source": "question-banks/ch22_simple_interest_all_vision_text_only.zip",
+      "sha256": "b1434f02f49d5507d0fe12371d38f65e4b1040e6b411e5ff5a16732dacdfb97b",
+      "questions": 106,
+      "pages": 0,
+      "source_commit": "b182fa0 2026-09-10"
+    },
+    {
+      "path": "quantitative-aptitude/ch23_compound_interest_all_vision_text_only.zip",
+      "source": "question-banks/ch23_compound_interest_all_vision_text_only.zip",
+      "sha256": "35d7f712e661e960d04e07c2c51c9a74497b3f2aa6cfeff63ca1894ad8830f3a",
+      "questions": 69,
+      "pages": 0,
+      "source_commit": "b182fa0 2026-09-10"
+    },
+    {
+      "path": "quantitative-aptitude/ch24_area_all_vision_text_only.zip",
+      "source": "question-banks/ch24_area_all_vision_text_only.zip",
+      "sha256": "25d61f9bdc8515e65730274175eb8b2497f4e3440a15a2af4583560031431d1c",
+      "questions": 415,
+      "pages": 0,
+      "source_commit": "90c8472 2026-09-10"
+    },
+    {
+      "path": "quantitative-aptitude/ch25_volume_surface_areas_all_vision_text_only.zip",
+      "source": "question-banks/ch25_volume_surface_areas_all_vision_text_only.zip",
+      "sha256": "1ac1f77fa118356bd018ea7ee0e381c97f78cb5fa5666b6d91572b3624eefa93",
+      "questions": 301,
+      "pages": 0,
+      "source_commit": "b182fa0 2026-09-10"
+    },
+    {
+      "path": "quantitative-aptitude/ch26_races_games_skill_all_vision_text_only.zip",
+      "source": "question-banks/ch26_races_games_skill_all_vision_text_only.zip",
+      "sha256": "000d98d7ff769bbf1ec107af7afc010873a922ff7261dcd997183f222439541d",
+      "questions": 25,
+      "pages": 0,
+      "source_commit": "b182fa0 2026-09-10"
+    },
+    {
+      "path": "quantitative-aptitude/ch27_calendar_all_vision_text_only.zip",
+      "source": "question-banks/ch27_calendar_all_vision_text_only.zip",
+      "sha256": "5d821faa19dda3290685350e377cf998a8d5367cb593e3522fb7cefb0df4138b",
+      "questions": 9,
+      "pages": 0,
+      "source_commit": "b182fa0 2026-09-10"
+    },
+    {
+      "path": "quantitative-aptitude/ch28_clocks_all_vision_text_only.zip",
+      "source": "question-banks/ch28_clocks_all_vision_text_only.zip",
+      "sha256": "f3f97332f49540179712064ab82743562dac7c484e762465bdf38f717011d47a",
+      "questions": 54,
+      "pages": 0,
+      "source_commit": "b182fa0 2026-09-10"
+    },
+    {
+      "path": "quantitative-aptitude/ch29_stocks_shares_all_vision_text_only.zip",
+      "source": "question-banks/ch29_stocks_shares_all_vision_text_only.zip",
+      "sha256": "1ab944e2e6ef3f3637df861253dcadf3243c00ab6634497ebba76c5f860ae8c8",
+      "questions": 29,
+      "pages": 0,
+      "source_commit": "b182fa0 2026-09-10"
+    },
+    {
+      "path": "quantitative-aptitude/ch30_permutations_and_combinations_all_vision_text_only.zip",
+      "source": "question-banks/ch30_permutations_and_combinations_all_vision_text_only.zip",
+      "sha256": "d8cc1bd5995bbc11829e70ff66796cf16b823ce0035c9ecaa508a732537b8d08",
+      "questions": 48,
+      "pages": 0,
+      "source_commit": "b182fa0 2026-09-10"
+    },
+    {
+      "path": "quantitative-aptitude/ch31_probability_all_vision_text_only.zip",
+      "source": "question-banks/ch31_probability_all_vision_text_only.zip",
+      "sha256": "a691a631f334462f1f195f0d824af303c8ba176d560e48fb45ec51729801ad62",
+      "questions": 50,
+      "pages": 0,
+      "source_commit": "b182fa0 2026-09-10"
+    },
+    {
+      "path": "quantitative-aptitude/ch32_true_discount_all_vision_text_only.zip",
+      "source": "question-banks/ch32_true_discount_all_vision_text_only.zip",
+      "sha256": "933599ce87e1e62b242bf492aaccdc17f0f824028d257a3c1d9c68133ac4b869",
+      "questions": 20,
+      "pages": 0,
+      "source_commit": "b182fa0 2026-09-10"
+    },
+    {
+      "path": "quantitative-aptitude/ch33_bankers_discount_all_vision_text_only.zip",
+      "source": "question-banks/ch33_bankers_discount_all_vision_text_only.zip",
+      "sha256": "378d124b652d34149e08f8258cca0e8ebacc130f27127b49872a550e536fa57c",
+      "questions": 13,
+      "pages": 0,
+      "source_commit": "b182fa0 2026-09-10"
+    },
+    {
+      "path": "quantitative-aptitude/ch34_heights_distances_all_vision_text_only.zip",
+      "source": "question-banks/ch34_heights_distances_all_vision_text_only.zip",
+      "sha256": "bddd0b696fcd411aff638b5bc2cef02334634f9bb79b995c0fde36c2e902218e",
+      "questions": 18,
+      "pages": 0,
+      "source_commit": "b182fa0 2026-09-10"
+    },
+    {
+      "path": "quantitative-aptitude/ch35_odd_man_out_and_series_all_vision_text_only.zip",
+      "source": "question-banks/ch35_odd_man_out_and_series_all_vision_text_only.zip",
+      "sha256": "7abcd9146160b44be763eca2716ab31eeb343e7ddc80b498209e6707b4d4892e",
+      "questions": 96,
+      "pages": 0,
+      "source_commit": "b182fa0 2026-09-10"
+    },
+    {
+      "path": "quantitative-aptitude/ch36_tabulation_all_vision_text_only.zip",
+      "source": "question-banks/ch36_tabulation_all_vision_text_only.zip",
+      "sha256": "1ec350ff570d73e13d57baa87f428188bb4923371cc1caa3e48d483dc1448711",
+      "questions": 85,
+      "pages": 0,
+      "source_commit": "139ef99 2026-09-24"
+    },
+    {
+      "path": "quantitative-aptitude/ch37_bar_graphs_all_vision_text_only.zip",
+      "source": "question-banks/ch37_bar_graphs_all_vision_text_only.zip",
+      "sha256": "dcad3daa267cac460f6ef3f66cbd0935ffe22ed861fd22468348dfa5167a0e62",
+      "questions": 77,
+      "pages": 0,
+      "source_commit": "139ef99 2026-09-24"
+    },
+    {
+      "path": "quantitative-aptitude/ch38_pie_chart_all_vision_text_only.zip",
+      "source": "question-banks/ch38_pie_chart_all_vision_text_only.zip",
+      "sha256": "e8ac3b31bbde626aff7b1b3b7d86a24ec164ee3a6a84d16fe644317aecaee537",
+      "questions": 76,
+      "pages": 0,
+      "source_commit": "139ef99 2026-09-24"
+    },
+    {
+      "path": "quantitative-aptitude/ch39_line_graphs_all_vision_text_only.zip",
+      "source": "question-banks/ch39_line_graphs_all_vision_text_only.zip",
+      "sha256": "cff58d8c009e1de2df56c3be8be6d38e711d6892ede460b782aa63ce54bb1d88",
+      "questions": 68,
+      "pages": 0,
+      "source_commit": "139ef99 2026-09-24"
+    },
+    {
+      "path": "reasoning-source-pages/logical_reasoning_new_ch01_coding_decoding_all_vision.zip",
+      "source": "question-banks/logical-reasoning-new-book-vision/logical_reasoning_new_ch01_coding_decoding_all_vision.zip",
+      "sha256": "88e05d069a9130ae1abfc039093c428f2de8b65b202a971d838d39c4581515e3",
+      "questions": 0,
+      "pages": 34,
+      "source_commit": "f9cdb94 2026-09-18"
+    },
+    {
+      "path": "reasoning-source-pages/logical_reasoning_new_ch02_alphabet_test_all_vision.zip",
+      "source": "question-banks/logical-reasoning-new-book-vision/logical_reasoning_new_ch02_alphabet_test_all_vision.zip",
+      "sha256": "b752c190a6fdae1a50546f8e843b0a9509216cc13fa69918157d1acb7416b0cd",
+      "questions": 0,
+      "pages": 20,
+      "source_commit": "f9cdb94 2026-09-18"
+    }
+  ]
+}

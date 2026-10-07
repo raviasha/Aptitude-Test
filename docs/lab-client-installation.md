@@ -3,14 +3,23 @@
 Use the single EXE supplied by faculty **for your lab**. You do not need to type a server URL, select certificate files, install Python or run a separate trust script.
 
 1. Finish any test and wait for pending answer uploads to complete. Ask faculty before changing a PC used for an examination.
-2. Run `KSATClientSetup-<your-lab>-2.1.3.exe` (pilot release: test one PC first).
+2. Run `KSATClientSetup-<your-lab>-2.1.4.exe` (pilot release: test one PC first).
 3. An authorized administrator must approve the Windows prompt. Students without administrator permission need lab IT to approve it.
 4. Confirm the displayed lab name and Coordinator address, then click **Install**.
 5. When setup finishes, choose **Open KSAT Lab Client**. Sign in or create a student login through the normal client screen.
 
 Setup installs the connection profile, public trust, client service and updater. Each fresh PC creates its own device identity. It does not copy another student's device records into your PC.
 
-In 2.1.3 the shortcut starts the service when needed; ordinary launches do not
+Version 2.1.4 corrects the false `downgrade_refused` error in the 2.1.3 installer.
+The upgrade helper and client now share the same release version. Cancel the old
+installer and use 2.1.4; do not change the registry version or delete data.
+
+For another lab, faculty must regenerate the installer with **that lab's** server
+URL and two public connection files. A fresh PC can use that installer; an
+existing PC configured for a different coordinator is deliberately not switched
+silently. Contact faculty for a separate, data-safe lab migration if needed.
+
+In 2.1.4 the shortcut starts the service when needed; ordinary launches do not
 require administrator approval. Closing the final KSAT tab signs out and safely
 stops the client after a 15-second grace period and upload cleanup. Other open or
 minimized KSAT tabs keep it running. Saved answers and unacknowledged uploads are

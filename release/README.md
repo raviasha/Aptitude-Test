@@ -1,8 +1,24 @@
 # Current KSAT release files
 
-The newest **pilot/prerelease** is **Client 2.1.3 and Lab Package Builder 2.1.3**. Coordinator remains **2.1.0**. Test one lab PC before wider deployment; the real administrator/standard-user installation pilot is still required.
+The newest **pilot/prerelease** is **Client 2.1.4 and Lab Package Builder 2.1.4**. Coordinator remains **2.1.0**. Test one lab PC before wider deployment; the real administrator/standard-user installation pilot is still required.
 
-## 2.1.3 pilot downloads
+## 2.1.4 pilot downloads — corrected upgrade check
+
+| Purpose | Download |
+| --- | --- |
+| Upgrade an existing client, retaining its server configuration | [KSATClientSetup-2.1.4.exe](https://github.com/raviasha/Aptitude-Test/releases/download/client-v2.1.4/KSATClientSetup-2.1.4.exe) |
+| Create a preconfigured **2.1.4 client** installer for your lab | [KSATLabPackageBuilder-2.1.4.exe](https://github.com/raviasha/Aptitude-Test/releases/download/client-v2.1.4/KSATLabPackageBuilder-2.1.4.exe) |
+| Install/update the faculty server (unchanged) | [KSATCoordinatorSetup-2.1.0.exe](KSATCoordinatorSetup-2.1.0.exe) |
+
+**October 7 installer correction:** The 2.1.3 install helper incorrectly targeted 2.1.1, causing false `downgrade_refused` errors. In 2.1.4 the helper, client and builder share one version value. Browser-close lifecycle and hostname recovery remain included.
+
+For each lab, use Builder 2.1.4 with **that lab's server URL and its two public connection files**. Regenerate old lab EXEs; they cannot update themselves. A fresh PC accepts its lab's package; a configured PC is not silently moved to another coordinator. Finish tests/uploads, install over the old client, and do not uninstall, edit the registry version or delete ProgramData. Coordinator remains running; no new central-update bundle is included.
+
+[Installation instructions](../docs/lab-client-installation.md) · [Verification and pilot limits](../docs/lab-package-builder-acceptance.md) · [Client checksum](KSATClientSetup-2.1.4.sha256) · [Builder checksum](KSATLabPackageBuilder-2.1.4.sha256)
+
+## Superseded 2.1.3 pilot downloads — use 2.1.4 above
+
+Retained for history only: these installers contain the stale upgrade target described above. Do not regenerate lab packages with Builder 2.1.3.
 
 | Purpose | Download |
 | --- | --- |

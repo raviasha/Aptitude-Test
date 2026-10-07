@@ -209,13 +209,18 @@ class CompiledInstallerTests(unittest.TestCase):
             (payload / "lab-summary.ini").write_text("[Lab]\nName=Test Lab\nURL=https://lab.example.edu:8443\n", encoding="utf-16")
             for mode, bundled_trust in ((0, 1), (1, 1), (0, 0)):
                 with self.subTest(mode=mode, bundled_trust=bundled_trust):
+                    from ksat.client.version import CLIENT_VERSION
+                    # Exercise the real template default as well as explicit overrides.
+                    use_default = (mode, bundled_trust) == (0, 1)
+                    version_args = [] if use_default else ["/DKSAT_CLIENT_VERSION=2.1.1"]
+                    expected_version = CLIENT_VERSION if use_default else "2.1.1"
                     output = work / f"{mode}-{bundled_trust}"
                     result = subprocess.run([os.environ["KSAT_ISCC"], f"/DKSAT_LAB_MODE={mode}",
                         f"/DKSAT_PAYLOAD_DIR={payload}", f"/DKSAT_OUTPUT_DIR={output}",
-                        "/DKSAT_CLIENT_VERSION=2.1.1", f"/DKSAT_BUNDLE_PUBLISHER_TRUST={bundled_trust}", str(root / "installer/KSATClient.iss")],
+                        *version_args, f"/DKSAT_BUNDLE_PUBLISHER_TRUST={bundled_trust}", str(root / "installer/KSATClient.iss")],
                         capture_output=True, text=True, timeout=120)
                     self.assertEqual(0, result.returncode, result.stdout + result.stderr)
-                    exe = output / "KSATClientSetup-2.1.1.exe"
+                    exe = output / f"KSATClientSetup-{expected_version}.exe"
                     self.assertTrue(exe.is_file())
                     extracted = output / "extracted"
                     result = subprocess.run([os.environ["KSAT_INNOEXTRACT"], "-d", str(extracted), str(exe)],

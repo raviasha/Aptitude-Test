@@ -1,5 +1,10 @@
 # Client window lifecycle — release acceptance
 
+**Installation update (2026-10-07): use Client/Builder 2.1.4.** The 2.1.3
+packages below are historical verification records; their upgrade helper retained
+a stale 2.1.1 target. Version 2.1.4 corrects that mismatch without changing the
+lifecycle behavior described here. See the [current installation guide](lab-client-installation.md).
+
 Client and Lab Package Builder **2.1.3** are the pilot/prerelease packages for
 this change. Coordinator 2.1.0 and the connection files are unchanged. Previous
 2.1.2 assets are retained, not overwritten. The user approved pilot publication

@@ -126,3 +126,14 @@ class MultiChapterTests(BookFixture):
                 JOIN questions q ON q.question_id=r.question_id WHERE r.release_id=? ORDER BY q.bank_id""",
                 (created.json()["release_id"],)).fetchall()
             self.assertEqual([r["correct_answer"] for r in frozen],["A","B","A"])
+
+    def test_deletion_reports_pending_cleanup_without_losing_archived_data(self):
+        ids,body=self.setup_selection()
+        created=self.post("/api/admin/tests",body).json()
+        with patch.object(app.ArtifactQuarantine,"purge",return_value=False):
+            result=self.client.delete(f"/api/admin/tests/{created['test_id']}",headers=self.headers)
+            self.assertEqual(result.status_code,200,result.text)
+            self.assertTrue(result.json()["cleanup_pending"])
+            result=self.client.delete(f"/api/admin/question-banks/{ids[-1]}",headers=self.headers)
+            self.assertEqual(result.status_code,200,result.text)
+            self.assertTrue(result.json()["cleanup_pending"])

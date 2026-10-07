@@ -586,7 +586,7 @@ function bankImportReport(results) {
 }
 
 async function questionBanks() {
-  const library = await api('/api/admin/question-banks');
+  const [library, bookData] = await Promise.all([api('/api/admin/question-banks'), api('/api/admin/books')]);
   const questionCount = library.banks.reduce((total, bank) => total + Number(bank.question_count || 0), 0);
   layout('Question banks', 'Everything you need to build a great assessment, organised in one place.', `
     <section class="bank-upload card">
@@ -604,12 +604,35 @@ async function questionBanks() {
       </form>
     </section>
     <section id="bank-import-results" class="card" style="overflow-wrap:anywhere" ${bankImportResults.length ? '' : 'hidden'}>${bankImportReport(bankImportResults)}</section>
+    <section class="card book-assignment"><h2>Organize by textbook</h2><p class="muted">Check imported banks below, then assign them to a book. No reimport is needed.</p>
+      <form id="book-assignment"><label>Existing book<select id="assign-book"><option value="">Create a new book…</option>${bookData.books.map(b => `<option value="${b.book_id}">${esc(b.title)}</option>`).join('')}</select></label><label>New book title<input id="new-book-title" maxlength="200" /></label><div class="row-actions"><button class="primary">Assign selected to book</button><button class="secondary" type="button" id="rename-book">Rename selected book</button></div><p id="book-status" role="status"></p></form>
+    </section>
     <section class="card bank-library">
       <div class="library-heading"><div><p class="eyebrow">Your library</p><h2>Available question banks <span class="count-pill">${library.banks.length}</span></h2><p class="muted">${questionCount.toLocaleString()} questions across your imported banks</p></div><label class="bank-search">${facultyIcon('search')}<span class="sr-only">Search question banks</span><input id="bank-search" type="search" placeholder="Search question banks…" /></label></div>
-      <div class="table-scroll"><table><thead><tr><th>Question bank</th><th>Questions</th><th>Used in</th><th>Imported</th><th><span class="sr-only">Actions</span></th></tr></thead><tbody>${library.banks.map(item => `<tr data-bank-row data-bank-search="${esc(item.bank_name.toLocaleLowerCase())}"><td><div class="bank-name"><span class="bank-icon">${facultyIcon('banks')}</span><strong>${esc(item.bank_name)}</strong></div></td><td><span class="question-count">${Number(item.question_count).toLocaleString()}</span></td><td>${item.test_count ? `<span class="usage-badge">${item.test_count} test${item.test_count === 1 ? '' : 's'}</span>` : '<span class="muted">Not used yet</span>'}</td><td>${date(item.imported_at)}</td><td><button class="danger small" data-delete-bank="${item.bank_id}" data-bank-name="${esc(item.bank_name)}" data-test-count="${item.test_count || 0}" aria-label="Delete ${esc(item.bank_name)}">Delete</button></td></tr>`).join('')}</tbody></table></div>
+      <div class="table-scroll"><table><thead><tr><th><span class="sr-only">Assign to book</span></th><th>Question bank</th><th>Questions</th><th>Used in</th><th>Imported</th><th><span class="sr-only">Actions</span></th></tr></thead><tbody>${library.banks.map(item => `<tr data-bank-row data-bank-search="${esc((item.bank_name+' '+(item.book_title||'')).toLocaleLowerCase())}"><td><input type="checkbox" data-assign-bank="${item.bank_id}" aria-label="Assign ${esc(item.bank_name)}" /></td><td><div class="bank-name"><span class="bank-icon">${facultyIcon('banks')}</span><strong>${esc(item.bank_name)}</strong></div><small>${esc(item.book_title || 'Unassigned')}</small></td><td><span class="question-count">${Number(item.question_count).toLocaleString()}</span></td><td>${item.test_count ? `<span class="usage-badge">${item.test_count} test${item.test_count === 1 ? '' : 's'}</span>` : '<span class="muted">Not used yet</span>'}</td><td>${date(item.imported_at)}</td><td><button class="danger small" data-delete-bank="${item.bank_id}" data-bank-name="${esc(item.bank_name)}" data-test-count="${item.test_count || 0}" aria-label="Delete ${esc(item.bank_name)}">Delete</button></td></tr>`).join('')}</tbody></table></div>
       <div id="bank-empty" class="empty-state" ${library.banks.length ? 'hidden' : ''}>${facultyIcon('banks')}<h3>${library.banks.length ? 'No matching question banks' : 'Your library starts here'}</h3><p>${library.banks.length ? 'Try a different bank name.' : 'Import your first ZIP above, then create an assessment from its questions.'}</p></div>
       <p id="bank-search-count" class="library-footnote" role="status">${library.banks.length} bank${library.banks.length === 1 ? '' : 's'} in your library</p>
     </section>`, adminNav('banks'));
+  const bookForm = document.querySelector('#book-assignment');
+  const bookSelect = bookForm.querySelector('#assign-book'), newTitle = bookForm.querySelector('#new-book-title');
+  bookSelect.addEventListener('change', () => { newTitle.disabled = Boolean(bookSelect.value); });
+  bookForm.addEventListener('submit', async event => {
+    event.preventDefault();
+    const bank_ids = [...document.querySelectorAll('[data-assign-bank]:checked')].map(el => Number(el.dataset.assignBank));
+    const status = bookForm.querySelector('#book-status');
+    if (!bank_ids.length) { status.textContent = 'Check at least one question bank below.'; return; }
+    const body = bookSelect.value ? {bank_ids, book_id:Number(bookSelect.value)} : {bank_ids, book_title:newTitle.value.trim()};
+    const button = bookForm.querySelector('button'); button.disabled = true;
+    try { await api('/api/admin/books/assign', {method:'POST',body}); if(bookForm.isConnected) await questionBanks(); }
+    catch(error) { if(bookForm.isConnected) { status.textContent = error.message; button.disabled = false; } }
+  });
+  bookForm.querySelector('#rename-book').addEventListener('click', async () => {
+    if(!bookSelect.value) { bookForm.querySelector('#book-status').textContent='Choose an existing book to rename.'; return; }
+    const title=prompt('New book title:',bookSelect.selectedOptions[0].textContent);
+    if(title===null) return;
+    try { await api('/api/admin/books/'+bookSelect.value,{method:'PATCH',body:{title}}); if(bookForm.isConnected) await questionBanks(); }
+    catch(error) { if(bookForm.isConnected) bookForm.querySelector('#book-status').textContent=error.message; }
+  });
   const search = document.querySelector('#bank-search');
   search.addEventListener('input', () => {
     const query = search.value.trim().toLocaleLowerCase();
@@ -680,13 +703,13 @@ async function questionBanks() {
   });
   document.querySelectorAll('[data-delete-bank]').forEach(button => button.addEventListener('click', async () => {
     const testCount = Number(button.dataset.testCount || 0);
-    const dependentWarning = testCount ? ` This will also delete ${testCount} dependent test(s), attempts and responses. Completed results will remain in the CSV export.` : '';
+    const dependentWarning = testCount ? ` This will also delete ${testCount} dependent test(s), including combined-chapter tests, attempts and responses. Completed results will remain in the CSV export.` : '';
     if (!confirm(`Delete “${button.dataset.bankName}” and its questions/visuals?${dependentWarning} This cannot be undone.`)) return;
     try {
       const result = await api(`/api/admin/question-banks/${button.dataset.deleteBank}`, {method:'DELETE'});
       const counts = result.deleted_counts || {};
       const historySummary = counts.tests ? `, ${counts.tests} dependent test(s), and ${counts.attempts || 0} attempt(s)` : '';
-      notify(`${result.bank_name}${historySummary} deleted.`);
+      notify(`${result.bank_name}${historySummary} deleted.${result.cleanup_pending ? ' File cleanup pending; the recovery record is retained.' : ''}`, Boolean(result.cleanup_pending));
       questionBanks();
     } catch(error) { notify(error.message,true); }
   }));
@@ -694,12 +717,59 @@ async function questionBanks() {
 
 async function testsLegacy() { const data = await api('/api/admin/tests'); layout('Create a <em>test.</em>', 'Launch one test for an exclusive exam, or leave all tests available for student choice.', `<section class="grid two"><article class="card"><p class="eyebrow">New assessment</p><h2>Question composition</h2><form id="test-form"><label>Test name<input name="test_name" required placeholder="Placement Readiness · Set 02" /></label><label>Question bank<select name="bank_id" required><option value="">Choose a bank…</option>${data.banks.map(bank => `<option value="${bank.bank_id}">${esc(bank.bank_name)} · ${bank.question_count} active questions</option>`).join('')}</select></label><div class="composition">${categories.map(category => `<label><span>${esc(category)}</span><input type="number" name="${esc(category)}" min="0" max="100" value="6" /></label>`).join('')}</div><button class="primary">Create test →</button></form></article><article class="card"><p class="eyebrow">Current tests</p><h2>Test library</h2><table><thead><tr><th>Name</th><th>Bank</th><th>Questions</th><th>Action</th></tr></thead><tbody>${data.tests.map(test => `<tr><td>${esc(test.test_name)}</td><td>${esc(test.bank_name || '—')}</td><td>${Object.values(test.composition).reduce((sum,value)=>sum+value,0)}</td><td>${test.launched ? '<button class="secondary small" data-close-test="'+test.test_id+'">Close</button>' : '<button class="primary small" data-launch-test="'+test.test_id+'">Launch</button>'}</td></tr>`).join('')}</tbody></table></article></section>`, adminNav('tests')); document.querySelector('#test-form').addEventListener('submit', async event => { event.preventDefault(); const values = Object.fromEntries(new FormData(event.currentTarget)); const composition = {}; categories.forEach(category => composition[category] = Number(values[category] || 0)); try { await api('/api/admin/tests',{method:'POST',body:{test_name:values.test_name,bank_id:Number(values.bank_id),composition}}); notify('Test created.'); tests(); } catch(error) { notify(error.message,true); } }); document.querySelectorAll('[data-launch-test]').forEach(button => button.addEventListener('click', async () => { await api(`/api/admin/tests/${button.dataset.launchTest}/launch`, {method:'POST'}); notify('Test launched.'); tests(); })); document.querySelectorAll('[data-close-test]').forEach(button => button.addEventListener('click', async () => { await api(`/api/admin/tests/${button.dataset.closeTest}/close`, {method:'POST'}); notify('Test closed. Students can choose available tests.'); tests(); })); }
 
+
+function chapterSelectionKey(bankId, chapter) { return JSON.stringify([bankId,chapter]); }
+
+function renderBookChapterPicker(chapters, selectedKeys) {
+  const groups = new Map();
+  for(const chapter of chapters) {
+    const key=chapter.book_id ?? 'unassigned';
+    if(!groups.has(key))groups.set(key,{title:chapter.book_title || 'Unassigned',chapters:[]});
+    groups.get(key).chapters.push(chapter);
+  }
+  if(!groups.size)return '<p class="muted">Import question banks to select chapters.</p>';
+  return [...groups.values()].map(group=>`<details class="chapter-book" open><summary>${esc(group.title)} <span class="count-pill">${group.chapters.length}</span></summary>${group.chapters.map(c=>`<label class="chapter-choice"><input type="checkbox" data-chapter-key="${esc(chapterSelectionKey(c.bank_id,c.chapter))}" aria-label="${esc(c.chapter + ' — ' + c.bank_name)}" ${selectedKeys.has(chapterSelectionKey(c.bank_id,c.chapter))?'checked':''} /><span><strong>${esc(c.chapter)}</strong><small>${esc(c.bank_name)}</small></span><small data-chapter-available>${c.question_count} available</small></label>`).join('')}</details>`).join('');
+}
+
+function selectedChapterChoices(selection) {
+  return [...selection.picker.querySelectorAll('[data-chapter-key]:checked')].map(input=>{
+    const [bank_id,chapter]=JSON.parse(input.dataset.chapterKey);return {bank_id,chapter};
+  });
+}
+
+async function requestChapterPreview(selection) {
+  const generation=++selection.generation;
+  selection.preview=null;selection.button.disabled=true;selection.refresh.hidden=true;
+  const chapters=selectedChapterChoices(selection), total=Number(selection.total.value);
+  const levels=selectedDifficulties(selection.difficulty);
+  for(const input of selection.picker.querySelectorAll('[data-chapter-key]')) {
+    const source=selection.catalogue.find(c=>chapterSelectionKey(c.bank_id,c.chapter)===input.dataset.chapterKey);
+    const available=levels.reduce((sum,level)=>sum+(source.difficulties[level]||0),0);
+    input.closest('label').querySelector('[data-chapter-available]').textContent=available+' available';
+  }
+  if(!chapters.length){selection.status.textContent='Select chapters to preview the allocation.';return;}
+  if(!Number.isInteger(total)||total<chapters.length||total>500){
+    selection.status.textContent='Choose a whole-number total between '+chapters.length+' and 500.';return;
+  }
+  selection.status.textContent='Calculating chapter allocation…';
+  try {
+    const preview=await api('/api/admin/tests/preview',{method:'POST',body:{chapters,total_questions:total,difficulties:levels}});
+    if(!selection.form.isConnected||generation!==selection.generation||selection.mode.value!=='balanced')return;
+    selection.preview=preview;
+    selection.status.innerHTML=`<p><strong>${preview.total_questions} questions</strong> across ${preview.allocations.length} chapters</p><ul class="chapter-allocations">${preview.allocations.map(a=>`<li><span>${esc(a.book_title||'Unassigned')} · ${esc(a.chapter)}<small>${esc(a.bank_name)}</small></span><strong data-allocation-count>${a.quantity}</strong></li>`).join('')}</ul>${preview.redistributed?'<p>A smaller chapter is filled first; its shortfall is shared across the others.</p>':''}`;
+    selection.button.disabled=selection.busy;
+  } catch(error) {
+    if(!selection.form.isConnected||generation!==selection.generation||selection.mode.value!=='balanced')return;
+    selection.status.textContent=error.message;selection.refresh.hidden=false;
+  }
+}
+
 async function tests() {
-  const [data, deviceData] = await Promise.all([api('/api/admin/tests'), api('/api/admin/devices')]);
+  const [data, deviceData, catalogue] = await Promise.all([api('/api/admin/tests'), api('/api/admin/devices'), api('/api/admin/chapter-catalogue')]);
   const releaseStatus = test => ['prepared', 'launched'].includes(test.release_state)
     ? `<span class="ok">Ready</span><small><code>${esc(test.content_hash_prefix || '')}</code></small>`
     : test.release_state === 'failed' ? '<span class="warn">Preparation failed</span>' : '<span class="muted">Preparing</span>';
-  layout('Tests', 'Launch multiple assessments and let students choose. Close each test to release its answer review.', `<section class="test-workspace"><details class="card test-builder" ${data.tests.length ? '' : 'open'}><summary><span><span class="eyebrow">Build something new</span><strong>Create an assessment</strong></span><span class="details-hint">Choose bank & questions</span></summary><form id="test-form"><label>Test name<input name="test_name" required placeholder="Placement Readiness · Set 02" /></label><label>Question bank<select id="test-bank" name="bank_id" required><option value="">Choose a bank…</option>${data.banks.map(bank => `<option value="${bank.bank_id}">${esc(bank.bank_name)} · ${bank.question_count} active questions</option>`).join('')}</select></label><label>Difficulty<select id="test-difficulty"><option value="all">All difficulty levels</option>${difficulties.map(level => `<option value="${level}">${level}</option>`).join('')}</select></label><div id="test-composition" class="taxonomy"><p class="muted">Choose a question bank to see its categories and chapters.</p></div><p class="composition-total">Selected: <strong id="test-total">0</strong> / 500</p><button class="primary">Create test →</button></form></details><article class="card"><p class="eyebrow">Current and past tests · submission queue ${Number(data.submission_queue_pending || 0)}</p><h2>Test library</h2><div class="table-scroll" id="faculty-test-library"><table><thead><tr><th>Name</th><th>Bank</th><th>Difficulty</th><th>Questions</th><th>Readiness</th><th>Status</th><th>Timing</th><th>Action</th></tr></thead><tbody>${data.tests.map(test => `<tr><td>${esc(test.test_name)}<small>${test.attempt_count} attempt${test.attempt_count===1?'':'s'}</small></td><td>${esc(test.bank_name || '—')}</td><td>${esc(difficultyLabel(test.difficulty_levels))}</td><td>${compositionTotal(test)}</td><td>${releaseStatus(test)}</td><td>${Number(test.distributed_status?.started||0)} started · ${Number(test.distributed_status?.submitted||0)} submitted · ${Number(test.distributed_status?.voided||0)} voided</td><td data-faculty-timing="${test.test_id}">${facultyTimingMarkup(test)}</td><td><div class="row-actions">${facultyLaunchAction(test)}<button class="secondary small" data-duplicate-test="${test.test_id}">Duplicate</button><button class="secondary small" data-extend-test="${test.test_id}">Extend</button><button class="danger small" data-delete-test="${test.test_id}" data-test-name="${esc(test.test_name)}" data-attempt-count="${test.attempt_count}">Delete</button></div></td></tr>`).join('')}</tbody></table></div></article></section><details class="card device-library"><summary><span>Lab computers</span><span class="count-pill">${deviceData.devices.length} registered</span></summary><div class="heading"><div><p class="eyebrow">Managed lab computers</p><h2>${deviceData.devices.length} registered devices</h2></div></div><div class="table-scroll"><table><thead><tr><th>Label</th><th>Device</th><th>Fingerprint</th><th>Registered</th><th>State</th></tr></thead><tbody>${deviceData.devices.map(device => `<tr><td>${esc(device.label)}</td><td><code>${esc(device.device_id)}</code></td><td><code>${esc(device.public_key_fingerprint)}</code></td><td>${date(device.enrolled_at)}</td><td><button class="secondary small" data-device-state="${device.active?'revoke':'reactivate'}" data-device-id="${esc(device.device_id)}">${device.active?'Revoke':'Reactivate'}</button></td></tr>`).join('')}</tbody></table></div></details>`, adminNav('tests'));
+  layout('Tests', 'Launch multiple assessments and let students choose. Close each test to release its answer review.', `<section class="test-workspace"><details class="card test-builder" ${data.tests.length ? '' : 'open'}><summary><span><span class="eyebrow">Build something new</span><strong>Create an assessment</strong></span><span class="details-hint">Choose books & chapters</span></summary><form id="test-form"><label>Test name<input name="test_name" required placeholder="Placement Readiness · Set 02" /></label><label>Question selection<select id="selection-mode"><option value="balanced">Balanced across chapters</option><option value="manual">Manual single-bank counts</option></select></label><section id="balanced-selection"><label>Total questions<input id="chapter-total" type="number" min="1" max="500" step="1" value="30" required /></label><div id="chapter-picker">${renderBookChapterPicker(catalogue.chapters, new Set())}</div><div id="chapter-preview" role="status" aria-live="polite">Select chapters to preview the allocation.</div><button type="button" class="secondary" id="refresh-allocation" hidden>Refresh allocation</button></section><label id="manual-bank-label" hidden>Question bank<select id="test-bank" name="bank_id" disabled><option value="">Choose a bank…</option>${data.banks.map(bank => `<option value="${bank.bank_id}">${esc(bank.bank_name)} · ${bank.question_count} active questions</option>`).join('')}</select></label><label>Difficulty<select id="test-difficulty"><option value="all">All difficulty levels</option>${difficulties.map(level => `<option value="${level}">${level}</option>`).join('')}</select></label><div id="test-composition" class="taxonomy" hidden><p class="muted">Choose a question bank to see its categories and chapters.</p></div><p class="composition-total" id="manual-total" hidden>Selected: <strong id="test-total">0</strong> / 500</p><button class="primary" id="create-test" disabled>Create test →</button></form></details><article class="card"><p class="eyebrow">Current and past tests · submission queue ${Number(data.submission_queue_pending || 0)}</p><h2>Test library</h2><div class="table-scroll" id="faculty-test-library"><table><thead><tr><th>Name</th><th>Bank</th><th>Difficulty</th><th>Questions</th><th>Readiness</th><th>Status</th><th>Timing</th><th>Action</th></tr></thead><tbody>${data.tests.map(test => `<tr><td>${esc(test.test_name)}<small>${test.attempt_count} attempt${test.attempt_count===1?'':'s'}</small></td><td>${esc(test.source_summary || test.bank_name || '—')}</td><td>${esc(difficultyLabel(test.difficulty_levels))}</td><td>${compositionTotal(test)}</td><td>${releaseStatus(test)}</td><td>${Number(test.distributed_status?.started||0)} started · ${Number(test.distributed_status?.submitted||0)} submitted · ${Number(test.distributed_status?.voided||0)} voided</td><td data-faculty-timing="${test.test_id}">${facultyTimingMarkup(test)}</td><td><div class="row-actions">${facultyLaunchAction(test)}<button class="secondary small" data-duplicate-test="${test.test_id}">Duplicate</button><button class="secondary small" data-extend-test="${test.test_id}">Extend</button><button class="danger small" data-delete-test="${test.test_id}" data-test-name="${esc(test.test_name)}" data-attempt-count="${test.attempt_count}">Delete</button></div></td></tr>`).join('')}</tbody></table></div></article></section><details class="card device-library"><summary><span>Lab computers</span><span class="count-pill">${deviceData.devices.length} registered</span></summary><div class="heading"><div><p class="eyebrow">Managed lab computers</p><h2>${deviceData.devices.length} registered devices</h2></div></div><div class="table-scroll"><table><thead><tr><th>Label</th><th>Device</th><th>Fingerprint</th><th>Registered</th><th>State</th></tr></thead><tbody>${deviceData.devices.map(device => `<tr><td>${esc(device.label)}</td><td><code>${esc(device.device_id)}</code></td><td><code>${esc(device.public_key_fingerprint)}</code></td><td>${date(device.enrolled_at)}</td><td><button class="secondary small" data-device-state="${device.active?'revoke':'reactivate'}" data-device-id="${esc(device.device_id)}">${device.active?'Revoke':'Reactivate'}</button></td></tr>`).join('')}</tbody></table></div></details>`, adminNav('tests'));
   const manageAttempts = document.createElement('button');
   manageAttempts.className = 'secondary'; manageAttempts.textContent = 'Inspect / manage attempts';
   document.querySelector('main>.heading')?.append(manageAttempts);
@@ -722,10 +792,48 @@ async function tests() {
   });
   const bankSelect = document.querySelector('#test-bank'), difficultySelect = document.querySelector('#test-difficulty'), composition = document.querySelector('#test-composition'), total = document.querySelector('#test-total');
   await attachTaxonomySelector(bankSelect, composition, total, 500, 'test', difficultySelect);
+  const form = document.querySelector('#test-form');
+  const mode = form.querySelector('#selection-mode');
+  const selection = {form, mode, picker:form.querySelector('#chapter-picker'), catalogue:catalogue.chapters,
+    total:form.querySelector('#chapter-total'), difficulty:difficultySelect, button:form.querySelector('#create-test'),
+    status:form.querySelector('#chapter-preview'), refresh:form.querySelector('#refresh-allocation'),
+    generation:0, preview:null, busy:false};
+  const updateMode = () => {
+    const balanced = mode.value==='balanced'; selection.generation++; selection.preview=null;
+    form.querySelector('#balanced-selection').hidden=!balanced; selection.total.disabled=!balanced;
+    form.querySelector('#manual-bank-label').hidden=balanced; bankSelect.disabled=balanced; bankSelect.required=!balanced;
+    composition.hidden=balanced; form.querySelector('#manual-total').hidden=balanced;
+    composition.querySelectorAll('input').forEach(input=>input.disabled=balanced);
+    selection.button.disabled=balanced;
+    if(balanced) requestChapterPreview(selection);
+  };
+  mode.addEventListener('change',updateMode);
+  selection.picker.addEventListener('change',()=>requestChapterPreview(selection));
+  selection.total.addEventListener('input',()=>requestChapterPreview(selection));
+  difficultySelect.addEventListener('change',()=>{if(mode.value==='balanced')requestChapterPreview(selection);});
+  selection.refresh.addEventListener('click',()=>requestChapterPreview(selection));
   const timingRoot = document.querySelector('#faculty-test-library');
   facultyTimerId = setInterval(() => { if (timingRoot.isConnected) tickFacultyTimers(timingRoot); }, 1000);
   facultySyncTimerId = setInterval(createFacultyTimerSync(timingRoot), 5000);
-  document.querySelector('#test-form').addEventListener('submit', async event => { event.preventDefault(); const values = Object.fromEntries(new FormData(event.currentTarget)); try { await api('/api/admin/tests',{method:'POST',body:{test_name:values.test_name,bank_id:Number(bankSelect.value),selection_rules:selectedRules(composition),difficulties:selectedDifficulties(difficultySelect)}}); notify('Test created.'); tests(); } catch(error) { notify(error.message,true); } });
+  form.addEventListener('submit', async event => {
+    event.preventDefault();
+    if(selection.busy) return;
+    const balanced=mode.value==='balanced';
+    if(balanced && !selection.preview) return;
+    const body=balanced
+      ? {test_name:form.elements.test_name.value,selection_mode:'balanced',
+         chapters:selectedChapterChoices(selection),total_questions:Number(selection.total.value),
+         difficulties:selectedDifficulties(difficultySelect),preview_token:selection.preview.preview_token}
+      : {test_name:form.elements.test_name.value,bank_id:Number(bankSelect.value),
+         selection_rules:selectedRules(composition),difficulties:selectedDifficulties(difficultySelect)};
+    selection.busy=true; selection.button.disabled=true;
+    try { await api('/api/admin/tests',{method:'POST',body}); if(form.isConnected){notify('Test created.');await tests();} }
+    catch(error) {
+      if(!form.isConnected)return;
+      notify(error.message,true);
+      if(balanced){selection.preview=null;selection.generation++;selection.status.textContent=error.message;selection.refresh.hidden=false;}
+    } finally { selection.busy=false; if(form.isConnected)selection.button.disabled=mode.value==='balanced'&&!selection.preview; }
+  });
   document.querySelectorAll('[data-launch-test]').forEach(button => button.addEventListener('click', async () => { try { await api(`/api/admin/tests/${button.dataset.launchTest}/launch`, {method:'POST'}); notify('Test launched.'); tests(); } catch(error) { notify(error.message,true); } }));
   document.querySelectorAll('[data-close-test]').forEach(button => button.addEventListener('click', async () => { await api(`/api/admin/tests/${button.dataset.closeTest}/close`, {method:'POST'}); notify('Test closed. Students can choose available tests.'); tests(); }));
   document.querySelectorAll('[data-duplicate-test]').forEach(button => button.addEventListener('click', async () => { if (!confirm('Create a new immutable copy of this assessment? Attempts and results will not be copied.')) return; try { await api(`/api/admin/tests/${button.dataset.duplicateTest}/duplicate`, {method:'POST'}); notify('A new prepared assessment copy was created.'); tests(); } catch(error) { notify(error.message,true); } }));
@@ -735,7 +843,7 @@ async function tests() {
     const attemptCount = Number(button.dataset.attemptCount || 0);
     const historyWarning = attemptCount ? ` This will also delete ${attemptCount} attempt(s), responses and violation records. Completed results will remain in the CSV export.` : '';
     if (!confirm(`Delete “${button.dataset.testName}”?${historyWarning} This cannot be undone.`)) return;
-    try { const result = await api(`/api/admin/tests/${button.dataset.deleteTest}`, {method:'DELETE'}); notify(`${result.test_name} deleted.`); tests(); }
+    try { const result = await api(`/api/admin/tests/${button.dataset.deleteTest}`, {method:'DELETE'}); notify(`${result.test_name} deleted.${result.cleanup_pending ? ' File cleanup pending; the recovery record is retained.' : ''}`, Boolean(result.cleanup_pending)); tests(); }
     catch(error) { notify(error.message,true); }
   }));
 }

@@ -3107,8 +3107,9 @@ def list_question_banks(request: Request) -> Dict[str, Any]:
                GROUP BY b.bank_id ORDER BY b.imported_at DESC"""
         ).fetchall()
         result = rows(banks)
+        dependency_counts = question_books.bank_dependency_counts(connection)
         for bank in result:
-            bank["test_count"] = len(question_books.dependent_test_ids(connection, bank["bank_id"]))
+            bank["test_count"] = dependency_counts.get(bank["bank_id"], 0)
     return {"banks": result}
 
 
@@ -3164,8 +3165,9 @@ def delete_question_bank(bank_id: int, request: Request) -> Dict[str, Any]:
         raise
     finally:
         connection.close()
-    operation.purge()
-    return {"deleted": True, "bank_name": bank["bank_name"], "deleted_counts": deleted_counts}
+    cleanup_pending = not operation.purge()
+    return {"deleted": True, "cleanup_pending": cleanup_pending,
+            "bank_name": bank["bank_name"], "deleted_counts": deleted_counts}
 
 
 @app.get("/api/admin/question-banks/folder")
@@ -3757,8 +3759,9 @@ def delete_test(test_id: int, request: Request) -> Dict[str, Any]:
         raise
     finally:
         connection.close()
-    operation.purge()
-    return {"deleted": True, "test_name": test["test_name"], "attempts_deleted": len(attempt_ids)}
+    cleanup_pending = not operation.purge()
+    return {"deleted": True, "cleanup_pending": cleanup_pending,
+            "test_name": test["test_name"], "attempts_deleted": len(attempt_ids)}
 
 
 @app.post("/api/admin/tests/{test_id}/launch")

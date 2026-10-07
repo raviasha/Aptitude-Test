@@ -37,6 +37,13 @@ async function run() {
     let holdUpload;
     let resolveUpload;
     let uploadFails = true;
+    let books = [{book_id:1,title:'Quantitative aptitude'},{book_id:2,title:'Reasoning'}];
+    let releasePreview;
+    let delayPreview = false;
+    let conflictCreate = true;
+    const chapters = names.slice(0,3).map((chapter,i) => ({bank_id:i+1,chapter,bank_name:chapter,
+      book_id:i===2?2:1,book_title:i===2?'Reasoning':'Quantitative aptitude',
+      question_count:100,difficulties:{Easy:100}}));
     await page.route('**/api/**', async route => {
       const request = route.request();
       const pathname = new URL(request.url()).pathname;
@@ -45,6 +52,39 @@ async function run() {
       if (pathname === '/api/me') data = {user:{role:'admin',name:'Faculty'},csrf_token:'disposable-ui-token'};
       else if (pathname === '/api/admin/dashboard') data = {totals:{students:128,completed:96,average:74.8}, category_performance:[{category:'Quantitative Aptitude',percentage:78},{category:'Logical Reasoning',percentage:72},{category:'Data Interpretation',percentage:68}],recent_attempts:[{name:'Demo student',student_id:'DEMO-001',test_name:'Placement readiness · Set 01',submitted_at:'2026-09-11T09:40:00Z',score:24,total_questions:30,percentage:80,violation_count:0}]};
       else if (pathname === '/api/admin/question-banks') data = {banks};
+      else if (pathname === '/api/admin/books') data = {books};
+      else if (pathname === '/api/admin/books/assign') {
+        const body=request.postDataJSON();
+        const book=body.book_id ? books.find(b=>b.book_id===body.book_id) : {book_id:3,title:body.book_title};
+        if (!books.some(b=>b.book_id===book.book_id)) books.push(book);
+        banks=banks.map(b=>body.bank_ids.includes(b.bank_id)?{...b,book_id:book.book_id,book_title:book.title}:b);
+        data={...book,bank_ids:body.bank_ids};
+      }
+      else if (/^\/api\/admin\/books\/\d+$/.test(pathname)) {
+        const book=books.find(b=>b.book_id===Number(pathname.split('/').pop()));
+        book.title=request.postDataJSON().title; data=book;
+      }
+      else if (pathname === '/api/admin/chapter-catalogue') data = {chapters};
+      else if (/^\/api\/question-banks\/\d+\/taxonomy$/.test(pathname)) data={
+        bank_id:Number(pathname.split('/')[3]),bank_name:'Number systems',question_count:100,
+        categories:[{name:'Quantitative Aptitude',question_count:100,chapters:[{name:'Number systems',
+          question_count:100,difficulties:{Easy:100}}]}]};
+      else if (pathname === '/api/admin/tests/preview') {
+        const body=request.postDataJSON();
+        const selected=chapters.filter(c=>body.chapters.some(s=>s.bank_id===c.bank_id && s.chapter===c.chapter));
+        if ((body.difficulties.length===1 && body.difficulties[0]==='Hard') || body.total_questions<selected.length) {
+          await route.fulfill({status:400,json:{detail:'No eligible questions for the selected difficulty.'}}); return;
+        }
+        const counts=selected.map(()=>Math.floor(body.total_questions/selected.length));
+        counts.forEach((_,i)=>{if(i<body.total_questions%selected.length)counts[i]++;});
+        data={total_questions:body.total_questions,preview_token:'fixture-'+body.total_questions,redistributed:false,
+          allocations:selected.map((c,i)=>({...c,available:100,quantity:counts[i]}))};
+        if (delayPreview) { delayPreview=false; await new Promise(resolve=>{releasePreview=resolve;}); }
+      }
+      else if (pathname === '/api/admin/tests' && request.method()==='POST') {
+        if(conflictCreate){conflictCreate=false;await route.fulfill({status:409,json:{detail:'Refresh the chapter preview.'}});return;}
+        data={created:true,test_id:9};
+      }
       else if (pathname === '/api/admin/question-banks/import-package') {
         if (holdUpload) await holdUpload;
         if (uploadFails || request.postData().includes('filename="broken.zip"')) { await route.fulfill({status:400,json:{detail:'The ZIP does not contain a valid question-bank manifest.'}}); return; }
@@ -109,8 +149,67 @@ async function run() {
     await page.screenshot({path:path.join(output,'tests-desktop.png'), fullPage:true});
     await page.getByText('Create an assessment', {exact:true}).click();
     assert.equal(await page.locator('#test-form').isVisible(), true);
-    // A background import must not take faculty away from their current page.
+    assert.equal(await page.getByLabel('Question selection').inputValue(),'balanced');
+    await page.getByLabel('Test name',{exact:true}).fill('Across books');
+    await page.getByLabel('Total questions',{exact:true}).fill('50');
+    for (const chapter of names.slice(0,3)) await page.getByRole('checkbox',{name:chapter+' — '+chapter,exact:true}).check();
+    await page.waitForFunction(()=>document.querySelector('#chapter-preview').textContent.includes('50 questions'));
+    assert.deepEqual(await page.locator('[data-allocation-count]').allTextContents(),['17','17','16']);
+    await page.locator('.chapter-book > summary').first().click();
+    assert.equal(await page.locator('[data-chapter-key]').first().isChecked(),true);
+    await page.locator('.chapter-book > summary').first().click();
+    delayPreview=true;
+    await page.getByLabel('Total questions',{exact:true}).fill('49');
+    await page.waitForFunction(()=>document.querySelector('#create-test').disabled);
+    while(!releasePreview) await new Promise(resolve=>setTimeout(resolve,10));
+    await page.getByLabel('Total questions',{exact:true}).fill('48');
+    await page.waitForFunction(()=>document.querySelector('#chapter-preview').textContent.includes('48 questions'));
+    releasePreview();
+    await page.waitForResponse(r=>r.url().endsWith('/tests/preview') && r.request().postDataJSON().total_questions===49);
+    assert.deepEqual(await page.locator('[data-allocation-count]').allTextContents(),['16','16','16']);
+    await page.locator('#test-difficulty').selectOption('Hard');
+    await page.getByText('No eligible questions for the selected difficulty.',{exact:true}).waitFor();
+    assert.equal(await page.locator('#create-test').isDisabled(),true);
+    await page.locator('#test-difficulty').selectOption('Easy');
+    await page.waitForFunction(()=>!document.querySelector('#create-test').disabled);
+    await page.locator('#create-test').click();
+    await page.getByRole('button',{name:'Refresh allocation'}).waitFor();
+    assert.equal(await page.getByLabel('Test name',{exact:true}).inputValue(),'Across books');
+    await page.getByRole('button',{name:'Refresh allocation'}).click();
+    await page.waitForFunction(()=>!document.querySelector('#create-test').disabled);
+    await page.evaluate(()=>window.scrollTo(0,0));
+    await page.screenshot({path:path.join(output,'balanced-chapters-desktop.png'),fullPage:true});
+    await page.setViewportSize({width:390,height:844});
+    await page.screenshot({path:path.join(output,'balanced-chapters-mobile.png'),fullPage:true});
+    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth),true);
+    await page.setViewportSize({width:1440,height:1000});
+    await page.locator('#create-test').click();
+    await page.waitForFunction(()=>!document.querySelector('.test-builder').open);
+    const createdCall=calls.filter(c=>c.path==='/api/admin/tests'&&c.method==='POST').at(-1);
+    assert.equal(JSON.parse(createdCall.body).chapters.length,3);
+    assert.equal(JSON.parse(createdCall.body).bank_id,undefined);
+    await page.getByText('Create an assessment',{exact:true}).click();
+    await page.getByLabel('Question selection').selectOption('manual');
+    await page.getByLabel('Test name',{exact:true}).fill('Manual regression');
+    await page.locator('#test-bank').selectOption('1');
+    await page.locator('[data-rule-category]').first().fill('3');
+    await page.locator('#create-test').click();
+    await page.waitForFunction(()=>!document.querySelector('.test-builder').open);
+    const manual=JSON.parse(calls.filter(c=>c.path==='/api/admin/tests'&&c.method==='POST').at(-1).body);
+    assert.equal(manual.bank_id,1);
+    assert.equal(manual.selection_rules[0].quantity,3);
     await nav('Question banks').click();
+    await page.getByRole('checkbox',{name:'Assign Number systems',exact:true}).check();
+    await page.getByRole('checkbox',{name:'Assign HCF & LCM',exact:true}).check();
+    await page.getByLabel('New book title',{exact:true}).fill('New textbook');
+    await page.getByRole('button',{name:'Assign selected to book'}).click();
+    await page.getByRole('option',{name:'New textbook',exact:true}).waitFor({state:'attached'});
+    assert.equal(calls.filter(c=>c.path.endsWith('/import-package')).length,importCount);
+    await page.locator('#assign-book').selectOption('3');
+    page.once('dialog',dialog=>dialog.accept('Renamed textbook'));
+    await page.getByRole('button',{name:'Rename selected book'}).click();
+    await page.getByRole('option',{name:'Renamed textbook',exact:true}).waitFor({state:'attached'});
+    // A background import must not take faculty away from their current page.
     await file.setInputFiles({name:'another.zip',mimeType:'application/zip',buffer:Buffer.from('fixture')});
     holdUpload = new Promise(resolve => { resolveUpload = resolve; });
     await page.getByRole('button', {name:'Import question bank'}).click();

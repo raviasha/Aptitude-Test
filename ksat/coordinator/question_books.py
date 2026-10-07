@@ -36,9 +36,36 @@ def record_test_sources(connection: sqlite3.Connection, test_id: int) -> None:
                            [(test_id, bank_id) for bank_id in source_bank_ids(connection, test_id)])
 
 
+def test_source_map(connection: sqlite3.Connection) -> dict[int, set[int]]:
+    """Resolve all historical sources in three queries, independent of library size."""
+    sources = {}
+    for test in connection.execute("SELECT test_id,bank_id,composition FROM tests"):
+        ids = set() if test["bank_id"] is None else {test["bank_id"]}
+        rules = json.loads(test["composition"] or "[]")
+        if isinstance(rules, list):
+            ids.update(r["bank_id"] for r in rules if isinstance(r, dict) and type(r.get("bank_id")) is int)
+        sources[test["test_id"]] = ids
+    for test_id, bank_id in connection.execute("SELECT test_id,bank_id FROM test_source_banks"):
+        if test_id in sources:
+            sources[test_id].add(bank_id)
+    for test_id, bank_id in connection.execute("""SELECT DISTINCT a.test_id,q.bank_id FROM responses r
+        JOIN attempts a ON a.attempt_id=r.attempt_id JOIN questions q ON q.question_id=r.question_id
+        WHERE q.bank_id IS NOT NULL"""):
+        if test_id in sources:
+            sources[test_id].add(bank_id)
+    return sources
+
+
+def bank_dependency_counts(connection: sqlite3.Connection) -> dict[int, int]:
+    counts = {}
+    for banks in test_source_map(connection).values():
+        for bank in banks:
+            counts[bank] = counts.get(bank, 0) + 1
+    return counts
+
+
 def dependent_test_ids(connection: sqlite3.Connection, bank_id: int) -> list[int]:
-    return [r[0] for r in connection.execute("SELECT test_id FROM tests").fetchall()
-            if bank_id in source_bank_ids(connection, r[0])]
+    return sorted(test for test, banks in test_source_map(connection).items() if bank_id in banks)
 
 
 def ensure_book_schema(connection: sqlite3.Connection) -> None:
@@ -51,8 +78,8 @@ def ensure_book_schema(connection: sqlite3.Connection) -> None:
         bank_id INTEGER NOT NULL REFERENCES question_banks(bank_id),
         PRIMARY KEY(test_id,bank_id))""")
     connection.execute("CREATE INDEX IF NOT EXISTS idx_test_sources_bank ON test_source_banks(bank_id)")
-    for row in connection.execute("SELECT test_id FROM tests").fetchall():
-        record_test_sources(connection, row[0])
+    connection.executemany("INSERT OR IGNORE INTO test_source_banks(test_id,bank_id) VALUES (?,?)",
+        [(test, bank) for test, banks in test_source_map(connection).items() for bank in banks])
 
 
 def assign_book(connection: sqlite3.Connection, bank_ids: list[int], *,

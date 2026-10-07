@@ -74,7 +74,7 @@ All usage counts and replacement checks consult the complete set of sources, inc
 
 Bank deletion retains the existing explicitly confirmed cascading behavior, but its warning and affected-test count include combined tests. Resolve the complete affected test set once, then archive submitted CSV summaries and delete associated attempts/releases/tests transactionally. Keep other banks and their questions. Delete only the requested bank's question assets and the packs belonging to removed tests, using the existing recoverable quarantine mechanism.
 
-If one bank is used by multiple selected sources in a test, count that test once. Preserve the current `archived_results` behavior: submitted result summaries remain exportable after deleting tests or source banks. Never report a successful deletion when archival or cleanup failed.
+If one bank is used by multiple selected sources in a test, count that test once. Preserve the current `archived_results` behavior: submitted result summaries remain exportable after deleting tests or source banks. Archival, staging, or database-commit failures roll back. Review clarification: once deletion has committed, failed final quarantine cleanup is reported explicitly as `cleanup_pending`, with its durable recovery record retained, rather than falsely implying either complete cleanup or a database rollback.
 
 ## API and implementation boundaries
 
@@ -100,4 +100,4 @@ Use disposable databases and browser fixtures, never the running lab's ProgramDa
 
 No changes to exam timing, independent per-student question draws, automatic content deduplication, textbook ZIP contents, client update delivery, or the historical results CSV schema. No GitHub publication or installation is performed merely by approving this specification.
 
-Status: written specification approved by the user on 2026-10-07. Product code has not been changed for this feature; implementation planning is next.
+Status: written specification approved by the user on 2026-10-07; implementation and native execution plan subsequently approved. Implementation is undergoing final regression verification. The post-commit cleanup clarification above records the independent-review decision.

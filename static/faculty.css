@@ -219,3 +219,20 @@
   .faculty-shell summary strong { font-size: 18px; }
   .faculty-footer { flex-direction: column; gap: 6px; }
 }
+/* Book-grouped assessment selection */
+.book-assignment form { display: grid; gap: 14px; }
+.book-assignment .row-actions { flex-wrap: wrap; }
+.chapter-book { border: 1px solid var(--line, #ddd); border-radius: 10px; margin: 12px 0; padding: 12px; }
+.chapter-book summary { cursor: pointer; font-weight: 650; overflow-wrap: anywhere; }
+.faculty-shell .chapter-book summary > .count-pill { flex: 0 0 auto; margin-left: 8px; }
+.chapter-choice { display: flex !important; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid #eee; }
+.chapter-choice input[type=checkbox] { flex: 0 0 auto; width: 18px; height: 18px; }
+.chapter-choice > span { min-width: 0; flex: 1; overflow-wrap: anywhere; }
+.chapter-choice small, .chapter-allocations small { display: block; font-size: 12px; font-weight: 400; color: #666; }
+.chapter-choice > small { flex: 0 0 72px; text-align: right; }
+.chapter-allocations { list-style: none; padding: 0; }
+.chapter-allocations li { display: flex; justify-content: space-between; gap: 14px; padding: 8px 0; }
+.chapter-allocations li span { min-width: 0; overflow-wrap: anywhere; }
+.chapter-allocations strong { flex-shrink: 0; }
+#balanced-selection, #chapter-picker, #chapter-preview { min-width: 0; overflow-wrap: anywhere; }
+#test-form [hidden] { display: none !important; }

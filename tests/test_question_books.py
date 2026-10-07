@@ -93,3 +93,17 @@ class QuestionBooksTests(BookFixture):
         with app.db() as db:
             self.assertEqual([r[0] for r in db.execute("SELECT bank_id FROM test_source_banks WHERE test_id=? ORDER BY bank_id",(test,))],[a,b])
             self.assertEqual(db.execute("SELECT COUNT(*) FROM responses WHERE attempt_id='old'").fetchone()[0],1)
+
+    def test_dependency_counts_use_bounded_queries_for_large_libraries(self):
+        from ksat.coordinator.question_books import bank_dependency_counts
+        ids=[self.bank(f"Bank {i}",0) for i in range(50)]
+        with app.db() as db:
+            for i in range(100):
+                db.execute("INSERT INTO tests(test_name,composition,bank_id,created_at) VALUES ('Test','[]',?,?)",
+                           (ids[i%50],app.now()))
+            queries=[]
+            db.set_trace_callback(queries.append)
+            counts=bank_dependency_counts(db)
+            db.set_trace_callback(None)
+            self.assertEqual({b:counts[b] for b in ids},{b:2 for b in ids})
+            self.assertLessEqual(sum(q.lstrip().upper().startswith("SELECT") for q in queries),4)

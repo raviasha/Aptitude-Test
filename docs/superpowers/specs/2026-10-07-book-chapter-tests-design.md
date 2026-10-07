@@ -100,4 +100,4 @@ Use disposable databases and browser fixtures, never the running lab's ProgramDa
 
 No changes to exam timing, independent per-student question draws, automatic content deduplication, textbook ZIP contents, client update delivery, or the historical results CSV schema. No GitHub publication or installation is performed merely by approving this specification.
 
-Status: proposed written specification, ready for user review. Product code has not been changed for this feature.
+Status: written specification approved by the user on 2026-10-07. Product code has not been changed for this feature; implementation planning is next.

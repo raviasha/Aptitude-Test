@@ -56,6 +56,7 @@ from ksat.coordinator.routes import (
     warm_pack_registry,
 )
 from ksat.coordinator.process_lock import CoordinatorProcessLock
+from ksat.coordinator import question_books
 from ksat.coordinator.schema import migrate_distributed_schema
 from ksat.coordinator.submissions import (
     INVALID_ANSWER_STATE,
@@ -368,6 +369,16 @@ class PracticePayload(BaseModel):
     bank_id: int
     selection_rules: List[SelectionRule]
     difficulties: List[str] = Field(default_factory=lambda: list(QUESTION_DIFFICULTIES))
+
+
+class BookAssignmentPayload(BaseModel):
+    bank_ids: List[int] = Field(min_length=1, max_length=1000)
+    book_id: Optional[int] = None
+    book_title: Optional[str] = None
+
+
+class BookTitlePayload(BaseModel):
+    title: str
 
 
 class ExamViolationPayload(BaseModel):
@@ -1167,6 +1178,7 @@ def ensure_schema() -> None:
         connection.execute("CREATE INDEX IF NOT EXISTS idx_exam_violations_attempt ON exam_violations(attempt_id)")
         migrate_distributed_schema(connection)
         migrate_release_answer_states(connection)
+        question_books.ensure_book_schema(connection)
 
 
 def seed_data() -> None:
@@ -1211,6 +1223,7 @@ def seed_data() -> None:
                 ("Placement Readiness · Set 01", json.dumps(DEFAULT_COMPOSITION), starter_bank_id, now()),
             )
         connection.execute("UPDATE tests SET bank_id = ? WHERE bank_id IS NULL", (starter_bank_id,))
+        question_books.ensure_book_schema(connection)
 
 
 def copy_starter_question_files() -> None:
@@ -1352,6 +1365,10 @@ def parse_v2_question(entry: Any, origin: str) -> Dict[str, Any]:
 
 
 def parse_question_package(package_file: Any) -> tuple[str, List[Dict[str, Any]], List[Dict[str, Any]], int]:
+    return parse_question_package_with_metadata(package_file)[:4]
+
+
+def parse_question_package_with_metadata(package_file: Any) -> tuple:
     try:
         archive = zipfile.ZipFile(package_file)
     except (zipfile.BadZipFile, OSError) as error:
@@ -1373,6 +1390,12 @@ def parse_question_package(package_file: Any) -> tuple[str, List[Dict[str, Any]]
         if not isinstance(manifest, dict) or manifest.get("format_version") not in {2, 3}:
             raise HTTPException(400, "manifest.json must declare format_version 2 or 3.")
         format_version = manifest["format_version"]
+        metadata = {}
+        if "book_title" in manifest:
+            try:
+                metadata["book_title"] = question_books.normalize_title(manifest["book_title"])
+            except ValueError as error:
+                raise HTTPException(400, str(error)) from error
         bank_name = str(manifest.get("bank_name", "")).strip()
         if not bank_name:
             raise HTTPException(400, "manifest.json needs a non-empty bank_name.")
@@ -1465,7 +1488,7 @@ def parse_question_package(package_file: Any) -> tuple[str, List[Dict[str, Any]]
         unknown_stimuli = sorted({question["stimulus_id"] for question in questions if question["stimulus_id"]} - stimulus_ids)
         if unknown_stimuli:
             raise HTTPException(400, "Questions reference missing stimuli: " + ", ".join(unknown_stimuli[:20]))
-        return bank_name, questions, stimuli, format_version
+        return bank_name, questions, stimuli, format_version, metadata
 
 
 def parse_v2_package(package_file: Any) -> tuple[str, List[Dict[str, Any]], List[Dict[str, Any]]]:
@@ -1481,11 +1504,17 @@ def save_question_package(
     format_version: int,
     *,
     replace_existing: bool = False,
+    book_title: Optional[str] = None,
 ) -> Dict[str, Any]:
     if format_version not in {2, 3}:
         raise HTTPException(400, "Question-bank packages must use format_version 2 or 3.")
     bank_asset_dir: Optional[Path] = None
     new_bank = True
+    if book_title is not None:
+        try:
+            book_title = question_books.normalize_title(book_title)
+        except ValueError as error:
+            raise HTTPException(400, str(error)) from error
     try:
         with db() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -1527,6 +1556,10 @@ def save_question_package(
                        VALUES (?, ?, ?, ?, ?)""",
                     (bank_name, package_name, "manifest.json", now(), format_version),
                 ).lastrowid
+            if book_title is not None and connection.execute(
+                "SELECT book_id FROM question_banks WHERE bank_id=?", (bank_id,)
+            ).fetchone()["book_id"] is None:
+                question_books.assign_book(connection, [bank_id], book_title=book_title)
             bank_asset_dir = question_assets_dir() / str(bank_id)
             bank_asset_dir.mkdir(parents=True, exist_ok=not new_bank)
             for stimulus in stimuli:
@@ -2957,18 +2990,51 @@ def list_questions(request: Request) -> Dict[str, Any]:
         ).fetchall())}
 
 
+@app.get("/api/admin/books")
+def list_books(request: Request) -> Dict[str, Any]:
+    require_user(request, "admin")
+    with db() as connection:
+        return {"books": rows(connection.execute("SELECT book_id,title FROM books ORDER BY title_key"))}
+
+
+@app.post("/api/admin/books/assign")
+def assign_question_book(payload: BookAssignmentPayload, request: Request) -> Dict[str, Any]:
+    require_user(request, "admin")
+    try:
+        with db() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            return question_books.assign_book(connection, payload.bank_ids,
+                book_id=payload.book_id, book_title=payload.book_title)
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+
+
+@app.patch("/api/admin/books/{book_id}")
+def rename_question_book(book_id: int, payload: BookTitlePayload, request: Request) -> Dict[str, Any]:
+    require_user(request, "admin")
+    try:
+        with db() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            return question_books.rename_book(connection, book_id, payload.title)
+    except LookupError as error:
+        raise HTTPException(404, str(error)) from error
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+
+
 @app.get("/api/admin/question-banks")
 def list_question_banks(request: Request) -> Dict[str, Any]:
     require_user(request, "admin")
     with db() as connection:
         banks = connection.execute(
             """SELECT b.bank_id, b.bank_name, b.source_html_filename, b.answer_key_filename, b.imported_at,
-                      b.format_version,
+                      b.format_version, b.book_id, bk.title AS book_title,
                       COUNT(q.question_id) AS question_count,
                       SUM(q.question_html != '') AS visual_question_count,
                       (SELECT COUNT(*) FROM stimuli s WHERE s.bank_id = b.bank_id) AS stimulus_count,
                       (SELECT COUNT(*) FROM tests t WHERE t.bank_id = b.bank_id) AS test_count
-               FROM question_banks b LEFT JOIN questions q ON q.bank_id = b.bank_id
+               FROM question_banks b LEFT JOIN books bk ON bk.book_id=b.book_id
+               LEFT JOIN questions q ON q.bank_id = b.bank_id
                GROUP BY b.bank_id ORDER BY b.imported_at DESC"""
         ).fetchall()
     return {"banks": rows(banks)}
@@ -3222,10 +3288,11 @@ async def import_question_bank_package(
         raise HTTPException(400, "Choose a non-empty question-bank package.")
     if len(package_bytes) > MAX_PACKAGE_BYTES:
         raise HTTPException(413, "The compressed question-bank package must be under 50 MB.")
-    bank_name, questions, stimuli, format_version = parse_question_package(io.BytesIO(package_bytes))
+    bank_name, questions, stimuli, format_version, metadata = parse_question_package_with_metadata(io.BytesIO(package_bytes))
     return save_question_package(
         bank_name, questions, stimuli, package_name, format_version,
         replace_existing=replace_existing,
+        book_title=metadata.get("book_title"),
     )
 
 

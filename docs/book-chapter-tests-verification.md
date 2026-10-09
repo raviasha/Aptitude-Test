@@ -36,7 +36,7 @@ Decisions made during implementation:
 - Extended faculty browser fixture and bulk-import JavaScript checks: passed.
 - Final Coordinator/client suite: 834 passed, 48 skipped, 595 subtests passed; 40 existing deprecation warnings. Completed on 2026-10-08 in 564.26 seconds.
 
-All independent-review findings were addressed. No minor findings were deferred. The branch remains local, with no rebuilt executable, installer, publication, or live-lab installation.
+All independent-review findings were addressed. No minor findings were deferred. At this source-verification milestone no executable or installer had been rebuilt. See [Coordinator 2.2.0](coordinator-2.2.0.md) for the subsequent packaged release.
 
 The bare repository-wide pytest command could not collect ten textbook-extraction test modules. Missing dependencies are `pdfplumber`, `pypdf` and `jsonschema`; two extraction directories also expose the same `test_build` module name. No extraction code was changed, and this report does not claim that those suites passed.
 

@@ -67,8 +67,10 @@ def main():
         context = ssl.create_default_context(cafile=str(security.ca_certificate_path))
         process = subprocess.Popen([str(smoke)], cwd=root, env=environment, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, creationflags=subprocess.CREATE_NO_WINDOW)
         try:
-            if release._wait_json(f'https://localhost:{port}/api/build', context=context) != {'version': release.APP_VERSION}:
+            if release._wait_json(f'https://localhost:{port}/api/coordinator-build', context=context) != {'version': release.APP_VERSION}:
                 raise RuntimeError('Frozen Coordinator startup failed.')
+            if release._wait_json(f'https://localhost:{port}/api/build', context=context) != {'version': '2.1.0'}:
+                raise RuntimeError('Existing client compatibility handshake failed.')
         finally:
             logs = release._terminate_process(process)
         if 'Traceback' in logs:

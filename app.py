@@ -30,6 +30,8 @@ import urllib.request
 import uuid
 import webbrowser
 import zipfile
+import zlib
+import lzma
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
@@ -43,6 +45,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.middleware.sessions import SessionMiddleware
+from starlette.concurrency import run_in_threadpool
 from chapter_repairs import CHAPTER_01_REPAIRS
 import question_media
 from ksat.coordinator.artifacts import ArtifactQuarantine, recover_artifact_quarantine
@@ -103,7 +106,7 @@ QUESTION_BANKS_DIR = DATA_DIR / "Question Banks"
 STATIC_DIR = BUNDLE_DIR / "static"
 TEMPLATE_DIR = BUNDLE_DIR / "templates"
 SERVER_URL = "http://127.0.0.1:8000"
-APP_VERSION = "2.1.0"
+APP_VERSION = "2.2.0"
 DEFAULT_FACULTY_NAME = "Prof R Ravi Shankar"
 
 CATEGORIES = [
@@ -298,6 +301,12 @@ async def prevent_stale_frontend_assets(request: Request, call_next):
 
 @app.get("/api/build")
 def build_information() -> Dict[str, str]:
+    # Existing clients/builders require this exact compatibility handshake.
+    return {"version": "2.1.0"}
+
+
+@app.get("/api/coordinator-build")
+def coordinator_build_information() -> Dict[str, str]:
     return {"version": APP_VERSION}
 
 
@@ -1438,7 +1447,9 @@ def parse_question_package_with_metadata(package_file: Any) -> tuple:
             manifest = json.loads(archive.read(manifest_info).decode("utf-8-sig"))
         except (UnicodeDecodeError, json.JSONDecodeError) as error:
             raise HTTPException(400, "manifest.json must be valid UTF-8 JSON.") from error
-        if not isinstance(manifest, dict) or manifest.get("format_version") not in {2, 3}:
+        if isinstance(manifest, dict) and manifest.get('package_type') == 'all_vision_image_only':
+            raise HTTPException(400, "This source-page archive contains textbook images, not importable questions. Question extraction is required first.")
+        if not isinstance(manifest, dict) or manifest.get("format_version") not in (2, 3):
             raise HTTPException(400, "manifest.json must declare format_version 2 or 3.")
         format_version = manifest["format_version"]
         metadata = {}
@@ -1503,6 +1514,8 @@ def parse_question_package_with_metadata(package_file: Any) -> tuple:
 
         stimuli: List[Dict[str, Any]] = []
         stimulus_ids: set[str] = set()
+        if not isinstance(manifest.get('stimuli', []), list):
+            raise HTTPException(400, "manifest.json stimuli must be a list.")
         for entry in manifest.get("stimuli", []):
             if not isinstance(entry, dict):
                 raise HTTPException(400, "Every stimulus must be an object.")
@@ -3297,6 +3310,70 @@ async def import_question_bank_package(
         raise HTTPException(400, "Choose a non-empty question-bank package.")
     if len(package_bytes) > MAX_PACKAGE_BYTES:
         raise HTTPException(413, "The compressed question-bank package must be under 50 MB.")
+    return await run_in_threadpool(import_uploaded_package, package_bytes, package_name, replace_existing)
+
+
+def import_uploaded_package(package_bytes: bytes, package_name: str, replace_existing: bool) -> Dict[str, Any]:
+    """Import a chapter or one level of chapter ZIPs; never extract arbitrary paths."""
+    try:
+        archive = zipfile.ZipFile(io.BytesIO(package_bytes))
+    except (zipfile.BadZipFile, OSError) as error:
+        raise HTTPException(400, "The uploaded file is not a valid ZIP archive.") from error
+    with archive:
+        members = archive.infolist()
+        if len(members) > MAX_PACKAGE_FILES or sum(m.file_size for m in members) > MAX_PACKAGE_UNPACKED_BYTES:
+            raise HTTPException(413, "The unpacked ZIP archive is too large.")
+        names = {}
+        for member in members:
+            name = validate_package_member(member.filename)
+            if name in names or member.flag_bits & 1 or (member.external_attr >> 16) & 0o170000 == 0o120000:
+                raise HTTPException(400, "ZIP archives cannot contain duplicate paths, encrypted files or symbolic links.")
+            names[name] = member
+        if "manifest.json" in names:
+            return import_chapter_bytes(package_bytes, package_name, replace_existing)
+        chapters = [(name, member) for name, member in names.items()
+                    if not member.is_dir() and name.lower().endswith('.zip')]
+        if not chapters:
+            raise HTTPException(400, "This is not an importable question bank or textbook master ZIP. Source-page archives need question extraction first.")
+        if len(chapters) > 200 or any(m.file_size > MAX_PACKAGE_BYTES for _, m in chapters):
+            raise HTTPException(413, "A master ZIP supports at most 200 chapters, each under 50 MB.")
+        # Bound the entire nested expansion before saving even the first bank.
+        expanded_bytes = expanded_files = 0
+        for _, member in chapters:
+            try:
+                with zipfile.ZipFile(io.BytesIO(archive.read(member))) as inner:
+                    expanded_bytes += sum(m.file_size for m in inner.infolist())
+                    expanded_files += len(inner.infolist())
+            except (zipfile.BadZipFile, RuntimeError, NotImplementedError, OSError, zlib.error, lzma.LZMAError):
+                continue  # Report unreadable chapters individually below.
+            if expanded_bytes > MAX_PACKAGE_UNPACKED_BYTES or expanded_files > MAX_PACKAGE_FILES:
+                raise HTTPException(413, "The combined unpacked chapters exceed the master ZIP safety limit.")
+        results = []
+        for name, member in sorted(chapters):
+            try:
+                content = archive.read(member)
+                with zipfile.ZipFile(io.BytesIO(content)) as inner:
+                    inner_names = set()
+                    for item in inner.infolist():
+                        safe_name = validate_package_member(item.filename)
+                        if safe_name in inner_names or item.flag_bits & 1 or (item.external_attr >> 16) & 0o170000 == 0o120000:
+                            raise HTTPException(400, "Chapter contains duplicate paths, encrypted files or symbolic links.")
+                        inner_names.add(safe_name)
+                    if 'manifest.json' not in inner_names:
+                        raise HTTPException(400, "Not an importable chapter: source-page archives and nested master ZIPs are unsupported; a question-bank manifest.json is required.")
+                bank = import_chapter_bytes(content, Path(name).name, replace_existing)
+                results.append({'filename': name, 'ok': True,
+                                'message': f"{bank['bank_name']}: {bank['question_count']} questions imported."})
+            except HTTPException as error:
+                results.append({'filename': name, 'ok': False, 'message': str(error.detail)})
+            except (TypeError, ValueError, KeyError) as error:
+                results.append({'filename': name, 'ok': False, 'message': 'Invalid chapter data; check the question-bank manifest and question fields.'})
+            except (zipfile.BadZipFile, RuntimeError, NotImplementedError, OSError, zlib.error, lzma.LZMAError) as error:
+                results.append({'filename': name, 'ok': False, 'message': 'Cannot read this chapter ZIP; it may be damaged, encrypted or unsupported.'})
+        return {'results': results}
+
+
+def import_chapter_bytes(package_bytes: bytes, package_name: str, replace_existing: bool) -> Dict[str, Any]:
     bank_name, questions, stimuli, format_version, metadata = parse_question_package_with_metadata(io.BytesIO(package_bytes))
     return save_question_package(
         bank_name, questions, stimuli, package_name, format_version,
@@ -4136,7 +4213,7 @@ def server_is_already_running() -> bool:
 
 def running_server_version() -> Optional[str]:
     try:
-        with urllib.request.urlopen(f"{SERVER_URL}/api/build", timeout=0.8) as response:
+        with urllib.request.urlopen(f"{SERVER_URL}/api/coordinator-build", timeout=0.8) as response:
             return json.loads(response.read().decode("utf-8")).get("version")
     except (OSError, ValueError, json.JSONDecodeError):
         return None

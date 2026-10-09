@@ -1,5 +1,5 @@
 #define AppName "KSAT Faculty Coordinator"
-#define AppVersion "2.1.0"
+#define AppVersion "2.2.0"
 #define AppPublisher "College Assessment Lab"
 #define AppExeName "KSATCoordinator.exe"
 #define FirewallRule "KSAT Faculty Coordinator 2.1.0"
@@ -15,7 +15,7 @@ DefaultDirName={autopf}\KSAT Coordinator
 DefaultGroupName=KSAT
 DisableProgramGroupPage=yes
 OutputDir=..\release
-OutputBaseFilename=KSATCoordinatorSetup-2.1.0
+OutputBaseFilename=KSATCoordinatorSetup-{#AppVersion}
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern

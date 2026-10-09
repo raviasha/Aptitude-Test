@@ -32,6 +32,7 @@ else:
     import fcntl
 
 
+# Public trust metadata is a compatibility contract, not the product version.
 APP_VERSION = "2.1.0"
 COORDINATOR_SIGNING_KEY_OID = ObjectIdentifier("1.3.6.1.4.1.57264.1.1")
 _DNS_NAME = re.compile(

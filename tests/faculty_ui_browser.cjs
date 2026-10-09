@@ -85,8 +85,14 @@ async function run() {
         if(conflictCreate){conflictCreate=false;await route.fulfill({status:409,json:{detail:'Refresh the chapter preview.'}});return;}
         data={created:true,test_id:9};
       }
-      else if (pathname === '/api/admin/question-banks/import-package') {
-        if (holdUpload) await holdUpload;
+        else if (pathname === '/api/admin/question-banks/import-package') {
+          if (holdUpload) await holdUpload;
+          if (request.postData().includes('filename="master.zip"')) {
+            await route.fulfill({json:{results:[
+              {filename:'chapters/01.zip',ok:true,message:'First chapter: 20 questions imported.'},
+              {filename:'chapters/02.zip',ok:false,message:'Duplicate bank.'}
+            ]}}); return;
+          }
         if (uploadFails || request.postData().includes('filename="broken.zip"')) { await route.fulfill({status:400,json:{detail:'The ZIP does not contain a valid question-bank manifest.'}}); return; }
         banks = [...banks, {bank_id:99,bank_name:'New algebra bank',question_count:20,test_count:0,imported_at:'2026-09-11T10:00:00Z'}];
         data = banks[banks.length-1];
@@ -257,7 +263,13 @@ async function run() {
     assert.ok(batchCalls.every(call => /name="replace_existing"\r\n\r\ntrue/.test(call.body)));
     assert.match(await page.locator('#bank-import-results').innerText(),/broken.zip.*Failed/);
     assert.equal(await file.evaluate(element => element.files.length),0,'successful files must not be left selected for retry');
-    await page.screenshot({path:path.join(output,'bulk-import-results.png'),fullPage:true});
+      await page.screenshot({path:path.join(output,'bulk-import-results.png'),fullPage:true});
+      await file.setInputFiles({name:'master.zip',mimeType:'application/zip',buffer:Buffer.from('fixture')});
+      await page.getByRole('button', {name:'Import question bank'}).click();
+      await page.getByRole('heading', {name:'Import results: 1 succeeded, 1 failed'}).waitFor();
+      assert.match(await page.locator('#bank-import-results').innerText(), /master.zip.*chapters\/02.zip.*Duplicate bank/);
+      assert.match(await page.locator('#toast').innerText(), /1 chapter\(s\) imported; 1 failed/);
+      await page.screenshot({path:path.join(output,'master-import-results.png'),fullPage:true});
     await page.getByRole('button', {name:'Sign out',exact:true}).click();
     await page.getByRole('heading', {name:'Sign in',exact:true}).waitFor();
     assert.equal(await page.locator('.faculty-shell').count(),0);

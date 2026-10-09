@@ -47,9 +47,9 @@ if defined ISCC_EXE (
 
 echo.
 echo Complete:
-echo   release\KSATCoordinator-2.1.0.exe
-echo   release\KSATClient-2.1.0.exe
-echo   release\KSATCoordinatorSetup-2.1.0.exe
-echo   release\KSATClientSetup-2.1.0.exe
+echo   release\KSATCoordinator-2.2.0.exe
+echo   release\KSATClient-2.1.5.exe
+echo   release\KSATCoordinatorSetup-2.2.0.exe
+echo   release\KSATClientSetup-2.1.5.exe
 echo   release\SHA256SUMS.txt
 endlocal

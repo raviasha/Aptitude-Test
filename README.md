@@ -103,12 +103,15 @@ lock), after which the student can register that USN again.
 
 ## Build the Windows installer
 
+For the current ready-to-install Coordinator, use [Coordinator 2.2.0](release/coordinator-2.2.0/KSATCoordinatorSetup-2.2.0.exe).
+See the [upgrade and feature guide](docs/coordinator-2.2.0.md).
+
 Run [`build-windows.bat`](build-windows.bat) on a Windows computer with Python
 3.10+, Node.js, Inno Setup 6.7.3, and `innoextract`. The fail-fast build produces:
 
 ```text
-release\KSATCoordinatorSetup-2.1.0.exe
-release\KSATClientSetup-2.1.0.exe
+release\KSATCoordinatorSetup-2.2.0.exe
+release\KSATClientSetup-2.1.5.exe
 ```
 
 Detailed build, smoke, recursive payload-scan, and hash verification steps are in

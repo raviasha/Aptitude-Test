@@ -25,5 +25,13 @@ const {importBankFiles, bankImportReport} = require('../static/app.js');
     assert.equal(options.body.get('replace_existing'),'false');
     return {bank_name:'One',question_count:1};
   });
+  const masterResults = await importBankFiles([new File(['master'],'book.zip')], false,
+    async () => ({results:[
+      {filename:'chapters/01.zip',ok:true,message:'One: 12 questions imported.'},
+      {filename:'chapters/02.zip',ok:false,message:'Duplicate bank.'}
+    ]}));
+  assert.deepEqual(masterResults.map(r => r.ok), [true,false]);
+  assert.match(masterResults[0].filename, /book.zip/);
+  assert.match(bankImportReport(masterResults), /1 succeeded, 1 failed/);
   console.log('Bulk import: sequential uploads, continuation after failure, progress, replacement flag and escaped report passed.');
 })().catch(error => { console.error(error); process.exitCode=1; });

@@ -41,7 +41,7 @@ from ksat.update_protocol import parse_client_update
 from scripts.build_client_update import build_client_update
 
 
-COORDINATOR_VERSION = "2.1.0"
+COORDINATOR_VERSION = "2.2.0"
 from ksat.client.version import CLIENT_VERSION
 APP_VERSION = COORDINATOR_VERSION  # Backwards-compatible coordinator tooling.
 LAB_SIGNING_PUBLISHER = "CN=KSAT LAB RELEASE SIGNING"
@@ -952,7 +952,7 @@ def smoke_executables(
                 time.sleep(0.2)
             ssl_context = ssl.create_default_context(cafile=str(ca_path))
             coordinator_state = _wait_json(
-                f"https://localhost:{coordinator_port}/api/build", context=ssl_context
+                f"https://localhost:{coordinator_port}/api/coordinator-build", context=ssl_context
             )
             if coordinator_state != {"version": APP_VERSION}:
                 raise RuntimeError("Coordinator executable returned an unexpected version.")

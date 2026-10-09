@@ -51,8 +51,9 @@ class WindowsEntrypointTests(unittest.TestCase):
     def test_client_updater_has_a_separate_required_request_entrypoint(self):
         with self.assertRaises(SystemExit):
             client_updater_module.main([])
-    def test_version_is_consistent_and_build_endpoint_exposes_2_1_0(self):
-        self.assertEqual("2.1.0", faculty_app.APP_VERSION)
+    def test_product_version_and_legacy_handshake_are_separate(self):
+        self.assertEqual("2.2.0", faculty_app.APP_VERSION)
+        self.assertEqual({"version": "2.2.0"}, faculty_app.coordinator_build_information())
         response = faculty_app.build_information()
         self.assertEqual({"version": "2.1.0"}, response)
 

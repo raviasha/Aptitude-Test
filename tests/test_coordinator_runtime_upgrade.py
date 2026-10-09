@@ -22,7 +22,7 @@ class CoordinatorRuntimeUpgradeTests(unittest.TestCase):
                           interactive=False, port=9443, version="2.0.0")
         self.raw = self.encode(self.value)
         self.path.write_bytes(self.raw)
-        self.backup = self.data / "coordinator-runtime.pre-2.1.0.json.bak"
+        self.backup = self.data / "coordinator-runtime.pre-2.2.0.json.bak"
         # The migration must not touch unrelated data or security identity.
         self.untouched = {"aptitude.db": b"existing student records", "secrets/identity.key": b"existing identity"}
         for name, data in self.untouched.items():
@@ -38,7 +38,7 @@ class CoordinatorRuntimeUpgradeTests(unittest.TestCase):
         return coordinator.main(["--validate-config"], environ={"ProgramData": str(self.root)})
 
     def assert_migrated(self):
-        expected = dict(self.value, version="2.1.0")
+        expected = dict(self.value, version="2.2.0")
         self.assertEqual(self.encode(expected), self.path.read_bytes())
         self.assertEqual(self.raw, self.backup.read_bytes())
         for name, data in self.untouched.items():
@@ -69,7 +69,7 @@ class CoordinatorRuntimeUpgradeTests(unittest.TestCase):
         self.assert_migrated()
 
     def test_invalid_or_unknown_config_is_unchanged(self):
-        malformed = [dict(self.value, version="1.9.0"), dict(self.value, version="2.2.0"),
+        malformed = [dict(self.value, version="1.9.0"), dict(self.value, version="9.0.0"),
                      dict(self.value, port="8443"), dict(self.value, interactive=1),
                      dict(self.value, hostname="https://server"), dict(self.value, unexpected=True),
                      dict(self.value, bind_host=1), dict(self.value, bind_host=2130706433),
@@ -109,8 +109,18 @@ class CoordinatorRuntimeUpgradeTests(unittest.TestCase):
         self.assertEqual(b"earlier backup", self.backup.read_bytes())
 
     def test_current_config_does_not_create_migration_backup(self):
-        raw = self.encode(dict(self.value, version="2.1.0"))
+        raw = self.encode(dict(self.value, version="2.2.0"))
         self.path.write_bytes(raw)
         self.assertEqual(0, self.validate())
         self.assertEqual(raw, self.path.read_bytes())
         self.assertFalse(self.backup.exists())
+
+    def test_210_upgrade_preserves_previous_migration_backup(self):
+        old_backup = self.data / 'coordinator-runtime.pre-2.1.0.json.bak'
+        old_backup.write_bytes(self.raw)
+        self.value['version'] = '2.1.0'
+        self.raw = self.encode(self.value)
+        self.path.write_bytes(self.raw)
+        self.assertEqual(0, self.validate())
+        self.assert_migrated()
+        self.assertIn(b'2.0.0', old_backup.read_bytes())

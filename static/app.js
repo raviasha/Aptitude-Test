@@ -1,6 +1,6 @@
 const app = typeof document === 'undefined' ? null : document.querySelector('#app');
 const toast = typeof document === 'undefined' ? null : document.querySelector('#toast');
-const BUILD_VERSION = '2.1.0';
+const BUILD_VERSION = '2.2.0';
 let state = { user: null, csrfToken: null, attempt: null, questionIndex: 0 };
 let examGuard = {active:false, deadlineMs:null, timerId:null, syncTimerId:null, submitting:false, lastViolation:null, needsResume:false};
 let facultyTimerId = null;
@@ -571,7 +571,11 @@ async function importBankFiles(files, replaceExisting, send = api, progress = ()
       payload.append('package_file', file, file.name);
       payload.append('replace_existing', String(replaceExisting));
       const bank = await send('/api/admin/question-banks/import-package', {method:'POST', body:payload});
-      results.push({filename:file.name, ok:true, message:`${bank.bank_name}: ${bank.question_count} questions imported.`});
+      if (Array.isArray(bank.results)) {
+        results.push(...bank.results.map(result => ({...result, filename:`${file.name} / ${result.filename}`})));
+      } else {
+        results.push({filename:file.name, ok:true, message:`${bank.bank_name}: ${bank.question_count} questions imported.`});
+      }
     } catch (error) {
       results.push({filename:file.name, ok:false, message:error.message || 'Import failed.'});
     }
@@ -590,7 +594,7 @@ async function questionBanks() {
   const questionCount = library.banks.reduce((total, bank) => total + Number(bank.question_count || 0), 0);
   layout('Question banks', 'Everything you need to build a great assessment, organised in one place.', `
     <section class="bank-upload card">
-      <div class="upload-intro"><p class="eyebrow">Grow your library</p><h2>Import chapters together.</h2><p>Select one or more chapter ZIPs. Each chapter becomes a separate question bank.</p><div class="upload-note">${facultyIcon('banks')}<span>Downloaded a textbook master ZIP? Extract it once, then select the chapter ZIPs inside. Keep those chapter ZIPs zipped.</span></div></div>
+      <div class="upload-intro"><p class="eyebrow">Grow your library</p><h2>Import chapters together.</h2><p>Select textbook master ZIPs or individual chapter ZIPs. Each chapter becomes a separate question bank.</p><div class="upload-note">${facultyIcon('banks')}<span>Upload a master ZIP directly—no extraction needed. Source-page-only archives are not question banks. Keep this page open until the chapter results appear.</span></div></div>
       <form id="upload-package">
         <label class="zip-dropzone" id="zip-dropzone">
           <span class="upload-icon">${facultyIcon('upload')}</span>
@@ -686,7 +690,7 @@ async function questionBanks() {
     });
     bankImportBusy = false; replace.disabled = false;
     const succeeded = bankImportResults.filter(result => result.ok).length;
-    notify(`${succeeded} chapter(s) imported; ${files.length-succeeded} failed.`, succeeded !== files.length);
+    notify(`${succeeded} chapter(s) imported; ${bankImportResults.length-succeeded} failed.`, succeeded !== bankImportResults.length);
     if (!form.isConnected) return;
     const report = document.querySelector('#bank-import-results');
     report.hidden = false; report.innerHTML = bankImportReport(bankImportResults);

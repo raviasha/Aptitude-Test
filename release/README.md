@@ -1,17 +1,18 @@
 # Current KSAT release files
 
-## Coordinator update — 7 October 2026
+## Coordinator 2.2.0 — 9 October 2026
 
-[Download the updated Coordinator installer](coordinator-2026-10-07/KSATCoordinatorSetup-2.1.0.exe)
-for multi-ZIP chapter import and completed results retained in CSV after deleting
-tests. This dated build supersedes earlier Coordinator downloads below for these
-features; the compatible product version remains 2.1.0. No client update is needed.
+[Download Coordinator 2.2.0](coordinator-2.2.0/KSATCoordinatorSetup-2.2.0.exe)
+for book-grouped multi-chapter tests, direct textbook master-ZIP import, and
+completed results retained in CSV after deleting tests. This replaces the
+October 7 Coordinator 2.1.0 build. The app and installer display **2.2.0**.
+No client update is needed.
 
-[Upgrade and usage guide](../docs/coordinator-bulk-import-results-2026-10-07.md) ·
-[Checksums](coordinator-2026-10-07/SHA256SUMS.txt) ·
+[Upgrade and usage guide](../docs/coordinator-2.2.0.md) ·
+[Checksums](coordinator-2.2.0/SHA256SUMS.txt) ·
 [All 39 quantitative chapters in one ZIP](../question-banks/latest/textbook-downloads/quantitative-aptitude-chapters-01-39.zip)
 
-The newest **pilot/prerelease** is **Client 2.1.5 and Lab Package Builder 2.1.5**. Coordinator remains **2.1.0**. Test one lab PC before wider deployment; the real administrator/standard-user installation pilot is still required.
+The newest client **pilot/prerelease** remains **Client 2.1.5 and Lab Package Builder 2.1.5**; the current Coordinator is **2.2.0**. Test one lab PC before wider deployment; the real administrator/standard-user installation pilot is still required.
 
 ## 2.1.5 pilot downloads — upgrade clients with saved pending uploads
 
@@ -73,7 +74,7 @@ Run the builder on the designated packaging PC. Supply only the server URL and t
 
 ## Supporting files
 
-- Standalone Coordinator: [2.1.0](KSATCoordinator-2.1.0.exe). The retained [Client 2.1.0](KSATClient-2.1.0.exe) is older; use the installers above for current deployments.
+- Standalone Coordinator: [2.2.0](coordinator-2.2.0/KSATCoordinator-2.2.0.exe). Older 2.1.0 Coordinator files are retained for history; use the new installer above. The retained [Client 2.1.0](KSATClient-2.1.0.exe) is older; use the client installers above for current deployments.
 - Existing central-update bundle: [KSATClientUpdate-2.1.0.ksat-client-update](KSATClientUpdate-2.1.0.ksat-client-update). This is the older 2.1.0 bundle, **not** an update for builder-installed 2.1.1 clients.
 - Private-lab publisher trust: [certificate](KSATLabReleaseSigning.cer) and [trust installation script](Install-KSATLabReleaseTrust.ps1), for the standard 2.1.0 workflow. Generated lab installers handle their bundled public trust themselves.
 - [Retained 2.1.0 checksums](SHA256SUMS.txt), [previous 2.1.2 builder checksum](KSATLabPackageBuilder-2.1.2.sha256), and [previous 2.1.2 client checksum](KSATClientSetup-2.1.2.sha256).

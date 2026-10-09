@@ -1,0 +1,9 @@
+{
+  "version": "2.2.0",
+  "publisher": "CN=KSAT LAB RELEASE SIGNING",
+  "thumbprint": "13AE2A6440C33E074FC9C99FB35E5A1CFD9BE908",
+  "frozen_https_startup": "passed",
+  "installer_payload": "verified",
+  "uac_payload_equivalence": "verified",
+  "client_binaries_rebuilt": false
+}

@@ -41,7 +41,7 @@ from ksat.update_protocol import parse_client_update
 from scripts.build_client_update import build_client_update
 
 
-COORDINATOR_VERSION = "2.2.0"
+COORDINATOR_VERSION = "2.2.1"
 from ksat.client.version import CLIENT_VERSION
 APP_VERSION = COORDINATOR_VERSION  # Backwards-compatible coordinator tooling.
 LAB_SIGNING_PUBLISHER = "CN=KSAT LAB RELEASE SIGNING"

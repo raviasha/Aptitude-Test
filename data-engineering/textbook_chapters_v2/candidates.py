@@ -165,14 +165,16 @@ def _media_payload(
     return media
 
 
-def assemble_candidate(evidence: RecordEvidence, extraction: Any, findings: Sequence[Finding]) -> CandidateRecord:
+def assemble_candidate(
+    evidence: RecordEvidence, extraction: Any, findings: Sequence[Finding], *, extraction_mode: str = "text"
+) -> CandidateRecord:
     """Fail closed while turning one accepted extraction into an immutable candidate."""
     if not isinstance(evidence, RecordEvidence):
         raise TypeError("evidence must be a RecordEvidence value.")
     if evidence.requires_reviewed_rejection:
         raise PipelineBlocked("Source evidence requires reviewed rejection and cannot be assembled into a candidate.")
     record, attached = _accepted_payload(extraction)
-    expected_extraction_fingerprint = extraction_job_fingerprint(evidence)
+    expected_extraction_fingerprint = extraction_job_fingerprint(evidence, extraction_mode=extraction_mode)
     if record.get("source_fingerprint") != expected_extraction_fingerprint:
         raise PipelineBlocked("Accepted extraction fingerprint does not match the supplied record evidence.")
     question_text = _non_empty_text(record.get("question_text"), "question_text")

@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import io
 import importlib.metadata
 import json
+import math
 import os
 import shutil
 import socket
@@ -17,10 +19,13 @@ import time
 import urllib.error
 import urllib.request
 import zipfile
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Iterable, Iterator, Mapping, Sequence
+
+from PIL import Image
 
 from .models import CandidateRecord, RenderArtifacts as PipelineRenderArtifacts
 from .store import canonical_json
@@ -305,12 +310,47 @@ def _stop_server(process: subprocess.Popen[Any]) -> None:
     if process.poll() is not None:
         process.wait()
         return
+    if os.name == "nt":
+        # A Windows virtualenv executable is a launcher. Stopping just that
+        # process can leave its actual server child holding the data lock.
+        # Target only the tree we created, never other Python/KSAT processes.
+        stopped = subprocess.run(
+            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+            capture_output=True,
+            text=True,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+            timeout=15,
+        )
+        if stopped.returncode != 0:
+            raise RuntimeError(f"Could not stop validation server tree: {stopped.stderr.strip()}")
+        process.wait(timeout=10)
+        return
     process.terminate()
     try:
         process.wait(timeout=10)
     except subprocess.TimeoutExpired:
         process.kill()
         process.wait(timeout=10)
+
+
+@contextmanager
+def _render_data_directory() -> Iterator[str]:
+    temporary = tempfile.TemporaryDirectory(prefix="ksat-render-data-")
+    try:
+        yield temporary.name
+    finally:
+        # taskkill can return before a terminated child's file handles close.
+        # Retry only sharing/lock violations in this renderer-owned directory;
+        # persistent locks and all other cleanup errors must still fail closed.
+        deadline = time.monotonic() + 5
+        while True:
+            try:
+                temporary.cleanup()
+                break
+            except OSError as error:
+                if os.name != "nt" or getattr(error, "winerror", None) not in (32, 33) or time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.05)
 
 
 def _edge_executable() -> Path | None:
@@ -425,26 +465,56 @@ _MECHANICAL_FINDINGS = """
 """
 
 
-def _capture_fields(page: Any, state: str, viewport: str, prefix: Path) -> dict[str, Path]:
-    screenshots: dict[str, Path] = {}
+def _capture_fields(
+    page: Any, state: str, viewport: str, prefix: Path, *, card_path: Path | None = None,
+) -> dict[str, Path]:
+    """Crop real page pixels without element screenshots scrolling beneath sticky UI."""
+    page.evaluate("""async () => {
+        window.scrollTo({left: 0, top: 0, behavior: 'instant'});
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    }""")
+    targets: dict[str, tuple[Any, Path]] = {}
+    if card_path is not None:
+        targets["card"] = (page.locator(".question"), card_path)
     if state == "unanswered":
         prompt = page.locator(
             ".question > h1, .question > .visual-question, .question > .question-media"
         ).first
         prompt_path = prefix.with_name(prefix.name + "-question.png")
-        prompt.screenshot(path=str(prompt_path))
-        screenshots[f"{state}.{viewport}.question"] = prompt_path
+        targets[f"{state}.{viewport}.question"] = (prompt, prompt_path)
         answers = page.locator(".answers button")
         for index in range(answers.count()):
             label = answers.nth(index).get_attribute("data-answer") or str(index + 1)
             option_path = prefix.with_name(prefix.name + f"-option-{label}.png")
-            answers.nth(index).screenshot(path=str(option_path))
-            screenshots[f"{state}.{viewport}.option-{label}"] = option_path
+            targets[f"{state}.{viewport}.option-{label}"] = (answers.nth(index), option_path)
     else:
         feedback_path = prefix.with_name(prefix.name + "-solution.png")
-        page.locator(".feedback").screenshot(path=str(feedback_path))
-        screenshots[f"{state}.{viewport}.solution"] = feedback_path
-    return screenshots
+        targets[f"{state}.{viewport}.solution"] = (page.locator(".feedback"), feedback_path)
+    bounds = {key: target.bounding_box() for key, (target, _) in targets.items()}
+    if any(box is None or box["width"] <= 0 or box["height"] <= 0 for box in bounds.values()):
+        raise RuntimeError("Cannot capture an invisible or empty validation field.")
+    viewport_state = "({width: innerWidth, height: innerHeight, x: scrollX, y: scrollY})"
+    before = page.evaluate(viewport_state)
+    if before["x"] != 0 or before["y"] != 0:
+        raise RuntimeError("Validation capture could not establish the page origin.")
+    # Chromium captures beyond the viewport without changing the responsive
+    # layout. Keep the actual viewport and DOM untouched; never hide sticky UI.
+    pixels = page.screenshot(full_page=True, scale="css")
+    if page.evaluate(viewport_state) != before or any(
+        target.bounding_box() != bounds[key] for key, (target, _) in targets.items()
+    ):
+        raise RuntimeError("Validation layout changed during page capture.")
+    with Image.open(io.BytesIO(pixels)) as screenshot:
+        for key, (_, path) in targets.items():
+            box = bounds[key]
+            region = (
+                math.floor(box["x"]), math.floor(box["y"]),
+                math.ceil(box["x"] + box["width"]), math.ceil(box["y"] + box["height"]),
+            )
+            if region[0] < 0 or region[1] < 0 or region[2] > screenshot.width or region[3] > screenshot.height:
+                raise RuntimeError(f"Validation field falls outside captured page pixels: {key}")
+            screenshot.crop(region).save(path, format="PNG")
+    return {key: path for key, (_, path) in targets.items() if key != "card"}
 
 
 def _frontend_fingerprint() -> str:
@@ -482,7 +552,7 @@ def _render_mapping(
     field_screenshots: dict[str, Path] = {}
     findings: list[str] = []
 
-    with tempfile.TemporaryDirectory(prefix="ksat-render-data-") as temporary_data:
+    with _render_data_directory() as temporary_data:
         temporary_data_path = Path(temporary_data)
         log_path = temporary_data_path / "uvicorn.log"
         environment = os.environ.copy()
@@ -543,12 +613,11 @@ def _render_mapping(
                                         findings.append(f"{state}.{viewport}: {finding}")
                                     prefix = output / f"{viewport}-{state}"
                                     card_path = prefix.with_name(prefix.name + "-card.png")
-                                    page.locator(".question").screenshot(path=str(card_path))
+                                    field_screenshots.update(_capture_fields(page, state, viewport, prefix, card_path=card_path))
                                     if state == "unanswered":
                                         question_screenshots[viewport] = card_path
                                     else:
                                         solution_screenshots[viewport] = card_path
-                                    field_screenshots.update(_capture_fields(page, state, viewport, prefix))
                             finally:
                                 context.close()
                     finally:

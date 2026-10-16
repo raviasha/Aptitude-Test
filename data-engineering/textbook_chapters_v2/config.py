@@ -10,6 +10,13 @@ from typing import Any, Mapping
 from .models import frozen_mapping
 
 
+def validate_extraction_mode(value: Any) -> str:
+    """Keep diagram extraction an explicit, fail-closed opt-in."""
+    if not isinstance(value, str) or value not in ("text", "text_and_diagrams"):
+        raise ValueError("extraction_mode must be text or text_and_diagrams.")
+    return value
+
+
 def _page_range(raw: Any, name: str) -> tuple[int, int]:
     if not isinstance(raw, (list, tuple)) or len(raw) != 2:
         raise ValueError(f"{name} must contain exactly a start and end page.")
@@ -45,6 +52,13 @@ class ChapterConfig:
         object.__setattr__(self, "layout_boundaries", frozen_mapping(self.layout_boundaries))
         object.__setattr__(self, "shared_contexts", frozen_mapping(self.shared_contexts))
         object.__setattr__(self, "extras", frozen_mapping(self.extras))
+        validate_extraction_mode(self.extras.get("extraction_mode", "text"))
+
+    @property
+    def extraction_mode(self) -> str:
+        # Keep this in extras: adding a dataclass field would change serialized
+        # default configs and invalidate existing source/evidence fingerprints.
+        return validate_extraction_mode(self.extras.get("extraction_mode", "text"))
 
     @property
     def answer_key_pages(self) -> tuple[int, int]:

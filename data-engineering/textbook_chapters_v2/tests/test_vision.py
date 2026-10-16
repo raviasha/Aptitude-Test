@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from contextlib import chdir
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
@@ -135,6 +136,82 @@ class VisionProtocolTests(unittest.TestCase):
         self.assertNotEqual(changed.fingerprint, self.extraction_job.fingerprint)
         with self.assertRaisesRegex(ValueError, "fingerprint"):
             ingest_extraction_result(changed, stale_result)
+
+    def test_default_extraction_retains_legacy_fingerprint_and_schema_bytes(self) -> None:
+        import hashlib
+
+        evidence = replace(
+            self.evidence,
+            question_crops=(replace(self.question_crop, path=Path("question.png")),),
+            answer_key_crops=(replace(self.answer_crop, path=Path("answer_key.png")),),
+            solution_crops=(replace(self.solution_crop, path=Path("solution.png")),),
+        )
+        # Both checkout line endings have different byte-bound fingerprints.
+        # Pin the pre-change values without making this test Windows-only.
+        schemas = self.root / "legacy-schemas"
+        schemas.mkdir()
+        for ending, expected in (
+            (b"\r\n", "607c3af0061a5f333f7a413fc816b66b8323f3da4f7bdbfe31e2b7670ccbe5a8"),
+            (b"\n", "44d6fe702d058c8fa92feab4c81cfe58c3572ffe40bbf3ed06b09c0b6d977cb9"),
+        ):
+            for name in ("extraction-result.schema.json", "codex-extraction-result.schema.json"):
+                content = (vision._SCHEMA_DIRECTORY / name).read_bytes().replace(b"\r\n", b"\n")
+                (schemas / name).write_bytes(content.replace(b"\n", ending))
+            with self.subTest(ending=ending), chdir(self.root), patch.object(vision, "_SCHEMA_DIRECTORY", schemas):
+                job_path = self.root / "legacy-job.json"
+                job = create_extraction_job(evidence, job_path)
+                self.assertEqual(job.fingerprint, expected)
+                self.assertEqual(vision.extraction_job_fingerprint(evidence), expected)
+                original = job_path.read_bytes()
+                create_extraction_job(evidence, job_path, extraction_mode="text")
+                self.assertEqual(job_path.read_bytes(), original)
+                self.assertEqual(set(job.schema_bindings), {"extraction-result.schema.json", "codex-extraction-result.schema.json"})
+        content = (vision._SCHEMA_DIRECTORY / "codex-extraction-result.schema.json").read_bytes()
+        self.assertEqual(hashlib.sha256(content.replace(b"\r\n", b"\n")).hexdigest(),
+                         "98ec783cdf67c28096774e2b6da5db6fceea5688a58ffbc8e2fab059eeaaf5ae")
+
+    def test_diagram_job_binds_selected_schema_and_cache_fingerprint(self) -> None:
+        job = create_extraction_job(self.evidence, self.root / "diagram-job.json", extraction_mode="text_and_diagrams")
+        self.assertEqual(set(job.schema_bindings), {"extraction-result.schema.json", "codex-extraction-diagram-result.schema.json"})
+        self.assertNotEqual(job.fingerprint, self.extraction_job.fingerprint)
+        self.assertEqual(job.fingerprint, vision.extraction_job_fingerprint(self.evidence, extraction_mode="text_and_diagrams"))
+        self.assertEqual(job.prompt, self.extraction_job.prompt)
+        self.assertEqual(job.sources, self.extraction_job.sources)
+        for mode in ("image", "", None, True, []):
+            with self.subTest(mode=mode), self.assertRaisesRegex(ValueError, "extraction_mode"):
+                create_extraction_job(self.evidence, self.root / "bad-mode.json", extraction_mode=mode)
+            with self.subTest(fingerprint_mode=mode), self.assertRaisesRegex(ValueError, "extraction_mode"):
+                vision.extraction_job_fingerprint(self.evidence, extraction_mode=mode)
+
+    def test_diagram_schema_changes_invalidate_only_diagram_jobs(self) -> None:
+        job = create_extraction_job(self.evidence, self.root / "diagram-job.json", extraction_mode="text_and_diagrams")
+        schema_directory = self.root / "diagram-schemas"
+        schema_directory.mkdir()
+        for path in vision._SCHEMA_DIRECTORY.glob("*.json"):
+            (schema_directory / path.name).write_bytes(path.read_bytes())
+        schema = schema_directory / "codex-extraction-diagram-result.schema.json"
+        schema.write_bytes(schema.read_bytes() + b"\n")
+        with patch.object(vision, "_SCHEMA_DIRECTORY", schema_directory):
+            self.assertNotEqual(vision.extraction_job_fingerprint(self.evidence, extraction_mode="text_and_diagrams"), job.fingerprint)
+            self.assertEqual(vision.extraction_job_fingerprint(self.evidence), self.extraction_job.fingerprint)
+
+    def test_diagram_candidate_keeps_source_and_answer_key_fingerprint_gates(self) -> None:
+        job = create_extraction_job(self.evidence, self.root / "diagram-job.json", extraction_mode="text_and_diagrams")
+        result = self._extraction_result(job_fingerprint=job.fingerprint)
+        result["answer_key"]["job_fingerprint"] = job.fingerprint
+        accepted = ingest_extraction_result(job, self._write_result("diagram-result.json", result))
+        candidate = assemble_candidate(self.evidence, accepted, [], extraction_mode="text_and_diagrams")
+        self.assertEqual(candidate.source_fingerprint, job.fingerprint)
+        for evidence, mode in ((self.evidence, "text"), (replace(self.evidence, source_pdf_sha256="0" * 64), "text_and_diagrams")):
+            with self.subTest(mode=mode), self.assertRaisesRegex(PipelineBlocked, "extraction fingerprint"):
+                assemble_candidate(evidence, accepted, [], extraction_mode=mode)
+        for key in ("crop_sha256", "job_fingerprint"):
+            bad = {**result, "answer_key": {**result["answer_key"], key: "0" * 64}}
+            with self.subTest(key=key), self.assertRaisesRegex(ValueError, "answer_key"):
+                ingest_extraction_result(job, self._write_result("bad-answer.json", bad))
+        self.question_crop.path.write_bytes(b"changed source crop")
+        with self.assertRaisesRegex(ValueError, "Source crop hash"):
+            create_extraction_job(self.evidence, self.root / "changed-source.json", extraction_mode="text_and_diagrams")
 
     def test_extraction_schema_bytes_are_bound_and_stale_results_are_rejected(self) -> None:
         schema_directory = self.root / "schemas"

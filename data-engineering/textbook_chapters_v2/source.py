@@ -486,7 +486,7 @@ def _source_issue(config: ChapterConfig, number: int) -> tuple[str, tuple[str, .
     if raw is None or not isinstance(raw, Mapping) or "status" not in raw:
         return "complete", (), False
     status = raw.get("status")
-    if status not in {"missing_solution", "incomplete_solution", "answer_key_inconsistent"}:
+    if status not in {"missing_solution", "incomplete_solution", "answer_key_inconsistent", "missing_options"}:
         raise ValueError(f"Unsupported source status for question {number}: {status!r}.")
     reason = raw.get("reason")
     detail = raw.get("detail")

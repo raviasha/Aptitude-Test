@@ -10,6 +10,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+from .config import validate_extraction_mode
 from .models import CandidateRecord, RecordEvidence, RenderArtifacts, SourceCrop, VerificationResult, VisionJob
 from .store import canonical_json, dependency_fingerprint
 
@@ -303,7 +304,14 @@ def _extraction_fingerprint(
     )
 
 
-def extraction_job_fingerprint(evidence: RecordEvidence) -> str:
+def _extraction_schemas(extraction_mode: str) -> tuple[str, ...]:
+    mode = validate_extraction_mode(extraction_mode)
+    if mode == "text":
+        return _EXTRACTION_SCHEMAS
+    return ("extraction-result.schema.json", "codex-extraction-diagram-result.schema.json")
+
+
+def extraction_job_fingerprint(evidence: RecordEvidence, *, extraction_mode: str = "text") -> str:
     """Derive the immutable extraction-job fingerprint for one record's full evidence."""
     if not isinstance(evidence, RecordEvidence):
         raise TypeError("evidence must be a RecordEvidence value.")
@@ -314,11 +322,11 @@ def extraction_job_fingerprint(evidence: RecordEvidence) -> str:
         raise ValueError("Extraction requires at least one source crop.")
     sources = tuple(_crop_source(crop) for crop in crops)
     prompt = _extraction_prompt(evidence)
-    schema_bindings = _schema_bindings(_EXTRACTION_SCHEMAS)
+    schema_bindings = _schema_bindings(_extraction_schemas(extraction_mode))
     return _extraction_fingerprint(evidence, sources, prompt, schema_bindings)
 
 
-def create_extraction_job(evidence: RecordEvidence, output_path: Path) -> VisionJob:
+def create_extraction_job(evidence: RecordEvidence, output_path: Path, *, extraction_mode: str = "text") -> VisionJob:
     """Emit one durable extraction work item bound to immutable source crops."""
     if not isinstance(evidence, RecordEvidence):
         raise TypeError("evidence must be a RecordEvidence value.")
@@ -329,7 +337,7 @@ def create_extraction_job(evidence: RecordEvidence, output_path: Path) -> Vision
         raise ValueError("Extraction requires at least one source crop.")
     sources = tuple(_crop_source(crop) for crop in crops)
     prompt = _extraction_prompt(evidence)
-    schema_bindings = _schema_bindings(_EXTRACTION_SCHEMAS)
+    schema_bindings = _schema_bindings(_extraction_schemas(extraction_mode))
     fingerprint = _extraction_fingerprint(evidence, sources, prompt, schema_bindings)
     job = VisionJob(
         job_id=f"extract-ch{evidence.chapter:02d}-q{evidence.question_number:04d}",

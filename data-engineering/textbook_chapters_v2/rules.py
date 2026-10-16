@@ -53,6 +53,9 @@ RULES = (
             # expressions.  A variable expression followed by a digit, such
             # as the textbook's ``(n - 1) 9``, is ordinary multiplication by
             # juxtaposition rather than a flattened superscript.
+            # Only a tight number-code triplet such as 6(135)9 is exempt.
+            # A coefficient must not hide a spaced power: 2(80) 2 + 1.
+            r"(?:(?<!\d)|(?=\([^)]*\)[ \t]+[2-9]\b))"
             r"\([0-9?.,+\-\u2212\u2013*/=\u00D7\u00F7 \t]{1,48}\)[ \t]*[2-9]\b"
             r"(?=[ \t]*(?:[+\-\u2212\u2013*/=\u00D7\u00F7?]|$))"
         ),
@@ -60,7 +63,9 @@ RULES = (
     _Rule(
         "layout.option_spill",
         re.compile(
-            r"^\s*\d{4,}\s+(?!(?:and|to)\b)[A-Za-z]{1,3}\s+\d{2,}",
+            # A single letter can be an intentional coded arithmetic operator
+            # (e.g. 8900 a 100). The regression has merged labels such as ab.
+            r"^\s*\d{4,}\s+(?!(?:and|to)\b)[A-Za-z]{2,3}\s+\d{2,}",
             re.MULTILINE | re.IGNORECASE,
         ),
     ),

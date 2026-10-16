@@ -1,2 +1,4 @@
 # Debian maintainer scripts must remain executable by /bin/sh after a Windows checkout.
 installer/linux/* text eol=lf
+# Vision job fingerprints bind exact schema bytes across Windows checkouts.
+data-engineering/textbook_chapters_v2/schemas/*.json text eol=lf

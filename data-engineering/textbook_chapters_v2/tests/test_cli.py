@@ -26,6 +26,8 @@ from textbook_chapters_v2.cli import (
     PENDING_VISION_EXIT,
     _application_renderer_manifest,
     _candidates,
+    _candidate_cache_is_current,
+    _clear_cache,
     _evidence_from_payload,
     _evidence_payload,
     _path_value,
@@ -444,7 +446,7 @@ class WorkflowCliTests(unittest.TestCase):
             "source_fingerprint": candidate.source_fingerprint, "sha256": candidate.sha256, "status": candidate.status,
         }
 
-    def _controlled_render(self, question_number: int, *, persistent: bool = False) -> BrowserRenderArtifacts:
+    def _controlled_render(self, question_number: int, *, persistent: bool = True) -> BrowserRenderArtifacts:
         unanswered = self.root / f"q{question_number}-unanswered.png"
         submitted = self.root / f"q{question_number}-submitted.png"
         if persistent:
@@ -545,6 +547,7 @@ class WorkflowCliTests(unittest.TestCase):
             return completions, state_path.read_bytes()
 
         reverse_completions, reverse_state = run_with_completion_order((86, 85, 84))
+        _clear_cache(self.config, "render")
         forward_completions, forward_state = run_with_completion_order((84, 85, 86))
 
         self.assertEqual(reverse_completions, [86, 85, 84])
@@ -552,9 +555,12 @@ class WorkflowCliTests(unittest.TestCase):
         self.assertEqual(reverse_state, forward_state)
 
     def test_render_respects_configured_worker_limit(self) -> None:
+        from concurrent.futures import ThreadPoolExecutor
+
         candidates = self._render_test_candidates(render_workers=2)
         lock = threading.Lock()
         release = threading.Event()
+        first_started = threading.Event()
         two_started = threading.Event()
         third_started = threading.Event()
         active = 0
@@ -566,13 +572,17 @@ class WorkflowCliTests(unittest.TestCase):
             with lock:
                 active += 1
                 peak = max(peak, active)
+                first_started.set()
                 if active >= 2:
                     two_started.set()
                 if active >= 3:
                     third_started.set()
-            release.wait(timeout=1.0)
-            with lock:
-                active -= 1
+            try:
+                if not release.wait(timeout=60.0):
+                    raise RuntimeError("Worker-limit test did not release its render workers.")
+            finally:
+                with lock:
+                    active -= 1
             return self._controlled_render(candidate.question_number)
 
         def invoke_render() -> None:
@@ -583,17 +593,27 @@ class WorkflowCliTests(unittest.TestCase):
 
         with patch("textbook_chapters_v2.cli._candidate_cache_is_current", return_value=True), patch(
             "textbook_chapters_v2.cli._candidates", return_value=candidates
-        ), patch("textbook_chapters_v2.cli.render_candidate", side_effect=fake_render):
+        ), patch("textbook_chapters_v2.cli.render_candidate", side_effect=fake_render), patch(
+            "textbook_chapters_v2.cli.ThreadPoolExecutor", wraps=ThreadPoolExecutor,
+        ) as executor_factory:
             render_thread = threading.Thread(target=invoke_render)
             render_thread.start()
-            observed_two_workers = two_started.wait(timeout=0.5)
-            observed_third_worker = third_started.wait(timeout=0.1)
-            release.set()
-            render_thread.join(timeout=2.0)
+            try:
+                # Hashing/runtime and cache checks precede executor creation.
+                # Synchronize on actual worker entry, not a startup speed limit.
+                observed_first_worker = first_started.wait(timeout=30.0)
+                observed_two_workers = observed_first_worker and two_started.wait(timeout=30.0)
+            finally:
+                release.set()
+                render_thread.join(timeout=30.0)
 
         self.assertFalse(render_thread.is_alive())
+        # A late-scheduled third task must not conceal an oversized real pool.
+        executor_factory.assert_called_once()
+        self.assertEqual(executor_factory.call_args.kwargs["max_workers"], 2)
+        self.assertTrue(observed_first_worker)
         self.assertTrue(observed_two_workers)
-        self.assertFalse(observed_third_worker)
+        self.assertFalse(third_started.is_set())
         self.assertEqual(peak, 2)
         self.assertEqual(outcome, [0])
 
@@ -640,6 +660,176 @@ class WorkflowCliTests(unittest.TestCase):
             (self.work_root / "chapter-007" / "state" / "renders.json").read_text(encoding="utf-8")
         )
         self.assertEqual([record["question_number"] for record in state["records"]], [84, 85, 86])
+
+    def _partial_render_failure(self) -> tuple[CandidateRecord, ...]:
+        candidates = self._render_test_candidates(render_workers=1)[:2]
+        ledger_path = self.work_root / "chapter-007" / "audit-ledger.json"
+        original_ledger = ledger_path.read_bytes()
+
+        def render_then_fail(candidate, *_args):
+            rendered = self._controlled_render(candidate.question_number)
+            field = self.root / f"q{candidate.question_number}-field.png"
+            field.write_bytes(b"controlled field screenshot")
+            rendered = replace(rendered,
+                field_screenshots={"unanswered.desktop.question": field},
+                screenshot_hashes={**rendered.screenshot_hashes, "field.unanswered.desktop.question": _sha256(field)},
+            )
+            if candidate.question_number == 85:
+                # Even real files from an unsuccessful call are not a checkpoint.
+                raise RuntimeError("controlled partial timeout")
+            return rendered
+
+        with patch("textbook_chapters_v2.cli._candidate_cache_is_current", return_value=True), patch(
+            "textbook_chapters_v2.cli._candidates", return_value=candidates
+        ), patch("textbook_chapters_v2.cli.render_candidate", side_effect=render_then_fail):
+            with self.assertRaisesRegex(RuntimeError, "controlled partial timeout"):
+                _render(self.config)
+        self.assertEqual(ledger_path.read_bytes(), original_ledger)
+        self.assertFalse((self.work_root / "chapter-007/state/renders.json").exists())
+        self.assertTrue((self.work_root / "chapter-007/state/render-checkpoints/q0084.json").is_file())
+        return candidates
+
+    def _retry_partial_render(self, candidates) -> list[int]:
+        calls = []
+
+        def render(candidate, *_args):
+            calls.append(candidate.question_number)
+            return self._controlled_render(candidate.question_number)
+
+        with patch("textbook_chapters_v2.cli._candidate_cache_is_current", return_value=True), patch(
+            "textbook_chapters_v2.cli._candidates", return_value=candidates
+        ), patch("textbook_chapters_v2.cli.render_candidate", side_effect=render):
+            self.assertEqual(_render(self.config), 0)
+        return calls
+
+    def test_partial_render_retry_reuses_only_successfully_returned_record(self) -> None:
+        candidates = self._partial_render_failure()
+        checkpoints = self.work_root / "chapter-007/state/render-checkpoints"
+        self.assertTrue((checkpoints / "q0084.json").is_file())
+        self.assertFalse((checkpoints / "q0085.json").exists())
+        # A partial checkpoint is never evidence for retaining an approval.
+        ledger = AuditLedger(self.work_root, 7)
+        ledger.merge_record(replace(ledger.record(84), status="approved_for_publish", reviewer="old"))
+        with patch("textbook_chapters_v2.cli._approval_matches_reused_render", return_value=True) as approval:
+            self.assertEqual(self._retry_partial_render(candidates), [85])
+        approval.assert_not_called()
+        ledger = AuditLedger(self.work_root, 7)
+        self.assertEqual(ledger.record(84).status, "pending_vision")
+        self.assertEqual(ledger.record(84).reviewer, "")
+        self.assertEqual(set(_renders(self.config)), {84, 85})
+        state = json.loads((self.work_root / "chapter-007/state/renders.json").read_text(encoding="utf-8"))
+        self.assertEqual(state["records"][0]["artifacts"]["observed_renderer_version"], "controlled-concurrent-renderer")
+
+    def test_partial_render_changed_candidate_invalidates_checkpoint(self) -> None:
+        candidates = self._partial_render_failure()
+        changed = replace(candidates[0], question_text="Changed", sha256="f" * 64)
+        self.assertEqual(self._retry_partial_render((changed, candidates[1])), [84, 85])
+
+    def test_partial_render_changed_inputs_or_artifacts_invalidate_checkpoint(self) -> None:
+        cases = (
+            "static/app.js", "app.py", "data-engineering/textbook_chapters_v2/render.py",
+            "screenshot", "field", "import-evidence", "viewports", "playwright", "checkpoint", "malformed", "force",
+        )
+        for case in cases:
+            with self.subTest(case=case):
+                _clear_cache(self.config, "render")
+                candidates = self._partial_render_failure()
+                if case == "screenshot":
+                    (self.root / "q84-unanswered.png").write_bytes(b"changed")
+                elif case == "field":
+                    (self.root / "q84-field.png").write_bytes(b"changed")
+                elif case == "import-evidence":
+                    (self.root / "ch07-q0084-import-evidence.json").write_bytes(b"changed")
+                elif case == "viewports":
+                    self.config = replace(self.config, extras={**self.config.extras, "validation_viewports": [[800, 600]]})
+                elif case == "checkpoint":
+                    path = self.work_root / "chapter-007/state/render-checkpoints/q0084.json"
+                    payload = json.loads(path.read_text(encoding="utf-8"))
+                    payload["records"][0]["artifacts"]["findings"] = ["tampered"]
+                    path.write_bytes(canonical_json(payload))
+                elif case == "malformed":
+                    (self.work_root / "chapter-007/state/render-checkpoints/q0084.json").write_text("{broken", encoding="utf-8")
+                elif case == "force":
+                    _clear_cache(self.config, "render")
+                elif case != "playwright":
+                    (self.application_root / case).write_bytes(f"changed {case}".encode())
+                with patch("textbook_chapters_v2.cli.importlib.metadata.version", return_value="changed") if case == "playwright" else patch(
+                    "textbook_chapters_v2.cli._candidate_cache_is_current", return_value=True
+                ):
+                    self.assertEqual(self._retry_partial_render(candidates), [84, 85])
+
+    def test_partial_render_browser_change_blocks_final_manifest(self) -> None:
+        candidates = self._partial_render_failure()
+        ledger_path = self.work_root / "chapter-007/audit-ledger.json"
+        original_ledger = ledger_path.read_bytes()
+        with patch("textbook_chapters_v2.cli._candidate_cache_is_current", return_value=True), patch(
+            "textbook_chapters_v2.cli._candidates", return_value=candidates
+        ), patch("textbook_chapters_v2.cli.render_candidate", side_effect=lambda candidate, *_: replace(
+            self._controlled_render(candidate.question_number), browser_runtime="playwright-chromium:125.0"
+        )):
+            with self.assertRaisesRegex(PipelineBlocked, "consistent actual browser runtime"):
+                _render(self.config)
+        self.assertFalse((self.work_root / "chapter-007/state/renders.json").exists())
+        self.assertEqual(ledger_path.read_bytes(), original_ledger)
+
+    def test_render_input_change_during_capture_does_not_checkpoint_or_finalize(self) -> None:
+        candidates = self._render_test_candidates(render_workers=1)[:1]
+
+        def render_and_change(candidate, *_args):
+            rendered = self._controlled_render(candidate.question_number)
+            (self.application_root / "static/app.js").write_bytes(b"changed during capture")
+            return rendered
+
+        with patch("textbook_chapters_v2.cli._candidate_cache_is_current", return_value=True), patch(
+            "textbook_chapters_v2.cli._candidates", return_value=candidates
+        ), patch("textbook_chapters_v2.cli.render_candidate", side_effect=render_and_change):
+            with self.assertRaisesRegex(PipelineBlocked, "changed during rendering"):
+                _render(self.config)
+        self.assertFalse((self.work_root / "chapter-007/state/render-checkpoints/q0084.json").exists())
+        self.assertFalse((self.work_root / "chapter-007/state/renders.json").exists())
+
+    def test_all_partial_checkpoints_still_require_an_actual_runtime_witness(self) -> None:
+        candidates = self._render_test_candidates(render_workers=1)[:2]
+        from textbook_chapters_v2.cli import _atomic_json
+
+        def interrupt_final_manifest(path, payload):
+            if path.name == "application-renderer-manifest.json":
+                raise OSError("controlled final write interruption")
+            _atomic_json(path, payload)
+
+        with patch("textbook_chapters_v2.cli._atomic_json", side_effect=interrupt_final_manifest):
+            with self.assertRaisesRegex(OSError, "controlled final write interruption"):
+                self._retry_partial_render(candidates)
+        self.assertFalse((self.work_root / "chapter-007/state/renders.json").exists())
+        self.assertEqual(self._retry_partial_render(candidates), [85])
+
+    def test_partial_render_changed_artifact_during_retry_blocks_final_manifest(self) -> None:
+        candidates = self._partial_render_failure()
+        ledger_path = self.work_root / "chapter-007/audit-ledger.json"
+        original_ledger = ledger_path.read_bytes()
+
+        def render_and_tamper(candidate, *_args):
+            rendered = self._controlled_render(candidate.question_number)
+            (self.root / "q84-field.png").write_bytes(b"changed during retry")
+            return rendered
+
+        with patch("textbook_chapters_v2.cli._candidate_cache_is_current", return_value=True), patch(
+            "textbook_chapters_v2.cli._candidates", return_value=candidates
+        ), patch("textbook_chapters_v2.cli.render_candidate", side_effect=render_and_tamper):
+            with self.assertRaisesRegex(PipelineBlocked, "artifacts changed during rendering"):
+                _render(self.config)
+        self.assertEqual(ledger_path.read_bytes(), original_ledger)
+        self.assertFalse((self.work_root / "chapter-007/state/renders.json").exists())
+
+    def test_returned_render_with_missing_artifacts_cannot_be_checkpointed(self) -> None:
+        candidates = self._render_test_candidates(render_workers=1)[:1]
+        with patch("textbook_chapters_v2.cli._candidate_cache_is_current", return_value=True), patch(
+            "textbook_chapters_v2.cli._candidates", return_value=candidates
+        ), patch("textbook_chapters_v2.cli.render_candidate", return_value=self._controlled_render(84, persistent=False)):
+            with self.assertRaisesRegex(PipelineBlocked, "artifacts are missing or stale"):
+                _render(self.config)
+        self.assertFalse((self.work_root / "chapter-007/state/render-checkpoints/q0084.json").exists())
+        self.assertFalse((self.work_root / "chapter-007/state/renders.json").exists())
 
     def test_render_reuses_cryptographically_bound_unchanged_records(self) -> None:
         candidates = self._render_test_candidates(render_workers=3)
@@ -1073,6 +1263,60 @@ class WorkflowCliTests(unittest.TestCase):
 
         self.assertEqual(main(["ingest-extraction", "--config", str(self.config_path), "--results", str(results)]), BLOCKED_EXIT)
         self.assertEqual(AuditLedger(self.work_root, 7).record(84).status, "blocked")
+
+    def _opt_in_to_diagrams(self) -> None:
+        raw = json.loads(self.config_path.read_text(encoding="utf-8"))
+        raw["extraction_mode"] = "text_and_diagrams"
+        self.config_path.write_text(json.dumps(raw), encoding="utf-8")
+        self.config = ChapterConfig.load(self.config_path)
+
+    def test_diagram_config_uses_same_schema_for_extraction_ingestion_and_cache(self) -> None:
+        self._opt_in_to_diagrams()
+        chapter = self._prepare_media_extraction({"options": {"D": [{"role": "question", "source_index": 2}]}})
+        job_path = chapter / "extraction-jobs" / "extract-ch07-q0084.json"
+        job = json.loads(job_path.read_text(encoding="utf-8"))
+        self.assertIn("codex-extraction-diagram-result.schema.json", job["schema_bindings"])
+        results = self._write_extraction_result({
+            "question": "text", "options": {"A": "text", "B": "text", "C": "text", "D": "image"},
+            "solution": "text",
+        }, chapter / "extraction-results")
+        self.assertEqual(main(["ingest-extraction", "--config", str(self.config_path), "--results", str(results)]), 0)
+        self.assertEqual(json.loads(job_path.read_text(encoding="utf-8"))["job_fingerprint"], job["job_fingerprint"])
+        self.assertTrue(_candidate_cache_is_current(self.config))
+        candidate = _candidates(self.config)[0]
+        self.assertEqual(candidate.representation["options"]["D"], "image")
+        self.assertEqual(candidate.source_fingerprint, job["job_fingerprint"])
+        self.assertEqual(candidate.representation["media"]["options"]["D"]["source_sha256"], _sha256(self.root / "option-d-only.png"))
+        self.assertEqual(main(["extract", "--config", str(self.config_path)]), 0)
+        self.assertEqual(main(["package", "--config", str(self.config_path)]), BLOCKED_EXIT)
+
+    def test_diagram_opt_in_does_not_bypass_field_media_or_quarantine_gates(self) -> None:
+        self._opt_in_to_diagrams()
+        self._prepare_media_extraction()
+        for mode in ("image", "quarantine"):
+            with self.subTest(mode=mode):
+                results = self._write_extraction_result({
+                    "question": "text", "options": {"A": "text", "B": "text", "C": "text", "D": mode},
+                    "solution": "text",
+                })
+                self.assertEqual(main(["ingest-extraction", "--config", str(self.config_path), "--results", str(results)]), BLOCKED_EXIT)
+                self.assertEqual(AuditLedger(self.work_root, 7).record(84).status, "blocked")
+
+    def test_switching_extraction_mode_invalidates_previous_text_results(self) -> None:
+        self._prepare_media_extraction()
+        job_path = self.work_root / "chapter-007" / "extraction-jobs" / "extract-ch07-q0084.json"
+        old = json.loads(job_path.read_text(encoding="utf-8"))
+        results = self._write_extraction_result({
+            "question": "text", "options": dict.fromkeys("ABCD", "text"), "solution": "text",
+        })
+        self.assertEqual(main(["ingest-extraction", "--config", str(self.config_path), "--results", str(results)]), 0)
+        self.assertTrue(_candidate_cache_is_current(self.config))
+        self._opt_in_to_diagrams()
+        with patch("textbook_chapters_v2.cli.prepare_source_evidence", return_value=self._media_evidence()):
+            self.assertEqual(main(["prepare", "--config", str(self.config_path)]), 0)
+        self.assertFalse(_candidate_cache_is_current(self.config))
+        self.assertEqual(main(["ingest-extraction", "--config", str(self.config_path), "--results", str(results)]), PENDING_VISION_EXIT)
+        self.assertNotEqual(json.loads(job_path.read_text(encoding="utf-8"))["job_fingerprint"], old["job_fingerprint"])
 
     def test_explicit_option_media_uses_only_the_option_field_crop(self) -> None:
         self._prepare_media_extraction({

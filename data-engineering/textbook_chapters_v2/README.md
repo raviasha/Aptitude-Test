@@ -50,6 +50,41 @@ chapter configs and is validated before any source crop is accepted.
 Independent candidates render concurrently; `render_workers` is an optional
 positive integer and defaults to the conservative value `3`.
 
+Codex extraction defaults to the original text-only output schema. To enable
+text plus original source diagrams for a chapter, explicitly add:
+
+```json
+{"extraction_mode": "text_and_diagrams"}
+```
+
+The only supported values are `text` (also the omitted default) and
+`text_and_diagrams`; invalid values fail during configuration loading. The
+opt-in binds `codex-extraction-diagram-result.schema.json` into each new job's
+fingerprint. That schema permits `text`, `image`, and `quarantine` for each
+field and preserves the nullable fifth-option convention. The original text
+schema bytes, default prompts, serialized default configs, and default job
+fingerprints remain unchanged; existing text jobs require no migration.
+
+After opting in, run `prepare` and `extract` for that chapter to create the new
+bound jobs. Prior text results will be stale for the opted-in chapter. Run the
+queue without a schema override:
+
+```powershell
+python scripts/run_codex_extraction_queue.py --queue <chapter-work-directory>/extraction-jobs.jsonl
+```
+
+The runner selects the single supported Codex schema named in each job's
+`schema_bindings` and verifies its exact SHA-256 before execution or cache
+reuse. It supports mixed text/diagram queues. An explicit `--schema` remains
+available, but its bytes must match the selected job binding; missing,
+ambiguous, or mismatched bindings fail closed. The runner also validates
+cached representations, so matching IDs cannot authorize images in text jobs.
+Extraction ingestion, candidate assembly, and cache checks use the same
+configured mode. Source and answer-key hash checks still apply. A quarantine
+result can be recorded by the runner but cannot become a publishable candidate;
+image fields still need the explicit `field_media` evidence below, and every
+publishable candidate still needs independent application-render verification.
+
 Fields that must remain images require an explicit, record-scoped
 `field_media` mapping. The mapping selects only source crops already authorized
 for that record; it never falls back to the whole question crop for a question,
@@ -141,6 +176,16 @@ Resume `run` after the named results have been ingested. `run` packages an
 all-green chapter but deliberately does not promote it.
 
 ## Recording a reviewed rejection
+
+Known source defects belong in `known_source_issues`, keyed by question number.
+Supported statuses are `missing_solution`, `incomplete_solution`,
+`answer_key_inconsistent`, and `missing_options`. Each issue requires a nonempty
+`reason` and `detail`, plus `requires_reviewed_rejection: true`. Preparation
+retains the record and its source crops in the audit with status `blocked`;
+extraction excludes it from the queue and removes any stale job file. Missing
+printed options must not be inferred from neighboring questions. This is not
+a reviewed rejection: publication stays blocked until an operator records one
+through the existing review command below.
 
 A record can become a reviewed rejection only after deterministic field checks
 or vision verification have quarantined it with status `blocked`. An operator

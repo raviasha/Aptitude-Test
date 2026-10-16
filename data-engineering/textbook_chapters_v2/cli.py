@@ -10,7 +10,7 @@ import os
 import shutil
 import sys
 import tempfile
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
@@ -148,9 +148,8 @@ def _published_path(config: ChapterConfig) -> Path:
     return _path_value(config, "published_path")
 
 
-def _application_renderer_manifest(
-    config: ChapterConfig, browser_identities: Iterable[str]
-) -> dict[str, Any]:
+def _application_renderer_inputs(config: ChapterConfig) -> dict[str, Any]:
+    """Snapshot render inputs independently of the runtime observed by capture."""
     root = APPLICATION_ROOT
     static_root = root / "static"
     if not (root / "app.py").is_file() or not static_root.is_dir():
@@ -177,14 +176,6 @@ def _application_renderer_manifest(
         playwright_version = importlib.metadata.version("playwright")
     except importlib.metadata.PackageNotFoundError:
         playwright_version = "unavailable"
-    normalized_identities = tuple(sorted({" ".join(str(item).split()).casefold() for item in browser_identities}))
-    if len(normalized_identities) != 1:
-        raise PipelineBlocked(
-            "Release rendering requires one consistent actual browser runtime across every screenshot render."
-        )
-    browser_identity = normalized_identities[0]
-    if not browser_identity.startswith(("microsoft-edge:", "playwright-chromium:")) or not browser_identity.split(":", 1)[1]:
-        raise PipelineBlocked(f"Rendered browser runtime identity is malformed: {browser_identity!r}.")
     runtime_policy = {
         "python_abi": f"{sys.version_info.major}.{sys.version_info.minor}",
         "playwright_version": playwright_version,
@@ -194,6 +185,28 @@ def _application_renderer_manifest(
         "package_format_version": 3,
         "render_contract_version": RENDER_CONTRACT_VERSION,
     }
+    return {
+        "application_assets": application_assets,
+        "renderer_contract": renderer_contract,
+        "runtime_policy": runtime_policy,
+    }
+
+
+def _application_renderer_manifest(
+    config: ChapterConfig, browser_identities: Iterable[str]
+) -> dict[str, Any]:
+    inputs = _application_renderer_inputs(config)
+    application_assets = inputs["application_assets"]
+    renderer_contract = inputs["renderer_contract"]
+    runtime_policy = inputs["runtime_policy"]
+    normalized_identities = tuple(sorted({" ".join(str(item).split()).casefold() for item in browser_identities}))
+    if len(normalized_identities) != 1:
+        raise PipelineBlocked(
+            "Release rendering requires one consistent actual browser runtime across every screenshot render."
+        )
+    browser_identity = normalized_identities[0]
+    if not browser_identity.startswith(("microsoft-edge:", "playwright-chromium:")) or not browser_identity.split(":", 1)[1]:
+        raise PipelineBlocked(f"Rendered browser runtime identity is malformed: {browser_identity!r}.")
     runtime_evidence = {"selected_browser_identity": browser_identity}
     application_fingerprint = dependency_fingerprint("ksat-application-assets", application_assets)
     renderer_fingerprint = dependency_fingerprint(
@@ -607,7 +620,9 @@ def _candidate_cache_is_current(config: ChapterConfig) -> bool:
     if {item.question_number for item in candidates} != expected:
         return False
     return all(
-        candidate.source_fingerprint == extraction_job_fingerprint(evidence[candidate.question_number])
+        candidate.source_fingerprint == extraction_job_fingerprint(
+            evidence[candidate.question_number], extraction_mode=config.extraction_mode
+        )
         and candidate.sha256 == _candidate_content_fingerprint(candidate)
         for candidate in candidates
     )
@@ -747,10 +762,12 @@ def _render_files_are_current(rendered: RenderArtifacts) -> bool:
 def _reusable_renders(
     config: ChapterConfig,
     candidates: Iterable[CandidateRecord],
+    *,
+    state: Mapping[str, Any] | None = None,
 ) -> dict[int, BrowserRenderArtifacts]:
     """Return only render records cryptographically bound to unchanged candidates."""
     try:
-        state = _render_state(config)
+        state = _render_state(config) if state is None else state
         records = state["records"]
         browser_identities = tuple(
             str(item["artifacts"].get("browser_runtime", "")) for item in records
@@ -776,6 +793,67 @@ def _reusable_renders(
         except (OSError, ValueError, TypeError, KeyError):
             continue
         reusable[number] = rendered
+    return reusable
+
+
+def _render_checkpoint_path(config: ChapterConfig, number: int) -> Path:
+    return _chapter_root(config) / "state" / "render-checkpoints" / f"q{number:04d}.json"
+
+
+def _checkpoint_render(
+    config: ChapterConfig,
+    candidate: CandidateRecord,
+    rendered: BrowserRenderArtifacts,
+    inputs: Mapping[str, Any],
+) -> None:
+    """Persist only a returned, byte-validated capture; never infer one from files."""
+    manifest = _application_renderer_manifest(config, (rendered.browser_runtime,))
+    if any(manifest[key] != value for key, value in inputs.items()):
+        raise PipelineBlocked("Application/renderer inputs changed during rendering; refusing checkpoint.")
+    if not _render_files_are_current(rendered):
+        raise PipelineBlocked("Returned render artifacts are missing or stale; refusing checkpoint.")
+    records = [{
+        "question_number": candidate.question_number,
+        "artifacts": _render_payload(rendered, str(manifest["manifest_fingerprint"]), candidate.sha256),
+    }]
+    payload = {
+        "schema_version": 1,
+        "application_renderer_manifest": manifest,
+        "dependency_fingerprint": _render_dependency_fingerprint((candidate,), manifest, records),
+        "records": records,
+    }
+    _atomic_json(_render_checkpoint_path(config, candidate.question_number), {
+        **payload, "checkpoint_fingerprint": dependency_fingerprint("render-checkpoint-v1", payload),
+    })
+
+
+def _reusable_render_checkpoints(
+    config: ChapterConfig, candidates: Iterable[CandidateRecord],
+) -> dict[int, BrowserRenderArtifacts]:
+    reusable: dict[int, BrowserRenderArtifacts] = {}
+    for candidate in candidates:
+        try:
+            state = json.loads(_render_checkpoint_path(config, candidate.question_number).read_text(encoding="utf-8"))
+            seal = state.pop("checkpoint_fingerprint")
+            if state["schema_version"] != 1 or seal != dependency_fingerprint("render-checkpoint-v1", state):
+                continue
+            records = state["records"]
+            if len(records) != 1 or records[0]["question_number"] != candidate.question_number:
+                continue
+            if state["dependency_fingerprint"] != _render_dependency_fingerprint(
+                (candidate,), state["application_renderer_manifest"], records
+            ):
+                continue
+            validated = _reusable_renders(config, (candidate,), state=state)
+            if candidate.question_number in validated:
+                # _reusable_renders validates the manifest version. Preserve the
+                # original capture's observed version when serializing it again.
+                reusable[candidate.question_number] = replace(
+                    validated[candidate.question_number],
+                    renderer_version=records[0]["artifacts"]["observed_renderer_version"],
+                )
+        except (OSError, ValueError, TypeError, KeyError, AttributeError, PipelineBlocked):
+            continue
     return reusable
 
 
@@ -811,6 +889,8 @@ def _verification_job(
 def _clear_cache(config: ChapterConfig, command: str) -> None:
     chapter = _chapter_root(config).resolve()
     directories = ["cache"] + (["state"] if command == "run" else [])
+    if command == "render":
+        directories.append("state/render-checkpoints")
     for name in directories:
         disposable = (chapter / name).resolve()
         try:
@@ -953,13 +1033,15 @@ def _extract(config: ChapterConfig, results_dir: Path | None = None) -> int:
     default_results = results_dir or (_chapter_root(config) / "extraction-results")
     ledger = AuditLedger(_work_root(config), config.chapter)
     for evidence in _evidence(config):
+        if evidence.requires_reviewed_rejection:
+            continue
         try:
             if ledger.record(evidence.question_number).status == REVIEWED_REJECTION:
                 continue
         except KeyError:
             pass
         job_path = _chapter_root(config) / "extraction-jobs" / f"extract-ch{config.chapter:02d}-q{evidence.question_number:04d}.json"
-        job = create_extraction_job(evidence, job_path)
+        job = create_extraction_job(evidence, job_path, extraction_mode=config.extraction_mode)
         jobs.append(job)
         if not _result_is_current(default_results / f"{job.job_id}.json", job):
             pending.append(job)
@@ -1035,7 +1117,7 @@ def _ingest_extraction(config: ChapterConfig, results: Path) -> int:
         except KeyError:
             pass
         job_file = _chapter_root(config) / "extraction-jobs" / f"extract-ch{config.chapter:02d}-q{evidence.question_number:04d}.json"
-        job = create_extraction_job(evidence, job_file)
+        job = create_extraction_job(evidence, job_file, extraction_mode=config.extraction_mode)
         result_path = results / f"{job.job_id}.json"
         if not _result_is_current(result_path, job):
             return _write_pending("extract", 1, _chapter_root(config) / "extraction-jobs.jsonl")
@@ -1043,7 +1125,9 @@ def _ingest_extraction(config: ChapterConfig, results: Path) -> int:
         findings = validate_record(raw)
         try:
             ingest_extraction_result(job, result_path)
-            candidate = assemble_candidate(evidence, _image_evidence(config, raw, evidence), findings)
+            candidate = assemble_candidate(
+                evidence, _image_evidence(config, raw, evidence), findings, extraction_mode=config.extraction_mode
+            )
         except PipelineBlocked as error:
             current = ledger.record(evidence.question_number)
             quarantined = replace(
@@ -1150,12 +1234,22 @@ def _render(config: ChapterConfig) -> int:
             return resumed
     ledger = AuditLedger(_work_root(config), config.chapter)
     candidates = _candidates(config)
+    render_inputs = _application_renderer_inputs(config)
     completed_renders: list[tuple[CandidateRecord, BrowserRenderArtifacts]] = []
     if candidates:
         viewports = _viewports(config)
         renders_root = _chapter_root(config) / "renders"
         rendered_by_number = _reusable_renders(config, candidates)
+        # Only the completed final manifest may preserve an existing approval.
         reused_numbers = frozenset(rendered_by_number)
+        checkpoints = _reusable_render_checkpoints(
+            config, (candidate for candidate in candidates if candidate.question_number not in reused_numbers)
+        )
+        rendered_by_number.update(checkpoints)
+        if checkpoints and len(rendered_by_number) == len(candidates):
+            # A crash may leave every checkpoint but no final state. Obtain a
+            # runtime witness from an actual capture, never a capability probe.
+            del rendered_by_number[next(reversed(checkpoints))]
         pending_candidates = [
             candidate for candidate in candidates
             if candidate.question_number not in rendered_by_number
@@ -1164,31 +1258,37 @@ def _render(config: ChapterConfig) -> int:
         transient_failures: list[CandidateRecord] = []
         if pending_candidates:
             with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="ksat-render") as executor:
-                futures = [
-                    (candidate, executor.submit(
+                futures = {
+                    executor.submit(
                         render_candidate,
                         candidate,
                         {},
                         viewports,
                         renders_root / f"q{candidate.question_number:04d}",
-                    ))
+                    ): candidate
                     for candidate in pending_candidates
-                ]
-                for candidate, future in futures:
+                }
+                for future in as_completed(futures):
+                    candidate = futures[future]
                     try:
-                        rendered_by_number[candidate.question_number] = future.result()
+                        rendered = future.result()
                     except Exception:
                         transient_failures.append(candidate)
+                        continue
+                    _checkpoint_render(config, candidate, rendered, render_inputs)
+                    rendered_by_number[candidate.question_number] = rendered
         # Browser startups occasionally time out under concurrent load. Retry
         # only those records once, serially, before failing the stage. State is
-        # still written atomically only after every record succeeds.
+        # finalized only after every record succeeds; checkpoints are not approvals.
         for candidate in transient_failures:
-            rendered_by_number[candidate.question_number] = render_candidate(
+            rendered = render_candidate(
                 candidate,
                 {},
                 viewports,
                 renders_root / f"q{candidate.question_number:04d}",
             )
+            _checkpoint_render(config, candidate, rendered, render_inputs)
+            rendered_by_number[candidate.question_number] = rendered
         completed_renders = [
             (candidate, rendered_by_number[candidate.question_number])
             for candidate in candidates
@@ -1196,6 +1296,10 @@ def _render(config: ChapterConfig) -> int:
     manifest = _application_renderer_manifest(
         config, (rendered.browser_runtime for _, rendered in completed_renders)
     )
+    if any(manifest[key] != value for key, value in render_inputs.items()):
+        raise PipelineBlocked("Application/renderer inputs changed during rendering; refusing final manifest.")
+    if any(not _render_files_are_current(rendered) for _, rendered in completed_renders):
+        raise PipelineBlocked("Render artifacts changed during rendering; refusing final manifest.")
     evidence_by_number: dict[int, RecordEvidence] | None = None
     rendered_records: list[dict[str, Any]] = []
     for candidate, rendered in completed_renders:

@@ -95,6 +95,26 @@ class DeterministicCorruptionRuleTests(unittest.TestCase):
 
         self.assertEqual(findings, [])
 
+    def test_bracketed_number_code_is_not_a_detached_power(self) -> None:
+        self.assertEqual(validate_record({
+            "question_text": "If 6(135)9 and 5(4)11 then find 11(A)25.",
+            "solution_steps": ["6(135)9 = 6³ − 9² = 135"],
+        }), [])
+        self.assertEqual(
+            [f.rule_id for f in validate_record({"question_text": "2(80) 2 + 1"})],
+            ["math.detached_parenthesized_power"],
+        )
+
+    def test_single_letter_coded_operator_is_not_option_spill(self) -> None:
+        self.assertEqual(validate_record({
+            "question_text": "Find the value:\n8900 a 100 ⊕ 5 θ 4 ⊕ 121 a 11 = ?",
+            "solution_steps": ["8900 a 100 ⊕ 5 θ 4 ⊕ 121 a 11"],
+        }), [])
+        self.assertEqual(
+            [f.rule_id for f in validate_record({"question_text": "28700 ab 252 ba 24 12 12 ×"})],
+            ["layout.option_spill"],
+        )
+
     def test_representation_policy_is_selected_per_field_and_fails_closed(self) -> None:
         blocking = [
             Finding(

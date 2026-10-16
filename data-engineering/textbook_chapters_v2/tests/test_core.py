@@ -119,6 +119,19 @@ class CoreContractTests(unittest.TestCase):
         with self.assertRaises(TypeError):
             config.marker_overrides["1"] = {}  # type: ignore[index]
 
+    def test_extraction_mode_is_explicit_and_default_config_fingerprint_is_unchanged(self) -> None:
+        raw = dict(chapter=1, question_pages=[1, 1], answer_pages=[1, 1],
+                   solution_pages=[1, 1], question_numbers=[1, 1])
+        default = ChapterConfig.from_dict(raw)
+        self.assertEqual(dependency_fingerprint(default),
+                         "aeace850eff5301d96c45dbedf960ce0e3971f945f71f89270cc87392f6554f6")
+        self.assertEqual(default.extraction_mode, "text")
+        self.assertEqual(ChapterConfig.from_dict({**raw, "extraction_mode": "text_and_diagrams"}).extraction_mode,
+                         "text_and_diagrams")
+        for mode in ("images", "", None, True, [], {}):
+            with self.subTest(mode=mode), self.assertRaisesRegex(ValueError, "extraction_mode"):
+                ChapterConfig.from_dict({**raw, "extraction_mode": mode})
+
     def test_cross_stage_models_are_frozen_and_copy_collections(self) -> None:
         box = CropBox(0, 40, 100, 120)
         crop = SourceCrop(

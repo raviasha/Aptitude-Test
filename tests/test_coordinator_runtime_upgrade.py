@@ -1,7 +1,9 @@
 """Exercise the actual installer validation/startup paths with legacy data."""
 import json
+import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -22,7 +24,7 @@ class CoordinatorRuntimeUpgradeTests(unittest.TestCase):
                           interactive=False, port=9443, version="2.0.0")
         self.raw = self.encode(self.value)
         self.path.write_bytes(self.raw)
-        self.backup = self.data / "coordinator-runtime.pre-2.2.0.json.bak"
+        self.backup = self.data / "coordinator-runtime.pre-2.2.1.json.bak"
         # The migration must not touch unrelated data or security identity.
         self.untouched = {"aptitude.db": b"existing student records", "secrets/identity.key": b"existing identity"}
         for name, data in self.untouched.items():
@@ -38,7 +40,7 @@ class CoordinatorRuntimeUpgradeTests(unittest.TestCase):
         return coordinator.main(["--validate-config"], environ={"ProgramData": str(self.root)})
 
     def assert_migrated(self):
-        expected = dict(self.value, version="2.2.0")
+        expected = dict(self.value, version="2.2.1")
         self.assertEqual(self.encode(expected), self.path.read_bytes())
         self.assertEqual(self.raw, self.backup.read_bytes())
         for name, data in self.untouched.items():
@@ -109,7 +111,7 @@ class CoordinatorRuntimeUpgradeTests(unittest.TestCase):
         self.assertEqual(b"earlier backup", self.backup.read_bytes())
 
     def test_current_config_does_not_create_migration_backup(self):
-        raw = self.encode(dict(self.value, version="2.2.0"))
+        raw = self.encode(dict(self.value, version="2.2.1"))
         self.path.write_bytes(raw)
         self.assertEqual(0, self.validate())
         self.assertEqual(raw, self.path.read_bytes())
@@ -124,3 +126,44 @@ class CoordinatorRuntimeUpgradeTests(unittest.TestCase):
         self.assertEqual(0, self.validate())
         self.assert_migrated()
         self.assertIn(b'2.0.0', old_backup.read_bytes())
+
+    def test_220_upgrade_to_221_preserves_logins_results_assets_security_and_old_backups(self):
+        self.value['version'] = '2.2.0'
+        self.raw = self.encode(self.value)
+        self.path.write_bytes(self.raw)
+        database = self.data / 'aptitude.db'
+        database.write_bytes(b'')
+        with closing(sqlite3.connect(database)) as connection:
+            connection.executescript('''
+                CREATE TABLE students (student_id TEXT PRIMARY KEY, password_hash TEXT);
+                INSERT INTO students VALUES ('student-1', 'existing-password-hash');
+                CREATE TABLE attempts (attempt_id TEXT PRIMARY KEY, student_id TEXT, score INTEGER);
+                INSERT INTO attempts VALUES ('completed-1', 'student-1', 17);
+            ''')
+        self.untouched.update({
+            'aptitude.db': database.read_bytes(),
+            'Question Assets/bank-1/diagram.png': b'existing question asset',
+            'secrets/protocol-signing.key': b'existing protocol identity',
+            'secrets/coordinator-ca.key.pem': b'existing TLS identity',
+            'public/coordinator-public.json': b'{"version":"2.1.0"}',
+            'coordinator-runtime.pre-2.1.0.json.bak': b'old 2.0.0 runtime backup',
+            'coordinator-runtime.pre-2.2.0.json.bak': b'old 2.1.0 runtime backup',
+            'backups/prior-aptitude.db': b'previous database backup',
+        })
+        for name, content in self.untouched.items():
+            target = self.data / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(content)
+        # Exercise the release-transition allowlist independently of the version bump.
+        with patch.object(coordinator, 'APP_VERSION', '2.2.1'):
+            self.assertEqual(0, self.validate())
+            self.assert_migrated()
+            backup_time = self.backup.stat().st_mtime_ns
+            self.assertEqual(0, self.validate())
+            self.assert_migrated()
+            self.assertEqual(backup_time, self.backup.stat().st_mtime_ns)
+        with closing(sqlite3.connect(f'{database.as_uri()}?mode=ro', uri=True)) as connection:
+            self.assertEqual([('student-1', 'existing-password-hash')],
+                             connection.execute('SELECT * FROM students').fetchall())
+            self.assertEqual([('completed-1', 'student-1', 17)],
+                             connection.execute('SELECT * FROM attempts').fetchall())

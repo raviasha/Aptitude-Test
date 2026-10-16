@@ -21,6 +21,10 @@ DEFAULT_SCHEMA = (
     / "schemas"
     / "codex-extraction-result.schema.json"
 )
+_SCHEMA_MODES = {
+    "codex-extraction-result.schema.json": ("text",),
+    "codex-extraction-diagram-result.schema.json": ("text", "image", "quarantine"),
+}
 _PRINT_LOCK = threading.Lock()
 
 
@@ -76,8 +80,19 @@ def _prompt(job: dict[str, Any]) -> str:
     )
 
 
+def _bound_schema_name(job: dict[str, Any]) -> str:
+    bindings = job.get("schema_bindings")
+    if not isinstance(bindings, dict):
+        raise ValueError("The extraction job must bind one supported output schema.")
+    names = [name for name in _SCHEMA_MODES if name in bindings]
+    if len(names) != 1 or not isinstance(bindings[names[0]], str) or not bindings[names[0]]:
+        raise ValueError("The extraction job must bind exactly one supported output schema.")
+    return names[0]
+
+
 def _validate_bound_schema(schema: Path, job: dict[str, Any]) -> None:
-    expected = job.get("schema_bindings", {}).get("codex-extraction-result.schema.json")
+    name = _bound_schema_name(job)
+    expected = job["schema_bindings"][name]
     try:
         actual = hashlib.sha256(Path(schema).read_bytes()).hexdigest()
     except OSError as error:
@@ -89,24 +104,26 @@ def _validate_bound_schema(schema: Path, job: dict[str, Any]) -> None:
 def _valid_existing(path: Path, job: dict[str, Any]) -> bool:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        _validate_result(value, job)
+    except (ValueError, TypeError, AttributeError, OSError):
         return False
-    return value.get("job_id") == job["job_id"] and value.get("job_fingerprint") == job["job_fingerprint"]
+    return True
 
 
 def _validate_result(value: dict[str, Any], job: dict[str, Any]) -> None:
+    modes = _SCHEMA_MODES[_bound_schema_name(job)]
     if value.get("job_id") != job["job_id"] or value.get("job_fingerprint") != job["job_fingerprint"]:
         raise ValueError("Codex result does not match its extraction job.")
     labels = set(value.get("options", {}))
     if labels not in ({"A", "B", "C", "D"}, {"A", "B", "C", "D", "E"}):
         raise ValueError(f"Unsupported option labels: {sorted(labels)}")
     representation = value.get("representation", {})
-    if representation.get("question") != "text" or representation.get("solution") != "text":
-        raise ValueError("All-vision text-only extraction returned non-text representation.")
+    if representation.get("question") not in modes or representation.get("solution") not in modes:
+        raise ValueError("Extraction representation is not permitted by the job-bound schema.")
     if set(representation.get("options", {})) != labels:
         raise ValueError("Option representation labels do not match options.")
-    if any(kind != "text" for kind in representation["options"].values()):
-        raise ValueError("All option representations must be text.")
+    if any(kind not in modes for kind in representation["options"].values()):
+        raise ValueError("Option representation is not permitted by the job-bound schema.")
     correct = value.get("correct_answer")
     if correct not in labels or value.get("answer_key", {}).get("correct_answer") != correct:
         raise ValueError("Correct answer is inconsistent with the answer-key crop.")
@@ -115,12 +132,13 @@ def _validate_result(value: dict[str, Any], job: dict[str, Any]) -> None:
 def _run_one(
     job: dict[str, Any],
     *,
-    schema: Path,
+    schema: Path | None,
     model: str,
     reasoning: str,
     timeout: int,
     force: bool,
 ) -> tuple[str, str]:
+    schema = Path(schema) if schema is not None else DEFAULT_SCHEMA.with_name(_bound_schema_name(job))
     _validate_bound_schema(schema, job)
     output = _result_path(job)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -176,7 +194,7 @@ def _run_one(
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--queue", required=True)
-    parser.add_argument("--schema", default=str(DEFAULT_SCHEMA))
+    parser.add_argument("--schema", type=Path, help="Optional schema override; its bytes must match each job's bound schema.")
     parser.add_argument("--workers", type=int, default=3)
     parser.add_argument("--model", default="gpt-5.6-sol")
     parser.add_argument("--reasoning", choices=("low", "medium", "high"), default="low")
@@ -196,7 +214,7 @@ def main() -> None:
             executor.submit(
                 _run_one,
                 job,
-                schema=Path(args.schema),
+                schema=args.schema,
                 model=args.model,
                 reasoning=args.reasoning,
                 timeout=args.timeout,

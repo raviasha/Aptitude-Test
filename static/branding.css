@@ -193,6 +193,10 @@ main.institutional-assessment {
 }
 
 @media (max-width: 1100px) {
+  #app:has(main.institutional-assessment) {
+    grid-template-columns: 92px minmax(0, 1180px) 92px;
+  }
+
   .institution-rail {
     grid-template-columns: 1fr;
   }

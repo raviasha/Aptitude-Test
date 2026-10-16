@@ -1,5 +1,5 @@
 #define AppName "KSAT Faculty Coordinator"
-#define AppVersion "2.2.0"
+#define AppVersion "2.2.1"
 #define AppPublisher "College Assessment Lab"
 #define AppExeName "KSATCoordinator.exe"
 #define FirewallRule "KSAT Faculty Coordinator 2.1.0"

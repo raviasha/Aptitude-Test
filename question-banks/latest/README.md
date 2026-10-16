@@ -1,6 +1,6 @@
 # Latest chapter downloads
 
-Use this folder to choose a chapter package. Selected from GitHub main on **7 October 2026**. Each ZIP is an unchanged copy of the current published package; this selection does not re-extract or re-review textbook content.
+Use this folder to choose a chapter package. Selection refreshed on **16 October 2026**. Each ZIP is an unchanged copy of the reviewed package identified in `selection.json`.
 
 ## Quantitative aptitude — upload these to KSAT
 
@@ -57,7 +57,15 @@ Use these in preference to the older `_complete`, `_hybrid`, and candidate alter
 | 38 | [pie chart](quantitative-aptitude/ch38_pie_chart_all_vision_text_only.zip) | 76 | 139ef99 2026-09-24 |
 | 39 | [line graphs](quantitative-aptitude/ch39_line_graphs_all_vision_text_only.zip) | 68 | 139ef99 2026-09-24 |
 
-## New reasoning textbook — source pages only
+## A New Approach to Reasoning — 41 importable chapter banks
+
+**[Download all 41 chapters in one master ZIP](textbook-downloads/new-reasoning-chapters-01-41.zip)**, or browse the [41 individual chapter ZIPs](new-reasoning/).
+
+The master is about 88 MB, which is larger than the Coordinator's 50 MB single-upload limit. Download and extract it once, open its `chapters` folder, select all 41 chapter ZIPs together in Coordinator → Question banks, and click Import. Keep the individual chapter files zipped.
+
+The 41 banks contain 3,812 reviewed questions produced with the V2 all-vision pipeline. One printed item—Chapter 19, question 45—was intentionally excluded because the source does not provide its answer choices. The packages passed sealed import checks against Coordinator 2.2.1 and a semantic-reference scan. After import, assign the banks to the book **A New Approach to Reasoning** in Coordinator.
+
+## Historical new-book source pages — not importable
 
 [Download both reasoning source archives together](textbook-downloads/new-reasoning-chapters-01-02-SOURCE-PAGES-ONLY.zip).
 This download is for reference/extraction work only, not Coordinator import.
@@ -73,7 +81,7 @@ The previous reasoning textbook's archives are not part of this selection. Exist
 
 ## Provenance and checks
 
-`selection.json` records original paths, source-change commits and SHA-256 hashes. All 41 ZIPs were checked for archive integrity and exact equality with their source files. For the 39 quantitative banks, question files were parsed and checked for question text, options and answer keys referencing an existing option. This is a packaging check, not a fresh review of answer correctness or textbook completeness.
+`selection.json` records paths, source-change commits and SHA-256 hashes for 82 selected archives: 39 quantitative banks, 41 reasoning banks, and two historical source-page archives. The importable banks were checked for archive integrity and Coordinator compatibility. This packaging index does not replace the source and visual-review evidence used to approve each bank.
 
 When a chapter package is updated, refresh its copy here and its selection entry together, so this folder continues to identify the current version.
 

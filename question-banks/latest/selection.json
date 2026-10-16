@@ -1,5 +1,5 @@
 {
-  "selected_on": "2026-10-07",
+  "selected_on": "2026-10-16",
   "packages": [
     {
       "path": "quantitative-aptitude/ch01_number_system_all_vision_text_only.zip",
@@ -328,6 +328,334 @@
       "questions": 0,
       "pages": 20,
       "source_commit": "f9cdb94 2026-09-18"
+    },
+    {
+      "path": "new-reasoning/new_reasoning_ch01_coding_decoding_all_vision_text_only.zip",
+      "source": "question-banks/latest/new-reasoning/new_reasoning_ch01_coding_decoding_all_vision_text_only.zip",
+      "sha256": "04518477e06c346d07bb598b59d4b1f720835fc6df95fc709fdf2b8a53e6193e",
+      "questions": 279,
+      "pages": 0,
+      "source_commit": "e023702 2026-10-16"
+    },
+    {
+      "path": "new-reasoning/new_reasoning_ch02_alphabet_test_all_vision.zip",
+      "source": "question-banks/latest/new-reasoning/new_reasoning_ch02_alphabet_test_all_vision.zip",
+      "sha256": "3587af84eaaaab010e0166ff3daacb2971a8c25d03629d4327201b8794a831b5",
+      "questions": 174,
+      "pages": 0,
+      "source_commit": "e023702 2026-10-16"
+    },
+    {
+      "path": "new-reasoning/new_reasoning_ch03_arrangement_of_words_in_logical_order_v2.zip",
+      "source": "question-banks/latest/new-reasoning/new_reasoning_ch03_arrangement_of_words_in_logical_order_v2.zip",
+      "sha256": "2fdc94c29348df4a142fc6611cddd7484c242178132fb0ab95b63f0f7315a189",
+      "questions": 63,
+      "pages": 0,
+      "source_commit": "e023702 2026-10-16"
+    },
+    {
+      "path": "new-reasoning/new_reasoning_ch04_missing_number_all_vision_text_only.zip",
+      "source": "question-banks/latest/new-reasoning/new_reasoning_ch04_missing_number_all_vision_text_only.zip",
+      "sha256": "4383d122702e4a6b088538e1fb1412fbeadd5a58222508d5e065ce666ba19774",
+      "questions": 126,
+      "pages": 0,
+      "source_commit": "e023702 2026-10-16"
+    },
+    {
+      "path": "new-reasoning/new_reasoning_ch05_symbols_and_notations_v2.zip",
+      "source": "question-banks/latest/new-reasoning/new_reasoning_ch05_symbols_and_notations_v2.zip",
+      "sha256": "ce6520eef9b1a9ae3573fa48b97e76e8fc967d8d6e98c7f437cdc0ea2db1408a",
+      "questions": 154,
+      "pages": 0,
+      "source_commit": "e023702 2026-10-16"
+    },
+    {
+      "path": "new-reasoning/new_reasoning_ch06_series_v2.zip",
+      "source": "question-banks/latest/new-reasoning/new_reasoning_ch06_series_v2.zip",
+      "sha256": "b96dce62aace7adee95deadfb2a4b71c092a67a51ed9b46ac0c308ec9a122e1c",
+      "questions": 246,
+      "pages": 0,
+      "source_commit": "e023702 2026-10-16"
+    },
+    {
+      "path": "new-reasoning/new_reasoning_ch07_analogy_v2.zip",
+      "source": "question-banks/latest/new-reasoning/new_reasoning_ch07_analogy_v2.zip",
+      "sha256": "04d392994696619d88acabfa0a6930a17e1f96edf450fca83bf9bbe20073861a",
+      "questions": 311,
+      "pages": 0,
+      "source_commit": "e023702 2026-10-16"
+    },
+    {
+      "path": "new-reasoning/new_reasoning_ch08_classification_v2.zip",
+      "source": "question-banks/latest/new-reasoning/new_reasoning_ch08_classification_v2.zip",
+      "sha256": "919b8523a3e4ccf299eec512182fa35aaf7737b47eacd83816092cd0a80a4f0e",
+      "questions": 237,
+      "pages": 0,
+      "source_commit": "e023702 2026-10-16"
+    },
+    {
+      "path": "new-reasoning/new_reasoning_ch09_matrix_all_vision.zip",
+      "source": "question-banks/latest/new-reasoning/new_reasoning_ch09_matrix_all_vision.zip",
+      "sha256": "a7b0e481502545a1ba2e1c0f562196246272d2aa80589c6d8d3666293c3adca2",
+      "questions": 20,
+      "pages": 0,
+      "source_commit": "e023702 2026-10-16"
+    },
+    {
+      "path": "new-reasoning/new_reasoning_ch10_direction_and_distance_all_vision.zip",
+      "source": "question-banks/latest/new-reasoning/new_reasoning_ch10_direction_and_distance_all_vision.zip",
+      "sha256": "894549923d1c3c2c15eb879e2ddda93611abdd3a88b82762f654b3126501c8ce",
+      "questions": 124,
+      "pages": 0,
+      "source_commit": "e023702 2026-10-16"
+    },
+    {
+      "path": "new-reasoning/new_reasoning_ch11_blood_relation_all_vision.zip",
+      "source": "question-banks/latest/new-reasoning/new_reasoning_ch11_blood_relation_all_vision.zip",
+      "sha256": "f5b49b8620ecfb1985f7233335b1b094da89abb4a7c6bb76291f373a86f606a1",
+      "questions": 157,
+      "pages": 0,
+      "source_commit": "e023702 2026-10-16"
+    },
+    {
+      "path": "new-reasoning/new_reasoning_ch12_ranking_all_vision.zip",
+      "source": "question-banks/latest/new-reasoning/new_reasoning_ch12_ranking_all_vision.zip",
+      "sha256": "f932d45b8e68135844597777976fd6b8f9eb3e7f4b51d20abc2537991ff613b9",
+      "questions": 82,
+      "pages": 0,
+      "source_commit": "e023702 2026-10-16"
+    },
+    {
+      "path": "new-reasoning/new_reasoning_ch13_seating_arrangement_v2.zip",
+      "source": "question-banks/latest/new-reasoning/new_reasoning_ch13_seating_arrangement_v2.zip",
+      "sha256": "be6789f6c6613382627d07e63f82c7ce8337d75958e0b2b709402f3fba5d377a",
+      "questions": 60,
+      "pages": 0,
+      "source_commit": "e023702 2026-10-16"
+    },
+    {
+      "path": "new-reasoning/new_reasoning_ch14_puzzles_v2.zip",
+      "source": "question-banks/latest/new-reasoning/new_reasoning_ch14_puzzles_v2.zip",
+      "sha256": "ec9f4607167c29eed80b53c6b1f776ec614fca71a722bceb3baa3a188da45f7c",
+      "questions": 96,
+      "pages": 0,
+      "source_commit": "e023702 2026-10-16"
+    },
+    {
+      "path": "new-reasoning/new_reasoning_ch15_data_sufficiency_all_vision.zip",
+      "source": "question-banks/latest/new-reasoning/new_reasoning_ch15_data_sufficiency_all_vision.zip",
+      "sha256": "8264c00cf5b7a20234615ac8800aa4727bd43c70b2fd1e1e042e75500d0823ee",
+      "questions": 55,
+      "pages": 0,
+      "source_commit": "e023702 2026-10-16"
+    },
+    {
+      "path": "new-reasoning/new_reasoning_ch16_logical_venn_diagram_all_vision.zip",
+      "source": "question-banks/latest/new-reasoning/new_reasoning_ch16_logical_venn_diagram_all_vision.zip",
+      "sha256": "1666acdc2aa9b6ada6ee308bf0aafa67f818dbb9b164bac16c2bf507f7525b95",
+      "questions": 185,
+      "pages": 0,
+      "source_commit": "e023702 2026-10-16"
+    },
+    {
+      "path": "new-reasoning/new_reasoning_ch17_syllogism_v2.zip",
+      "source": "question-banks/latest/new-reasoning/new_reasoning_ch17_syllogism_v2.zip",
+      "sha256": "eb6b13b29df45e8ceff40ad680cfb97b241ee5a54d22d7e9ae0cb12c9fc2cf3a",
+      "questions": 107,
+      "pages": 0,
+      "source_commit": "e023702 2026-10-16"
+    },
+    {
+      "path": "new-reasoning/new_reasoning_ch18_statement_conclusion_v2.zip",
+      "source": "question-banks/latest/new-reasoning/new_reasoning_ch18_statement_conclusion_v2.zip",
+      "sha256": "b4670f2bc7e8d077beff66debcce88fa4a79615bd9b1ff262f8e59e81d07aced",
+      "questions": 63,
+      "pages": 0,
+      "source_commit": "e023702 2026-10-16"
+    },
+    {
+      "path": "new-reasoning/new_reasoning_ch19_statement_assumption_v2.zip",
+      "source": "question-banks/latest/new-reasoning/new_reasoning_ch19_statement_assumption_v2.zip",
+      "sha256": "be4da2cfd11350b749f9c4fd37b9fdd2248a85ca477d8c330911e7e484f19f1e",
+      "questions": 64,
+      "pages": 0,
+      "source_commit": "e023702 2026-10-16"
+    },
+    {
+      "path": "new-reasoning/new_reasoning_ch20_statement_and_argument_v2.zip",
+      "source": "question-banks/latest/new-reasoning/new_reasoning_ch20_statement_and_argument_v2.zip",
+      "sha256": "2988163044a1da78bddb139d809d0641d0daa2b9bd3112ba1d04ad090d436978",
+      "questions": 49,
+      "pages": 0,
+      "source_commit": "e023702 2026-10-16"
+    },
+    {
+      "path": "new-reasoning/new_reasoning_ch21_statement_and_course_of_action_v2.zip",
+      "source": "question-banks/latest/new-reasoning/new_reasoning_ch21_statement_and_course_of_action_v2.zip",
+      "sha256": "efa5f6020fd3a2dcca8d6fdf467d93b9dfbcea67d57008565f282fb086afa344",
+      "questions": 45,
+      "pages": 0,
+      "source_commit": "e023702 2026-10-16"
+    },
+    {
+      "path": "new-reasoning/new_reasoning_ch22_cause_and_effect_v2.zip",
+      "source": "question-banks/latest/new-reasoning/new_reasoning_ch22_cause_and_effect_v2.zip",
+      "sha256": "05249ae42495b4b8b6fff241b64152cb36f8b93198a8da3235068fffc26e57c9",
+      "questions": 41,
+      "pages": 0,
+      "source_commit": "e023702 2026-10-16"
+    },
+    {
+      "path": "new-reasoning/new_reasoning_ch23_input_output_v2.zip",
+      "source": "question-banks/latest/new-reasoning/new_reasoning_ch23_input_output_v2.zip",
+      "sha256": "878c308fcf26407da0e3ffab1b2b73686d27ddb3e0a3f2970798c18cea0d65b3",
+      "questions": 25,
+      "pages": 0,
+      "source_commit": "e023702 2026-10-16"
+    },
+    {
+      "path": "new-reasoning/new_reasoning_ch24_calendar_v2.zip",
+      "source": "question-banks/latest/new-reasoning/new_reasoning_ch24_calendar_v2.zip",
+      "sha256": "b957eb350a713e89ce7607cc2eb07717e58046375f839fd3714a2e4a8415bdab",
+      "questions": 66,
+      "pages": 0,
+      "source_commit": "e023702 2026-10-16"
+    },
+    {
+      "path": "new-reasoning/new_reasoning_ch25_clock_all_vision.zip",
+      "source": "question-banks/latest/new-reasoning/new_reasoning_ch25_clock_all_vision.zip",
+      "sha256": "3bd11d3ee4a52eb7bd1927d8daa1b4c121afb83a7a9d3c4101a24deae6c8b9d9",
+      "questions": 58,
+      "pages": 0,
+      "source_commit": "e023702 2026-10-16"
+    },
+    {
+      "path": "new-reasoning/new_reasoning_ch26_arithmetical_reasoning_all_vision.zip",
+      "source": "question-banks/latest/new-reasoning/new_reasoning_ch26_arithmetical_reasoning_all_vision.zip",
+      "sha256": "6bb03bba0f8cd37e6f038d12d7bd47f3b19966b39acdcfaa6877011643effa00",
+      "questions": 95,
+      "pages": 0,
+      "source_commit": "e023702 2026-10-16"
+    },
+    {
+      "path": "new-reasoning/new_reasoning_ch27_inequalities_v2.zip",
+      "source": "question-banks/latest/new-reasoning/new_reasoning_ch27_inequalities_v2.zip",
+      "sha256": "3b194c3ab45ff7e8811e1500996a0947c60330cfb5d7911f644bc1286be515c6",
+      "questions": 30,
+      "pages": 0,
+      "source_commit": "e023702 2026-10-16"
+    },
+    {
+      "path": "new-reasoning/new_reasoning_ch28_cubes_and_dice_v2.zip",
+      "source": "question-banks/latest/new-reasoning/new_reasoning_ch28_cubes_and_dice_v2.zip",
+      "sha256": "0aa07afabf893ef1fd21f46c1cef9fd32bccad6d6686aee082338c4440d96366",
+      "questions": 118,
+      "pages": 0,
+      "source_commit": "e023702 2026-10-16"
+    },
+    {
+      "path": "new-reasoning/new_reasoning_ch29_figure_counting_all_vision.zip",
+      "source": "question-banks/latest/new-reasoning/new_reasoning_ch29_figure_counting_all_vision.zip",
+      "sha256": "cb63ddcae870c62a9b5e69644facdc273bef00cc56a6329d5afc9a9f9c193f07",
+      "questions": 108,
+      "pages": 0,
+      "source_commit": "e023702 2026-10-16"
+    },
+    {
+      "path": "new-reasoning/new_reasoning_ch30_mirror_image_and_water_image_all_vision.zip",
+      "source": "question-banks/latest/new-reasoning/new_reasoning_ch30_mirror_image_and_water_image_all_vision.zip",
+      "sha256": "fe39550b0bff1910c736ed505466c964b1fcf9b8999a477a655ce977d6f95939",
+      "questions": 47,
+      "pages": 0,
+      "source_commit": "e023702 2026-10-16"
+    },
+    {
+      "path": "new-reasoning/new_reasoning_ch31_paper_folding_v2.zip",
+      "source": "question-banks/latest/new-reasoning/new_reasoning_ch31_paper_folding_v2.zip",
+      "sha256": "82250de19462a61b5fbb4c09fa225f00e91a9b3fe95c602f16ec0f85061d392b",
+      "questions": 41,
+      "pages": 0,
+      "source_commit": "e023702 2026-10-16"
+    },
+    {
+      "path": "new-reasoning/new_reasoning_ch32_paper_cutting_v2.zip",
+      "source": "question-banks/latest/new-reasoning/new_reasoning_ch32_paper_cutting_v2.zip",
+      "sha256": "7a2da2522f1805403d88deca0e449c78639e9027634392fb1518d5adffe91d3b",
+      "questions": 60,
+      "pages": 0,
+      "source_commit": "e023702 2026-10-16"
+    },
+    {
+      "path": "new-reasoning/new_reasoning_ch33_embedded_figures_v2.zip",
+      "source": "question-banks/latest/new-reasoning/new_reasoning_ch33_embedded_figures_v2.zip",
+      "sha256": "c955e3897b988a2e69014786839731474f89eff3630e49cee978b1061faac2ee",
+      "questions": 49,
+      "pages": 0,
+      "source_commit": "e023702 2026-10-16"
+    },
+    {
+      "path": "new-reasoning/new_reasoning_ch34_completion_of_figures_v2.zip",
+      "source": "question-banks/latest/new-reasoning/new_reasoning_ch34_completion_of_figures_v2.zip",
+      "sha256": "1cd7f5cff78a8ea3d2ae82bccfeadedb66fa090cedecf61a16beb2dede6daeb0",
+      "questions": 50,
+      "pages": 0,
+      "source_commit": "e023702 2026-10-16"
+    },
+    {
+      "path": "new-reasoning/new_reasoning_ch35_number_pyramid_v2.zip",
+      "source": "question-banks/latest/new-reasoning/new_reasoning_ch35_number_pyramid_v2.zip",
+      "sha256": "0faac8ab4bb90b3e3ba5c5e5d90158d6b7c444ff865c136f1233065adfe889d0",
+      "questions": 45,
+      "pages": 0,
+      "source_commit": "e023702 2026-10-16"
+    },
+    {
+      "path": "new-reasoning/new_reasoning_ch36_formation_of_figures_v2.zip",
+      "source": "question-banks/latest/new-reasoning/new_reasoning_ch36_formation_of_figures_v2.zip",
+      "sha256": "34f63a341632d83dc582bd44cbb45ba699a2e9e80fe5185efc89ec80afa9d872",
+      "questions": 47,
+      "pages": 0,
+      "source_commit": "e023702 2026-10-16"
+    },
+    {
+      "path": "new-reasoning/new_reasoning_ch37_figure_analogy_v2.zip",
+      "source": "question-banks/latest/new-reasoning/new_reasoning_ch37_figure_analogy_v2.zip",
+      "sha256": "d3c4affc74f69d9daa960bc1509434f53e59b1c2a53df430d8cb35c0deddc03f",
+      "questions": 47,
+      "pages": 0,
+      "source_commit": "e023702 2026-10-16"
+    },
+    {
+      "path": "new-reasoning/new_reasoning_ch38_figure_classification_v2.zip",
+      "source": "question-banks/latest/new-reasoning/new_reasoning_ch38_figure_classification_v2.zip",
+      "sha256": "a1a16304d3f29b0472a84b1072f3fb4ed8080f011b5e4c578d0c95774c87e147",
+      "questions": 84,
+      "pages": 0,
+      "source_commit": "e023702 2026-10-16"
+    },
+    {
+      "path": "new-reasoning/new_reasoning_ch39_figure_series_completion_all_vision.zip",
+      "source": "question-banks/latest/new-reasoning/new_reasoning_ch39_figure_series_completion_all_vision.zip",
+      "sha256": "b6614b09e0e52f07c03cd4d63164122e540668b20abdfdd7b8b2796f74b7826e",
+      "questions": 51,
+      "pages": 0,
+      "source_commit": "e023702 2026-10-16"
+    },
+    {
+      "path": "new-reasoning/new_reasoning_ch40_dot_situation_all_vision.zip",
+      "source": "question-banks/latest/new-reasoning/new_reasoning_ch40_dot_situation_all_vision.zip",
+      "sha256": "9a4be9a46d7a55de7ecaf3c3d417d392f64329eca834eedd378cd814a2aa2fe2",
+      "questions": 20,
+      "pages": 0,
+      "source_commit": "e023702 2026-10-16"
+    },
+    {
+      "path": "new-reasoning/new_reasoning_ch41_figure_matrix_all_vision.zip",
+      "source": "question-banks/latest/new-reasoning/new_reasoning_ch41_figure_matrix_all_vision.zip",
+      "sha256": "c59035cc6364bf4831dd327f5fcea2af5d1c302fd2bb833a2d709f25dd38bb4c",
+      "questions": 33,
+      "pages": 0,
+      "source_commit": "e023702 2026-10-16"
     }
   ]
 }

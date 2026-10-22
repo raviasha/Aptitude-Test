@@ -106,7 +106,7 @@ QUESTION_BANKS_DIR = DATA_DIR / "Question Banks"
 STATIC_DIR = BUNDLE_DIR / "static"
 TEMPLATE_DIR = BUNDLE_DIR / "templates"
 SERVER_URL = "http://127.0.0.1:8000"
-APP_VERSION = "2.2.1"
+APP_VERSION = "2.2.2"
 DEFAULT_FACULTY_NAME = "Prof R Ravi Shankar"
 
 CATEGORIES = [
@@ -132,6 +132,7 @@ EXAM_VIOLATION_LABELS = {
     "contextmenu": INTEGRITY_DEFINITIONS["context_menu"].title,
 }
 MAX_LEGACY_FILE_BYTES = 25_000_000
+MAX_UPLOAD_BYTES = 100_000_000
 MAX_PACKAGE_BYTES = 50_000_000
 MAX_PACKAGE_UNPACKED_BYTES = 150_000_000
 MAX_PACKAGE_FILES = 10_000
@@ -3305,11 +3306,11 @@ async def import_question_bank_package(
     package_name = Path(package_file.filename or "").name
     if not package_name.lower().endswith(".zip"):
         raise HTTPException(400, "A question bank must be uploaded as a ZIP file.")
-    package_bytes = await package_file.read(MAX_PACKAGE_BYTES + 1)
+    package_bytes = await package_file.read(MAX_UPLOAD_BYTES + 1)
     if not package_bytes:
         raise HTTPException(400, "Choose a non-empty question-bank package.")
-    if len(package_bytes) > MAX_PACKAGE_BYTES:
-        raise HTTPException(413, "The compressed question-bank package must be under 50 MB.")
+    if len(package_bytes) > MAX_UPLOAD_BYTES:
+        raise HTTPException(413, "The uploaded question-bank ZIP must be under 100 MB.")
     return await run_in_threadpool(import_uploaded_package, package_bytes, package_name, replace_existing)
 
 
@@ -3330,6 +3331,8 @@ def import_uploaded_package(package_bytes: bytes, package_name: str, replace_exi
                 raise HTTPException(400, "ZIP archives cannot contain duplicate paths, encrypted files or symbolic links.")
             names[name] = member
         if "manifest.json" in names:
+            if len(package_bytes) > MAX_PACKAGE_BYTES:
+                raise HTTPException(413, "An individual chapter ZIP must be under 50 MB.")
             return import_chapter_bytes(package_bytes, package_name, replace_existing)
         chapters = [(name, member) for name, member in names.items()
                     if not member.is_dir() and name.lower().endswith('.zip')]

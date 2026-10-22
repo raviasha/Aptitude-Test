@@ -52,8 +52,8 @@ class WindowsEntrypointTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             client_updater_module.main([])
     def test_product_version_and_legacy_handshake_are_separate(self):
-        self.assertEqual("2.2.1", faculty_app.APP_VERSION)
-        self.assertEqual({"version": "2.2.1"}, faculty_app.coordinator_build_information())
+        self.assertEqual("2.2.2", faculty_app.APP_VERSION)
+        self.assertEqual({"version": "2.2.2"}, faculty_app.coordinator_build_information())
         response = faculty_app.build_information()
         self.assertEqual({"version": "2.1.0"}, response)
 
@@ -287,6 +287,27 @@ class WindowsEntrypointTests(unittest.TestCase):
             )
             self.assertEqual(0, result)
             self.assertEqual([], runs)
+
+    def test_coordinator_shortcut_reopens_page_when_server_is_already_running(self):
+        with tempfile.TemporaryDirectory() as directory:
+            program_data = Path(directory)
+            save_runtime_settings(
+                program_data, hostname="ksat-server.example.edu", port=9443
+            )
+            opened = []
+
+            def already_running(_settings):
+                raise CoordinatorLockHeld("already running")
+
+            result = coordinator_main(
+                [],
+                environ={"ProgramData": str(program_data)},
+                coordinator_runner=already_running,
+                browser_opener=opened.append,
+            )
+
+            self.assertEqual(0, result)
+            self.assertEqual(["https://127.0.0.1:9443"], opened)
 
     def test_coordinator_certificate_renewal_requires_explicit_confirmation(self):
         with tempfile.TemporaryDirectory() as directory:

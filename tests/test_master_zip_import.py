@@ -56,7 +56,7 @@ class MasterZipTests(BookFixture):
 
     def test_product_version_is_distinct_from_legacy_client_handshake(self):
         self.assertEqual(self.client.get('/api/build').json(), {'version': '2.1.0'})
-        self.assertEqual(self.client.get('/api/coordinator-build').json(), {'version': '2.2.1'})
+        self.assertEqual(self.client.get('/api/coordinator-build').json(), {'version': '2.2.2'})
 
     def upload(self, content, replace=False):
         return self.client.post('/api/admin/question-banks/import-package',
@@ -72,6 +72,27 @@ class MasterZipTests(BookFixture):
         imported = [b for b in banks if b['bank_name'] in ('First', 'Second')]
         self.assertEqual(len(imported), 2)
         self.assertEqual({b['book_title'] for b in imported}, {'Example Book'})
+
+    def test_outer_master_can_exceed_individual_chapter_limit(self):
+        inner = chapter('First')
+        content = archive_bytes([('README.txt', 'x' * 5000), ('chapters/01.zip', inner)])
+        self.assertGreater(len(content), len(inner) + 1)
+        with patch.object(app, 'MAX_PACKAGE_BYTES', len(inner) + 1):
+            result = self.upload(content)
+        self.assertEqual(result.status_code, 200, result.text)
+        self.assertTrue(result.json()['results'][0]['ok'], result.text)
+
+    def test_outer_upload_limit_is_still_enforced(self):
+        content = archive_bytes([('chapters/01.zip', chapter('First'))])
+        with patch.object(app, 'MAX_UPLOAD_BYTES', len(content) - 1, create=True):
+            result = self.upload(content)
+        self.assertEqual(result.status_code, 413, result.text)
+
+    def test_individual_chapter_limit_remains_enforced(self):
+        content = chapter('First')
+        with patch.object(app, 'MAX_PACKAGE_BYTES', len(content) - 1):
+            result = self.upload(content)
+        self.assertEqual(result.status_code, 413, result.text)
 
     def test_bad_chapter_does_not_hide_successes(self):
         result = self.upload(archive_bytes([('01.zip', chapter('First')),

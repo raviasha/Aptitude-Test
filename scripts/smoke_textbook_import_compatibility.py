@@ -182,7 +182,7 @@ def worker(request):
     sys.path.insert(0, str(ROOT))
     import app  # Import only inside this fresh process, after setting KSAT_DATA_DIR.
     require(app.DATA_DIR == data_dir and app.DB_PATH.parent == data_dir, 'Application data isolation failed')
-    require(app.APP_VERSION == '2.2.1', 'Expected current-main Coordinator 2.2.1')
+    require(app.APP_VERSION == '2.2.2', 'Expected current-main Coordinator 2.2.2')
     app.ensure_schema()
     specs = request['specs']
     for spec in specs:
@@ -190,7 +190,8 @@ def worker(request):
     paths = [Path(request['master'])] if request.get('master') else [Path(s['path']) for s in specs]
     for path in paths:
         content = path.read_bytes()
-        require(len(content) <= app.MAX_PACKAGE_BYTES, 'Upload exceeds unchanged 50,000,000-byte limit; extract once and import chapters separately')
+        limit = app.MAX_UPLOAD_BYTES if request.get('master') else app.MAX_PACKAGE_BYTES
+        require(len(content) <= limit, 'Question-bank ZIP exceeds its compressed upload limit')
         result = app.import_uploaded_package(content, path.name, False)
         require(all(r['ok'] for r in result.get('results', [])), f'Importer reported failed chapters: {result}')
     banks = [inspect_bank(app, spec) for spec in specs]
@@ -198,7 +199,8 @@ def worker(request):
         require(connection.execute('SELECT count(*) FROM question_banks').fetchone()[0] == len(specs), 'Unexpected bank inventory')
     return {'kind': 'master' if request.get('master') else 'chapters', 'banks': banks,
             'version': app.APP_VERSION, 'data_dir': str(data_dir),
-            'limits': {'upload_bytes': app.MAX_PACKAGE_BYTES, 'expanded_bytes': app.MAX_PACKAGE_UNPACKED_BYTES,
+            'limits': {'upload_bytes': app.MAX_UPLOAD_BYTES, 'chapter_bytes': app.MAX_PACKAGE_BYTES,
+                       'expanded_bytes': app.MAX_PACKAGE_UNPACKED_BYTES,
                        'files': app.MAX_PACKAGE_FILES}}
 
 

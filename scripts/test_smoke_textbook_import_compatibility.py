@@ -90,7 +90,7 @@ class ImportCompatibilitySmokeTests(unittest.TestCase):
         result, report = self.run_smoke([self.fixture(book_title=' Example Book ')])
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         self.assertEqual(report['status'], 'passed')
-        self.assertEqual(report['application']['version'], '2.2.1')
+        self.assertEqual(report['application']['version'], '2.2.2')
         self.assertTrue(report['temporary_data_removed'])
         bank = report['phases'][0]['banks'][0]
         self.assertEqual(bank['question_count'], 1)

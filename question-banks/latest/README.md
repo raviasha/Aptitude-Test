@@ -61,7 +61,7 @@ Use these in preference to the older `_complete`, `_hybrid`, and candidate alter
 
 **[Download all 41 chapters in one master ZIP](textbook-downloads/new-reasoning-chapters-01-41.zip)**, or browse the [41 individual chapter ZIPs](new-reasoning/).
 
-The master is about 88 MB, which is larger than the Coordinator's 50 MB single-upload limit. Download and extract it once, open its `chapters` folder, select all 41 chapter ZIPs together in Coordinator → Question banks, and click Import. Keep the individual chapter files zipped.
+Coordinator 2.2.2 or newer can import this approximately 88 MB master ZIP directly. In Coordinator → Question banks, choose the master ZIP and click Import. Coordinator 2.2.0 and 2.2.1 retain the older 50 MB upload limit; with those versions, extract the master once and bulk-select the 41 ZIPs in its `chapters` folder.
 
 The 41 banks contain 3,812 reviewed questions produced with the V2 all-vision pipeline. One printed item—Chapter 19, question 45—was intentionally excluded because the source does not provide its answer choices. The packages passed sealed import checks against Coordinator 2.2.1 and a semantic-reference scan. After import, assign the banks to the book **A New Approach to Reasoning** in Coordinator.
 

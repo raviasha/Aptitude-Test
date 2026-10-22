@@ -16,7 +16,7 @@ def build(root: Path) -> None:
         ('reasoning-source-pages', 'new-reasoning-chapters-01-02-SOURCE-PAGES-ONLY.zip', 2,
          'These two ZIPs contain textbook page images only, NOT importable question banks. Do not upload them to Coordinator. Question extraction and verification are still required.'),
         ('new-reasoning', 'new-reasoning-chapters-01-41.zip', 41,
-         'Coordinator 2.2.0 or newer can import this master directly only within its limits: 50,000,000 uploaded bytes, 150,000,000 expanded bytes, 10,000 files and 200 chapters. Otherwise extract this master ZIP once. In Coordinator > Question banks, select the individual chapter ZIPs in chapters/ and click Import. Keep chapter ZIPs zipped. Each chapter is a separate bank. Bulk selection requires a Coordinator build with multi-ZIP upload; older builds import individually. Assign the imported banks to A New Approach to Reasoning in Coordinator; the chapter archives do not contain book_title metadata.'),
+         'Coordinator 2.2.2 or newer can import this master ZIP directly. Its limits are 100,000,000 uploaded bytes, 150,000,000 expanded bytes, 10,000 files and 200 chapters; individual chapter ZIPs remain limited to 50,000,000 bytes. In older Coordinator versions, extract this master ZIP once, select the individual chapter ZIPs in chapters/ and click Import. Keep chapter ZIPs zipped. Assign the imported banks to A New Approach to Reasoning in Coordinator; the chapter archives do not contain book_title metadata.'),
     ]
     prepared = []
     # Check every group's counts and names before replacing any master ZIP.

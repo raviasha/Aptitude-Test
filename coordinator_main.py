@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
-from ksat.coordinator.process_lock import CoordinatorProcessLock
+from ksat.coordinator.process_lock import CoordinatorLockHeld, CoordinatorProcessLock
 from ksat.coordinator.tls import (
     CoordinatorSecurity,
     load_or_create_coordinator_security,
@@ -24,7 +24,7 @@ from ksat.coordinator.tls import (
 )
 
 
-APP_VERSION = "2.2.1"
+APP_VERSION = "2.2.2"
 _HOSTNAME = re.compile(
     r"(?=.{1,253}\Z)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)"
     r"(?:\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))*\Z"
@@ -156,7 +156,7 @@ def _load_runtime_settings(data_dir: Path) -> CoordinatorRuntimeSettings | None:
     if (
         not isinstance(value, dict)
         or set(value) != {"bind_host", "hostname", "interactive", "port", "version"}
-        or value.get("version") not in ("2.0.0", "2.1.0", "2.2.0", APP_VERSION)
+        or value.get("version") not in ("2.0.0", "2.1.0", "2.2.0", "2.2.1", APP_VERSION)
         or type(value.get("interactive")) is not bool
     ):
         raise ValueError("Coordinator runtime configuration is invalid.")
@@ -184,7 +184,7 @@ def _load_runtime_settings(data_dir: Path) -> CoordinatorRuntimeSettings | None:
 
 
 def _migrate_runtime_settings(data_dir: Path) -> None:
-    """Upgrade known identical 2.0.0/2.1.0/2.2.0 schemas while the process lock is held.
+    """Upgrade known identical 2.0.0/2.1.0/2.2.0/2.2.1 schemas while the process lock is held.
 
     Loading remains read-only. Both installer validation and normal startup
     perform migration under exclusive ownership, before opening application data.
@@ -345,6 +345,7 @@ def main(
     coordinator_runner: Callable[..., None] = run_coordinator,
     certificate_renewer: Callable[..., CoordinatorSecurity] = renew_coordinator_server_certificate,
     lock_factory: Callable[[Path], CoordinatorProcessLock] = CoordinatorProcessLock,
+    browser_opener: Callable[[str], None] = _open_browser,
 ) -> int:
     parser = argparse.ArgumentParser(prog="KSATCoordinator")
     parser.add_argument("--install-config", action="store_true")
@@ -396,7 +397,11 @@ def main(
         parser.error("--confirm-renewal requires --renew-certificate")
     if arguments.hostname is not None or arguments.port != 8443:
         parser.error("runtime settings require --install-config")
-    coordinator_runner(CoordinatorRuntimeSettings.from_environment(values))
+    runtime = CoordinatorRuntimeSettings.from_environment(values)
+    try:
+        coordinator_runner(runtime)
+    except CoordinatorLockHeld:
+        browser_opener(f"https://127.0.0.1:{runtime.port}")
     return 0
 
 

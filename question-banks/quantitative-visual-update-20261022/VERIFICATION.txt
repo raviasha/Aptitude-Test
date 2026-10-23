@@ -1,0 +1,73 @@
+Quantitative visual correction checks — 2026-10-22
+
+Pre-publication verification snapshot for Coordinator 2.2.3 and Windows
+Client/Builder 2.1.6. Repository history records publication separately. Historical V2
+metadata remains baseline history; this is not a new full V2 vision-pipeline seal.
+
+Publication preparation:
+- Only outer ZIP READMEs are replaced; every embedded chapter ZIP is unchanged.
+- publication.json records the authorized presentation-maintenance revision,
+  all 39 selected chapter hashes, and both current outer ZIP hashes.
+- Chapter promotion_status: staged_only is retained as creation-stage history.
+- validation.json is retained unchanged as creation-time validation evidence;
+  its bundle hashes precede the README replacement. Current hashes are in
+  publication.json, which does not claim a completed GitHub upload.
+- Original latest/ chapter ZIPs, selection.json and quantitative master remain
+  unchanged. Existing installs use the six-chapter update; new installs use 39.
+- Coordinator 2.2.3 directly imports either outer ZIP. Revised bank names have
+  [Visual revision 2026-10-22]; keep old banks/results and select one chapter
+  version per new test.
+
+Fresh publication checks:
+- python scripts/publish_quantitative_visual_update.py --check: passed;
+  verified all 39 chapter hashes and the 6 + 39 embedded chapter ZIP copies,
+  current outer hashes, README contents, and unchanged baseline metadata.
+- python -m unittest scripts.test_publish_quantitative_visual_update -v:
+  5 tests passed, including repeatability, protected-input preservation,
+  changed-chapter rejection, and injected replacement failures with rollback
+  followed by a successful retry. Recovery originals are retained if rollback
+  itself fails or the process is forcibly terminated during publication.
+
+The following review and application-test results are the retained creation-time
+record from the preceding build, not new test runs by the publication script.
+
+Reviewed changes:
+- Chapter 24: 29 source diagrams added.
+- Chapter 25: 1 source diagram added.
+- Chapters 36–39: duplicated chart/table transcription removed from 306 stems.
+- Required prompts, units, definitions and formulas retained.
+- Independently checked all 30 diagram crops against their source segments.
+- Corrected q316's extraction spacing ("shaded are a" -> "shaded area").
+- Removed neighboring Q162's prompt from Q163's image-failure description.
+
+Preservation and packaging:
+- Original latest/ archives remain byte-for-byte unchanged.
+- All keys, options, answers and solution fields preserved.
+- All 1,022 records in the six revised packages imported into a disposable DB
+  and produced strict client-compatible public questions successfully.
+- A fresh rebuild produced identical six chapter ZIP hashes.
+- The six-chapter update ZIP contains exactly the revised chapters.
+- The 39-chapter master contains those six and 33 unchanged baseline chapters.
+- Nested ZIP bytes checked against their SHA256SUMS.json inventory.
+- Revisioned bank names allow import alongside banks with existing test history.
+
+Code checks:
+- Application tests/ suite: 920 passed, 48 skipped, 603 subtests passed;
+  exit code 0. This is not the repository-wide data-engineering test collection.
+- 171 focused tests passed, plus 259 subtests.
+- Registration/import suite: 54 tests passed (separate run).
+- Headless Edge browser verified live/review presentation and broken-image
+  transcription fallback at 1024 x 768.
+- Independent code review's two packaging safeguards were corrected and
+  rechecked: protected output paths and reviewed-corpus hash binding.
+- git diff --check and Python compilation passed.
+
+Limits:
+- Not an answer-key or mathematical correctness audit; pre-existing source
+  wording/data defects have not been silently repaired.
+- Installed legacy-client executables were not launched. Their existing
+  stimulus wire schema is used and validated by the Coordinator changes.
+- Existing assessments/releases are immutable; select revised banks for NEW tests.
+- Accompanies Coordinator 2.2.3 and Windows Client/Builder 2.1.6; installer
+  builds and GitHub publication are handled separately.
+- No installed student data, GitHub assets or existing release was modified.

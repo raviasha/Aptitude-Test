@@ -1,0 +1,42 @@
+{
+  "client_version": "2.1.6",
+  "builder_version": "2.1.6",
+  "coordinator_version": "2.2.3",
+  "verification_date": "2026-10-23",
+  "release_kind": "signed private-lab pilot/prerelease",
+  "publisher": "CN=KSAT LAB RELEASE SIGNING",
+  "thumbprint": "13AE2A6440C33E074FC9C99FB35E5A1CFD9BE908",
+  "client_frozen_startup": "passed; loopback-only API, device_setup state, TLS-verified Coordinator connection",
+  "installer_payload": "deep extraction verified against signed Client, Updater and InstallGuard",
+  "builder_payload": "exact public-only allowlist and embedded bytes verified; Client 2.1.6; Tk/Tcl runtime present",
+  "authenticode": "all executables and installers verified with unchanged publisher pin",
+  "frozen_client_static_files": "app.js, styles.css and index.html exactly match reviewed source in both Client and Coordinator",
+  "managed_update": {
+    "filename": "KSATClientUpdate-2.1.6.ksat-client-update",
+    "sha256": "ec2ed21bf9b966a65e4131dd62084dc34965671e28c7d87d6c9ca2bb39fa58fd",
+    "signature": "Ed25519 manifest and Authenticode installer verified",
+    "client_version": "2.1.6",
+    "minimum_source_version": "2.0.0",
+    "source_2_1_5_version_eligible": true,
+    "embedded_installer": "byte-for-byte identical to released KSATClientSetup-2.1.6.exe",
+    "public_key": "matches Client, Coordinator, Builder and retained Coordinator 2.2.2",
+    "rollout": "Faculty > Client updates: upload signed bundle, pilot enrolled Windows device until healthy on 2.1.6, then Publish to all clients",
+    "active_tests_and_pending_submissions": "defer managed update",
+    "physical_rollout": "not performed"
+  },
+  "regression": {
+    "passed": 948,
+    "skipped": 48,
+    "subtests_passed": 603,
+    "exit_code": 0,
+    "details": "../coordinator-2.2.3/verification.json"
+  },
+  "limits": [
+    "Real administrator/standard-user installation and healthy-pilot rollout must be tested on one lab PC before broader deployment.",
+    "No physical PC update or installed student data modification was performed.",
+    "Existing older Builder/generated installers do not change automatically; use Builder 2.1.6 for future lab packages.",
+    "Windows only; no Ubuntu binary or Ubuntu managed-update support added.",
+    "Repository-wide suite is not fully green: 3 old calibration failures reproduced at base commit; details in Coordinator verification record.",
+    "Private-lab signing is not public CA signing or a guarantee of antivirus/SmartScreen acceptance."
+  ]
+}

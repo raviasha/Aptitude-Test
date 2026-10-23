@@ -1,0 +1,40 @@
+{
+  "review_note": "Source question crops visually reviewed on 2026-10-22. Boxes isolate original diagrams and retain labels, dimensions, right-angle marks and shading; text/options excluded.",
+  "crops": {
+    "ch24-q0026": [0, [420, 5, 665, 170]],
+    "ch24-q0075": [0, [430, 10, 660, 135]],
+    "ch24-q0083": [0, [355, 0, 650, 155]],
+    "ch24-q0087": [0, [225, 40, 450, 235]],
+    "ch24-q0090": [0, [410, 70, 660, 185]],
+    "ch24-q0102": [0, [485, 15, 660, 190]],
+    "ch24-q0143": [0, [465, 0, 655, 170]],
+    "ch24-q0161": [0, [175, 36, 475, 160]],
+    "ch24-q0162": [0, [195, 63, 455, 185]],
+    "ch24-q0163": [0, [195, 63, 455, 188]],
+    "ch24-q0165": [0, [195, 33, 480, 255]],
+    "ch24-q0175": [0, [460, 135, 655, 325]],
+    "ch24-q0176": [0, [460, 135, 655, 325]],
+    "ch24-q0210": [0, [365, 14, 650, 205]],
+    "ch24-q0212": [0, [490, 33, 650, 225]],
+    "ch24-q0214": [0, [420, 0, 650, 175]],
+    "ch24-q0314": [0, [230, 60, 425, 225]],
+    "ch24-q0315": [0, [455, 8, 650, 139]],
+    "ch24-q0316": [1, [0, 0, 245, 170]],
+    "ch24-q0317": [0, [402, 5, 650, 140]],
+    "ch24-q0318": [0, [392, 9, 650, 139]],
+    "ch24-q0319": [0, [190, 120, 490, 215]],
+    "ch24-q0320": [0, [240, 59, 430, 235]],
+    "ch24-q0322": [0, [465, 5, 660, 112]],
+    "ch24-q0328": [0, [390, 0, 650, 255]],
+    "ch24-q0342": [0, [445, 5, 660, 220]],
+    "ch24-q0345": [0, [195, 30, 455, 177]],
+    "ch24-q0354": [0, [470, 0, 660, 195]],
+    "ch24-q0381": [0, [210, 95, 440, 315]],
+    "ch25-q0146": [0, [0, 0, 225, 227]]
+  },
+  "excluded_non_diagram_regions": {
+    "ch24-q0175": [[0, 0, 25, 30]],
+    "ch24-q0176": [[0, 0, 25, 30]]
+  },
+  "exclusion_note": "The top-left 25x30 area of the shared midpoint-triangle crop contains only the preceding answer-option digit, outside the triangle and all its labels. Exclude that unrelated text; original figure pixels remain unchanged."
+}

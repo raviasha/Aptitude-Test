@@ -24,7 +24,7 @@ class CoordinatorRuntimeUpgradeTests(unittest.TestCase):
                           interactive=False, port=9443, version="2.0.0")
         self.raw = self.encode(self.value)
         self.path.write_bytes(self.raw)
-        self.backup = self.data / "coordinator-runtime.pre-2.2.2.json.bak"
+        self.backup = self.data / "coordinator-runtime.pre-2.2.3.json.bak"
         # The migration must not touch unrelated data or security identity.
         self.untouched = {"aptitude.db": b"existing student records", "secrets/identity.key": b"existing identity"}
         for name, data in self.untouched.items():
@@ -40,7 +40,7 @@ class CoordinatorRuntimeUpgradeTests(unittest.TestCase):
         return coordinator.main(["--validate-config"], environ={"ProgramData": str(self.root)})
 
     def assert_migrated(self):
-        expected = dict(self.value, version="2.2.2")
+        expected = dict(self.value, version="2.2.3")
         self.assertEqual(self.encode(expected), self.path.read_bytes())
         self.assertEqual(self.raw, self.backup.read_bytes())
         for name, data in self.untouched.items():
@@ -111,7 +111,7 @@ class CoordinatorRuntimeUpgradeTests(unittest.TestCase):
         self.assertEqual(b"earlier backup", self.backup.read_bytes())
 
     def test_current_config_does_not_create_migration_backup(self):
-        raw = self.encode(dict(self.value, version="2.2.2"))
+        raw = self.encode(dict(self.value, version="2.2.3"))
         self.path.write_bytes(raw)
         self.assertEqual(0, self.validate())
         self.assertEqual(raw, self.path.read_bytes())
@@ -127,8 +127,8 @@ class CoordinatorRuntimeUpgradeTests(unittest.TestCase):
         self.assert_migrated()
         self.assertIn(b'2.0.0', old_backup.read_bytes())
 
-    def test_221_upgrade_to_222_preserves_logins_results_assets_security_and_old_backups(self):
-        self.value['version'] = '2.2.1'
+    def test_222_upgrade_to_223_preserves_logins_results_assets_security_and_old_backups(self):
+        self.value['version'] = '2.2.2'
         self.raw = self.encode(self.value)
         self.path.write_bytes(self.raw)
         database = self.data / 'aptitude.db'
@@ -149,6 +149,7 @@ class CoordinatorRuntimeUpgradeTests(unittest.TestCase):
             'coordinator-runtime.pre-2.1.0.json.bak': b'old 2.0.0 runtime backup',
             'coordinator-runtime.pre-2.2.0.json.bak': b'old 2.1.0 runtime backup',
             'coordinator-runtime.pre-2.2.1.json.bak': b'old 2.2.0 runtime backup',
+            'coordinator-runtime.pre-2.2.2.json.bak': b'old 2.2.1 runtime backup',
             'backups/prior-aptitude.db': b'previous database backup',
         })
         for name, content in self.untouched.items():
@@ -156,7 +157,7 @@ class CoordinatorRuntimeUpgradeTests(unittest.TestCase):
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(content)
         # Exercise the release-transition allowlist independently of the version bump.
-        with patch.object(coordinator, 'APP_VERSION', '2.2.2'):
+        with patch.object(coordinator, 'APP_VERSION', '2.2.3'):
             self.assertEqual(0, self.validate())
             self.assert_migrated()
             backup_time = self.backup.stat().st_mtime_ns

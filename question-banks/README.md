@@ -2,13 +2,25 @@
 
 ## Start here: current chapter downloads
 
-Use **[latest chapter downloads](latest/README.md)** for one selected published ZIP
-per quantitative chapter (1–39), including the updated visual packages for 36–39.
-The guide also identifies the two new reasoning source-page archives separately:
-those contain page images, not importable question banks. Older alternatives below
-remain available for reference; use the latest folder when choosing downloads.
+Use **[latest chapter downloads](latest/README.md)** for the current quantitative
+chapter links (1–39) and the 41 importable reasoning chapter banks.
 
-Files in this folder are published separately on GitHub and are not included in
+The **2026-10-22 visual maintenance revision** accompanies **Coordinator 2.2.3
+and Windows Client/Builder 2.1.6**. Coordinator 2.2.3 imports either bundle directly:
+
+- Existing installations: [six-chapter visual update](quantitative-visual-update-20261022/quantitative-visual-updates-6-chapters.zip).
+- New installations: [complete 39-chapter quantitative master](quantitative-visual-update-20261022/quantitative-aptitude-master-39-chapters.zip).
+- [Import instructions](quantitative-visual-update-20261022/README.txt) and
+  [maintenance publication index and SHA-256 hashes](quantitative-visual-update-20261022/publication.json).
+
+Revised chapters 24, 25 and 36–39 have bank names ending in
+`[Visual revision 2026-10-22]` and coexist with older banks. Keep older banks and
+results; select only one version of each chapter for new tests. Original V2
+metadata remains baseline history, not a new vision approval of this revision.
+The latest guide also separates historical reasoning source-page archives,
+which contain images rather than importable question banks.
+
+Question banks are distributed separately from the installer and are not included in
 `Aptitude-Lab-Setup.exe`. The installer contains only the example pair from the
 repository's `templates` folder.
 

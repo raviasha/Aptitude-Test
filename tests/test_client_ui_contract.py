@@ -12,6 +12,15 @@ INDEX = ROOT / "static" / "client" / "index.html"
 
 
 class ClientUiContractTests(unittest.TestCase):
+    def test_supporting_chart_preserves_stem_and_restores_transcript_on_failure(self):
+        self._run_flow('supporting_chart_preserves_stem_and_restores_transcript_on_failure')
+
+    def test_complete_images_replace_text_with_safe_fallback(self):
+        self._run_flow('complete_images_replace_text_with_safe_fallback')
+
+    def test_review_images_replace_text_with_safe_fallback(self):
+        self._run_flow('review_images_replace_text_with_safe_fallback')
+
     def test_presence_lifecycle(self):
         node = shutil.which('node')
         if not node:

@@ -466,6 +466,28 @@ if (typeof document !== 'undefined') {
     while (node.firstChild) node.removeChild(node.firstChild);
   }
 
+  const replacementImages = new WeakMap();
+
+  function bindReplacementText(text, image, media, sourceKey) {
+    // Keep fallback copy until the complete image is usable. Context diagrams
+    // supplement the stem; they must never hide it. Ignore detached old loads.
+    replacementImages.set(text, image);
+    text.hidden = false;
+    // Legacy packs discard placement, including quantitative context diagrams.
+    // Only this book's reviewed full-field images are safe to replace by default.
+    const chapter = /^ch(4\d{2})-q\d{4}$/.exec(sourceKey || '');
+    if (!image || !chapter || Number(chapter[1]) < 401 || Number(chapter[1]) > 441
+        || (media.placement && media.placement !== 'replacement')) return;
+    const loaded = () => {
+      if (replacementImages.get(text) === image) text.hidden = true;
+    };
+    image.addEventListener('load', loaded);
+    image.addEventListener('error', () => {
+      if (replacementImages.get(text) === image) text.hidden = false;
+    });
+    if (image.complete && image.naturalWidth > 0) loaded();
+  }
+
   function createPublicImage(attemptId, media, review = false) {
     if (!media || typeof media !== 'object') return null;
     const source = review ? reviewAssetUrl(attemptId, media.url) : assetUrl(attemptId, media.url);
@@ -484,6 +506,20 @@ if (typeof document !== 'undefined') {
       image.height = media.height;
     }
     return image;
+  }
+
+  function appendContextImage(container, attemptId, media, review = false) {
+    const image = createPublicImage(attemptId, media, review);
+    const fallback = document.createElement('p');
+    fallback.className = 'media-transcript';
+    setSafeText(fallback, media.alt_text || 'The supporting image could not be loaded. Ask Faculty for assistance.');
+    fallback.hidden = Boolean(image);
+    if (image) {
+      image.addEventListener('error', () => { image.hidden = true; fallback.hidden = false; });
+      image.addEventListener('load', () => { image.hidden = false; fallback.hidden = true; });
+      container.append(image);
+    }
+    container.append(fallback);
   }
 
   function showStatus(title, copy) {
@@ -783,11 +819,11 @@ if (typeof document !== 'undefined') {
       setSafeText(text, item.question.question_text);
       card.append(heading, text);
       if (item.question.stimulus && item.question.stimulus.type === 'image') {
-        const image = createPublicImage(review.attempt_id, item.question.stimulus, true);
-        if (image) card.append(image);
+        appendContextImage(card, review.attempt_id, item.question.stimulus, true);
       }
       const displayMedia = item.question.display_media || {};
       const questionImage = createPublicImage(review.attempt_id, displayMedia.question, true);
+      bindReplacementText(text, questionImage, displayMedia.question, item.question.source_key);
       if (questionImage) card.append(questionImage);
       const choice = reviewChoiceState(item.selected_answer, item.correct_answer);
       Object.entries(item.question.options).forEach(([key, value]) => {
@@ -796,11 +832,14 @@ if (typeof document !== 'undefined') {
         if (key === choice.selected) option.classList.add('student-choice');
         if (key === choice.correct) option.classList.add('correct-choice');
         const copy = document.createElement('span');
-        setSafeText(copy, `${key}. ${value}`);
-        option.append(copy);
+        const keyLabel = document.createElement('strong');
+        setSafeText(keyLabel, `${key}. `);
+        setSafeText(copy, value);
+        option.append(keyLabel, copy);
         const optionImage = createPublicImage(
           review.attempt_id, displayMedia.options && displayMedia.options[key], true,
         );
+        bindReplacementText(copy, optionImage, displayMedia.options && displayMedia.options[key], item.question.source_key);
         if (optionImage) option.append(optionImage);
         if (key === choice.selected) {
           const badge = document.createElement('strong');
@@ -933,11 +972,11 @@ if (typeof document !== 'undefined') {
     setSafeText(elements.questionText, question.question_text);
     clear(elements.questionMedia);
     if (question.stimulus && question.stimulus.type === 'image') {
-      const stimulusImage = createPublicImage(attempt.attempt_id, question.stimulus);
-      if (stimulusImage) elements.questionMedia.append(stimulusImage);
+      appendContextImage(elements.questionMedia, attempt.attempt_id, question.stimulus);
     }
     const displayMedia = question.display_media || {};
     const questionImage = createPublicImage(attempt.attempt_id, displayMedia.question);
+    bindReplacementText(elements.questionText, questionImage, displayMedia.question, question.source_key);
     if (questionImage) elements.questionMedia.append(questionImage);
     clear(elements.options);
     const selected = attempt.responses[String(question.question_id)];
@@ -956,6 +995,7 @@ if (typeof document !== 'undefined') {
         attempt.attempt_id,
         displayMedia.options && displayMedia.options[key],
       );
+      bindReplacementText(copy, optionImage, displayMedia.options && displayMedia.options[key], question.source_key);
       if (optionImage) option.append(optionImage);
       option.addEventListener('click', () => saveAnswer(question.question_id, key));
       elements.options.append(option);

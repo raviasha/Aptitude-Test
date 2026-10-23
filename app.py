@@ -106,7 +106,7 @@ QUESTION_BANKS_DIR = DATA_DIR / "Question Banks"
 STATIC_DIR = BUNDLE_DIR / "static"
 TEMPLATE_DIR = BUNDLE_DIR / "templates"
 SERVER_URL = "http://127.0.0.1:8000"
-APP_VERSION = "2.2.2"
+APP_VERSION = "2.2.3"
 DEFAULT_FACULTY_NAME = "Prof R Ravi Shankar"
 
 CATEGORIES = [
@@ -837,10 +837,27 @@ def clean_display_value(value: Any) -> Any:
 
 
 def display_question_text(question_text: str, source_key: Optional[str] = None) -> str:
-    """Return a vision-reviewed stem for known legacy package records."""
+    """Apply display-only repairs without rewriting the imported source record."""
     normalized = clean_display_text(question_text)
     repair = LEGACY_QUESTION_REPAIRS.get(source_key or "", {})
-    return str(repair.get("question_text", normalized))
+    text = str(repair.get("question_text", normalized))
+    source = re.fullmatch(r"ch(4\d{2})-q(\d{4})", source_key or "")
+    if source and 401 <= int(source[1]) <= 441:
+        # This book's stable source keys retain the printed question number.
+        # Remove only its matching label, never decimals or statement numbering.
+        label = re.search(rf"(?m)^[ \t]*{int(source[2])}\.[ \t]+(?=\S)", text)
+        if label:
+            before = text[:label.start()]
+            directions_only = (
+                re.match(r"(?i)^directions\b", before.lstrip())
+                and not re.search(
+                    r"(?im)^[ \t]*(?:(?:statements?|conclusions?|assumptions?)[ \t]*:|\d+[.)][ \t]+)",
+                    before,
+                )
+            )
+            if not before.strip() or directions_only:
+                text = before + text[label.end():]
+    return text
 
 
 def display_solution_steps(question_text: str, stored_steps: str, source_key: Optional[str] = None) -> List[str]:
@@ -1878,12 +1895,15 @@ def display_media_for_attempt(
 
     def item(media: Dict[str, Any], solution: bool = False) -> Dict[str, Any]:
         suffix = f"?attempt_id={attempt_id}" if solution and attempt_id else ""
-        return {
+        result = {
             "url": f"/api/question-banks/{bank_id}/media/{Path(media['asset_url']).name}{suffix}",
             "alt_text": media["alt_text"],
             "width": media["width"],
             "height": media["height"],
         }
+        if media.get("placement") == "context":
+            result["placement"] = "context"
+        return result
 
     display_media: Dict[str, Any] = {}
     if "question" in public:
@@ -1936,20 +1956,37 @@ def public_release_material(
 
         def rewrite_media(item: dict[str, Any]) -> dict[str, Any]:
             return {
-                **item,
+                **{key: value for key, value in item.items() if key != "placement"},
                 "url": embedded_asset(row["bank_id"], Path(item["url"]).name),
             }
 
+        stimulus: dict[str, Any] | None = None
         embedded_media: dict[str, Any] = {}
         if "question" in display_media:
-            embedded_media["question"] = rewrite_media(display_media["question"])
+            question_media_item = display_media["question"]
+            if question_media_item.get("placement") == "context":
+                source_key = str(row["source_key"] or f"question-{row['question_id']}")
+                if row["stimulus_id"]:
+                    raise ValueError(
+                        f"Context image for bank {row['bank_id']} question {source_key!r} "
+                        "cannot be combined with an existing stimulus in an assessment release."
+                    )
+                # Existing clients show image stimuli alongside the stem; their
+                # PublicMediaItem schema has no placement field.
+                stimulus = {
+                    "id": f"bank:{row['bank_id']}:context:{source_key}",
+                    "type": "image",
+                    "alt_text": question_media_item["alt_text"],
+                    "url": embedded_asset(row["bank_id"], Path(question_media_item["url"]).name),
+                }
+            else:
+                embedded_media["question"] = rewrite_media(question_media_item)
         if "options" in display_media:
             embedded_media["options"] = {
                 option: rewrite_media(item)
                 for option, item in sorted(display_media["options"].items())
             }
 
-        stimulus: dict[str, Any] | None = None
         if row["stimulus_id"] and row["stimulus_type"]:
             stimulus = {
                 "id": f"bank:{row['bank_id']}:{row['stimulus_id']}" if mixed_sources else row["stimulus_id"],

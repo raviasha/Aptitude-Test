@@ -41,7 +41,7 @@ from ksat.update_protocol import parse_client_update
 from scripts.build_client_update import build_client_update
 
 
-COORDINATOR_VERSION = "2.2.2"
+COORDINATOR_VERSION = "2.2.3"
 from ksat.client.version import CLIENT_VERSION
 APP_VERSION = COORDINATOR_VERSION  # Backwards-compatible coordinator tooling.
 LAB_SIGNING_PUBLISHER = "CN=KSAT LAB RELEASE SIGNING"
@@ -519,7 +519,7 @@ def create_lab_client_update_bundle(
         publisher=publisher,
         private_key_file=private_key_file,
         output=layout.client_update,
-        release_notes="KSAT Lab Client 2.1 managed-update bootstrap",
+        release_notes=f"KSAT Lab Client {CLIENT_VERSION}: clearer textbook diagrams, no duplicate image text, and readable image-failure fallback",
         authenticode_verifier=authenticode_verifier,
     )
 

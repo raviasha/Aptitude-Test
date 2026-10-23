@@ -1,0 +1,4 @@
+b8dfee00ddfd3570394e56680ee1c13bedb6185c583e6188948e107e4a5462c5  KSATClient-2.1.6.exe
+066c731e7fb6d044faba1c040a7d4dae3b8ca55773ca8c807004d33eb2417177  KSATClientSetup-2.1.6.exe
+ec2ed21bf9b966a65e4131dd62084dc34965671e28c7d87d6c9ca2bb39fa58fd  KSATClientUpdate-2.1.6.ksat-client-update
+5db09fcb073e7de47af5649dc32332a33b51298d20e92e8993c53ab1ea38960b  KSATLabPackageBuilder-2.1.6.exe

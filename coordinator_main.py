@@ -24,7 +24,7 @@ from ksat.coordinator.tls import (
 )
 
 
-APP_VERSION = "2.2.2"
+APP_VERSION = "2.2.3"
 _HOSTNAME = re.compile(
     r"(?=.{1,253}\Z)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)"
     r"(?:\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))*\Z"
@@ -156,7 +156,7 @@ def _load_runtime_settings(data_dir: Path) -> CoordinatorRuntimeSettings | None:
     if (
         not isinstance(value, dict)
         or set(value) != {"bind_host", "hostname", "interactive", "port", "version"}
-        or value.get("version") not in ("2.0.0", "2.1.0", "2.2.0", "2.2.1", APP_VERSION)
+        or value.get("version") not in ("2.0.0", "2.1.0", "2.2.0", "2.2.1", "2.2.2", APP_VERSION)
         or type(value.get("interactive")) is not bool
     ):
         raise ValueError("Coordinator runtime configuration is invalid.")
@@ -184,7 +184,7 @@ def _load_runtime_settings(data_dir: Path) -> CoordinatorRuntimeSettings | None:
 
 
 def _migrate_runtime_settings(data_dir: Path) -> None:
-    """Upgrade known identical 2.0.0/2.1.0/2.2.0/2.2.1 schemas while the process lock is held.
+    """Upgrade known identical 2.0.0 through 2.2.2 schemas while the process lock is held.
 
     Loading remains read-only. Both installer validation and normal startup
     perform migration under exclusive ownership, before opening application data.

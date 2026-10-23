@@ -1,17 +1,32 @@
 # Latest chapter downloads
 
-Use this folder to choose a chapter package. Selection refreshed on **16 October 2026**. Each ZIP is an unchanged copy of the reviewed package identified in `selection.json`.
+Use this guide to choose a chapter package. Current quantitative links include
+the **22 October 2026 presentation-maintenance revision**, accompanying
+**Coordinator 2.2.3 and Windows Client/Builder 2.1.6**. The files in this folder and
+`selection.json` retain the original **16 October 2026** baseline selection;
+the six revised chapter links below point to the separate maintenance directory.
 
 ## Quantitative aptitude — upload these to KSAT
 
-**[Download all 39 chapters in one master ZIP](textbook-downloads/quantitative-aptitude-chapters-01-39.zip)**.
-Extract the master ZIP once, open its `chapters` folder, then select all chapter ZIPs
-in Coordinator → Question banks and click Import. Keep the individual chapter ZIPs
-zipped. Multiple-file selection requires a Coordinator build containing the bulk
-upload change; older installed versions still import one chapter at a time.
-The master ZIP is a download container, not itself an importable bank.
+**[Download the current 39-chapter quantitative master](../quantitative-visual-update-20261022/quantitative-aptitude-master-39-chapters.zip)**.
+Coordinator **2.2.3 imports this master ZIP directly**: in Coordinator → Question
+banks, choose the ZIP and click Import.
 
-39 chapter question banks. Download the desired ZIP from `quantitative-aptitude`, then upload it through Faculty → Question banks. These are the published all-vision packages (their internal manifest format is version 3). Chapters 36–39 include the source-visual updates published on 24 September 2026. Filenames retain their original `text_only` suffix even where reviewed visual assets are included.
+For existing installations, import the **[six-chapter update pack](../quantitative-visual-update-20261022/quantitative-visual-updates-6-chapters.zip)**
+directly in Coordinator 2.2.3. Use the accompanying Windows Client/Builder 2.1.6
+release for the updated presentation and image-failure fallback. Revised bank
+names end in `[Visual revision 2026-10-22]` and coexist with the original banks.
+Keep older banks, student data and results. For new tests, select only one version
+of each chapter; existing test releases are unchanged.
+
+The maintenance revision adds 30 source diagrams in chapters 24/25 and removes
+duplicated chart/table prose from 306 question stems in chapters 36–39. Required
+prompts, options, answers and solutions are retained. The other 33 chapters are
+unchanged baseline packages. All 39 packages use manifest format version 3;
+filenames retain `text_only` even where reviewed visual assets are included.
+Original V2 metadata is preserved as baseline history, not a fresh vision seal.
+See the [maintenance instructions](../quantitative-visual-update-20261022/README.txt)
+and [publication index](../quantitative-visual-update-20261022/publication.json).
 
 Use these in preference to the older `_complete`, `_hybrid`, and candidate alternatives elsewhere in the repository. Candidate packages have not been selected merely because their names contain a higher version number.
 
@@ -40,8 +55,8 @@ Use these in preference to the older `_complete`, `_hybrid`, and candidate alter
 | 21 | [alligation mixture](quantitative-aptitude/ch21_alligation_mixture_all_vision_text_only.zip) | 26 | b182fa0 2026-09-10 |
 | 22 | [simple interest](quantitative-aptitude/ch22_simple_interest_all_vision_text_only.zip) | 106 | b182fa0 2026-09-10 |
 | 23 | [compound interest](quantitative-aptitude/ch23_compound_interest_all_vision_text_only.zip) | 69 | b182fa0 2026-09-10 |
-| 24 | [area](quantitative-aptitude/ch24_area_all_vision_text_only.zip) | 415 | 90c8472 2026-09-10 |
-| 25 | [volume surface areas](quantitative-aptitude/ch25_volume_surface_areas_all_vision_text_only.zip) | 301 | b182fa0 2026-09-10 |
+| 24 | [area](../quantitative-visual-update-20261022/chapters/ch24_area_all_vision_text_only.zip) | 415 | Visual maintenance 2026-10-22 |
+| 25 | [volume surface areas](../quantitative-visual-update-20261022/chapters/ch25_volume_surface_areas_all_vision_text_only.zip) | 301 | Visual maintenance 2026-10-22 |
 | 26 | [races games skill](quantitative-aptitude/ch26_races_games_skill_all_vision_text_only.zip) | 25 | b182fa0 2026-09-10 |
 | 27 | [calendar](quantitative-aptitude/ch27_calendar_all_vision_text_only.zip) | 9 | b182fa0 2026-09-10 |
 | 28 | [clocks](quantitative-aptitude/ch28_clocks_all_vision_text_only.zip) | 54 | b182fa0 2026-09-10 |
@@ -52,10 +67,10 @@ Use these in preference to the older `_complete`, `_hybrid`, and candidate alter
 | 33 | [bankers discount](quantitative-aptitude/ch33_bankers_discount_all_vision_text_only.zip) | 13 | b182fa0 2026-09-10 |
 | 34 | [heights distances](quantitative-aptitude/ch34_heights_distances_all_vision_text_only.zip) | 18 | b182fa0 2026-09-10 |
 | 35 | [odd man out and series](quantitative-aptitude/ch35_odd_man_out_and_series_all_vision_text_only.zip) | 96 | b182fa0 2026-09-10 |
-| 36 | [tabulation](quantitative-aptitude/ch36_tabulation_all_vision_text_only.zip) | 85 | 139ef99 2026-09-24 |
-| 37 | [bar graphs](quantitative-aptitude/ch37_bar_graphs_all_vision_text_only.zip) | 77 | 139ef99 2026-09-24 |
-| 38 | [pie chart](quantitative-aptitude/ch38_pie_chart_all_vision_text_only.zip) | 76 | 139ef99 2026-09-24 |
-| 39 | [line graphs](quantitative-aptitude/ch39_line_graphs_all_vision_text_only.zip) | 68 | 139ef99 2026-09-24 |
+| 36 | [tabulation](../quantitative-visual-update-20261022/chapters/ch36_tabulation_all_vision_text_only.zip) | 85 | Visual maintenance 2026-10-22 |
+| 37 | [bar graphs](../quantitative-visual-update-20261022/chapters/ch37_bar_graphs_all_vision_text_only.zip) | 77 | Visual maintenance 2026-10-22 |
+| 38 | [pie chart](../quantitative-visual-update-20261022/chapters/ch38_pie_chart_all_vision_text_only.zip) | 76 | Visual maintenance 2026-10-22 |
+| 39 | [line graphs](../quantitative-visual-update-20261022/chapters/ch39_line_graphs_all_vision_text_only.zip) | 68 | Visual maintenance 2026-10-22 |
 
 ## A New Approach to Reasoning — 41 importable chapter banks
 
@@ -81,10 +96,23 @@ The previous reasoning textbook's archives are not part of this selection. Exist
 
 ## Provenance and checks
 
-`selection.json` records paths, source-change commits and SHA-256 hashes for 82 selected archives: 39 quantitative banks, 41 reasoning banks, and two historical source-page archives. The importable banks were checked for archive integrity and Coordinator compatibility. This packaging index does not replace the source and visual-review evidence used to approve each bank.
+`selection.json` retains the original baseline index: paths, source-change commits
+and SHA-256 hashes for 82 archives (39 quantitative banks, 41 reasoning banks,
+and two historical source-page archives). The original chapter ZIPs and
+[original quantitative master](textbook-downloads/quantitative-aptitude-chapters-01-39.zip)
+are unchanged. The baseline index does not describe the maintenance revision.
 
-When a chapter package is updated, refresh its copy here and its selection entry together, so this folder continues to identify the current version.
+[publication.json](../quantitative-visual-update-20261022/publication.json) indexes
+the maintenance revision, its six revised chapters, the full 39-chapter inventory,
+and both current bundle hashes. It records authorization for presentation
+maintenance separately from actual GitHub publication. The unchanged
+`promotion_status: staged_only` inside revised chapters describes their creation
+stage; it does not override this external release authorization. Original V2
+approvals apply to the baseline only; this revision has no new vision seal.
 
-After refreshing chapter files and selection hashes, rebuild the master downloads
-with `python scripts/build_textbook_downloads.py`. The builder checks the hashes
-and preserves each enclosed chapter ZIP byte-for-byte.
+The original `validation.json` in the maintenance directory records creation-time
+checks and pre-publication bundle hashes. Use `publication.json` for the current
+outer ZIP hashes after the README update. Maintenance packaging is prepared with
+`python scripts/publish_quantitative_visual_update.py`; it preserves every
+embedded chapter ZIP byte-for-byte and leaves the original baseline index and
+master untouched.

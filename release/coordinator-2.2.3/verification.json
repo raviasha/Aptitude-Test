@@ -1,0 +1,40 @@
+{
+  "version": "2.2.3",
+  "verification_date": "2026-10-23",
+  "publisher": "CN=KSAT LAB RELEASE SIGNING",
+  "thumbprint": "13AE2A6440C33E074FC9C99FB35E5A1CFD9BE908",
+  "frozen_https_startup": "passed",
+  "coordinator_reported_version": "2.2.3",
+  "client_handshake_protocol_version": "2.1.0 (unchanged)",
+  "installer_payload": "deep extraction verified against signed executable",
+  "uac_payload_equivalence": "verified using disposable non-elevated smoke build",
+  "frozen_client_static_files": "exact match to reviewed source",
+  "update_verification_key": "unchanged from signed Coordinator 2.2.2",
+  "runtime_upgrade_2_2_2_to_2_2_3": "regression passed; login/result database bytes, assets, identity and prior backups preserved",
+  "client_binaries_rebuilt": true,
+  "client_version": "2.1.6",
+  "regression": {
+    "command": "python -m pytest tests scripts/test_publish_quantitative_visual_update.py scripts/test_smoke_textbook_import_compatibility.py test_feedback_ui.py -q --tb=short",
+    "passed": 948,
+    "skipped": 48,
+    "subtests_passed": 603,
+    "warnings": 50,
+    "exit_code": 0,
+    "seconds": 696.17,
+    "publication_helper_final_rerun": "5 passed, including replacement-failure rollback and retry"
+  },
+  "question_banks": {
+    "revised_chapters": [24, 25, 36, 37, 38, 39],
+    "master_chapters": 39,
+    "embedded_chapter_copies_verified": 45,
+    "original_baselines_unchanged": true,
+    "answers_options_solutions_unchanged": true,
+    "provenance": "../../question-banks/quantitative-visual-update-20261022/publication.json"
+  },
+  "limits": [
+    "Physical administrator/standard-user installation and lab rollout pilot not performed; required before broad deployment.",
+    "No installed student data or live lab machine was modified.",
+    "Repository-wide importlib run stopped at 3 pre-existing data-engineering calibration failures after 117 passed; the same failures reproduced in an isolated export of base commit 86a7acafa7a9ed0fc220031955267322b05f7b80. They arise from a stale Chapter 1 published-ZIP checksum, not this release. Full repository suite is not claimed passing.",
+    "Question-bank maintenance is not a new answer-key audit or full V2 vision approval. Existing assessment releases remain unchanged."
+  ]
+}

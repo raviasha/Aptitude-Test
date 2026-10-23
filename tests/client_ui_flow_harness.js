@@ -182,6 +182,102 @@ async function boot(initialState = 'waiting_or_ready', routes = {}, savedStorage
 }
 
 const scenarios = {
+  async supporting_chart_preserves_stem_and_restores_transcript_on_failure() {
+    const stimulus = { id: 'context', type: 'image', url: `assets/${'c'.repeat(64)}.png`, alt_text: 'Year | Sales\n2005 | 12\n2006 | 24' };
+    const visual = { ...attempt, questions: [{ ...attempt.questions[0], source_key: 'ch36-q0001', stimulus }] };
+    const page = await boot('waiting_or_ready', {
+      '/api/assessments/second-release/start': () => visual,
+      [`/api/attempts/${attempt.attempt_id}`]: () => visual,
+    });
+    await page.click('Start');
+    await page.elements.get('enter-fullscreen').listeners.get('click')();
+    const container = page.elements.get('question-media');
+    const image = container.children.find(child => child.tagName === 'img');
+    const fallback = container.children.find(child => child.className === 'media-transcript');
+    assert.ok(fallback, 'Supporting charts need a readable fallback, not a truncated broken-image alt label');
+    assert.equal(fallback.hidden, true);
+    image.listeners.get('error')();
+    assert.equal(fallback.hidden, false);
+    assert.equal(fallback.textContent, stimulus.alt_text);
+    assert.equal(image.hidden, true);
+    assert.equal(page.elements.get('question-text').hidden, false);
+    image.listeners.get('load')();
+    assert.equal(fallback.hidden, true);
+    assert.equal(image.hidden, false);
+    const review = { ...localReview, questions: [{ ...localReview.questions[0], question: visual.questions[0] }] };
+    const reviewPage = await boot('sealed_pending', { [pendingReviewPath]: () => review });
+    await reviewPage.click('Check review availability');
+    const card = reviewPage.actions().children.find(child => child.className === 'review-list').children[0];
+    card.children.find(child => child.tagName === 'img').listeners.get('error')();
+    const reviewFallback = card.children.find(child => child.className === 'media-transcript');
+    assert.equal(reviewFallback.hidden, false);
+    assert.equal(reviewFallback.textContent, stimulus.alt_text);
+  },
+  async complete_images_replace_text_with_safe_fallback() {
+    const media = { url: `assets/${'a'.repeat(64)}.png`, alt_text: 'Complete question', width: 650, height: 300 };
+    const visual = { ...attempt, questions: [
+      { ...attempt.questions[0], source_key: 'ch441-q0001', display_media: { question: media, options: { A: media } } },
+    ] };
+    const page = await boot('waiting_or_ready', {
+      '/api/assessments/second-release/start': () => visual,
+      [`/api/attempts/${attempt.attempt_id}`]: () => visual,
+    });
+    await page.click('Start');
+    await page.elements.get('enter-fullscreen').listeners.get('click')();
+    const text = page.elements.get('question-text');
+    const image = page.elements.get('question-media').children[0];
+    assert.equal(text.hidden, false, 'Keep text available until the image loads');
+    image.listeners.get('load')?.();
+    assert.equal(text.hidden, true, 'A complete question image replaces its duplicate text');
+    const option = page.elements.get('options').children[0];
+    const optionImage = option.children.find(child => child.tagName === 'img');
+    optionImage.listeners.get('load')?.();
+    assert.equal(option.children[1].hidden, true);
+    assert.equal(option.children[0].textContent, 'A. ', 'Keep the selectable answer label');
+    image.listeners.get('error')?.();
+    optionImage.listeners.get('error')?.();
+    assert.equal(text.hidden, false, 'A broken image must restore the question text');
+    assert.equal(option.children[1].hidden, false);
+
+    visual.questions[0].display_media.question = { ...media, placement: 'context' };
+    await page.tick(1000);
+    page.elements.get('question-media').children[0].listeners.get('load')?.();
+    assert.equal(text.hidden, false, 'A diagram-only image cannot replace instructions');
+    // Older release packs omit placement even for quantitative context diagrams.
+    visual.questions[0].source_key = 'ch36-q0001';
+    visual.questions[0].display_media.question = media;
+    await page.tick(1000);
+    page.elements.get('question-media').children[0].listeners.get('load')?.();
+    assert.equal(text.hidden, false, 'Keep older, unaudited books unchanged');
+    visual.questions[0].display_media = {};
+    await page.tick(1000);
+    image.listeners.get('load')?.();
+    assert.equal(text.hidden, false, 'A late load from the previous question cannot hide new text');
+    assert.equal(page.elements.get('question-media').children.length, 0);
+  },
+  async review_images_replace_text_with_safe_fallback() {
+    const media = { url: `assets/${'b'.repeat(64)}.png`, alt_text: 'Complete question', width: 650, height: 300 };
+    const review = { ...localReview, questions: [{ ...localReview.questions[0], question: {
+      ...localReview.questions[0].question, source_key: 'ch441-q0001', display_media: { question: media, options: { A: media } },
+    } }] };
+    const page = await boot('sealed_pending', { [pendingReviewPath]: () => review });
+    await page.click('Check review availability');
+    const list = page.actions().children.find(child => child.className === 'review-list');
+    const card = list.children[0];
+    const text = card.children.find(child => child.tagName === 'p');
+    const image = card.children.find(child => child.tagName === 'img');
+    image.listeners.get('load')?.();
+    assert.equal(text.hidden, true);
+    const option = card.children.find(child => child.className === 'review-option');
+    option.children.find(child => child.tagName === 'img').listeners.get('load')?.();
+    assert.equal(option.children.find(child => child.tagName === 'span').hidden, true);
+    assert.ok(option.children.some(child => child.textContent === 'A. '));
+    assert.ok(option.children.some(child => child.textContent === 'Your choice'));
+    assert.ok(option.children.some(child => child.textContent === 'Correct choice'));
+    image.listeners.get('error')?.();
+    assert.equal(text.hidden, false);
+    assert.match(card.textContent, /Review-only solution step/);
+  },
   async manual_submission_requires_explicit_dialog_confirmation() {
     const page = await boot('waiting_or_ready', {
       [`/api/attempts/${attempt.attempt_id}/submit`]: () => ({ ...attempt, state: 'sealed_pending' }),

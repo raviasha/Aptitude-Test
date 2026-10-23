@@ -157,9 +157,9 @@ class FeedbackUiTests(unittest.TestCase):
         index = INDEX_HTML.read_text(encoding="utf-8")
 
         for filename in ("styles.css", "branding.css", "math.css"):
-            self.assertIn(f'/static/{filename}?v=2.2.2', index)
+            self.assertIn(f'/static/{filename}?v=2.2.3', index)
         for filename in ("app.js", "faculty.css"):
-            version = "2.2.2"
+            version = "2.2.3"
             self.assertIn(f'/static/{filename}?v={version}', index)
             self.assertTrue((INDEX_HTML.parent / filename).is_file())
         self.assertNotIn('/static/app.js?v=2.0.0', index)

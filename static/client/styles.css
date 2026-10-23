@@ -103,6 +103,8 @@ input, select { min-height: 44px; padding: .65rem .75rem; border: 2px solid #8b9
 #question-text { white-space: pre-wrap; font-size: 1.15rem; line-height: 1.6; }
 .question-media { display: grid; gap: .75rem; justify-items: start; }
 .public-media { display: block; max-width: 100%; height: auto; object-fit: contain; }
+.public-media[hidden], .media-transcript[hidden] { display: none; }
+.media-transcript { white-space: pre-wrap; overflow-wrap: anywhere; }
 .options { display: grid; gap: .75rem; margin: 1.5rem 0; }
 .answer { display: flex; flex-wrap: wrap; align-items: center; width: 100%; gap: .3rem; text-align: left; color: var(--ink); background: white; }
 .answer .public-media { flex-basis: 100%; margin-top: .5rem; }

@@ -220,35 +220,35 @@ class WindowsPackagingTests(unittest.TestCase):
     def test_release_layout_has_two_distinct_versioned_products(self):
         with tempfile.TemporaryDirectory() as directory:
             layout = ReleaseLayout(Path(directory))
-            self.assertEqual("2.2.2", APP_VERSION)
+            self.assertEqual("2.2.3", APP_VERSION)
             self.assertEqual("KSATCoordinator.exe", layout.coordinator_executable.name)
             self.assertEqual("KSATClient.exe", layout.client_executable.name)
             self.assertEqual("KSATClientUpdater.exe", layout.updater_executable.name)
             self.assertEqual(
-                "KSATCoordinator-2.2.2.exe",
+                "KSATCoordinator-2.2.3.exe",
                 layout.coordinator_release_executable.name,
             )
             self.assertEqual(
-                "KSATClient-2.1.5.exe", layout.client_release_executable.name
+                "KSATClient-2.1.6.exe", layout.client_release_executable.name
             )
             self.assertEqual(
-                "KSATCoordinatorSetup-2.2.2.exe", layout.coordinator_installer.name
+                "KSATCoordinatorSetup-2.2.3.exe", layout.coordinator_installer.name
             )
-            self.assertEqual("KSATClientSetup-2.1.5.exe", layout.client_installer.name)
+            self.assertEqual("KSATClientSetup-2.1.6.exe", layout.client_installer.name)
             self.assertEqual(
-                "KSATClientUpdate-2.1.5-TEST-ONLY.ksat-client-update",
+                "KSATClientUpdate-2.1.6-TEST-ONLY.ksat-client-update",
                 layout.test_client_update.name,
             )
             self.assertEqual("SHA256SUMS.txt", layout.hash_manifest.name)
             self.assertEqual(
-                "KSATClientUpdate-2.1.5.ksat-client-update",
+                "KSATClientUpdate-2.1.6.ksat-client-update",
                 layout.client_update.name,
             )
             self.assertEqual(
                 "KSATLabReleaseSigning.cer", layout.lab_trust_certificate.name
             )
             self.assertEqual(
-                "SHA256SUMS-2.1.5-TEST-ONLY.txt", layout.test_hash_manifest.name
+                "SHA256SUMS-2.1.6-TEST-ONLY.txt", layout.test_hash_manifest.name
             )
 
     def test_test_update_bundle_uses_matching_ephemeral_update_key(self):
@@ -478,7 +478,7 @@ class WindowsPackagingTests(unittest.TestCase):
         )
         for path in paths:
             text = path.read_text("utf-8")
-            expected = "2.1.0" if path.name in ("tls.py", "KSATClient.iss") else "2.2.2"
+            expected = "2.1.0" if path.name in ("tls.py", "KSATClient.iss") else "2.2.3"
             self.assertIn(expected, text, path.name)
             self.assertNotIn("1.3.3", text, path.name)
 

@@ -2,3 +2,6 @@
 installer/linux/* text eol=lf
 # Vision job fingerprints bind exact schema bytes across Windows checkouts.
 data-engineering/textbook_chapters_v2/schemas/*.json text eol=lf
+# Presentation-maintenance provenance and bundled README hashes bind exact bytes.
+question-banks/quantitative-visual-update-20261022/*.json -text whitespace=cr-at-eol
+question-banks/quantitative-visual-update-20261022/*.txt -text whitespace=cr-at-eol

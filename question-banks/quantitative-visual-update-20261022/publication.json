@@ -1,0 +1,474 @@
+{
+  "schema_version": 1,
+  "revision_date": "2026-10-22",
+  "kind": "presentation-maintenance",
+  "status": "release_candidate_for_approved_publication",
+  "release_authorized": true,
+  "authorization": "User authorized publication of the completed visual fixes and question banks with Coordinator 2.2.3 and Windows Client/Builder 2.1.6.",
+  "github_publication": "not_confirmed",
+  "accompanying_release": {
+    "coordinator": "2.2.3",
+    "windows_client": "2.1.6",
+    "windows_builder": "2.1.6"
+  },
+  "approval_scope": {
+    "original_v2_metadata": "Preserved byte-for-byte as baseline history; original approvals apply only to the baseline.",
+    "new_vision_approvals": false,
+    "chapter_promotion_status": "staged_only is unchanged creation-stage history; this external index records release authorization."
+  },
+  "baseline_index": {
+    "path": "../latest/selection.json",
+    "sha256": "ad6c34a2a3f2627c8829312ed8f33df36cd444bfa60bbdd63a8b257bf7de33fd",
+    "hash_normalization": "CRLF line endings converted to LF; original file is not modified",
+    "role": "Original baseline index retained unchanged; this publication.json indexes the maintenance revision."
+  },
+  "baseline_master": {
+    "path": "../latest/textbook-downloads/quantitative-aptitude-chapters-01-39.zip",
+    "sha256": "9dd21e3092d5c94e190d1845a00d3d76cee1ab921172bce8b956f21fc8aeebd7"
+  },
+  "creation_validation": {
+    "path": "validation.json",
+    "sha256": "7c84b570706371ac6ad7706865089807c351bbd9460a4eb0be05afab73234bca",
+    "role": "Unchanged creation-time evidence; its bundle hashes predate the outer README replacement. Current hashes are in bundles below."
+  },
+  "review_manifest": {
+    "path": "review-manifest.json",
+    "sha256": "f2027181e28982acb15919eac047a4fc3b5b103ef4cad8d89760e26c660f716a"
+  },
+  "readme_sha256": "458dd6de2a4b92ef48c681bb7eafc44ab64b8ec934c434799d3940def4764768",
+  "revised_chapters": [
+    24,
+    25,
+    36,
+    37,
+    38,
+    39
+  ],
+  "changed_records": 336,
+  "chapters": [
+    {
+      "chapter": 1,
+      "path": "../latest/quantitative-aptitude/ch01_number_system_all_vision_text_only.zip",
+      "sha256": "4514afe7347f9d68c867f8534fc9f8c9e9d9953610df11568efcaf92e05ac931",
+      "baseline_sha256": "4514afe7347f9d68c867f8534fc9f8c9e9d9953610df11568efcaf92e05ac931",
+      "revision": "unchanged-baseline",
+      "questions": 378,
+      "bank_name": "R. S. Aggarwal - Chapter 1: Number System (all-vision text-only)"
+    },
+    {
+      "chapter": 2,
+      "path": "../latest/quantitative-aptitude/ch02_hcf_lcm_all_vision_text_only.zip",
+      "sha256": "1bffb151248a30841a3a5067cc27347e5a568dbe60e01058dfbfb6bfe7428dea",
+      "baseline_sha256": "1bffb151248a30841a3a5067cc27347e5a568dbe60e01058dfbfb6bfe7428dea",
+      "revision": "unchanged-baseline",
+      "questions": 130,
+      "bank_name": "R. S. Aggarwal - Chapter 2: H.C.F. and L.C.M. of Numbers (all-vision text-only)"
+    },
+    {
+      "chapter": 3,
+      "path": "../latest/quantitative-aptitude/ch03_decimal_fractions_all_vision_text_only.zip",
+      "sha256": "8f421989e08bf5c9d70ef27dbb07e79e4d8826d13a84c47754379fb9c7916fab",
+      "baseline_sha256": "8f421989e08bf5c9d70ef27dbb07e79e4d8826d13a84c47754379fb9c7916fab",
+      "revision": "unchanged-baseline",
+      "questions": 206,
+      "bank_name": "R. S. Aggarwal - Chapter 3: Decimal Fractions (all-vision text-only)"
+    },
+    {
+      "chapter": 4,
+      "path": "../latest/quantitative-aptitude/ch04_simplification_all_vision_text_only.zip",
+      "sha256": "92220f14094e5b9a1011f3c9ffdd607e566048184561dd9ce7c907ff1b346d83",
+      "baseline_sha256": "92220f14094e5b9a1011f3c9ffdd607e566048184561dd9ce7c907ff1b346d83",
+      "revision": "unchanged-baseline",
+      "questions": 545,
+      "bank_name": "R. S. Aggarwal - Chapter 4: Simplification (all-vision text-only)"
+    },
+    {
+      "chapter": 5,
+      "path": "../latest/quantitative-aptitude/ch05_square_roots_cube_roots_all_vision_text_only.zip",
+      "sha256": "44fe39fffb4cfae78bd74557fc7cc3be5d7a98070c0d061174a1317c56e7ab34",
+      "baseline_sha256": "44fe39fffb4cfae78bd74557fc7cc3be5d7a98070c0d061174a1317c56e7ab34",
+      "revision": "unchanged-baseline",
+      "questions": 188,
+      "bank_name": "R. S. Aggarwal - Chapter 5: Square Roots and Cube Roots (all-vision text-only)"
+    },
+    {
+      "chapter": 6,
+      "path": "../latest/quantitative-aptitude/ch06_average_all_vision_text_only.zip",
+      "sha256": "32863d84e899e356d93761432dc475f2603d39656e8f16d58d30b288c81ae09d",
+      "baseline_sha256": "32863d84e899e356d93761432dc475f2603d39656e8f16d58d30b288c81ae09d",
+      "revision": "unchanged-baseline",
+      "questions": 161,
+      "bank_name": "R. S. Aggarwal - Chapter 6: Average (all-vision text-only)"
+    },
+    {
+      "chapter": 7,
+      "path": "../latest/quantitative-aptitude/ch07_problems_on_numbers_all_vision_text_only.zip",
+      "sha256": "0940281bca5ff45b4af5566660b444a4ffb508b9adcfe0c5ac97c5527c3ef1d4",
+      "baseline_sha256": "0940281bca5ff45b4af5566660b444a4ffb508b9adcfe0c5ac97c5527c3ef1d4",
+      "revision": "unchanged-baseline",
+      "questions": 133,
+      "bank_name": "R. S. Aggarwal - Chapter 7: Problems on Numbers (all-vision text-only)"
+    },
+    {
+      "chapter": 8,
+      "path": "../latest/quantitative-aptitude/ch08_problems_on_ages_all_vision_text_only.zip",
+      "sha256": "2999d7446859c8960a77ddbce6ce9be1f86544e7937409629607875eae45aa41",
+      "baseline_sha256": "2999d7446859c8960a77ddbce6ce9be1f86544e7937409629607875eae45aa41",
+      "revision": "unchanged-baseline",
+      "questions": 73,
+      "bank_name": "R. S. Aggarwal - Chapter 8: Problems on Ages (all-vision text-only)"
+    },
+    {
+      "chapter": 9,
+      "path": "../latest/quantitative-aptitude/ch09_surds_indices_all_vision_text_only.zip",
+      "sha256": "6bcca4b1d410384702cebd0dadc67b6964938e277531414d8f1671f30b704d62",
+      "baseline_sha256": "6bcca4b1d410384702cebd0dadc67b6964938e277531414d8f1671f30b704d62",
+      "revision": "unchanged-baseline",
+      "questions": 122,
+      "bank_name": "R. S. Aggarwal - Chapter 9: Surds and Indices (all-vision text-only)"
+    },
+    {
+      "chapter": 10,
+      "path": "../latest/quantitative-aptitude/ch10_logarithms_all_vision_text_only.zip",
+      "sha256": "63eab162899d9b1dcc3f240c8c276df2129d86c18f4aa7f310f4bacd4ecb443b",
+      "baseline_sha256": "63eab162899d9b1dcc3f240c8c276df2129d86c18f4aa7f310f4bacd4ecb443b",
+      "revision": "unchanged-baseline",
+      "questions": 92,
+      "bank_name": "R. S. Aggarwal - Chapter 10: Logarithms (all-vision text-only)"
+    },
+    {
+      "chapter": 11,
+      "path": "../latest/quantitative-aptitude/ch11_percentage_all_vision_text_only.zip",
+      "sha256": "ecc99062b835180e0b40891a440c66a3e9ee264fe1d21d0aea1b3c2cb48a5599",
+      "baseline_sha256": "ecc99062b835180e0b40891a440c66a3e9ee264fe1d21d0aea1b3c2cb48a5599",
+      "revision": "unchanged-baseline",
+      "questions": 372,
+      "bank_name": "R. S. Aggarwal - Chapter 11: Percentage (all-vision text-only)"
+    },
+    {
+      "chapter": 12,
+      "path": "../latest/quantitative-aptitude/ch12_profit_loss_all_vision_text_only.zip",
+      "sha256": "cf0b4ef66c176977403087262bd7d963e33f29dfc4fc1804348832f4d4b14bac",
+      "baseline_sha256": "cf0b4ef66c176977403087262bd7d963e33f29dfc4fc1804348832f4d4b14bac",
+      "revision": "unchanged-baseline",
+      "questions": 292,
+      "bank_name": "R. S. Aggarwal - Chapter 12: Profit and Loss (all-vision text-only)"
+    },
+    {
+      "chapter": 13,
+      "path": "../latest/quantitative-aptitude/ch13_ratio_proportion_all_vision_text_only.zip",
+      "sha256": "ba34749c213719bc986239069d4293947659cfff84514fb9beed76ecd2147f5a",
+      "baseline_sha256": "ba34749c213719bc986239069d4293947659cfff84514fb9beed76ecd2147f5a",
+      "revision": "unchanged-baseline",
+      "questions": 255,
+      "bank_name": "R. S. Aggarwal - Chapter 13: Ratio and Proportion (all-vision text-only)"
+    },
+    {
+      "chapter": 14,
+      "path": "../latest/quantitative-aptitude/ch14_partnership_all_vision_text_only.zip",
+      "sha256": "09032abddab20924eb77d68f7b1dcc3a3c3fe94c7cdb76f43dee3f048a5facf1",
+      "baseline_sha256": "09032abddab20924eb77d68f7b1dcc3a3c3fe94c7cdb76f43dee3f048a5facf1",
+      "revision": "unchanged-baseline",
+      "questions": 64,
+      "bank_name": "R. S. Aggarwal - Chapter 14: Partnership (all-vision text-only)"
+    },
+    {
+      "chapter": 15,
+      "path": "../latest/quantitative-aptitude/ch15_chain_rule_all_vision_text_only.zip",
+      "sha256": "5e810d05afed8bb3436769236bb6712d6b72d9223f651491bae0454941848a39",
+      "baseline_sha256": "5e810d05afed8bb3436769236bb6712d6b72d9223f651491bae0454941848a39",
+      "revision": "unchanged-baseline",
+      "questions": 82,
+      "bank_name": "R. S. Aggarwal - Chapter 15: Chain Rule (all-vision text-only)"
+    },
+    {
+      "chapter": 16,
+      "path": "../latest/quantitative-aptitude/ch16_pipes_cisterns_all_vision_text_only.zip",
+      "sha256": "1a63961783ff851b6d4c7bbe04c1ffd55c56d52a383af0522195859962860668",
+      "baseline_sha256": "1a63961783ff851b6d4c7bbe04c1ffd55c56d52a383af0522195859962860668",
+      "revision": "unchanged-baseline",
+      "questions": 54,
+      "bank_name": "R. S. Aggarwal - Chapter 16: Pipes and Cisterns (all-vision text-only)"
+    },
+    {
+      "chapter": 17,
+      "path": "../latest/quantitative-aptitude/ch17_time_work_all_vision_text_only.zip",
+      "sha256": "a66f9616eee0c3486b61b20881947e071332455b2c09c004f8b2882e7f02cd70",
+      "baseline_sha256": "a66f9616eee0c3486b61b20881947e071332455b2c09c004f8b2882e7f02cd70",
+      "revision": "unchanged-baseline",
+      "questions": 133,
+      "bank_name": "R. S. Aggarwal - Chapter 17: Time and Work (all-vision text-only)"
+    },
+    {
+      "chapter": 18,
+      "path": "../latest/quantitative-aptitude/ch18_time_distance_all_vision_text_only.zip",
+      "sha256": "d71a091a6f74771935373ad3c3e9714d374e659b3ebbda2e0d33f7208f8f55df",
+      "baseline_sha256": "d71a091a6f74771935373ad3c3e9714d374e659b3ebbda2e0d33f7208f8f55df",
+      "revision": "unchanged-baseline",
+      "questions": 191,
+      "bank_name": "R. S. Aggarwal - Chapter 18: Time and Distance (all-vision text-only)"
+    },
+    {
+      "chapter": 19,
+      "path": "../latest/quantitative-aptitude/ch19_boats_streams_all_vision_text_only.zip",
+      "sha256": "56dd3c04cb9b46487374cc56de0c4dc18a82e2f1657d67ca659213b3ad99bdf1",
+      "baseline_sha256": "56dd3c04cb9b46487374cc56de0c4dc18a82e2f1657d67ca659213b3ad99bdf1",
+      "revision": "unchanged-baseline",
+      "questions": 36,
+      "bank_name": "R. S. Aggarwal - Chapter 19: Boats and Streams (all-vision text-only)"
+    },
+    {
+      "chapter": 20,
+      "path": "../latest/quantitative-aptitude/ch20_problems_on_trains_all_vision_text_only.zip",
+      "sha256": "bf2b459738815f510d5b0f783843ad56d059ed26a6f71b0d4b8263340b5dfec4",
+      "baseline_sha256": "bf2b459738815f510d5b0f783843ad56d059ed26a6f71b0d4b8263340b5dfec4",
+      "revision": "unchanged-baseline",
+      "questions": 74,
+      "bank_name": "R. S. Aggarwal - Chapter 20: Problems on Trains (all-vision text-only)"
+    },
+    {
+      "chapter": 21,
+      "path": "../latest/quantitative-aptitude/ch21_alligation_mixture_all_vision_text_only.zip",
+      "sha256": "9f6612586557443ccf631327dda01de1dc315e1adb56d00b6570e6f32c46470d",
+      "baseline_sha256": "9f6612586557443ccf631327dda01de1dc315e1adb56d00b6570e6f32c46470d",
+      "revision": "unchanged-baseline",
+      "questions": 26,
+      "bank_name": "R. S. Aggarwal - Chapter 21: Alligation or Mixture (all-vision text-only)"
+    },
+    {
+      "chapter": 22,
+      "path": "../latest/quantitative-aptitude/ch22_simple_interest_all_vision_text_only.zip",
+      "sha256": "b1434f02f49d5507d0fe12371d38f65e4b1040e6b411e5ff5a16732dacdfb97b",
+      "baseline_sha256": "b1434f02f49d5507d0fe12371d38f65e4b1040e6b411e5ff5a16732dacdfb97b",
+      "revision": "unchanged-baseline",
+      "questions": 106,
+      "bank_name": "R. S. Aggarwal - Chapter 22: Simple Interest (all-vision text-only)"
+    },
+    {
+      "chapter": 23,
+      "path": "../latest/quantitative-aptitude/ch23_compound_interest_all_vision_text_only.zip",
+      "sha256": "35d7f712e661e960d04e07c2c51c9a74497b3f2aa6cfeff63ca1894ad8830f3a",
+      "baseline_sha256": "35d7f712e661e960d04e07c2c51c9a74497b3f2aa6cfeff63ca1894ad8830f3a",
+      "revision": "unchanged-baseline",
+      "questions": 69,
+      "bank_name": "R. S. Aggarwal - Chapter 23: Compound Interest (all-vision text-only)"
+    },
+    {
+      "chapter": 24,
+      "path": "chapters/ch24_area_all_vision_text_only.zip",
+      "sha256": "2ceeaf0743f5a48b0a5d6e3f679c591e4f66d305c6165ee4e131f7ad5d3b9df6",
+      "baseline_sha256": "25d61f9bdc8515e65730274175eb8b2497f4e3440a15a2af4583560031431d1c",
+      "revision": "presentation-maintenance",
+      "questions": 415,
+      "bank_name": "R. S. Aggarwal - Chapter 24: Area (all-vision text-only) [Visual revision 2026-10-22]"
+    },
+    {
+      "chapter": 25,
+      "path": "chapters/ch25_volume_surface_areas_all_vision_text_only.zip",
+      "sha256": "16fa4dc5171ac6a4f3c3de3b7c41f887c1303574ab3144c5e5fdc0834b1d3c52",
+      "baseline_sha256": "1ac1f77fa118356bd018ea7ee0e381c97f78cb5fa5666b6d91572b3624eefa93",
+      "revision": "presentation-maintenance",
+      "questions": 301,
+      "bank_name": "R. S. Aggarwal - Chapter 25: Volume and Surface Areas (all-vision text-only) [Visual revision 2026-10-22]"
+    },
+    {
+      "chapter": 26,
+      "path": "../latest/quantitative-aptitude/ch26_races_games_skill_all_vision_text_only.zip",
+      "sha256": "000d98d7ff769bbf1ec107af7afc010873a922ff7261dcd997183f222439541d",
+      "baseline_sha256": "000d98d7ff769bbf1ec107af7afc010873a922ff7261dcd997183f222439541d",
+      "revision": "unchanged-baseline",
+      "questions": 25,
+      "bank_name": "R. S. Aggarwal - Chapter 26: Races and Games of Skill (all-vision text-only)"
+    },
+    {
+      "chapter": 27,
+      "path": "../latest/quantitative-aptitude/ch27_calendar_all_vision_text_only.zip",
+      "sha256": "5d821faa19dda3290685350e377cf998a8d5367cb593e3522fb7cefb0df4138b",
+      "baseline_sha256": "5d821faa19dda3290685350e377cf998a8d5367cb593e3522fb7cefb0df4138b",
+      "revision": "unchanged-baseline",
+      "questions": 9,
+      "bank_name": "R. S. Aggarwal - Chapter 27: Calendar (all-vision text-only)"
+    },
+    {
+      "chapter": 28,
+      "path": "../latest/quantitative-aptitude/ch28_clocks_all_vision_text_only.zip",
+      "sha256": "f3f97332f49540179712064ab82743562dac7c484e762465bdf38f717011d47a",
+      "baseline_sha256": "f3f97332f49540179712064ab82743562dac7c484e762465bdf38f717011d47a",
+      "revision": "unchanged-baseline",
+      "questions": 54,
+      "bank_name": "R. S. Aggarwal - Chapter 28: Clocks (all-vision text-only)"
+    },
+    {
+      "chapter": 29,
+      "path": "../latest/quantitative-aptitude/ch29_stocks_shares_all_vision_text_only.zip",
+      "sha256": "1ab944e2e6ef3f3637df861253dcadf3243c00ab6634497ebba76c5f860ae8c8",
+      "baseline_sha256": "1ab944e2e6ef3f3637df861253dcadf3243c00ab6634497ebba76c5f860ae8c8",
+      "revision": "unchanged-baseline",
+      "questions": 29,
+      "bank_name": "R. S. Aggarwal - Chapter 29: Stocks and Shares (all-vision text-only)"
+    },
+    {
+      "chapter": 30,
+      "path": "../latest/quantitative-aptitude/ch30_permutations_and_combinations_all_vision_text_only.zip",
+      "sha256": "d8cc1bd5995bbc11829e70ff66796cf16b823ce0035c9ecaa508a732537b8d08",
+      "baseline_sha256": "d8cc1bd5995bbc11829e70ff66796cf16b823ce0035c9ecaa508a732537b8d08",
+      "revision": "unchanged-baseline",
+      "questions": 48,
+      "bank_name": "R. S. Aggarwal - Chapter 30: Permutations and Combinations (all-vision text-only)"
+    },
+    {
+      "chapter": 31,
+      "path": "../latest/quantitative-aptitude/ch31_probability_all_vision_text_only.zip",
+      "sha256": "a691a631f334462f1f195f0d824af303c8ba176d560e48fb45ec51729801ad62",
+      "baseline_sha256": "a691a631f334462f1f195f0d824af303c8ba176d560e48fb45ec51729801ad62",
+      "revision": "unchanged-baseline",
+      "questions": 50,
+      "bank_name": "R. S. Aggarwal - Chapter 31: Probability (all-vision text-only)"
+    },
+    {
+      "chapter": 32,
+      "path": "../latest/quantitative-aptitude/ch32_true_discount_all_vision_text_only.zip",
+      "sha256": "933599ce87e1e62b242bf492aaccdc17f0f824028d257a3c1d9c68133ac4b869",
+      "baseline_sha256": "933599ce87e1e62b242bf492aaccdc17f0f824028d257a3c1d9c68133ac4b869",
+      "revision": "unchanged-baseline",
+      "questions": 20,
+      "bank_name": "R. S. Aggarwal - Chapter 32: True Discount (all-vision text-only)"
+    },
+    {
+      "chapter": 33,
+      "path": "../latest/quantitative-aptitude/ch33_bankers_discount_all_vision_text_only.zip",
+      "sha256": "378d124b652d34149e08f8258cca0e8ebacc130f27127b49872a550e536fa57c",
+      "baseline_sha256": "378d124b652d34149e08f8258cca0e8ebacc130f27127b49872a550e536fa57c",
+      "revision": "unchanged-baseline",
+      "questions": 13,
+      "bank_name": "R. S. Aggarwal - Chapter 33: Banker’s Discount (all-vision text-only)"
+    },
+    {
+      "chapter": 34,
+      "path": "../latest/quantitative-aptitude/ch34_heights_distances_all_vision_text_only.zip",
+      "sha256": "bddd0b696fcd411aff638b5bc2cef02334634f9bb79b995c0fde36c2e902218e",
+      "baseline_sha256": "bddd0b696fcd411aff638b5bc2cef02334634f9bb79b995c0fde36c2e902218e",
+      "revision": "unchanged-baseline",
+      "questions": 18,
+      "bank_name": "R. S. Aggarwal - Chapter 34: Heights and Distances (all-vision text-only)"
+    },
+    {
+      "chapter": 35,
+      "path": "../latest/quantitative-aptitude/ch35_odd_man_out_and_series_all_vision_text_only.zip",
+      "sha256": "7abcd9146160b44be763eca2716ab31eeb343e7ddc80b498209e6707b4d4892e",
+      "baseline_sha256": "7abcd9146160b44be763eca2716ab31eeb343e7ddc80b498209e6707b4d4892e",
+      "revision": "unchanged-baseline",
+      "questions": 96,
+      "bank_name": "R. S. Aggarwal - Chapter 35: Odd Man Out and Series (all-vision text-only)"
+    },
+    {
+      "chapter": 36,
+      "path": "chapters/ch36_tabulation_all_vision_text_only.zip",
+      "sha256": "9447eb7002565b76177840ce462886df836c2e672b2496130381f130bb4c4189",
+      "baseline_sha256": "1ec350ff570d73e13d57baa87f428188bb4923371cc1caa3e48d483dc1448711",
+      "revision": "presentation-maintenance",
+      "questions": 85,
+      "bank_name": "R. S. Aggarwal - Chapter36: Tabulation (all-vision text-only) [Visual revision 2026-10-22]"
+    },
+    {
+      "chapter": 37,
+      "path": "chapters/ch37_bar_graphs_all_vision_text_only.zip",
+      "sha256": "4fb48df2984825daf090157e5630610dd6adf67d77c912c17e6afa0c2d4a665e",
+      "baseline_sha256": "dcad3daa267cac460f6ef3f66cbd0935ffe22ed861fd22468348dfa5167a0e62",
+      "revision": "presentation-maintenance",
+      "questions": 77,
+      "bank_name": "R. S. Aggarwal - Chapter 37: Bar Graphs (all-vision text-only) [Visual revision 2026-10-22]"
+    },
+    {
+      "chapter": 38,
+      "path": "chapters/ch38_pie_chart_all_vision_text_only.zip",
+      "sha256": "ba7c47b8811e22fa9500da22e23eb424cfbbea5b05c7d70b8c2a51f1ff3008b0",
+      "baseline_sha256": "e8ac3b31bbde626aff7b1b3b7d86a24ec164ee3a6a84d16fe644317aecaee537",
+      "revision": "presentation-maintenance",
+      "questions": 76,
+      "bank_name": "R. S. Aggarwal - Chapter 38: Pie Chart (all-vision text-only) [Visual revision 2026-10-22]"
+    },
+    {
+      "chapter": 39,
+      "path": "chapters/ch39_line_graphs_all_vision_text_only.zip",
+      "sha256": "454a9e0104ddd4eef43e9c08715ee2bd09c6478c094a92496ef1af30558f01c2",
+      "baseline_sha256": "cff58d8c009e1de2df56c3be8be6d38e711d6892ede460b782aa63ce54bb1d88",
+      "revision": "presentation-maintenance",
+      "questions": 68,
+      "bank_name": "R. S. Aggarwal - Chapter 39: Line Graphs (all-vision text-only) [Visual revision 2026-10-22]"
+    }
+  ],
+  "bundles": [
+    {
+      "file": "quantitative-visual-updates-6-chapters.zip",
+      "sha256": "6cc1472590d44a665cacdf9f7e98899cf6b778d8b1956383f41612ce8fa743c4",
+      "chapters": 6,
+      "chapter_sha256": {
+        "chapters/ch24_area_all_vision_text_only.zip": "2ceeaf0743f5a48b0a5d6e3f679c591e4f66d305c6165ee4e131f7ad5d3b9df6",
+        "chapters/ch25_volume_surface_areas_all_vision_text_only.zip": "16fa4dc5171ac6a4f3c3de3b7c41f887c1303574ab3144c5e5fdc0834b1d3c52",
+        "chapters/ch36_tabulation_all_vision_text_only.zip": "9447eb7002565b76177840ce462886df836c2e672b2496130381f130bb4c4189",
+        "chapters/ch37_bar_graphs_all_vision_text_only.zip": "4fb48df2984825daf090157e5630610dd6adf67d77c912c17e6afa0c2d4a665e",
+        "chapters/ch38_pie_chart_all_vision_text_only.zip": "ba7c47b8811e22fa9500da22e23eb424cfbbea5b05c7d70b8c2a51f1ff3008b0",
+        "chapters/ch39_line_graphs_all_vision_text_only.zip": "454a9e0104ddd4eef43e9c08715ee2bd09c6478c094a92496ef1af30558f01c2"
+      }
+    },
+    {
+      "file": "quantitative-aptitude-master-39-chapters.zip",
+      "sha256": "69e9b5640efc2fc56c8fced4447356016cc32c05f8de677e18b556623f28abce",
+      "chapters": 39,
+      "chapter_sha256": {
+        "chapters/ch01_number_system_all_vision_text_only.zip": "4514afe7347f9d68c867f8534fc9f8c9e9d9953610df11568efcaf92e05ac931",
+        "chapters/ch02_hcf_lcm_all_vision_text_only.zip": "1bffb151248a30841a3a5067cc27347e5a568dbe60e01058dfbfb6bfe7428dea",
+        "chapters/ch03_decimal_fractions_all_vision_text_only.zip": "8f421989e08bf5c9d70ef27dbb07e79e4d8826d13a84c47754379fb9c7916fab",
+        "chapters/ch04_simplification_all_vision_text_only.zip": "92220f14094e5b9a1011f3c9ffdd607e566048184561dd9ce7c907ff1b346d83",
+        "chapters/ch05_square_roots_cube_roots_all_vision_text_only.zip": "44fe39fffb4cfae78bd74557fc7cc3be5d7a98070c0d061174a1317c56e7ab34",
+        "chapters/ch06_average_all_vision_text_only.zip": "32863d84e899e356d93761432dc475f2603d39656e8f16d58d30b288c81ae09d",
+        "chapters/ch07_problems_on_numbers_all_vision_text_only.zip": "0940281bca5ff45b4af5566660b444a4ffb508b9adcfe0c5ac97c5527c3ef1d4",
+        "chapters/ch08_problems_on_ages_all_vision_text_only.zip": "2999d7446859c8960a77ddbce6ce9be1f86544e7937409629607875eae45aa41",
+        "chapters/ch09_surds_indices_all_vision_text_only.zip": "6bcca4b1d410384702cebd0dadc67b6964938e277531414d8f1671f30b704d62",
+        "chapters/ch10_logarithms_all_vision_text_only.zip": "63eab162899d9b1dcc3f240c8c276df2129d86c18f4aa7f310f4bacd4ecb443b",
+        "chapters/ch11_percentage_all_vision_text_only.zip": "ecc99062b835180e0b40891a440c66a3e9ee264fe1d21d0aea1b3c2cb48a5599",
+        "chapters/ch12_profit_loss_all_vision_text_only.zip": "cf0b4ef66c176977403087262bd7d963e33f29dfc4fc1804348832f4d4b14bac",
+        "chapters/ch13_ratio_proportion_all_vision_text_only.zip": "ba34749c213719bc986239069d4293947659cfff84514fb9beed76ecd2147f5a",
+        "chapters/ch14_partnership_all_vision_text_only.zip": "09032abddab20924eb77d68f7b1dcc3a3c3fe94c7cdb76f43dee3f048a5facf1",
+        "chapters/ch15_chain_rule_all_vision_text_only.zip": "5e810d05afed8bb3436769236bb6712d6b72d9223f651491bae0454941848a39",
+        "chapters/ch16_pipes_cisterns_all_vision_text_only.zip": "1a63961783ff851b6d4c7bbe04c1ffd55c56d52a383af0522195859962860668",
+        "chapters/ch17_time_work_all_vision_text_only.zip": "a66f9616eee0c3486b61b20881947e071332455b2c09c004f8b2882e7f02cd70",
+        "chapters/ch18_time_distance_all_vision_text_only.zip": "d71a091a6f74771935373ad3c3e9714d374e659b3ebbda2e0d33f7208f8f55df",
+        "chapters/ch19_boats_streams_all_vision_text_only.zip": "56dd3c04cb9b46487374cc56de0c4dc18a82e2f1657d67ca659213b3ad99bdf1",
+        "chapters/ch20_problems_on_trains_all_vision_text_only.zip": "bf2b459738815f510d5b0f783843ad56d059ed26a6f71b0d4b8263340b5dfec4",
+        "chapters/ch21_alligation_mixture_all_vision_text_only.zip": "9f6612586557443ccf631327dda01de1dc315e1adb56d00b6570e6f32c46470d",
+        "chapters/ch22_simple_interest_all_vision_text_only.zip": "b1434f02f49d5507d0fe12371d38f65e4b1040e6b411e5ff5a16732dacdfb97b",
+        "chapters/ch23_compound_interest_all_vision_text_only.zip": "35d7f712e661e960d04e07c2c51c9a74497b3f2aa6cfeff63ca1894ad8830f3a",
+        "chapters/ch24_area_all_vision_text_only.zip": "2ceeaf0743f5a48b0a5d6e3f679c591e4f66d305c6165ee4e131f7ad5d3b9df6",
+        "chapters/ch25_volume_surface_areas_all_vision_text_only.zip": "16fa4dc5171ac6a4f3c3de3b7c41f887c1303574ab3144c5e5fdc0834b1d3c52",
+        "chapters/ch26_races_games_skill_all_vision_text_only.zip": "000d98d7ff769bbf1ec107af7afc010873a922ff7261dcd997183f222439541d",
+        "chapters/ch27_calendar_all_vision_text_only.zip": "5d821faa19dda3290685350e377cf998a8d5367cb593e3522fb7cefb0df4138b",
+        "chapters/ch28_clocks_all_vision_text_only.zip": "f3f97332f49540179712064ab82743562dac7c484e762465bdf38f717011d47a",
+        "chapters/ch29_stocks_shares_all_vision_text_only.zip": "1ab944e2e6ef3f3637df861253dcadf3243c00ab6634497ebba76c5f860ae8c8",
+        "chapters/ch30_permutations_and_combinations_all_vision_text_only.zip": "d8cc1bd5995bbc11829e70ff66796cf16b823ce0035c9ecaa508a732537b8d08",
+        "chapters/ch31_probability_all_vision_text_only.zip": "a691a631f334462f1f195f0d824af303c8ba176d560e48fb45ec51729801ad62",
+        "chapters/ch32_true_discount_all_vision_text_only.zip": "933599ce87e1e62b242bf492aaccdc17f0f824028d257a3c1d9c68133ac4b869",
+        "chapters/ch33_bankers_discount_all_vision_text_only.zip": "378d124b652d34149e08f8258cca0e8ebacc130f27127b49872a550e536fa57c",
+        "chapters/ch34_heights_distances_all_vision_text_only.zip": "bddd0b696fcd411aff638b5bc2cef02334634f9bb79b995c0fde36c2e902218e",
+        "chapters/ch35_odd_man_out_and_series_all_vision_text_only.zip": "7abcd9146160b44be763eca2716ab31eeb343e7ddc80b498209e6707b4d4892e",
+        "chapters/ch36_tabulation_all_vision_text_only.zip": "9447eb7002565b76177840ce462886df836c2e672b2496130381f130bb4c4189",
+        "chapters/ch37_bar_graphs_all_vision_text_only.zip": "4fb48df2984825daf090157e5630610dd6adf67d77c912c17e6afa0c2d4a665e",
+        "chapters/ch38_pie_chart_all_vision_text_only.zip": "ba7c47b8811e22fa9500da22e23eb424cfbbea5b05c7d70b8c2a51f1ff3008b0",
+        "chapters/ch39_line_graphs_all_vision_text_only.zip": "454a9e0104ddd4eef43e9c08715ee2bd09c6478c094a92496ef1af30558f01c2"
+      }
+    }
+  ],
+  "preservation": {
+    "embedded_chapter_zip_bytes_unchanged": true,
+    "baseline_archives_and_index_unchanged": true,
+    "original_v2_metadata_unchanged": true
+  },
+  "import_guidance": {
+    "coordinator": "2.2.3 directly imports either outer ZIP.",
+    "existing_installations": "quantitative-visual-updates-6-chapters.zip",
+    "new_installations": "quantitative-aptitude-master-39-chapters.zip",
+    "bank_name_suffix": "[Visual revision 2026-10-22]",
+    "history": "Revised banks coexist with original banks. Keep old banks and results; select only one version per chapter for new tests. Existing releases remain unchanged."
+  }
+}

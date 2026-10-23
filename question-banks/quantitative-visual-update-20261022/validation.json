@@ -1,0 +1,70 @@
+{
+  "status": "local_staged_validated",
+  "source_pdf_sha256": "0723862418cd7b088341bcfc78a10745fd434b3f4db695986b1ff4f40a7223bf",
+  "baseline_archives_unchanged": true,
+  "answers_options_solutions_unchanged": true,
+  "disposable_database_imports_and_public_wire_questions": 1022,
+  "changed_records": 336,
+  "chapters": [
+    {
+      "file": "ch24_area_all_vision_text_only.zip",
+      "sha256": "2ceeaf0743f5a48b0a5d6e3f679c591e4f66d305c6165ee4e131f7ad5d3b9df6",
+      "chapter": "24",
+      "questions": 415,
+      "changed": 29,
+      "bank_name": "R. S. Aggarwal - Chapter 24: Area (all-vision text-only) [Visual revision 2026-10-22]"
+    },
+    {
+      "file": "ch25_volume_surface_areas_all_vision_text_only.zip",
+      "sha256": "16fa4dc5171ac6a4f3c3de3b7c41f887c1303574ab3144c5e5fdc0834b1d3c52",
+      "chapter": "25",
+      "questions": 301,
+      "changed": 1,
+      "bank_name": "R. S. Aggarwal - Chapter 25: Volume and Surface Areas (all-vision text-only) [Visual revision 2026-10-22]"
+    },
+    {
+      "file": "ch36_tabulation_all_vision_text_only.zip",
+      "sha256": "9447eb7002565b76177840ce462886df836c2e672b2496130381f130bb4c4189",
+      "chapter": "36",
+      "questions": 85,
+      "changed": 85,
+      "bank_name": "R. S. Aggarwal - Chapter36: Tabulation (all-vision text-only) [Visual revision 2026-10-22]"
+    },
+    {
+      "file": "ch37_bar_graphs_all_vision_text_only.zip",
+      "sha256": "4fb48df2984825daf090157e5630610dd6adf67d77c912c17e6afa0c2d4a665e",
+      "chapter": "37",
+      "questions": 77,
+      "changed": 77,
+      "bank_name": "R. S. Aggarwal - Chapter 37: Bar Graphs (all-vision text-only) [Visual revision 2026-10-22]"
+    },
+    {
+      "file": "ch38_pie_chart_all_vision_text_only.zip",
+      "sha256": "ba7c47b8811e22fa9500da22e23eb424cfbbea5b05c7d70b8c2a51f1ff3008b0",
+      "chapter": "38",
+      "questions": 76,
+      "changed": 76,
+      "bank_name": "R. S. Aggarwal - Chapter 38: Pie Chart (all-vision text-only) [Visual revision 2026-10-22]"
+    },
+    {
+      "file": "ch39_line_graphs_all_vision_text_only.zip",
+      "sha256": "454a9e0104ddd4eef43e9c08715ee2bd09c6478c094a92496ef1af30558f01c2",
+      "chapter": "39",
+      "questions": 68,
+      "changed": 68,
+      "bank_name": "R. S. Aggarwal - Chapter 39: Line Graphs (all-vision text-only) [Visual revision 2026-10-22]"
+    }
+  ],
+  "bundles": [
+    {
+      "file": "quantitative-visual-updates-6-chapters.zip",
+      "sha256": "2319aee7ee8c33abef4d83be3535b5d8074af3c2421c2f34da72885c871042a7",
+      "chapters": 6
+    },
+    {
+      "file": "quantitative-aptitude-master-39-chapters.zip",
+      "sha256": "3c40200cd9fdee9d3c1b07967658fec692b0c666ea3687383a7e355d736aa710",
+      "chapters": 39
+    }
+  ]
+}

@@ -56,7 +56,7 @@ class MasterZipTests(BookFixture):
 
     def test_product_version_is_distinct_from_legacy_client_handshake(self):
         self.assertEqual(self.client.get('/api/build').json(), {'version': '2.1.0'})
-        self.assertEqual(self.client.get('/api/coordinator-build').json(), {'version': '2.2.2'})
+        self.assertEqual(self.client.get('/api/coordinator-build').json(), {'version': '2.2.3'})
 
     def upload(self, content, replace=False):
         return self.client.post('/api/admin/question-banks/import-package',

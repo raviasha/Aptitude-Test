@@ -58,7 +58,7 @@ class ClientUpdateEndToEndTests(unittest.TestCase):
             before=[hashlib.sha256(path.read_bytes()).hexdigest() for path in (identity,config,state)]
             manager=ClientUpdateManager(client_root/'updates',transport,'2.1.0',public,lambda _p,p:{'publisher':p})
             self.assertEqual('deferred_active_attempt',manager.check(active_attempt=True).stage)
-            self.assertEqual('deferred_pending_submission',manager.check(pending_submission=True).stage)
+            self.assertEqual('required',manager.check(pending_submission=True).stage)
             self.assertEqual('required',manager.check().stage)
             self.assertEqual('ready_to_install',manager.download().stage)
             self.assertEqual(before,[hashlib.sha256(path.read_bytes()).hexdigest() for path in (identity,config,state)])

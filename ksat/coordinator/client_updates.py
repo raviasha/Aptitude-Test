@@ -340,15 +340,20 @@ class ClientUpdateStore:
         cutoff = self.now().astimezone(timezone.utc) - self.offline_after
         result = []
         for row in rows:
-            last_seen = datetime.fromisoformat(row["last_seen_at"]) if row["last_seen_at"] else None
-            offline = last_seen is None or last_seen.astimezone(timezone.utc) < cutoff
+            try:
+                last_seen = datetime.fromisoformat(row["last_seen_at"])
+                last_seen = last_seen.astimezone(timezone.utc) if last_seen.tzinfo else None
+            except (TypeError, ValueError, OverflowError):
+                last_seen = None
             if row["stage"] == "healthy" and row["installed_version"] == release.client_version:
                 label = "Updated"
             elif row["stage"] in {"downloading", "verifying", "installing", "restarting"}:
                 label = "Downloading"
             elif row["stage"] in {"failed", "rolled_back"}:
                 label = "Failed"
-            elif offline:
+            elif last_seen is None:
+                label = "Unknown"
+            elif last_seen < cutoff:
                 label = "Offline"
             else:
                 label = "Waiting"

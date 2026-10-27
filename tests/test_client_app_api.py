@@ -895,7 +895,7 @@ class ClientAppApiTests(unittest.TestCase):
         ).json()
         self.assertEqual("faculty_intervention_required", intervention["state"])
         self.assertEqual(
-            "The sealed submission needs Faculty attention. Your answers remain saved on this computer.",
+            "The last upload attempt did not complete. Faculty: open KSAT Client Recovery for diagnostics.",
             intervention["message"],
         )
         self.assertNotIn("leaked details", str(intervention))
@@ -1139,7 +1139,7 @@ class ClientProductionConfigTests(unittest.TestCase):
             "client_configuration_invalid", response.json()["problem"]["code"]
         )
         self.assertEqual(
-            "The requested action could not be completed.",
+            "This PC's saved server connection could not be verified. Faculty: open KSAT Client Recovery to inspect the configuration and trust settings.",
             response.json()["problem"]["message"],
         )
         identity_type.assert_not_called()

@@ -1,6 +1,6 @@
 const app = typeof document === 'undefined' ? null : document.querySelector('#app');
 const toast = typeof document === 'undefined' ? null : document.querySelector('#toast');
-const BUILD_VERSION = '2.2.5';
+const BUILD_VERSION = '2.2.6';
 let state = { user: null, csrfToken: null, attempt: null, questionIndex: 0 };
 let examGuard = {active:false, deadlineMs:null, timerId:null, syncTimerId:null, submitting:false, lastViolation:null, needsResume:false};
 let facultyTimerId = null;
@@ -505,7 +505,7 @@ async function admin(view) {
 }
 
 const eligiblePilotDevices = devices => (devices || []).filter(device => device.active === true);
-const clientUpdateStatusLabel = device => ['Updated','Downloading','Waiting','Offline','Failed'].includes(device?.status)
+const clientUpdateStatusLabel = device => ['Updated','Downloading','Waiting','Unknown','Offline','Failed'].includes(device?.status)
   ? device.status : 'Waiting';
 function canPublishClientUpdate(release) {
   const pilot = (release?.devices || []).find(device => device.device_id === release.pilot_device_id);
@@ -528,6 +528,12 @@ function renderClientUpdateRelease(root, release, devices) {
   heading.append(title); card.append(heading);
   const metadata = document.createElement('dl'); metadata.className = 'update-metadata';
   [['Release ID',release.release_id],['Publisher',release.manifest?.authenticode_publisher],['SHA-256',release.bundle_sha256],['Size',`${Number(release.bundle_size || 0).toLocaleString('en-IN')} bytes`]].forEach(([label,value]) => { appendText(metadata,'dt',label); appendText(metadata,'dd',value); });
+  if (release.pilot_device_id) {
+    const pilot = (release.devices || []).find(device => device.device_id === release.pilot_device_id);
+    const enrolled = (devices || []).find(device => device.device_id === release.pilot_device_id);
+    appendText(metadata,'dt','Pilot computer');
+    appendText(metadata,'dd',`${pilot?.label || enrolled?.label || 'Unknown computer'} (${release.pilot_device_id})`);
+  }
   card.append(metadata);
   const actions = document.createElement('div'); actions.className = 'row-actions update-actions';
   if (release.state === 'withdrawn') {
@@ -548,13 +554,13 @@ function renderClientUpdateRelease(root, release, devices) {
   }
   if (release.state === 'uploaded') {
     const select = document.createElement('select'); select.setAttribute('aria-label','Pilot lab computer');
-    eligiblePilotDevices(devices).forEach(device => { const option=document.createElement('option'); option.value=device.device_id; option.textContent=device.label; select.append(option); });
+    eligiblePilotDevices(devices).forEach(device => { const option=document.createElement('option'); option.value=device.device_id; option.textContent=`${device.label || 'Unknown computer'} (${device.device_id})`; select.append(option); });
     const pilot = appendText(actions,'button','Start pilot','primary small'); pilot.disabled=!select.value;
     pilot.addEventListener('click', async () => { try { await api(`/api/admin/client-updates/${encodeURIComponent(release.release_id)}/pilot`,{method:'POST',body:{device_id:select.value}}); notify('Pilot enabled. Reopen KSAT on the selected PC to check for the update.'); clientUpdates(); } catch(error) { notify(error.message,true); } });
     actions.prepend(select);
   }
   if (release.state === 'pilot') {
-    appendText(card,'p','After Start pilot, reopen KSAT on the selected PC while the Coordinator is running. Active tests and pending submissions defer updates. Refresh this page to see the latest status. Offline PCs will wait until KSAT connects.','muted');
+    appendText(card,'p','After Start pilot, reopen KSAT on the selected PC while the Coordinator is running. Active tests defer updates. Older clients (2.1.5/2.1.6) blocked by pending submissions need a one-time administrator installation of the new client; reopening alone cannot clear that blocker. Refresh this page to see the latest status. Unknown means no usable authenticated contact time is available. Offline PCs will wait until KSAT connects.','muted');
     const publish=appendText(actions,'button','Publish to all clients','primary small'); publish.disabled=!canPublishClientUpdate(release); publish.title=publish.disabled?'The pilot must report healthy on this exact version first.':'';
     publish.addEventListener('click', async () => { try { await api(`/api/admin/client-updates/${encodeURIComponent(release.release_id)}/publish`,{method:'POST'}); notify('Update published to all clients.'); clientUpdates(); } catch(error) { notify(error.message,true); } });
   }

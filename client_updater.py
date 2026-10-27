@@ -9,23 +9,14 @@ import sys
 import urllib.request
 from pathlib import Path
 
-from ksat.client.identity import DeviceIdentityStore, derive_state_integrity_key
-from ksat.client.store import ClientStore
 from ksat.client.install_guard import installed_version
 from ksat.client.updater import HealthVerifier, Updater
+from ksat.client.preservation import authenticated_store_ready
 from ksat.update_protocol import load_update_public_key
 from ksat.windows_authenticode import verify_authenticode
 
 
 _BUNDLE_ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
-
-
-def _digest(path: Path) -> str:
-    digest = hashlib.sha256()
-    paths = [path] if path.is_file() else sorted(item for item in path.rglob("*") if item.is_file())
-    for item in paths:
-        digest.update(item.relative_to(path.parent).as_posix().encode("utf-8")); digest.update(item.read_bytes())
-    return digest.hexdigest()
 
 
 def configuration_digest(data: Path) -> str:
@@ -59,26 +50,23 @@ def main(argv=None) -> int:
     program_data=os.environ.get("ProgramData") or os.environ.get("PROGRAMDATA")
     if not program_data: raise ValueError("ProgramData is unavailable.")
     data=Path(program_data).resolve()/"KSAT Client"; updates=data/"updates"
-    identity_path=data/"identity"; config_path=data/"client-config.json"; state_path=data/"state"
-    database_path=state_path/"client.sqlite3"
-    before=(_digest(identity_path),configuration_digest(data),_digest(database_path))
+    from client_install_guard import require_protected_directory
+    require_protected_directory(updates, allow_service=True)
+    require_protected_directory(data / "state", allow_service=True)
+    require_protected_directory(data / "identity", allow_service=True)
     def version_probe():
         with urllib.request.urlopen("http://127.0.0.1:8010/api/build",timeout=5) as response:
             import json
             return json.loads(response.read().decode("utf-8"))
     def store_probe():
-        identity=DeviceIdentityStore(identity_path).load_existing()
-        return ClientStore.inspect_replacement_safety(state_path/"client.sqlite3",
-            integrity_key=derive_state_integrity_key(identity),
-            integrity_anchor_path=identity_path/"state-anchor.json") is None
+        return authenticated_store_ready(data)
     version = installed_version(Path(program_data))
     if version is None:
         raise ValueError("The installed client version could not be established.")
     updater=Updater(
         updates,load_update_public_key(_BUNDLE_ROOT/"update-release-public.json"),verify_authenticode,
         WindowsServices(),WindowsInstallers(),HealthVerifier(version_probe,store_probe),
-        installed_version=version,identity_digest=before[0],config_digest=before[1],state_digest=before[2],
-        current_digest_probe=lambda:(_digest(identity_path),configuration_digest(data),_digest(database_path)),
+        installed_version=version, data_root=data,
     )
     return 0 if updater.run(args.request).success else 1
 

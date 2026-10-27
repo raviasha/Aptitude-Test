@@ -15,7 +15,7 @@ from ksat.public_trust import strict_json
 from ksat.windows_authenticode import verify_authenticode
 
 from ksat.client.version import CLIENT_VERSION
-REQUIRED_FILES = frozenset({"KSATClient.exe", "KSATClientUpdater.exe", "KSATClientInstallGuard.exe",
+REQUIRED_FILES = frozenset({"KSATClient.exe", "KSATClientUpdater.exe", "KSATClientInstallGuard.exe", "KSATClientRecovery.exe",
                             "publisher.cer", "update-release-public.json", "KSATClient.iss"})
 _PRIVATE = re.compile(rb"-----BEGIN [A-Z ]*PRIVATE KEY-----")
 
@@ -87,7 +87,7 @@ def verify_payload(payload: ApprovedPayload) -> None:
             if identity.thumbprint != payload.thumbprint:
                 raise ValueError("Payload executable has the wrong signer.")
             archive = pyinstaller_payload_manifest(path)
-            if name in {"KSATClient.exe", "KSATClientUpdater.exe"}:
+            if name in {"KSATClient.exe", "KSATClientUpdater.exe", "KSATClientInstallGuard.exe"}:
                 expected_key = payload.files["update-release-public.json"]
                 keys = [digest for item, digest in archive.items()
                         if item.replace("\\", "/").endswith((":update-release-public.json", "/update-release-public.json"))]

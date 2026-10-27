@@ -48,7 +48,7 @@ from ksat.client.identity import DeviceIdentityStore, derive_state_integrity_key
 from ksat.client.outbox import OutboxWorker
 from ksat.client.lifecycle import BrowserLifetime
 from ksat.client.runtime import AssessmentRuntime, SystemClock
-from ksat.client.updates import ClientUpdateManager
+from ksat.client.updates import ClientUpdateManager, UpdateSnapshot
 from ksat.client.store import (
     AttemptSealedError,
     ClientStateMigrationRequired,
@@ -77,7 +77,7 @@ _PUBLIC_ASSET_FILENAME = re.compile(r"^[0-9a-f]{64}\.(?:png|jpe?g|webp|svg)$")
 _SEALED_MESSAGE = "Your answers are safe and will upload automatically."
 _INTERVENTION_MESSAGE = (
     "The sealed submission needs Faculty attention. "
-    "Your answers remain saved on this computer."
+    "Your answers remain saved. Faculty: open KSAT Client Recovery from the Windows Start menu."
 )
 _CSP = (
     "default-src 'none'; script-src 'self'; style-src 'self'; "
@@ -85,6 +85,9 @@ _CSP = (
     "base-uri 'none'; form-action 'self'; frame-ancestors 'none'; object-src 'none'"
 )
 _KNOWN_PUBLIC_MESSAGES = {
+    "attempt_identity_mismatch": "The server no longer matches this saved attempt. Faculty: open KSAT Client Recovery to inspect it; archive only obsolete practice attempts.",
+    "client_configuration_invalid": "This PC's saved server connection could not be verified. Faculty: open KSAT Client Recovery to inspect the configuration and trust settings.",
+    "client_startup_failed": "KSAT could not open its saved state. Faculty: open KSAT Client Recovery for diagnostics. Keep the saved data.",
     "coordinator_unavailable": "The assessment server is temporarily unavailable. Your saved work is safe.",
     "start_window_closed": "The 10-minute start window has closed. Ask Faculty for help.",
     "content_hash_mismatch": "The assessment download failed verification and will be downloaded again.",
@@ -678,6 +681,8 @@ class _ClientContext:
         self._control_reaper_thread: threading.Thread | None = None
         self._control_restart_thread: threading.Thread | None = None
         self.update_snapshot = None
+        self._update_stop = threading.Event()
+        self._update_thread: threading.Thread | None = None
 
     def initialize(self) -> None:
         with self._prefetch_state_lock:
@@ -702,6 +707,7 @@ class _ClientContext:
             self._outbox_started = True
             self.observe_snapshot(recovered)
             self._check_client_update(recovered)
+            self._start_update_thread()
             self._start_control_thread()
             if (
                 self.services.background_prefetch
@@ -724,7 +730,7 @@ class _ClientContext:
 
     def _check_client_update_locked(self, recovered: Any | None) -> None:
         manager = self.services.update_manager if self.services is not None else None
-        if manager is None or getattr(self.identity, "device_id", None) is None:
+        if manager is None or getattr(self.identity, "device_id", None) is None or self._prefetch_shutdown_requested:
             return
         reason = self.services.store.update_deferral_reason()
         self.update_snapshot = manager.check(
@@ -734,11 +740,39 @@ class _ClientContext:
         if self.update_snapshot.stage == "required":
             self.update_snapshot = manager.download()
         if self.update_snapshot.stage == "ready_to_install" and self.services.updater_launcher is not None:
-            self.services.updater_launcher(manager.prepare_install())
+            try:
+                self.services.updater_launcher(manager.prepare_install())
+                self.update_snapshot = manager.snapshot()
+            except (OSError, ValueError, RuntimeError):
+                self.update_snapshot = manager.launch_failed()
+
+    def _start_update_thread(self, *, interval: float = 15.0) -> None:
+        if (self.services is None or self.services.update_manager is None
+                or self._prefetch_shutdown_requested
+                or (self._update_thread is not None and self._update_thread.is_alive())):
+            return
+        self._update_stop.clear()
+        def poll():
+            while not self._update_stop.wait(interval):
+                try:
+                    self._check_client_update(None)
+                except (ValueError, OSError, RuntimeError, sqlite3.Error):
+                    self.update_snapshot = UpdateSnapshot(None, None, 'recovery_required', 0, 'update_state_unreadable')
+        self._update_thread = threading.Thread(target=poll, name='ksat-update-status', daemon=True)
+        self._update_thread.start()
+
+    def _stop_update_thread(self) -> None:
+        self._update_stop.set()
+        if self._update_thread is not None and self._update_thread is not threading.current_thread():
+            # Do not close the coordinator/store while a bounded HTTP operation
+            # in this owned worker still uses them.
+            self._update_thread.join()
+        self._update_thread = None
 
     def shutdown(self) -> None:
         with self._prefetch_state_lock:
             self._prefetch_shutdown_requested = True
+        self._stop_update_thread()
         prefetch_stopped = self._quiesce_prefetch()
         control_stopped = self._stop_control_thread()
         if self.services is None:
@@ -758,6 +792,7 @@ class _ClientContext:
         """
         with self._prefetch_state_lock:
             self._prefetch_shutdown_requested = True
+        self._stop_update_thread()
         while not self._quiesce_prefetch():
             time.sleep(0.1)
         while not self._stop_control_thread():
@@ -773,6 +808,7 @@ class _ClientContext:
             return
         with self._prefetch_state_lock:
             self._prefetch_shutdown_requested = True
+        self._stop_update_thread()
         prefetch_stopped = self._quiesce_prefetch()
         control_stopped = self._stop_control_thread()
         if not control_stopped:
@@ -1421,13 +1457,16 @@ def _queue_for(context: _ClientContext, attempt_id: str) -> Any | None:
 def _queue_payload(item: Any | None) -> dict[str, Any] | None:
     if item is None:
         return None
+    code = (item.last_error or '').split(':', 1)[0]
+    known_code = code if code in _KNOWN_PUBLIC_MESSAGES else None
     return {
         "retry_count": item.retry_count,
         "next_attempt_at": _jsonable(item.next_attempt_at),
         "last_error": (
             None if item.last_error is None
-            else "The last upload attempt did not complete."
+            else _KNOWN_PUBLIC_MESSAGES.get(code, "The last upload attempt did not complete. Faculty: open KSAT Client Recovery for diagnostics.")
         ),
+        "diagnostic_code": known_code,
         "status": item.status,
     }
 
@@ -1456,7 +1495,7 @@ def _attempt_payload(context: _ClientContext, snapshot: Any, *, include_question
         queue = _queue_payload(queue_item)
         if queue_item is not None and queue_item.status == "faculty_intervention_required":
             state = "faculty_intervention_required"
-            message = _INTERVENTION_MESSAGE
+            message = queue['last_error'] or _INTERVENTION_MESSAGE
         else:
             message = _SEALED_MESSAGE
     elif state == "acknowledged":
@@ -1903,15 +1942,19 @@ def create_client_app(services: ClientServices | None = None, *, lifetime=None, 
         if manager is None or context.update_snapshot is None:
             raise ClientApiProblem("update_unavailable", "Client update is unavailable.", 409)
         reason = current.store.update_deferral_reason()
-        if reason is not None:
+        if reason == 'active_attempt':
             raise ClientApiProblem("update_deferred", "Saved assessment work must finish first.", 409)
         if context.update_snapshot.stage != "failed":
             raise ClientApiProblem("update_retry_not_allowed", "Client update retry is not available.", 409)
-        context.update_snapshot = manager.check()
+        context.update_snapshot = manager.check(retry=True)
         if context.update_snapshot.stage == "required":
             context.update_snapshot = manager.download()
         if context.update_snapshot.stage == "ready_to_install" and current.updater_launcher is not None:
-            current.updater_launcher(manager.prepare_install())
+            try:
+                current.updater_launcher(manager.prepare_install())
+                context.update_snapshot = manager.snapshot()
+            except (OSError, ValueError, RuntimeError):
+                context.update_snapshot = manager.launch_failed()
         return {"update": _jsonable(context.update_snapshot)}
 
     @app.get("/api/attempts/{attempt_id}/assets/{filename}")

@@ -6,6 +6,9 @@ const browserSessionKey = 'ksat-browser-session-active';
 const departments = ['CSE', 'AIML', 'CS&D', 'CCE', 'CSE (ICB)', 'ECE', 'ME', 'MCA', 'Science and Humanities'];
 
 const problemMessages = {
+  attempt_identity_mismatch: 'The server no longer matches this saved attempt. Faculty: open KSAT Client Recovery from the Start menu; archive only obsolete practice attempts.',
+  client_configuration_invalid: 'This PC\'s server connection could not be verified. Faculty: open KSAT Client Recovery to inspect its connection and trust settings.',
+  client_startup_failed: 'KSAT could not open its saved state. Faculty: open KSAT Client Recovery for diagnostics. Keep the saved data.',
   coordinator_unavailable: 'The assessment server is temporarily unavailable. Your saved work is safe.',
   start_window_closed: 'The 10-minute start window has closed. Ask Faculty for help.',
   content_hash_mismatch: 'The assessment download failed verification and will be downloaded again.',
@@ -14,7 +17,7 @@ const problemMessages = {
   student_id_exists: 'That Student ID is already registered.',
   registration_rate_limited: 'Too many accounts are being created. Wait one minute and try again.',
   corrupt_local_attempt: 'Saved assessment data could not be verified. Do not close the application; ask Faculty for help.',
-  faculty_intervention_required: 'The sealed submission needs Faculty attention. Your answers remain saved on this computer.',
+  faculty_intervention_required: 'This saved submission needs Faculty attention. Your answers remain saved. Faculty: open KSAT Client Recovery from the Start menu.',
   review_not_released: 'Review will be available after Faculty closes the assessment.',
   review_unavailable: 'Detailed review is unavailable for this older assessment.',
 };
@@ -139,6 +142,11 @@ const updatePresentations = {
   downloading: ['Downloading client update', 'The signed update is downloading. Keep this computer on.'],
   verifying: ['Verifying client update', 'Checking the release signature and installer identity.'],
   ready_to_install: ['Installing and restarting', 'The lab client will restart automatically when installation finishes.'],
+  installing: ['Installing and restarting', 'The signed installer is running. Keep this computer on and reopen KSAT after it finishes.'],
+  deferred_active_attempt: ['Update waiting for test completion', 'Finish the active test. KSAT will check again automatically.'],
+  deferred_pending_submission: ['Saved submission needs attention', 'Faculty: open KSAT Client Recovery to inspect the saved submission.'],
+  unavailable: ['Unable to check for updates', 'Check the assessment server connection. KSAT will retry automatically; saved work is retained.'],
+  recovery_required: ['Update needs administrator recovery', 'Faculty: keep the saved data and update diagnostics. Use the current client installer to repair an interrupted update. KSAT Client Recovery handles blocked practice submissions.'],
   failed: ['Client update needs attention', 'The update did not finish. Your saved assessment data has not been changed.'],
 };
 function updatePresentation(stage) {
@@ -148,7 +156,7 @@ function updatePresentation(stage) {
 function canRetryUpdate(update) {
   return update?.stage === 'failed' && [
     'coordinator_unavailable', 'download_failed', 'download_range_invalid',
-    'disk_full', 'bundle_hash_mismatch', 'bundle_verification_failed',
+    'disk_full', 'bundle_hash_mismatch', 'bundle_verification_failed', 'updater_launch_failed', 'update_install_failed',
   ].includes(update.diagnostic_code);
 }
 
@@ -558,7 +566,7 @@ if (typeof document !== 'undefined') {
         } catch (error) { showProblem(error.problem); }
       }, 'secondary'));
     }
-    if (['required', 'downloading', 'verifying', 'ready_to_install'].includes(update?.stage)) {
+    if (['required', 'downloading', 'verifying', 'ready_to_install', 'installing', 'unavailable', 'deferred_active_attempt'].includes(update?.stage)) {
       ui.pollHandle = window.setTimeout(refreshState, 1500);
     }
   }

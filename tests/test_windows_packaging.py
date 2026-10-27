@@ -38,6 +38,22 @@ from scripts.windows_release import (
 
 
 class WindowsPackagingTests(unittest.TestCase):
+    def test_bootstrap_normalizes_parent_and_seeds_healthy_rollback_installer(self):
+        source = (Path(__file__).resolve().parents[1]/'installer/KSATClient.iss').read_text(encoding='utf-8')
+        post = source[source.index('if CurStep = ssPostInstall'):]
+        self.assertLess(post.index('ProtectInstallationRoot();'), post.index("GuardCommand('configure')"))
+        self.assertLess(post.index('client local health check failed'), post.index('SeedLastKnownGood();'))
+        self.assertIn('(not HadExistingConfiguration) or (not WizardSilent)', post)
+
+    def test_recovery_is_built_as_an_elevated_installed_tool(self):
+        root = Path(__file__).resolve().parents[1]
+        command = next((c for c in build_commands(root, Path(sys.executable)) if c[-1].endswith('client_recovery.py')), None)
+        self.assertIsNotNone(command)
+        self.assertIn('--uac-admin', command)
+        installer = (root / 'installer/KSATClient.iss').read_text(encoding='utf-8')
+        self.assertIn('KSATClientRecovery.exe', installer)
+        self.assertIn('KSAT Client Recovery', installer)
+
     def test_lab_identity_protects_directory_only_after_all_secrets_are_written(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "identity"
@@ -179,6 +195,7 @@ class WindowsPackagingTests(unittest.TestCase):
             layout.client_executable.write_bytes(b"MZclient")
             layout.updater_executable.write_bytes(b"MZupdater")
             (layout.dist_dir / "KSATClientInstallGuard.exe").write_bytes(b"MZguard")
+            layout.recovery_executable.write_bytes(b"MZrecovery")
             events = []
 
             def fake_sign(path, _config):
@@ -190,7 +207,7 @@ class WindowsPackagingTests(unittest.TestCase):
                 environ={"KSAT_RELEASE_TEST_SIGNING": "1"},
             )
             publish_signed_executables(layout, config, signer=fake_sign)
-            self.assertEqual(["KSATCoordinator.exe", "KSATClient.exe", "KSATClientUpdater.exe", "KSATClientInstallGuard.exe"], events)
+            self.assertEqual(["KSATCoordinator.exe", "KSATClient.exe", "KSATClientUpdater.exe", "KSATClientInstallGuard.exe", "KSATClientRecovery.exe"], events)
             self.assertEqual(b"MZguard-signed", (layout.dist_dir / "KSATClientInstallGuard.exe").read_bytes())
             self.assertEqual(
                 layout.coordinator_executable.read_bytes(),
@@ -220,35 +237,35 @@ class WindowsPackagingTests(unittest.TestCase):
     def test_release_layout_has_two_distinct_versioned_products(self):
         with tempfile.TemporaryDirectory() as directory:
             layout = ReleaseLayout(Path(directory))
-            self.assertEqual("2.2.5", APP_VERSION)
+            self.assertEqual("2.2.6", APP_VERSION)
             self.assertEqual("KSATCoordinator.exe", layout.coordinator_executable.name)
             self.assertEqual("KSATClient.exe", layout.client_executable.name)
             self.assertEqual("KSATClientUpdater.exe", layout.updater_executable.name)
             self.assertEqual(
-                "KSATCoordinator-2.2.5.exe",
+                "KSATCoordinator-2.2.6.exe",
                 layout.coordinator_release_executable.name,
             )
             self.assertEqual(
-                "KSATClient-2.1.6.exe", layout.client_release_executable.name
+                "KSATClient-2.1.7.exe", layout.client_release_executable.name
             )
             self.assertEqual(
-                "KSATCoordinatorSetup-2.2.5.exe", layout.coordinator_installer.name
+                "KSATCoordinatorSetup-2.2.6.exe", layout.coordinator_installer.name
             )
-            self.assertEqual("KSATClientSetup-2.1.6.exe", layout.client_installer.name)
+            self.assertEqual("KSATClientSetup-2.1.7.exe", layout.client_installer.name)
             self.assertEqual(
-                "KSATClientUpdate-2.1.6-TEST-ONLY.ksat-client-update",
+                "KSATClientUpdate-2.1.7-TEST-ONLY.ksat-client-update",
                 layout.test_client_update.name,
             )
             self.assertEqual("SHA256SUMS.txt", layout.hash_manifest.name)
             self.assertEqual(
-                "KSATClientUpdate-2.1.6.ksat-client-update",
+                "KSATClientUpdate-2.1.7.ksat-client-update",
                 layout.client_update.name,
             )
             self.assertEqual(
                 "KSATLabReleaseSigning.cer", layout.lab_trust_certificate.name
             )
             self.assertEqual(
-                "SHA256SUMS-2.1.6-TEST-ONLY.txt", layout.test_hash_manifest.name
+                "SHA256SUMS-2.1.7-TEST-ONLY.txt", layout.test_hash_manifest.name
             )
 
     def test_test_update_bundle_uses_matching_ephemeral_update_key(self):
@@ -271,7 +288,7 @@ class WindowsPackagingTests(unittest.TestCase):
             self.assertTrue(output.is_file())
             self.assertNotIn(b"k" * 32, output.read_bytes())
 
-    def test_lab_update_bundle_uses_normal_release_name(self):
+    def test_lab_bootstrap_release_has_no_unsafe_managed_bundle(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             layout = ReleaseLayout(root)
@@ -285,14 +302,16 @@ class WindowsPackagingTests(unittest.TestCase):
                 publisher="CN=KSAT LAB RELEASE SIGNING",
                 authenticode_verifier=lambda _path, _publisher: None,
             )
-            self.assertEqual(layout.client_update, output)
-            self.assertTrue(output.is_file())
+            self.assertIsNone(output)
+            self.assertFalse(layout.client_update.exists())
 
     def test_build_commands_use_distinct_entrypoints_workpaths_and_safe_assets(self):
         root = Path(__file__).resolve().parents[1]
         commands = build_commands(root, Path("C:/Python/python.exe"))
-        self.assertEqual(4, len(commands))
-        coordinator, client, updater, guard = commands
+        self.assertEqual(5, len(commands))
+        coordinator, client, updater, guard, recovery = commands
+        self.assertIn(str(root / 'client_recovery.py'), recovery)
+        self.assertIn('--uac-admin', recovery)
         self.assertIn(str(root / "client_install_guard.py"), guard)
         self.assertNotIn("--uac-admin", guard)
         self.assertIn(str(root / "coordinator_main.py"), coordinator)
@@ -478,7 +497,7 @@ class WindowsPackagingTests(unittest.TestCase):
         )
         for path in paths:
             text = path.read_text("utf-8")
-            expected = "2.1.0" if path.name in ("tls.py", "KSATClient.iss") else "2.2.5"
+            expected = "2.1.0" if path.name in ("tls.py", "KSATClient.iss") else "2.2.6"
             self.assertIn(expected, text, path.name)
             self.assertNotIn("1.3.3", text, path.name)
 

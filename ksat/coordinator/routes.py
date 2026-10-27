@@ -199,7 +199,7 @@ def utc_now() -> datetime:
 
 
 async def _verified_device(request: Request, connection) -> str:
-    return verify_device_request(
+    device_id = verify_device_request(
         connection,
         device_id=request.headers.get("X-KSAT-Device", ""),
         method=request.method,
@@ -209,6 +209,28 @@ async def _verified_device(request: Request, connection) -> str:
         nonce=request.headers.get("X-KSAT-Nonce", ""),
         signature_b64=request.headers.get("X-KSAT-Signature", ""),
     )
+    # Routes authenticate before starting their own work. Releasing this outer
+    # savepoint persists read-only contacts and leaves no write lock across an
+    # await or a downstream transaction. A caller's existing transaction, if
+    # any, retains ownership and is never committed here.
+    connection.execute("SAVEPOINT device_contact")
+    try:
+        updated = connection.execute(
+            """UPDATE devices
+               SET last_seen_at=strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
+               WHERE device_id=? AND status='active'""",
+            (device_id,),
+        )
+        if updated.rowcount != 1:
+            raise AuthenticationProblem(
+                "device_inactive", "The device is not active.", status_code=403
+            )
+    except Exception:
+        connection.execute("ROLLBACK TO device_contact")
+        connection.execute("RELEASE device_contact")
+        raise
+    connection.execute("RELEASE device_contact")
+    return device_id
 
 
 def _verified_student(request: Request, config: CoordinatorConfig, device_id: str) -> str:
@@ -745,17 +767,7 @@ async def create_client_session(payload: ClientLoginRequest, request: Request) -
     config = _config(request)
     connection = connect_sqlite(config.db_path)
     try:
-        device_id = request.headers.get("X-KSAT-Device", "")
-        verified_device_id = verify_device_request(
-            connection,
-            device_id=device_id,
-            method=request.method,
-            path=request.url.path,
-            body=await request.body(),
-            timestamp=request.headers.get("X-KSAT-Timestamp", ""),
-            nonce=request.headers.get("X-KSAT-Nonce", ""),
-            signature_b64=request.headers.get("X-KSAT-Signature", ""),
-        )
+        verified_device_id = await _verified_device(request, connection)
         if payload.device_id != verified_device_id:
             raise AuthenticationProblem(
                 "invalid_device_key",

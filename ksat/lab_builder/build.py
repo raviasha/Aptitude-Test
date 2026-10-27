@@ -20,7 +20,7 @@ from ksat.lab_builder.signing import SignerSelection, sign_from_store
 from ksat.public_trust import canonical_json
 from ksat.windows_authenticode import verify_authenticode
 
-INSTALLER_FILES = frozenset({"KSATClient.exe", "KSATClientUpdater.exe", "KSATClientInstallGuard.exe",
+INSTALLER_FILES = frozenset({"KSATClient.exe", "KSATClientUpdater.exe", "KSATClientInstallGuard.exe", "KSATClientRecovery.exe",
     "publisher.cer", "lab-profile.json", "coordinator-ca.pem", "coordinator-public.json", "lab-summary.ini"})
 
 

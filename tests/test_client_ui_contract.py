@@ -12,6 +12,23 @@ INDEX = ROOT / "static" / "client" / "index.html"
 
 
 class ClientUiContractTests(unittest.TestCase):
+    def test_recovery_and_deferred_update_messages_are_actionable(self):
+        result = self._run_node("""
+const ui = require(process.argv[1]);
+process.stdout.write(JSON.stringify({
+  recovery: ui.problemMessage('attempt_identity_mismatch'),
+  config: ui.problemMessage('client_configuration_invalid'),
+  active: ui.updatePresentation('deferred_active_attempt'),
+  offline: ui.updatePresentation('unavailable'),
+  recoveryUpdate: ui.updatePresentation('recovery_required')
+}));
+""")
+        self.assertIn('KSAT Client Recovery', result['recovery'])
+        self.assertIn('KSAT Client Recovery', result['config'])
+        self.assertIn('test', result['active']['message'])
+        self.assertIn('retry', result['offline']['message'])
+        self.assertIn('Recovery', result['recoveryUpdate']['message'])
+
     def test_supporting_chart_preserves_stem_and_restores_transcript_on_failure(self):
         self._run_flow('supporting_chart_preserves_stem_and_restores_transcript_on_failure')
 
@@ -357,7 +374,7 @@ process.stdout.write(JSON.stringify({
             result["messages"]["corrupt_local_attempt"],
         )
         self.assertEqual(
-            "The sealed submission needs Faculty attention. Your answers remain saved on this computer.",
+            "This saved submission needs Faculty attention. Your answers remain saved. Faculty: open KSAT Client Recovery from the Start menu.",
             result["messages"]["faculty_intervention_required"],
         )
         self.assertEqual(

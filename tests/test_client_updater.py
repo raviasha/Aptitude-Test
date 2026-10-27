@@ -114,6 +114,9 @@ class ClientUpdaterTests(unittest.TestCase):
     def test_identical_generic_update_preserves_two_lab_profiles(self):
         for label, url in (("a", "https://lab-a:8443"), ("b", "https://lab-b:8443")):
             with self.subTest(label=label):
+                request = json.loads(self.request.read_bytes())
+                request["attempt_id"] = str(uuid.uuid4())
+                self.request.write_bytes(canonical_json(request))
                 client = Path(self.temp.name) / label
                 client.mkdir()
                 config = client / "client-config.json"
@@ -134,6 +137,104 @@ class ClientUpdaterTests(unittest.TestCase):
         verifier=HealthVerifier(lambda:{"version":"2.1.0"},lambda:True)
         self.assertTrue(verifier.verify("2.1.0","i","c","s","i","c","s"))
         with self.assertRaises(ValueError): verifier.verify("2.2.0","i","c","s","i","c","s")
+
+    def test_terminal_journal_binds_verified_bundle_and_same_request_attempt(self):
+        self.updater.run(self.request)
+        journal = json.loads(self.updater.journal_path.read_bytes())
+        request = json.loads(self.request.read_bytes())
+        self.assertEqual(2, journal.get("format_version"))
+        for key in ("release_id", "attempt_id", "target_version"):
+            self.assertEqual(request[key], journal[key])
+        self.assertEqual(hashlib.sha256(self.bundle.read_bytes()).hexdigest(), journal["bundle_sha256"])
+        self.assertEqual("2.1.0", journal["installed_version"])
+
+    def test_completed_request_cannot_launch_installer_twice(self):
+        self.assertTrue(self.updater.run(self.request).success)
+        self.assertEqual("request_replayed", self.updater.run(self.request).stage)
+        self.assertEqual(1, len(self.installers.calls))
+
+    def test_missing_rollback_still_persists_bound_failure(self):
+        self.installers.fail = True
+        self.assertFalse(self.updater.run(self.request).success)
+        journal = json.loads(self.updater.journal_path.read_bytes())
+        self.assertEqual("rollback_failed", journal["stage"])
+        self.assertEqual(json.loads(self.request.read_bytes())["attempt_id"], journal["attempt_id"])
+        self.assertIsNone(journal["installed_version"])
+
+    def test_invalid_request_does_not_replace_existing_outcome(self):
+        self.updater.run(self.request)
+        before = self.updater.journal_path.read_bytes()
+        self.request.write_bytes(b"{}")
+        with self.assertRaises(ValueError):
+            self.updater.run(self.request)
+        self.assertEqual(before, self.updater.journal_path.read_bytes())
+        failure = json.loads((self.root / "invalid-request-journal.json").read_bytes())
+        self.assertEqual("invalid_install_request", failure["diagnostic_code"])
+
+    def test_second_helper_cannot_overwrite_journal_or_launch_during_install(self):
+        original = self.installers.run
+        def run(path, args, timeout):
+            before = self.updater.journal_path.read_bytes()
+            result = self.updater.run(self.request)
+            self.assertEqual("updater_busy", result.stage)
+            self.assertEqual(before, self.updater.journal_path.read_bytes())
+            original(path, args, timeout)
+        self.installers.run = run
+        self.assertTrue(self.updater.run(self.request).success)
+        self.assertEqual(1, len(self.installers.calls))
+
+    def test_extraction_rechecks_signed_installer_hash(self):
+        import zipfile
+        original = self.updater._extract_installer
+        def changed_bundle(verified):
+            with zipfile.ZipFile(self.bundle, "w") as archive:
+                archive.writestr(verified.manifest.installer_filename, b"different signed installer")
+            return original(verified)
+        with patch.object(self.updater, "_extract_installer", side_effect=changed_bundle):
+            result = self.updater.run(self.request)
+        self.assertFalse(result.success)
+        self.assertEqual([], self.installers.calls)
+        self.assertEqual("candidate_verification_failed", json.loads(self.updater.journal_path.read_bytes())["diagnostic_code"])
+
+    def test_new_attempt_cannot_replace_interrupted_preparing_journal(self):
+        old = dict(json.loads(self.request.read_bytes()), stage="preparing", attempt_id=str(uuid.uuid4()))
+        self.updater.journal_path.write_bytes(canonical_json(old))
+        self.assertEqual("unfinished_update", self.updater.run(self.request).stage)
+        self.assertEqual(old, json.loads(self.updater.journal_path.read_bytes()))
+
+    def test_health_waits_for_restart_with_signed_manifest_timeout(self):
+        clock = [0.0]
+        def probe():
+            if clock[0] < 2:
+                raise ConnectionRefusedError("service starting")
+            return {"version": "2.1.0"}
+        self.updater.health = HealthVerifier(probe, lambda: True)
+        with patch("ksat.client.updater.time.monotonic", create=True, side_effect=lambda: clock[0]), \
+             patch("ksat.client.updater.time.sleep", create=True, side_effect=lambda seconds: clock.__setitem__(0, clock[0] + seconds)):
+            self.assertTrue(self.updater.run(self.request).success)
+        self.assertEqual(2.0, clock[0])
+
+    def test_health_timeout_is_bounded_and_failed_journal_reports_observed_version(self):
+        clock = [0.0]
+        self.updater.health = HealthVerifier(lambda: {"version": "2.0.0"}, lambda: False)
+        with patch("ksat.client.updater.time.monotonic", create=True, side_effect=lambda: clock[0]), \
+             patch("ksat.client.updater.time.sleep", create=True, side_effect=lambda seconds: clock.__setitem__(0, clock[0] + seconds)):
+            self.assertFalse(self.updater.run(self.request).success)
+        self.assertEqual(60.0, clock[0])
+        self.assertEqual("2.0.0", json.loads(self.updater.journal_path.read_bytes())["installed_version"])
+
+    def test_failed_candidate_cache_promotion_keeps_rollback_installer_available(self):
+        self.updater.last_known_good_path.parent.mkdir()
+        self.updater.last_known_good_path.write_bytes(b"old signed installer")
+        with patch("ksat.client.updater.shutil.copy2", side_effect=OSError("disk full")):
+            result = self.updater.run(self.request)
+        self.assertTrue(result.rolled_back)
+        self.assertEqual("KSATClientSetup-2.0.0.exe", self.installers.calls[-1][0].name)
+
+    def test_health_requires_preservation_mode_or_explicit_legacy_digests(self):
+        with self.assertRaises(ValueError):
+            Updater(self.root, self.public, lambda *_: None, self.services,
+                    self.installers, self.health, installed_version="2.0.0")
 
 
 if __name__ == "__main__": unittest.main()

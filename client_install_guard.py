@@ -239,18 +239,90 @@ def interactive_installation(stage: Path) -> bool:
         return False
 
 
+def managed_preservation(program_data: Path, stage: Path):
+    """Bind this actual installer to the protected, verified updater request.
+
+Legacy unattended helpers have no bound journal and require one interactive
+bootstrap. A command-line flag or installer version alone grants no exception.
+"""
+    from ksat.client.preservation import (PreservationSession, load_install_request,
+                                         read_json, request_binding)
+    from ksat.update_protocol import load_update_public_key
+    from ksat.windows_authenticode import verify_authenticode
+    import sys
+    context = strict_json(bounded_read(stage / "install-context.json", 8192), 8192)
+    root = program_data / "KSAT Client"
+    updates = root / "updates"
+    require_protected_directory(updates, allow_service=True)
+    bundle_root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+    request, verified = load_install_request(updates, updates / "install-request.json",
+        load_update_public_key(bundle_root / "update-release-public.json"), verify_authenticode)
+    binding = request_binding(request, verified)
+    journal = read_json(updates / "update-journal.json")
+    if journal.get("format_version") != 2 or any(journal.get(k) != v for k, v in binding.items()):
+        raise ValueError("A bound updater journal is required.")
+    installer = Path(context["installer"])
+    reject_links(installer)
+    installer = installer.resolve(strict=True)
+    rollback_source = None
+    if journal.get("stage") == "installing":
+        if TARGET_VERSION != request["target_version"] or installer != updates.resolve() / "candidate-installer.exe":
+            raise ValueError("Installer does not match the update request.")
+        expected_hash = verified.manifest.installer_sha256
+    elif journal.get("stage") == "rollback_installing" and authorized_rollback(program_data, stage, TARGET_VERSION):
+        expected_hash = journal["rollback_sha256"]
+        from ksat.client.preservation import verify_rollback_source
+        rollback_source = verified.manifest.installer_sha256
+        verify_rollback_source(root, binding, rollback_source)
+    else:
+        raise ValueError("Updater is not installing this candidate.")
+    if hashlib.sha256(installer.read_bytes()).hexdigest() != expected_hash:
+        raise ValueError("Installer hash does not match the verified update.")
+    verify_authenticode(installer, verified.manifest.authenticode_publisher)
+    return PreservationSession(root, binding, TARGET_VERSION, expected_hash,
+                               rollback_from_installer_sha256=rollback_source)
+
+
+def _preservation_policy(program_data: Path, stage: Path):
+    if interactive_installation(stage):
+        return True, None
+    if not (program_data / "KSAT Client/client-config.json").exists():
+        return False, None
+    # Missing context remains the old conservative API for direct/manual callers.
+    # Production installers always supply the actual installer in protected context.
+    try:
+        context = strict_json(bounded_read(stage / "install-context.json", 8192), 8192)
+    except FileNotFoundError:
+        return False, None
+    if isinstance(context, dict) and "installer" in context:
+        return True, managed_preservation(program_data, stage)
+    return False, None
+
+
 def run_guard_session(program_data: Path, stage: Path, parent_alive, *, service=None,
                       profile=None) -> int:
     profile = profile or load_install_profile(stage, program_data)
     if not parent_alive():
         raise ValueError("The parent installer is no longer running.")
+    try:
+        allow_pending, preservation = _preservation_policy(program_data, stage)
+    except (OSError, ValueError, KeyError, TypeError):
+        _status(stage, "blocked", "interactive_bootstrap_required")
+        return 1
     with InstallationLease(program_data, service=service) as lease:
         rollback = authorized_rollback(program_data, stage, TARGET_VERSION)
         check = lease.prepare(profile, TARGET_VERSION, rollback_authorized=rollback,
-                              allow_pending_submissions=interactive_installation(stage))
+                              allow_pending_submissions=allow_pending)
         if check.state == "blocked":
             _status(stage, "blocked", check.diagnostic_code)
             return 1
+        from ksat.client.preservation import fingerprints, authenticated_store_ready
+        root = program_data / "KSAT Client"
+        baseline = fingerprints(root) if check.state == "same_server" else None
+        if preservation is not None:
+            if baseline is None:
+                raise ValueError("Managed replacement requires an existing authenticated installation.")
+            preservation.capture()
         _status(stage, "ready")
         configured = False
         # A slow/suspended installer may still replace files. Only its explicit
@@ -269,6 +341,11 @@ def run_guard_session(program_data: Path, stage: Path, parent_alive, *, service=
                 if command == {"action": "commit"}:
                     if not configured:
                         raise ValueError("Installation has not been configured.")
+                    if baseline is not None:
+                        if fingerprints(root) != baseline or not authenticated_store_ready(root):
+                            raise ValueError("Installation changed protected client data.")
+                    if preservation is not None:
+                        preservation.finish()
                     lease.commit()
                     _status(stage, "committed")
                     return 0
@@ -295,9 +372,14 @@ def main(argv=None) -> int:
     validate_stage(stage, program_data)
     try:
         profile = load_install_profile(stage, program_data)
+        try:
+            allow_pending, _ = _preservation_policy(program_data, stage)
+        except (OSError, ValueError, KeyError, TypeError):
+            _status(stage, "blocked", "interactive_bootstrap_required")
+            return 1
         check = inspect_installation(program_data, profile, TARGET_VERSION,
             rollback_authorized=authorized_rollback(program_data, stage, TARGET_VERSION),
-            allow_pending_submissions=interactive_installation(stage))
+            allow_pending_submissions=allow_pending)
         if check.state == "blocked":
             _status(stage, "blocked", check.diagnostic_code)
             return 1

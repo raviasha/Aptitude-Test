@@ -41,7 +41,7 @@ from ksat.update_protocol import parse_client_update
 from scripts.build_client_update import build_client_update
 
 
-COORDINATOR_VERSION = "2.2.5"
+COORDINATOR_VERSION = "2.2.6"
 from ksat.client.version import CLIENT_VERSION
 APP_VERSION = COORDINATOR_VERSION  # Backwards-compatible coordinator tooling.
 LAB_SIGNING_PUBLISHER = "CN=KSAT LAB RELEASE SIGNING"
@@ -442,6 +442,10 @@ class ReleaseLayout:
         return self.dist_dir / "KSATClientInstallGuard.exe"
 
     @property
+    def recovery_executable(self) -> Path:
+        return self.dist_dir / "KSATClientRecovery.exe"
+
+    @property
     def coordinator_installer(self) -> Path:
         return self.release_dir / f"KSATCoordinatorSetup-{APP_VERSION}.exe"
 
@@ -510,16 +514,20 @@ def create_lab_client_update_bundle(
     *,
     publisher: str,
     authenticode_verifier,
-) -> Path:
-    """Create the signed bundle distributed by a private KSAT lab."""
+) -> Path | None:
+    """Bootstrap 2.1.7 interactively; subsequent releases require its safe helper."""
+    if tuple(map(int, CLIENT_VERSION.split('.'))) <= (2, 1, 7):
+        if layout.client_update.exists():
+            raise ValueError('Bootstrap release must not contain a managed update bundle.')
+        return None
     return build_client_update(
         installer=layout.client_installer,
         version=CLIENT_VERSION,
-        minimum_source_version="2.0.0",
+        minimum_source_version="2.1.7",
         publisher=publisher,
         private_key_file=private_key_file,
         output=layout.client_update,
-        release_notes=f"KSAT Lab Client {CLIENT_VERSION}: clearer textbook diagrams, no duplicate image text, and readable image-failure fallback",
+        release_notes=f"KSAT Lab Client {CLIENT_VERSION}: preserved submissions and verified update completion",
         authenticode_verifier=authenticode_verifier,
     )
 
@@ -624,8 +632,11 @@ def build_commands(root: Path, python: Path) -> list[list[str]]:
     updater.extend(_add_data(public_key_resource, "."))
     updater.extend(["--uac-admin", str(root / "client_updater.py")])
     guard = _common_pyinstaller(root, python, "KSATClientInstallGuard", "install-guard")
+    guard.extend(_add_data(public_key_resource, "."))
     guard.append(str(root / "client_install_guard.py"))
-    return [coordinator, client, updater, guard]
+    recovery = _common_pyinstaller(root, python, "KSATClientRecovery", "recovery")
+    recovery.extend(["--hidden-import", "tkinter", "--uac-admin", str(root / "client_recovery.py")])
+    return [coordinator, client, updater, guard, recovery]
 
 
 def smoke_coordinator_command(
@@ -695,6 +706,9 @@ def write_version_resources(layout: ReleaseLayout) -> None:
     (layout.build_dir / "KSATClientInstallGuard.version.txt").write_text(
         _version_resource("KSAT Client Installation Guard", "KSATClientInstallGuard.exe"), encoding="utf-8"
     )
+    (layout.build_dir / "KSATClientRecovery.version.txt").write_text(
+        _version_resource("KSAT Client Recovery", "KSATClientRecovery.exe"), encoding="utf-8"
+    )
 
 
 def inspect_release_inputs(root: Path) -> None:
@@ -734,7 +748,7 @@ def publish_signed_executables(
     signer=sign_and_verify_artifact,
 ) -> None:
     signing = _require_signing(signing)
-    for executable in (layout.coordinator_executable, layout.client_executable, layout.updater_executable, layout.guard_executable):
+    for executable in (layout.coordinator_executable, layout.client_executable, layout.updater_executable, layout.guard_executable, layout.recovery_executable):
         if not executable.is_file() or executable.stat().st_size <= 0:
             raise RuntimeError(f"Expected executable was not built: {executable}")
         signer(executable, signing)
@@ -753,9 +767,9 @@ def build_executables(
     inspect_release_inputs(layout.root)
     layout.dist_dir.mkdir(parents=True, exist_ok=True)
     layout.build_dir.mkdir(parents=True, exist_ok=True)
-    for name in ("coordinator", "client", "updater", "install-guard"):
+    for name in ("coordinator", "client", "updater", "install-guard", "recovery"):
         _safe_remove_tree(layout.build_dir / name, layout.root)
-    for executable in (layout.coordinator_executable, layout.client_executable, layout.updater_executable, layout.guard_executable):
+    for executable in (layout.coordinator_executable, layout.client_executable, layout.updater_executable, layout.guard_executable, layout.recovery_executable):
         try:
             executable.unlink()
         except FileNotFoundError:
@@ -1203,6 +1217,7 @@ def inspect_artifacts(
         layout.client_executable,
         layout.updater_executable,
         layout.guard_executable,
+        layout.recovery_executable,
         layout.coordinator_release_executable,
         layout.client_release_executable,
         layout.coordinator_installer,
@@ -1226,6 +1241,7 @@ def inspect_artifacts(
         if not _manifest_has_update_key(manifest):
             raise ValueError(f"Public update verification key is missing: {executable.name}")
     pyinstaller_payload_manifest(layout.guard_executable)
+    pyinstaller_payload_manifest(layout.recovery_executable)
     extractor = Path(innoextract).resolve() if innoextract is not None else discover_innoextract()
     if extractor is None or not extractor.is_file():
         raise FileNotFoundError("innoextract is required for deep installer inspection.")
@@ -1234,7 +1250,7 @@ def inspect_artifacts(
             layout.root / 'scripts/install_coordinator_release_trust.ps1') if signing.lab_identity else ())
     _inspect_installer(
         layout.client_installer, layout.client_executable, extractor,
-        (layout.updater_executable, layout.guard_executable),
+        (layout.updater_executable, layout.guard_executable, layout.recovery_executable),
     )
     update_bundle = (
         layout.test_client_update

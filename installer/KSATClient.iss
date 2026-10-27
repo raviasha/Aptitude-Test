@@ -2,7 +2,7 @@
   #define KSAT_LAB_MODE "0"
 #endif
 #ifndef KSAT_CLIENT_VERSION
-  #define KSAT_CLIENT_VERSION "2.1.6"
+  #define KSAT_CLIENT_VERSION "2.1.7"
 #endif
 #ifndef KSAT_BUNDLE_PUBLISHER_TRUST
   #define KSAT_BUNDLE_PUBLISHER_TRUST "1"
@@ -45,6 +45,7 @@ SetupLogging=yes
 [Files]
 Source: "{#KSAT_PAYLOAD_DIR}\KSATClient.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#KSAT_PAYLOAD_DIR}\KSATClientUpdater.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#KSAT_PAYLOAD_DIR}\KSATClientRecovery.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#KSAT_PAYLOAD_DIR}\KSATClientInstallGuard.exe"; Flags: dontcopy
 #if Int(KSAT_BUNDLE_PUBLISHER_TRUST) == 1
 Source: "{#KSAT_PAYLOAD_DIR}\publisher.cer"; Flags: dontcopy
@@ -65,6 +66,7 @@ Name: "{commonappdata}\KSAT Client\packs"; Permissions: admins-full system-full
 Name: "{commonappdata}\KSAT Client\updates"; Permissions: admins-full system-full
 
 [Icons]
+Name: "{group}\KSAT Client Recovery"; Filename: "{app}\KSATClientRecovery.exe"; WorkingDir: "{app}"
 Name: "{group}\KSAT Lab Client"; Filename: "{app}\KSATClient.exe"; Parameters: "--open-client"; WorkingDir: "{app}"
 Name: "{autodesktop}\KSAT Lab Client"; Filename: "{app}\KSATClient.exe"; Parameters: "--open-client"; WorkingDir: "{app}"
 
@@ -242,6 +244,19 @@ begin
     '', SW_HIDE, ewWaitUntilTerminated, Code)) or (Code <> 0) then RaiseException('Client data ownership failed.');
 end;
 
+procedure ProtectInstallationRoot();
+begin
+  { Normalize legacy parent ACLs while the guard holds replacement exclusion. }
+  PowerShell('$ErrorActionPreference=''Stop'';Import-Module (Join-Path $PSHOME ''Modules/Microsoft.PowerShell.Security/Microsoft.PowerShell.Security.psd1'');' +
+    '$p=' + PSQuote(ExpandConstant('{commonappdata}\KSAT Client')) + ';' +
+    '$acl=[Security.AccessControl.DirectorySecurity]::new();$acl.SetAccessRuleProtection($true,$false);' +
+    '$acl.SetOwner([Security.Principal.SecurityIdentifier]::new(''S-1-5-32-544''));' +
+    'foreach($sid in @(''S-1-5-18'',''S-1-5-32-544'')){' +
+    '$acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]::new($sid),''FullControl'',''ContainerInherit,ObjectInherit'',''None'',''Allow''))};' +
+    '$acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]::new(''S-1-5-32-545''),''ReadAndExecute'',''None'',''None'',''Allow''));' +
+    'Set-Acl -LiteralPath $p -AclObject $acl');
+end;
+
 procedure SeedLastKnownGood();
 begin
   PowerShell('$ErrorActionPreference=''Stop'';Import-Module (Join-Path $PSHOME ''Modules/Microsoft.PowerShell.Security/Microsoft.PowerShell.Security.psd1'');' +
@@ -255,6 +270,7 @@ procedure CurStepChanged(CurStep: TSetupStep);
 var Code: Integer; ImagePath, Verb: String;
 begin
   if CurStep = ssPostInstall then begin
+    ProtectInstallationRoot();
     GuardCommand('configure'); WaitForGuard('configured');
     ImagePath := ExpandConstant('{app}\KSATClient.exe');
     if Exec(ExpandConstant('{sys}\sc.exe'), 'query KSATLabClientAuthority', '', SW_HIDE, ewWaitUntilTerminated, Code) and (Code = 0) then Verb := 'config' else Verb := 'create';
@@ -266,13 +282,13 @@ begin
     ProtectAuthorityDirectory(ExpandConstant('{commonappdata}\KSAT Client\state'));
     ProtectAuthorityDirectory(ExpandConstant('{commonappdata}\KSAT Client\packs'));
     ProtectAuthorityDirectory(ExpandConstant('{commonappdata}\KSAT Client\updates'));
-    if not HadExistingConfiguration then SeedLastKnownGood();
     GuardCommand('commit'); WaitForGuard('committed'); GuardCommitted := True;
     ServiceCommand('start KSATLabClientAuthority');
     PowerShell('$ErrorActionPreference=''Stop'';$ok=$false;for($i=0;$i-lt 60;$i++){try{' +
       '$r=Invoke-RestMethod -Uri ''http://127.0.0.1:8010/api/build'' -TimeoutSec 2;' +
       'if($r.version-eq ''{#AppVersion}''){$ok=$true;break}}catch{};Start-Sleep -Milliseconds 500};' +
       'if(-not $ok){throw ''client local health check failed''}');
+    if (not HadExistingConfiguration) or (not WizardSilent) then SeedLastKnownGood();
     WizardForm.FinishedLabel.Caption := 'KSAT client is installed. Open KSAT to check coordinator connectivity. ' +
       'If the coordinator is offline, reconnect and retry; do not reinstall or remove student data.';
   end;

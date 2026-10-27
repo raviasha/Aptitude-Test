@@ -63,5 +63,22 @@
       "actual extracted certificate/helper tampering detected using real hashes"
     ],
     "field_installation": "not performed"
+  },
+  "github_publication": {
+    "release_commit": "1917f2222122a54765d5983b6da86f3c837e1a73",
+    "downloads": [
+      {
+        "file": "KSATCoordinator-2.2.4.exe",
+        "bytes": 36334072,
+        "sha256": "5a90d78ab2b0b88c1b7e5d50939badfdc346624c50afd517166e5c11038293ba",
+        "github_download": "verified"
+      },
+      {
+        "file": "KSATCoordinatorSetup-2.2.4.exe",
+        "bytes": 37927728,
+        "sha256": "72dc63511a87d64acf0706e416f2b43a5744318b25f35d7e5279cf1284a47b1b",
+        "github_download": "verified"
+      }
+    ]
   }
 }

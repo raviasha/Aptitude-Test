@@ -57,8 +57,8 @@
 - [x] Build with `python -m scripts.build_coordinator_lab_release --signing-directory "C:/ProgramData/KSAT Release Signing/lab-2026" --output release/coordinator-2.2.4 --innoextract "C:/Users/ravis/KSAT Build Tools/innoextract670/innoextract.exe"` using the existing build Python. Verify signatures, extracted public helper/certificate/application bytes, frozen HTTPS startup and unchanged update public key.
 - [x] Obtain a bounded independent code review of certificate validation, setup integration, both build paths and version/data preservation; address actionable findings and re-run affected checks.
 - [x] Publish accurate installation notes: run the new installer once per server, no separate trust script, keep ProgramData, retry uploading the existing Client 2.1.6 bundle. State that real untrusted lab-server installation remains a field check.
-- [ ] Commit measured verification/checksums and source. Recheck remote main and push only a normal fast-forward; preserve unrelated work and all older releases.
-- [ ] Verify GitHub commit, download availability and artifact hashes; hand off the installer and next steps without claiming lab deployment.
+- [x] Commit measured verification/checksums and source. Recheck remote main and push only a normal fast-forward; preserve unrelated work and all older releases.
+- [x] Verify GitHub commit, download availability and artifact hashes; hand off the installer and next steps without claiming lab deployment.
 
 ## Execution and baseline
 

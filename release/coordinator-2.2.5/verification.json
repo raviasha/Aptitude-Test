@@ -1,0 +1,56 @@
+{
+  "version": "2.2.5",
+  "publisher": "CN=KSAT LAB RELEASE SIGNING",
+  "thumbprint": "13AE2A6440C33E074FC9C99FB35E5A1CFD9BE908",
+  "frozen_https_startup": "passed",
+  "installer_payload": "exact signed executable, public publisher certificate and helper verified by deep extraction",
+  "uac_payload_equivalence": "verified",
+  "client_binaries_rebuilt": false,
+  "verification_date": "2026-10-27",
+  "source_commit": "8781f53880c870f584329a46832522357a1f578b",
+  "release_kind": "signed private-lab pilot",
+  "authenticode": "Coordinator and installer Valid with unchanged pinned publisher",
+  "client_handshake_protocol_version": "2.1.0 (unchanged)",
+  "update_verification_key": "byte-for-byte identical to signed Coordinator 2.2.4",
+  "runtime_upgrade_2_2_4_to_2_2_5": "regression passed; login/result database bytes, assets, security identity and prior backups preserved",
+  "client_version": "2.1.6",
+  "client_artifacts": "Client, installer, Builder and managed bundle hashes unchanged",
+  "regression": {
+    "upgrade_packaging_import_ui": {
+      "passed": 100,
+      "warnings": 5,
+      "subtests_passed": 12,
+      "seconds": 84.32
+    },
+    "client_update_store_api_updater_ui": {
+      "passed": 43,
+      "warnings": 4,
+      "subtests_passed": 2,
+      "seconds": 35.14
+    },
+    "additional_ed25519_rejection": {
+      "passed": 1,
+      "warnings": 4,
+      "seconds": 3.6
+    },
+    "scope": "Focused regression for localized recovery/version changes; full application suite previously measured in2.2.4 verification. Initial pre-bump run expected2.2.5 but loaded2.2.4; version-dependent cases rerun successfully after bump."
+  },
+  "recovery": {
+    "eligible": "withdrawn, never published, no client status reports",
+    "verification": "Ed25519 and Authenticode checked again, requested release ID and persisted manifest/size/hash bound, stored bytes checked",
+    "concurrency": "BEGIN IMMEDIATE rechecks eligibility after verification; late progress report regression passed",
+    "effect": "state uploaded, pilot cleared, explicit pilot selection required; withdrawal timestamp and stored bundle retained",
+    "no_deletion": "No device progress, enrollment, student, result or question-bank deletion"
+  },
+  "independent_review": {
+    "blocking_findings": 0,
+    "assessment": "ready for bounded unused-release change",
+    "minor_coverage": "Added wrong Ed25519 trusted-key rejection test. DOM test verifies restore visibility/handler; full browser click-through not automated."
+  },
+  "limits": [
+    "Physical server installation and client rollout have not been performed.",
+    "Eligibility is based on received client reports; previously published or reported-progress releases remain withdrawn. Recovery of interrupted active updates is outside this change.",
+    "No live data or certificate stores were modified.",
+    "Broader repository collection/calibration limitations are documented in2.2.4 and2.2.3 evidence; full repository green is not claimed."
+  ]
+}

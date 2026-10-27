@@ -1,0 +1,2 @@
+48caf594672cd20b99ad85893380e1952ecf428eb87bedf9577ab77e5499bb75  KSATCoordinator-2.2.6.exe
+d107984ec5f8192be6c2809480adcba1a18fc23ad590cfb714741023ebc14cb5  KSATCoordinatorSetup-2.2.6.exe

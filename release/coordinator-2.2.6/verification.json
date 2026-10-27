@@ -1,0 +1,22 @@
+{
+  "version": "2.2.6",
+  "publisher": "CN=KSAT LAB RELEASE SIGNING",
+  "thumbprint": "13AE2A6440C33E074FC9C99FB35E5A1CFD9BE908",
+  "frozen_https_startup": "passed",
+  "installer_payload": "verified",
+  "uac_payload_equivalence": "verified",
+  "client_binaries_rebuilt": false,
+  "physical_lab_pilot": "not yet performed",
+  "automated_regression": {
+    "passed": 755,
+    "skipped": 27,
+    "subtests_passed": 208
+  },
+  "source_commit": "1f9a0b051adf9d929f7377360f92431c6627d7c9",
+  "source_inputs_sha256": "f94744b7fa5f5138339701e749fd38e469a40acd7511e581c01e064c1d241455",
+  "final_focused_tests": {
+    "passed": 73,
+    "subtests_passed": 4
+  },
+  "independent_review": "continuity issue fixed and reproducer rejected; no remaining release blockers"
+}

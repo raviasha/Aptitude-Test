@@ -50,7 +50,7 @@ Files: ksat/client/updates.py, ksat/client/updater.py, client_updater.py, client
 Files: versions, installer/KSATClient.iss, scripts/windows_release.py, release build tools, release guides/evidence.
 - [x] Integrate recovery EXE and Start menu shortcut in signed Client and Builder payloads; bump all applicable versions consistently.
 - [x] Fresh independent whole-change review; resolve important findings with tests.
-- [ ] Build/sign/inspect installers and frozen startup; record checksums and source revision. Keep physical pilot explicitly unverified.
+- [x] Build/sign/inspect installers and frozen startup; record checksums and source revision. Keep physical pilot explicitly unverified.
 - [ ] Publish source and versioned release assets to GitHub, verifying remote hashes. Do not mutate old published artifacts or deployed rollout state.
 
 ## Execution record
@@ -66,3 +66,6 @@ Files: versions, installer/KSATClient.iss, scripts/windows_release.py, release b
 - Integrated regression: 755 passed, 27 environment-dependent skips, 208 subtests passed (494.55 seconds). Manager/UI/packaging final run: 85 passed, 7 subtests passed. Final continuity re-review: 14 focused tests passed; exact coherent-rollback reproducer now rejected, no remaining release blockers.
 - Coordinator2.2.6 signed build complete: frozen HTTPS startup, client compatibility handshake, UAC/smoke payload equivalence and exact Inno payload verified. Initial pre-freeze build was discarded after detecting a changed client JS resource; final source-frozen build passed.
 - Client/Builder2.1.7 build underway using source-input digest record; no 2.1.7 managed bundle. Existing-install parent ACL normalization and healthy interactive rollback seed included.
+
+- Final focused rerun: 73 passed, 4 subtests passed. Source frozen at 1f9a0b0; all 126 input digests unchanged through builds.
+- Signed Client2.1.7 and Builder2.1.7 built; real frozen Client TLS startup/loopback-only listener, exact Inno helper payloads, public-only Builder payload and pinned signer verified. No physical PC pilot performed. Publishing next.

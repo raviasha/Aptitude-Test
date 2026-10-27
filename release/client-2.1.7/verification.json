@@ -1,0 +1,24 @@
+{
+  "client_version": "2.1.7",
+  "publisher": "CN=KSAT LAB RELEASE SIGNING",
+  "thumbprint": "13AE2A6440C33E074FC9C99FB35E5A1CFD9BE908",
+  "installer_payload": "verified",
+  "builder_payload": "verified",
+  "frozen_client_startup": "passed",
+  "client_loopback_only": true,
+  "tls_verified": true,
+  "managed_bundle": "not published: interactive bootstrap required",
+  "physical_lab_pilot": "not yet performed",
+  "source_commit": "1f9a0b051adf9d929f7377360f92431c6627d7c9",
+  "source_inputs_sha256": "f94744b7fa5f5138339701e749fd38e469a40acd7511e581c01e064c1d241455",
+  "automated_regression": {
+    "passed": 755,
+    "skipped": 27,
+    "subtests_passed": 208
+  },
+  "final_focused_tests": {
+    "passed": 73,
+    "subtests_passed": 4
+  },
+  "independent_review": "continuity issue fixed and reproducer rejected; no remaining release blockers"
+}

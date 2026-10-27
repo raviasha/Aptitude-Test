@@ -1,6 +1,40 @@
 # KSAT release files
 
-## Coordinator 2.2.5, Client 2.1.6 and Lab Package Builder 2.1.6
+## Coordinator 2.2.6, Client 2.1.7 and Lab Package Builder 2.1.7
+
+This is the recovery/bootstrap release for clients blocked by old practice
+submissions. Use these files for new installations and upgrades:
+
+| Purpose | Download |
+| --- | --- |
+| Upgrade the faculty server | [KSATCoordinatorSetup-2.2.6.exe](coordinator-2.2.6/KSATCoordinatorSetup-2.2.6.exe) |
+| Install or upgrade a Windows client | [KSATClientSetup-2.1.7.exe](https://github.com/raviasha/Aptitude-Test/releases/download/client-v2.1.7/KSATClientSetup-2.1.7.exe) |
+| Build a lab-specific client installer | [KSATLabPackageBuilder-2.1.7.exe](https://github.com/raviasha/Aptitude-Test/releases/download/client-v2.1.7/KSATLabPackageBuilder-2.1.7.exe) |
+
+**Install Client 2.1.7 interactively once on existing 2.1.5/2.1.6 PCs.** There is
+no 2.1.7 managed-update bundle: the older updater cannot provide the verified
+preservation/completion evidence this release requires. Future compatible managed
+updates will require Client 2.1.7 or later.
+
+After installation, open **Start > KSAT > KSAT Client Recovery**. It can archive
+selected, confirmed obsolete practice submissions rejected with
+`attempt_identity_mismatch`, then remove those from the live queue. Other faculty
+assistance causes are diagnosed without discarding their records. Install over
+the existing application and keep ProgramData intact.
+
+Coordinator 2.2.6 identifies the selected pilot and improves authenticated contact
+reporting. Existing question banks, results and logins need no reimport.
+
+[Upgrade and recovery instructions](../docs/client-2.1.7-recovery.md) ·
+[Coordinator checksums](coordinator-2.2.6/SHA256SUMS.txt) ·
+[Coordinator verification](coordinator-2.2.6/verification.json) ·
+[Client/Builder checksums](client-2.1.7/SHA256SUMS.txt) ·
+[Client/Builder verification](client-2.1.7/verification.json)
+
+A physical affected-PC pilot remains required before broad deployment.
+
+## Previous: Coordinator 2.2.5, Client 2.1.6 and Lab Package Builder 2.1.6
+
 
 Signed private-lab pilot builds. Build, signature, frozen startup and payload
 checks passed; **a real installed-PC pilot remains required before broad

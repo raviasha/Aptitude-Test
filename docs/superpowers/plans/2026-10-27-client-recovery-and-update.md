@@ -51,7 +51,7 @@ Files: versions, installer/KSATClient.iss, scripts/windows_release.py, release b
 - [x] Integrate recovery EXE and Start menu shortcut in signed Client and Builder payloads; bump all applicable versions consistently.
 - [x] Fresh independent whole-change review; resolve important findings with tests.
 - [x] Build/sign/inspect installers and frozen startup; record checksums and source revision. Keep physical pilot explicitly unverified.
-- [ ] Publish source and versioned release assets to GitHub, verifying remote hashes. Do not mutate old published artifacts or deployed rollout state.
+- [x] Publish source and versioned release assets to GitHub, verifying remote hashes. Do not mutate old published artifacts or deployed rollout state.
 
 ## Execution record
 
@@ -69,3 +69,5 @@ Files: versions, installer/KSATClient.iss, scripts/windows_release.py, release b
 
 - Final focused rerun: 73 passed, 4 subtests passed. Source frozen at 1f9a0b0; all 126 input digests unchanged through builds.
 - Signed Client2.1.7 and Builder2.1.7 built; real frozen Client TLS startup/loopback-only listener, exact Inno helper payloads, public-only Builder payload and pinned signer verified. No physical PC pilot performed. Publishing next.
+
+- Published source and Coordinator artifacts to main at 2e45e2f; published Client/Builder under https://github.com/raviasha/Aptitude-Test/releases/tag/client-v2.1.7 as a private-lab prerelease. GitHub asset SHA-256/size verification passed for installer, Builder, checksums and evidence. Public Coordinator/Client/Builder download links returned HTTP 200. All planned work complete; physical affected-PC pilot remains explicitly outstanding and is not represented as automated verification.

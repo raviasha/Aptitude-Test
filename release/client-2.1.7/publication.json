@@ -1,0 +1,13 @@
+{
+  "source_commit": "1f9a0b051adf9d929f7377360f92431c6627d7c9",
+  "artifact_commit": "2e45e2f4038b6f0da9630dfe72fc26b02ad76ef3",
+  "github_release": "https://github.com/raviasha/Aptitude-Test/releases/tag/client-v2.1.7",
+  "prerelease": true,
+  "asset_hashes_verified": true,
+  "public_downloads_verified": [
+    "Coordinator 2.2.6",
+    "Client 2.1.7",
+    "Builder 2.1.7"
+  ],
+  "physical_lab_pilot": "not yet performed"
+}

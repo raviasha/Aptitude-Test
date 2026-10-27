@@ -37,13 +37,13 @@
 - Python `prepare_coordinator_installer_trust(layout: ReleaseLayout, signing: ReleaseSigningConfig) -> list[str]`: for lab builds validate/export the public certificate to `dist/publisher.cer` and return explicit Inno definitions enabling bundled trust and binding its thumbprint. For non-lab builds return disabled trust definitions.
 - Inno `EnsurePublisherTrust()` validates extracted helper/certificate hashes then runs the helper hidden, awaiting its exit. `PrepareToInstall` invokes it for both new and existing lab installations and returns a clear failure message on error.
 
-- [ ] Add failing tests for absent, complete and partial existing trust; invalid hash/thumbprint/subject/EKU/date; import failure and unsuccessful post-import verification. Execute the real PowerShell helper with only certificate-store commands mocked in a child process.
-- [ ] Run `python -m pytest tests/test_coordinator_release_trust.py -q`; observe the expected failures before implementation.
-- [ ] Implement the helper using bounded public certificate input, validation before store access, idempotent exact-certificate checks and verified imports into LocalMachine Root/TrustedPublisher. Keep any already-added approved certificate on a later failure; retry must complete safely.
-- [ ] Add failing packaging/integration checks for lab/non-lab compiler definitions, public-resource staging, setup ordering and no uninstall certificate removal.
-- [ ] Implement Inno integration and the shared Python compiler-definition helper; use it from both build entry points. Include user-visible trust notice and retain normal administrator approval.
-- [ ] Run helper, packaging and native Inno harness tests; inspect lab installer resources and verify non-lab compilation. Store tests must never access the real machine certificate stores.
-- [ ] Commit this tested implementation.
+- [x] Add failing tests for absent, complete and partial existing trust; invalid hash/thumbprint/subject/EKU/date; import failure and unsuccessful post-import verification. Execute the real PowerShell helper with only certificate-store commands mocked in a child process.
+- [x] Run `python -m pytest tests/test_coordinator_release_trust.py -q`; observe the expected failures before implementation.
+- [x] Implement the helper using bounded public certificate input, validation before store access, idempotent exact-certificate checks and verified imports into LocalMachine Root/TrustedPublisher. Keep any already-added approved certificate on a later failure; retry must complete safely.
+- [x] Add failing packaging/integration checks for lab/non-lab compiler definitions, public-resource staging, setup ordering and no uninstall certificate removal.
+- [x] Implement Inno integration and the shared Python compiler-definition helper; use it from both build entry points. Include user-visible trust notice and retain normal administrator approval.
+- [x] Run helper, packaging and native Inno harness tests; inspect lab installer resources and verify non-lab compilation. Store tests must never access the real machine certificate stores.
+- [x] Commit this tested implementation.
 
 ### Task 2: Version, verify, build and publish
 
@@ -51,12 +51,12 @@
 
 **Interfaces:** preserve handshake protocol `2.1.0`; accept runtime configuration versions through `2.2.3`, with current version `2.2.4`. Use the unchanged certificate thumbprint `13AE2A6440C33E074FC9C99FB35E5A1CFD9BE908` and existing update public key.
 
-- [ ] Add/update the version and 2.2.3-to-2.2.4 preservation regression first; run and observe expected failures.
-- [ ] Bump only Coordinator versions and retain 2.2.3 in the runtime migration allowlist. Do not alter historical release records or Client/Builder versions.
-- [ ] Run focused trust/runtime/packaging/native tests and the application suite. Record skipped tests and any pre-existing calibration failures accurately, without changing unrelated pipeline fixtures.
-- [ ] Build with `python -m scripts.build_coordinator_lab_release --signing-directory "C:/ProgramData/KSAT Release Signing/lab-2026" --output release/coordinator-2.2.4 --innoextract "C:/Users/ravis/KSAT Build Tools/innoextract670/innoextract.exe"` using the existing build Python. Verify signatures, extracted public helper/certificate/application bytes, frozen HTTPS startup and unchanged update public key.
-- [ ] Obtain a bounded independent code review of certificate validation, setup integration, both build paths and version/data preservation; address actionable findings and re-run affected checks.
-- [ ] Publish accurate installation notes: run the new installer once per server, no separate trust script, keep ProgramData, retry uploading the existing Client 2.1.6 bundle. State that real untrusted lab-server installation remains a field check.
+- [x] Add/update the version and 2.2.3-to-2.2.4 preservation regression first; run and observe expected failures.
+- [x] Bump only Coordinator versions and retain 2.2.3 in the runtime migration allowlist. Do not alter historical release records or Client/Builder versions.
+- [x] Run focused trust/runtime/packaging/native tests and the application suite. Record skipped tests and any pre-existing calibration failures accurately, without changing unrelated pipeline fixtures.
+- [x] Build with `python -m scripts.build_coordinator_lab_release --signing-directory "C:/ProgramData/KSAT Release Signing/lab-2026" --output release/coordinator-2.2.4 --innoextract "C:/Users/ravis/KSAT Build Tools/innoextract670/innoextract.exe"` using the existing build Python. Verify signatures, extracted public helper/certificate/application bytes, frozen HTTPS startup and unchanged update public key.
+- [x] Obtain a bounded independent code review of certificate validation, setup integration, both build paths and version/data preservation; address actionable findings and re-run affected checks.
+- [x] Publish accurate installation notes: run the new installer once per server, no separate trust script, keep ProgramData, retry uploading the existing Client 2.1.6 bundle. State that real untrusted lab-server installation remains a field check.
 - [ ] Commit measured verification/checksums and source. Recheck remote main and push only a normal fast-forward; preserve unrelated work and all older releases.
 - [ ] Verify GitHub commit, download availability and artifact hashes; hand off the installer and next steps without claiming lab deployment.
 

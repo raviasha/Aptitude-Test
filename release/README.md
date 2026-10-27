@@ -21,7 +21,7 @@ Release assets under `client-v2.1.6`.
 [Client/Builder checksums](client-2.1.6/SHA256SUMS.txt) ·
 [Client/Builder verification](client-2.1.6/verification.json)
 
-The complete visual fix requires **Coordinator 2.2.4 and Client 2.1.6**.
+The complete visual fix requires **Coordinator 2.2.3 or later and Client 2.1.6**.
 The server removes matching textbook question-number prefixes from reasoning
 text in newly created releases and converts supporting images to the existing
 image-stimulus format understood by older clients. Client 2.1.6 hides duplicate
@@ -61,6 +61,12 @@ update themselves.
 [Client visual update and central rollout guide](../docs/client-2.1.6-visual-update.md)
 
 ## Previous releases
+
+## Coordinator 2.2.3
+
+[Previous installer](coordinator-2.2.3/KSATCoordinatorSetup-2.2.3.exe) and
+[visual update guide](../docs/coordinator-2.2.3.md). Coordinator 2.2.4 retains
+these features and adds automatic publisher trust during setup.
 
 ## Coordinator 2.2.2
 

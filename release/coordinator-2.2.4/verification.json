@@ -1,0 +1,67 @@
+{
+  "version": "2.2.4",
+  "publisher": "CN=KSAT LAB RELEASE SIGNING",
+  "thumbprint": "13AE2A6440C33E074FC9C99FB35E5A1CFD9BE908",
+  "frozen_https_startup": "passed",
+  "installer_payload": "exact signed executable, public publisher certificate and helper verified by deep extraction",
+  "uac_payload_equivalence": "verified",
+  "client_binaries_rebuilt": false,
+  "verification_date": "2026-10-27",
+  "source_commit": "5e6bc451ca7b2338df985405b28df0e8af605f16",
+  "release_kind": "signed private-lab pilot",
+  "authenticode": "Coordinator and installer Valid with unchanged pinned publisher",
+  "client_handshake_protocol_version": "2.1.0 (unchanged)",
+  "update_verification_key": "byte-for-byte identical to signed Coordinator 2.2.3",
+  "runtime_upgrade_2_2_3_to_2_2_4": "regression passed; login/result database bytes, assets, security identity and prior backups preserved",
+  "publisher_certificate_sha256": "82a458843d5f028fee881e8b46ca0db5dbaa69a4a77f2d5b18bc94818c392096",
+  "trust_helper_sha256": "fe0efae357b9d92d94d4c3e074528b375fb82af94d5eb44cc8a1827902ca999c",
+  "generic_installer": "compiled and extracted: application only; no trust resources",
+  "client_version": "2.1.6",
+  "client_artifacts": "Client, installer, Builder and managed bundle hashes unchanged",
+  "trust_validation": {
+    "powershell_helper_tests": 16,
+    "compiled_inno_scenarios": 12,
+    "generic_and_lab_inspection_tests": 3,
+    "result": "31 passed in 53.28s",
+    "machine_store_changes": false,
+    "boundaries": "Certificate-store operations and process launch substituted; real certificate validation, PowerShell failure exit and extracted-resource hashes exercised; silent UI state simulated"
+  },
+  "focused_regression": {
+    "passed": 83,
+    "warnings": 4,
+    "subtests_passed": 12,
+    "seconds": 50.29
+  },
+  "limits": [
+    "Installation on an untrusted lab server and subsequent Client 2.1.6 upload remain physical operator checks. No live lab or development-PC trust stores were changed.",
+    "Full repository green is not claimed: default collection has the pre-existing duplicate test_build module collision in data-engineering; older calibration failures remain documented in the 2.2.3 verification record.",
+    "Private-lab signing is not public CA signing or a guarantee of SmartScreen acceptance."
+  ],
+  "regression": {
+    "command": "KSAT_ISCC configured; python -m pytest tests test_registration.py test_question_media.py test_feedback_ui.py scripts/test_smoke_textbook_import_compatibility.py -q --tb=short",
+    "passed": 1048,
+    "skipped": 35,
+    "subtests_passed": 630,
+    "warnings": 48,
+    "seconds": 1010.01,
+    "initial_failures": 1,
+    "initial_failure": "tests/test_distributed_end_to_end.py::DistributedEndToEndTests::test_load_gate_measures_the_requested_client_start_spread: disposable HTTPS fixture startup ConnectTimeout",
+    "failed_case_rerun": {
+      "passed": 1,
+      "warnings": 6,
+      "seconds": 21.23,
+      "exit_code": 0
+    },
+    "note": "Initial timeout did not reproduce in the isolated rerun. Full run and retry are reported separately; no unrelated application change made."
+  },
+  "independent_review": {
+    "source_commit": "5e6bc451ca7b2338df985405b28df0e8af605f16",
+    "result": "All findings closed on bounded followup review; targeted regressions passed",
+    "resolved": [
+      "inspection mock updated and generic/lab resources asserted",
+      "real nonzero PowerShell failure exits tested",
+      "actual extracted certificate/helper tampering detected using real hashes"
+    ],
+    "field_installation": "not performed"
+  }
+}

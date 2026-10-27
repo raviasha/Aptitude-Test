@@ -155,6 +155,58 @@ class ClientUpdateStoreTests(unittest.TestCase):
         self.assertEqual("Offline", rows["device-b"]["status"])
         self.assertNotIn("device-disabled", rows)
 
+    def test_restore_unused_withdrawn_release_allows_new_pilot_without_replacing_bundle(self):
+        release = self.store.upload(self.verified)
+        self.store.select_pilot(release.release_id, 'device-b')
+        withdrawn = self.store.withdraw(release.release_id)
+        self.assertEqual('withdrawn', self.store.upload(self.verified).state)
+        original = self.store.bundle_path(release.release_id).read_bytes()
+        self.assertTrue(self.store.can_restore(withdrawn))
+        restored = self.store.restore(self.verified)
+        self.assertEqual('uploaded', restored.state)
+        self.assertIsNone(restored.pilot_device_id)
+        self.assertEqual(withdrawn.withdrawn_at, restored.withdrawn_at)
+        self.assertEqual(original, self.store.bundle_path(release.release_id).read_bytes())
+        self.assertIsNone(self.store.policy_for_device('device-b', '2.0.0'))
+        with self.assertRaises(UpdateStateError):
+            self.store.publish(release.release_id)
+        self.store.select_pilot(release.release_id, 'device-a')
+        self.assertIsNotNone(self.store.policy_for_device('device-a', '2.0.0'))
+        self.assertIsNone(self.store.policy_for_device('device-b', '2.0.0'))
+
+    def test_restore_rejects_reported_activity_and_preserves_it(self):
+        release = self.store.upload(self.verified)
+        self.store.select_pilot(release.release_id, 'device-a')
+        self.store.record_status(release.release_id, 'device-a', 'downloading', '2.0.0', None,
+            attempt_id='11111111-1111-4111-8111-111111111111')
+        withdrawn = self.store.withdraw(release.release_id)
+        before = self.store.dashboard(release.release_id)
+        self.assertFalse(self.store.can_restore(withdrawn))
+        with self.assertRaises(UpdateStateError):
+            self.store.restore(self.verified)
+        self.assertEqual('withdrawn', self.store.release(release.release_id).state)
+        self.assertEqual(before, self.store.dashboard(release.release_id))
+
+    def test_restore_rejects_nonwithdrawn_or_previously_published_release(self):
+        release = self.store.upload(self.verified)
+        with self.assertRaises(UpdateStateError):
+            self.store.restore(self.verified)
+        self.store.withdraw(release.release_id)
+        with self.connection:
+            self.connection.execute('UPDATE client_update_releases SET published_at=? WHERE release_id=?',
+                                    (self.now.isoformat(), release.release_id))
+        self.assertFalse(self.store.can_restore(self.store.release(release.release_id)))
+        with self.assertRaises(UpdateStateError):
+            self.store.restore(self.verified)
+
+    def test_restore_rejects_changed_bundle_even_after_verification(self):
+        release = self.store.upload(self.verified)
+        self.store.withdraw(release.release_id)
+        self.store.bundle_path(release.release_id).write_bytes(b'tampered')
+        with self.assertRaises(ValueError):
+            self.store.restore(self.verified)
+        self.assertEqual('withdrawn', self.store.release(release.release_id).state)
+
 
 if __name__ == "__main__":
     unittest.main()

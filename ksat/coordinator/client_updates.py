@@ -179,6 +179,34 @@ class ClientUpdateStore:
             raise
         return self.release(release_id)
 
+    def can_restore(self, release: ClientUpdateRelease) -> bool:
+        return (release.state == "withdrawn" and release.published_at is None
+                and self.connection.execute(
+                    "SELECT 1 FROM client_update_device_status WHERE release_id=? LIMIT 1",
+                    (release.release_id,),
+                ).fetchone() is None)
+
+    def restore(self, verified: VerifiedClientUpdate) -> ClientUpdateRelease:
+        """Restore only an unused withdrawal; never discard client progress."""
+        with self.connection:
+            self.connection.execute("BEGIN IMMEDIATE")
+            release = self.release(verified.manifest.release_id)
+            if not self.can_restore(release):
+                raise UpdateStateError("Only an unused withdrawn update can be restored for a new pilot.")
+            if (release.client_version != verified.manifest.client_version
+                    or release.bundle_sha256 != verified.bundle_sha256
+                    or release.bundle_size != verified.bundle_size
+                    or canonical_json(release.manifest) != canonical_json(verified.manifest)):
+                raise UpdateStateError("Verified update does not match the withdrawn release.")
+            data = self.bundle_path(release.release_id).read_bytes()
+            if len(data) != release.bundle_size or hashlib.sha256(data).hexdigest() != release.bundle_sha256:
+                raise ValueError("Stored client update bundle failed verification.")
+            self.connection.execute(
+                "UPDATE client_update_releases SET state='uploaded',pilot_device_id=NULL WHERE release_id=?",
+                (release.release_id,),
+            )
+        return self.release(release.release_id)
+
     def select_pilot(self, release_id: str, device_id: str) -> ClientUpdateRelease:
         release = self.release(release_id)
         if release.state != "uploaded":

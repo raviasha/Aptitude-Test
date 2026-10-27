@@ -106,7 +106,7 @@ QUESTION_BANKS_DIR = DATA_DIR / "Question Banks"
 STATIC_DIR = BUNDLE_DIR / "static"
 TEMPLATE_DIR = BUNDLE_DIR / "templates"
 SERVER_URL = "http://127.0.0.1:8000"
-APP_VERSION = "2.2.4"
+APP_VERSION = "2.2.5"
 DEFAULT_FACULTY_NAME = "Prof R Ravi Shankar"
 
 CATEGORIES = [
@@ -2956,7 +2956,8 @@ def list_client_updates(request: Request) -> Dict[str, Any]:
         releases = store.releases()
         return {
             "releases": [
-                {**_client_update_release_json(release), "devices": store.dashboard(release.release_id)}
+                {**_client_update_release_json(release), "devices": store.dashboard(release.release_id),
+                 "can_restore": store.can_restore(release)}
                 for release in releases
             ]
         }
@@ -3003,6 +3004,32 @@ async def upload_client_update(request: Request, bundle: UploadFile = File(...))
         raise HTTPException(400, str(error)) from error
     finally:
         temporary_path.unlink(missing_ok=True)
+
+
+@app.post("/api/admin/client-updates/{release_id}/restore")
+def restore_client_update(release_id: str, request: Request) -> Dict[str, Any]:
+    require_admin_mutation(request)
+    config = app.state.coordinator_config
+    if not config.update_signing_public_key_b64 or not callable(config.update_authenticode_verifier):
+        raise HTTPException(503, "Client update verification is not configured.")
+    try:
+        with db() as connection:
+            store = ClientUpdateStore(connection, DATA_DIR / "Client Updates")
+            release = store.release(release_id)
+            if not store.can_restore(release):
+                raise UpdateStateError("Only an unused withdrawn update can be restored for a new pilot.")
+            verified = parse_client_update(store.bundle_path(release_id),
+                config.update_signing_public_key_b64, config.update_authenticode_verifier)
+            if verified.manifest.release_id != release_id:
+                raise ValueError("Stored bundle belongs to a different release.")
+            release = store.restore(verified)
+        return {"release": _client_update_release_json(release)}
+    except KeyError as error:
+        raise HTTPException(404, "Client update was not found.") from error
+    except UpdateStateError as error:
+        raise HTTPException(409, str(error)) from error
+    except (ValueError, OSError) as error:
+        raise HTTPException(400, "Stored client update could not be verified. " + str(error)) from error
 
 
 @app.post("/api/admin/client-updates/{release_id}/pilot")

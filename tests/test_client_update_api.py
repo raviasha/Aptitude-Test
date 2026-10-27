@@ -132,6 +132,95 @@ class ClientUpdateApiTests(unittest.TestCase):
         self.assertEqual(200, listed.status_code, listed.text)
         self.assertEqual(self.release.release_id, listed.json()["releases"][0]["release_id"])
 
+    def test_restore_requires_admin_csrf_and_verified_unused_release(self):
+        path = f'/api/admin/client-updates/{self.release.release_id}/restore'
+        with app.db() as connection:
+            ClientUpdateStore(connection, app.DATA_DIR/'Client Updates').withdraw(self.release.release_id)
+        self.assertIn(self.client.post(path).status_code, (401,403))
+        login = self.client.post('/api/login', json={'identifier':'faculty','password':'faculty123','role':'admin'})
+        csrf = {'X-KSAT-CSRF':login.json()['csrf_token']}
+        self.assertEqual(403, self.client.post(path).status_code)
+        listed = self.client.get('/api/admin/client-updates').json()['releases'][0]
+        self.assertTrue(listed['can_restore'])
+        restored = self.client.post(path, headers=csrf)
+        self.assertEqual(200, restored.status_code, restored.text)
+        self.assertEqual('uploaded', restored.json()['release']['state'])
+        self.assertFalse(self.client.get('/api/admin/client-updates').json()['releases'][0]['can_restore'])
+        self.assertEqual(409, self.client.post(path, headers=csrf).status_code)
+        pilot = self.client.post(f'/api/admin/client-updates/{self.release.release_id}/pilot',
+                                json={'device_id':self.device_id}, headers=csrf)
+        self.assertEqual(200, pilot.status_code, pilot.text)
+
+    def test_restore_rechecks_signature_and_leaves_withdrawal_on_failure(self):
+        with app.db() as connection:
+            ClientUpdateStore(connection, app.DATA_DIR/'Client Updates').withdraw(self.release.release_id)
+        login = self.client.post('/api/login', json={'identifier':'faculty','password':'faculty123','role':'admin'})
+        def reject(_path, _publisher):
+            raise ValueError('Untrusted signature')
+        app.app.state.coordinator_config.update_authenticode_verifier = reject
+        restored = self.client.post(f'/api/admin/client-updates/{self.release.release_id}/restore',
+                                   headers={'X-KSAT-CSRF':login.json()['csrf_token']})
+        self.assertEqual(400, restored.status_code, restored.text)
+        with app.db() as connection:
+            self.assertEqual('withdrawn', ClientUpdateStore(connection, app.DATA_DIR/'Client Updates').release(self.release.release_id).state)
+
+    def test_restore_rejects_untrusted_manifest_before_authenticode_check(self):
+        with app.db() as connection:
+            ClientUpdateStore(connection, app.DATA_DIR/'Client Updates').withdraw(self.release.release_id)
+        login = self.client.post('/api/login', json={'identifier':'faculty','password':'faculty123','role':'admin'})
+        _, different_public = generate_ed25519_keypair()
+        app.app.state.coordinator_config.update_signing_public_key_b64 = different_public
+        calls = []
+        app.app.state.coordinator_config.update_authenticode_verifier = lambda *args: calls.append(args)
+        response = self.client.post(f'/api/admin/client-updates/{self.release.release_id}/restore',
+                                   headers={'X-KSAT-CSRF':login.json()['csrf_token']})
+        self.assertEqual(400, response.status_code, response.text)
+        self.assertEqual([], calls)
+        with app.db() as connection:
+            self.assertEqual('withdrawn', ClientUpdateStore(connection, app.DATA_DIR/'Client Updates').release(self.release.release_id).state)
+
+    def test_restore_rechecks_activity_after_signature_verification(self):
+        with app.db() as connection:
+            ClientUpdateStore(connection, app.DATA_DIR/'Client Updates').withdraw(self.release.release_id)
+        login = self.client.post('/api/login', json={'identifier':'faculty','password':'faculty123','role':'admin'})
+        def late_report(_path, publisher):
+            with app.db() as connection:
+                ClientUpdateStore(connection, app.DATA_DIR/'Client Updates').record_status(
+                    self.release.release_id, self.device_id, 'downloading', '2.0.0', None,
+                    attempt_id='11111111-1111-4111-8111-111111111111')
+            return {'publisher':publisher}
+        app.app.state.coordinator_config.update_authenticode_verifier = late_report
+        response = self.client.post(f'/api/admin/client-updates/{self.release.release_id}/restore',
+                                   headers={'X-KSAT-CSRF':login.json()['csrf_token']})
+        self.assertEqual(409, response.status_code, response.text)
+        with app.db() as connection:
+            store = ClientUpdateStore(connection, app.DATA_DIR/'Client Updates')
+            self.assertEqual('withdrawn', store.release(self.release.release_id).state)
+            self.assertEqual('downloading', store.dashboard(self.release.release_id)[0]['stage'])
+
+    def test_restore_cannot_redirect_to_a_different_valid_signed_release(self):
+        other_id = str(uuid.uuid4())
+        other_bundle = app.DATA_DIR/'other.ksat-client-update'
+        build_client_update(installer=app.DATA_DIR/'setup.exe', version='2.1.1', minimum_source_version='2.0.0',
+            publisher='CN=KSIT', private_key_file=app.DATA_DIR/'offline.key', output=other_bundle,
+            release_notes='Other release', release_id=other_id, published_at=datetime(2026,9,24,tzinfo=timezone.utc),
+            authenticode_verifier=lambda _path,publisher:{'publisher':publisher})
+        config = app.app.state.coordinator_config
+        other = parse_client_update(other_bundle, config.update_signing_public_key_b64, config.update_authenticode_verifier)
+        with app.db() as connection:
+            store = ClientUpdateStore(connection, app.DATA_DIR/'Client Updates')
+            store.upload(other)
+            store.withdraw(other_id)
+            store.withdraw(self.release.release_id)
+            store.bundle_path(self.release.release_id).write_bytes(other_bundle.read_bytes())
+        login = self.client.post('/api/login', json={'identifier':'faculty','password':'faculty123','role':'admin'})
+        response = self.client.post(f'/api/admin/client-updates/{self.release.release_id}/restore',
+                                   headers={'X-KSAT-CSRF':login.json()['csrf_token']})
+        self.assertEqual(400, response.status_code, response.text)
+        with app.db() as connection:
+            store = ClientUpdateStore(connection, app.DATA_DIR/'Client Updates')
+            self.assertEqual(['withdrawn','withdrawn'], [store.release(key).state for key in (self.release.release_id,other_id)])
+
 
 if __name__ == "__main__":
     unittest.main()

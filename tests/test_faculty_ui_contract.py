@@ -12,6 +12,29 @@ UPDATE_FLOW = ROOT / "tests" / "client_update_admin_flow.js"
 
 
 class FacultyUiContractTests(unittest.TestCase):
+    def test_withdrawn_update_exposes_restore_only_when_unused(self):
+        result = self._run_node('''
+const ui = require(process.argv[1]);
+class Node {
+  constructor(tag) { this.tag=tag; this.children=[]; this.handlers={}; this.value=''; }
+  append(...nodes) { this.children.push(...nodes); if(this.tag==='select' && !this.value) this.value=nodes[0]?.value || ''; }
+  prepend(...nodes) { this.children.unshift(...nodes); }
+  setAttribute() {}
+  addEventListener(event, handler) { this.handlers[event]=handler; }
+}
+global.document={createElement:tag=>new Node(tag)};
+const walk=node=>[node,...node.children.flatMap(walk)];
+const render=(state,can_restore)=>{
+  const root=new Node('root');
+  ui.renderClientUpdateRelease(root,{release_id:'test',state,can_restore,client_version:'2.1.6',devices:[]},[]);
+  return walk(root).filter(n=>n.tag==='button').map(n=>({label:n.textContent,click:typeof n.handlers.click==='function'}));
+};
+process.stdout.write(JSON.stringify({unused:render('withdrawn',true),used:render('withdrawn',false),active:render('pilot',true)}));
+''')
+        self.assertIn({'label':'Restore for pilot','click':True}, result['unused'])
+        for name in ('used','active'):
+            self.assertNotIn('Restore for pilot', [button['label'] for button in result[name]])
+
     def test_client_update_dashboard_enforces_pilot_and_publish_gate(self):
         node = os.environ.get("KSAT_NODE") or shutil.which("node")
         if node is None:

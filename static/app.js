@@ -1,6 +1,6 @@
 const app = typeof document === 'undefined' ? null : document.querySelector('#app');
 const toast = typeof document === 'undefined' ? null : document.querySelector('#toast');
-const BUILD_VERSION = '2.2.4';
+const BUILD_VERSION = '2.2.5';
 let state = { user: null, csrfToken: null, attempt: null, questionIndex: 0 };
 let examGuard = {active:false, deadlineMs:null, timerId:null, syncTimerId:null, submitting:false, lastViolation:null, needsResume:false};
 let facultyTimerId = null;
@@ -530,20 +530,37 @@ function renderClientUpdateRelease(root, release, devices) {
   [['Release ID',release.release_id],['Publisher',release.manifest?.authenticode_publisher],['SHA-256',release.bundle_sha256],['Size',`${Number(release.bundle_size || 0).toLocaleString('en-IN')} bytes`]].forEach(([label,value]) => { appendText(metadata,'dt',label); appendText(metadata,'dd',value); });
   card.append(metadata);
   const actions = document.createElement('div'); actions.className = 'row-actions update-actions';
+  if (release.state === 'withdrawn') {
+    if (release.can_restore === true) {
+      const restore = appendText(actions,'button','Restore for pilot','primary small');
+      restore.addEventListener('click', async () => {
+        restore.disabled = true;
+        try {
+          await api(`/api/admin/client-updates/${encodeURIComponent(release.release_id)}/restore`,{method:'POST'});
+          notify('Update restored. Select a pilot, then reopen KSAT on that PC.');
+          clientUpdates();
+        } catch(error) { restore.disabled = false; notify(error.message,true); }
+      });
+      appendText(card,'p','This unused update can be restored, then assigned to a new pilot PC.','muted');
+    } else {
+      appendText(card,'p','This update has client activity or was previously published. Its withdrawal and update history are retained; it cannot be restarted here.','muted');
+    }
+  }
   if (release.state === 'uploaded') {
     const select = document.createElement('select'); select.setAttribute('aria-label','Pilot lab computer');
     eligiblePilotDevices(devices).forEach(device => { const option=document.createElement('option'); option.value=device.device_id; option.textContent=device.label; select.append(option); });
     const pilot = appendText(actions,'button','Start pilot','primary small'); pilot.disabled=!select.value;
-    pilot.addEventListener('click', async () => { try { await api(`/api/admin/client-updates/${encodeURIComponent(release.release_id)}/pilot`,{method:'POST',body:{device_id:select.value}}); notify('Pilot update enabled.'); clientUpdates(); } catch(error) { notify(error.message,true); } });
+    pilot.addEventListener('click', async () => { try { await api(`/api/admin/client-updates/${encodeURIComponent(release.release_id)}/pilot`,{method:'POST',body:{device_id:select.value}}); notify('Pilot enabled. Reopen KSAT on the selected PC to check for the update.'); clientUpdates(); } catch(error) { notify(error.message,true); } });
     actions.prepend(select);
   }
   if (release.state === 'pilot') {
+    appendText(card,'p','After Start pilot, reopen KSAT on the selected PC while the Coordinator is running. Active tests and pending submissions defer updates. Refresh this page to see the latest status. Offline PCs will wait until KSAT connects.','muted');
     const publish=appendText(actions,'button','Publish to all clients','primary small'); publish.disabled=!canPublishClientUpdate(release); publish.title=publish.disabled?'The pilot must report healthy on this exact version first.':'';
     publish.addEventListener('click', async () => { try { await api(`/api/admin/client-updates/${encodeURIComponent(release.release_id)}/publish`,{method:'POST'}); notify('Update published to all clients.'); clientUpdates(); } catch(error) { notify(error.message,true); } });
   }
   if (release.state !== 'withdrawn') {
     const withdraw=appendText(actions,'button','Withdraw','danger small');
-    withdraw.addEventListener('click', async () => { if (!confirm('Withdraw this client update? Clients that have not started it will no longer receive it.')) return; try { await api(`/api/admin/client-updates/${encodeURIComponent(release.release_id)}/withdraw`,{method:'POST'}); notify('Client update withdrawn.'); clientUpdates(); } catch(error) { notify(error.message,true); } });
+    withdraw.addEventListener('click', async () => { if (!confirm('Withdraw this client update release for all PCs? Clients that have not started it will no longer receive it. Only an unused, never-published release can be restored for a new pilot.')) return; try { await api(`/api/admin/client-updates/${encodeURIComponent(release.release_id)}/withdraw`,{method:'POST'}); notify('Client update withdrawn.'); clientUpdates(); } catch(error) { notify(error.message,true); } });
   }
   card.append(actions);
   const scroll=document.createElement('div'); scroll.className='table-scroll'; const table=document.createElement('table'); const thead=document.createElement('thead'), header=document.createElement('tr');
@@ -874,5 +891,5 @@ async function students() {
 }
 
 async function boot() { try { const result=await api('/api/me'); state.user=result.user; state.csrfToken=result.csrf_token || null; state.user ? home() : loginScreen(); } catch { loginScreen(); } }
-if (typeof module !== 'undefined' && module.exports) module.exports = {mathText, mathEsc, questionContentMarkup, facultyLaunchAction, facultyTimingMarkup, tickFacultyTimers, syncFacultyTimers, createFacultyTimerSync, eligiblePilotDevices, clientUpdateStatusLabel, canPublishClientUpdate, importBankFiles, bankImportReport};
+if (typeof module !== 'undefined' && module.exports) module.exports = {mathText, mathEsc, questionContentMarkup, facultyLaunchAction, facultyTimingMarkup, tickFacultyTimers, syncFacultyTimers, createFacultyTimerSync, eligiblePilotDevices, clientUpdateStatusLabel, canPublishClientUpdate, renderClientUpdateRelease, importBankFiles, bankImportReport};
 if (typeof document !== 'undefined') boot();

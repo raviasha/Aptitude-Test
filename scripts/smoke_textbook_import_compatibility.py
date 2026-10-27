@@ -182,7 +182,7 @@ def worker(request):
     sys.path.insert(0, str(ROOT))
     import app  # Import only inside this fresh process, after setting KSAT_DATA_DIR.
     require(app.DATA_DIR == data_dir and app.DB_PATH.parent == data_dir, 'Application data isolation failed')
-    require(app.APP_VERSION == '2.2.4', 'Expected current-main Coordinator 2.2.4')
+    require(app.APP_VERSION == '2.2.5', 'Expected current-main Coordinator 2.2.5')
     app.ensure_schema()
     specs = request['specs']
     for spec in specs:

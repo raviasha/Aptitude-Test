@@ -6,10 +6,10 @@ to select the server address and its two public trust files. No terminal command
 are needed for installation/configuration. See the [Ubuntu installation guide](docs/ubuntu-client-installation.md)
 and [GUI build verification](docs/ubuntu-gui-build-verification.md). These remain pilot builds.
 
-**Current Windows private-lab builds: Coordinator 2.2.4 and Client/Builder 2.1.6.**
-See [downloads and checksums](release/README.md). Coordinator 2.2.4 installs the
-verified KSAT publisher trust during administrator-approved setup, eliminating
-the separate server trust command. See the [upgrade guide](docs/coordinator-2.2.4.md).
+**Current Windows private-lab builds: Coordinator 2.2.5 and Client/Builder 2.1.6.**
+See [downloads and checksums](release/README.md). Coordinator 2.2.5 adds recovery
+for unused withdrawn pilot updates and retains automatic publisher trust during
+setup. See the [upgrade guide](docs/coordinator-2.2.5.md).
 An installed-PC pilot remains required before broad deployment.
 
 KSAT 2.0 ships separate Windows installers for the HTTPS faculty coordinator and

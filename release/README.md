@@ -1,6 +1,6 @@
 # KSAT release files
 
-## Coordinator 2.2.3, Client 2.1.6 and Lab Package Builder 2.1.6
+## Coordinator 2.2.4, Client 2.1.6 and Lab Package Builder 2.1.6
 
 Signed private-lab pilot builds. Build, signature, frozen startup and payload
 checks passed; **a real installed-PC pilot remains required before broad
@@ -8,26 +8,28 @@ deployment**. The existing release publisher and signing identity are unchanged.
 
 | Purpose | Download |
 | --- | --- |
-| Upgrade the faculty server | [KSATCoordinatorSetup-2.2.3.exe](coordinator-2.2.3/KSATCoordinatorSetup-2.2.3.exe) |
-| Standalone Coordinator | [KSATCoordinator-2.2.3.exe](coordinator-2.2.3/KSATCoordinator-2.2.3.exe) |
+| Upgrade the faculty server | [KSATCoordinatorSetup-2.2.4.exe](coordinator-2.2.4/KSATCoordinatorSetup-2.2.4.exe) |
+| Standalone Coordinator | [KSATCoordinator-2.2.4.exe](coordinator-2.2.4/KSATCoordinator-2.2.4.exe) |
 | Install/upgrade a Windows client directly | [KSATClientSetup-2.1.6.exe](https://github.com/raviasha/Aptitude-Test/releases/download/client-v2.1.6/KSATClientSetup-2.1.6.exe) |
 | Generate a lab-specific installer containing Client 2.1.6 | [KSATLabPackageBuilder-2.1.6.exe](https://github.com/raviasha/Aptitude-Test/releases/download/client-v2.1.6/KSATLabPackageBuilder-2.1.6.exe) |
 | Update existing clients from the server | [KSATClientUpdate-2.1.6.ksat-client-update](https://github.com/raviasha/Aptitude-Test/releases/download/client-v2.1.6/KSATClientUpdate-2.1.6.ksat-client-update) |
 
 The large client installer, builder and managed bundle are distributed as GitHub
 Release assets under `client-v2.1.6`.
-[Coordinator checksums](coordinator-2.2.3/SHA256SUMS.txt) ·
-[Coordinator verification](coordinator-2.2.3/verification.json) ·
+[Coordinator checksums](coordinator-2.2.4/SHA256SUMS.txt) ·
+[Coordinator verification](coordinator-2.2.4/verification.json) ·
 [Client/Builder checksums](client-2.1.6/SHA256SUMS.txt) ·
 [Client/Builder verification](client-2.1.6/verification.json)
 
-The complete visual fix requires **Coordinator 2.2.3 and Client 2.1.6**.
+The complete visual fix requires **Coordinator 2.2.4 and Client 2.1.6**.
 The server removes matching textbook question-number prefixes from reasoning
 text in newly created releases and converts supporting images to the existing
 image-stimulus format understood by older clients. Client 2.1.6 hides duplicate
 text only after a reviewed complete question/option image loads, restores that
 text on failure, and provides supporting-image transcription fallback in tests
 and review. Client 2.1.5 remains supported but lacks the full UI fix.
+
+Coordinator 2.2.4 adds the verified KSAT publisher certificate during administrator-approved setup. Run the installer once per server; no separate trust command is needed. Client and Builder remain 2.1.6.
 
 Open **Faculty > Client updates**, upload
 the `.ksat-client-update`, select an enrolled Windows pilot and wait for
@@ -55,7 +57,7 @@ identities. Do not uninstall or replace identities. Use the matching Builder
 2.1.6 to regenerate lab installers; existing builder-generated EXEs do not
 update themselves.
 
-[Coordinator upgrade and bank guide](../docs/coordinator-2.2.3.md) ·
+[Coordinator upgrade and bank guide](../docs/coordinator-2.2.4.md) ·
 [Client visual update and central rollout guide](../docs/client-2.1.6-visual-update.md)
 
 ## Previous releases

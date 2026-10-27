@@ -1,9 +1,19 @@
 #define AppName "KSAT Faculty Coordinator"
-#define AppVersion "2.2.3"
+#define AppVersion "2.2.4"
 #define AppPublisher "College Assessment Lab"
 #define AppExeName "KSATCoordinator.exe"
 #define FirewallRule "KSAT Faculty Coordinator 2.1.0"
 #define LegacyFirewallRule "KSAT Faculty Coordinator 2.0.0"
+#ifndef KSAT_BUNDLE_PUBLISHER_TRUST
+  #define KSAT_BUNDLE_PUBLISHER_TRUST "0"
+#endif
+#if Int(KSAT_BUNDLE_PUBLISHER_TRUST) == 1
+  #ifndef KSAT_PUBLISHER_THUMBPRINT
+    #error Private-lab trust requires the selected publisher thumbprint
+  #endif
+  #define PublisherHash GetSHA256OfFile(SourcePath + "..\dist\publisher.cer")
+  #define TrustHelperHash GetSHA256OfFile(SourcePath + "..\scripts\install_coordinator_release_trust.ps1")
+#endif
 
 [Setup]
 AppId={{6A30525E-E010-4B63-B5E9-1AEFDF47A6DC}
@@ -28,6 +38,10 @@ SetupLogging=yes
 
 [Files]
 Source: "..\dist\KSATCoordinator.exe"; DestDir: "{app}"; Flags: ignoreversion
+#if Int(KSAT_BUNDLE_PUBLISHER_TRUST) == 1
+Source: "..\dist\publisher.cer"; Flags: dontcopy
+Source: "..\scripts\install_coordinator_release_trust.ps1"; Flags: dontcopy
+#endif
 
 [Dirs]
 Name: "{commonappdata}\KSAT Coordinator"; Permissions: admins-full system-full
@@ -143,6 +157,15 @@ begin
   PortPage.Add('TCP port:', False); PortPage.Values[0] := PortValue;
 end;
 
+function UpdateReadyMemo(Space, NewLine, MemoUserInfoInfo, MemoDirInfo, MemoTypeInfo,
+  MemoComponentsInfo, MemoGroupInfo, MemoTasksInfo: String): String;
+begin
+  Result := MemoDirInfo + NewLine + MemoGroupInfo + NewLine + MemoTasksInfo;
+#if Int(KSAT_BUNDLE_PUBLISHER_TRUST) == 1
+  Result := Result + NewLine + NewLine + 'This private-lab setup installs the verified KSAT publisher certificate for signed updates. Shared publisher trust is retained on uninstall.';
+#endif
+end;
+
 function ShouldSkipPage(PageID: Integer): Boolean;
 begin Result := HasExistingConfig and ((PageID = HostPage.ID) or (PageID = PortPage.ID)); end;
 
@@ -158,6 +181,36 @@ begin
   begin MsgBox('Enter a TCP port from 1 through 65535.', mbError, MB_OK); Result := False; end;
 end;
 
+function EnsurePublisherTrust(): String;
+#if Int(KSAT_BUNDLE_PUBLISHER_TRUST) == 1
+var CertificatePath, HelperPath, Parameters: String; ResultCode: Integer;
+#endif
+begin
+  Result := '';
+#if Int(KSAT_BUNDLE_PUBLISHER_TRUST) == 1
+  try
+    ExtractTemporaryFile('publisher.cer');
+    ExtractTemporaryFile('install_coordinator_release_trust.ps1');
+    CertificatePath := ExpandConstant('{tmp}\publisher.cer');
+    HelperPath := ExpandConstant('{tmp}\install_coordinator_release_trust.ps1');
+    if (CompareText(GetSHA256OfFile(CertificatePath), '{#PublisherHash}') <> 0) or
+       (CompareText(GetSHA256OfFile(HelperPath), '{#TrustHelperHash}') <> 0) then
+      RaiseException('Publisher trust resources failed verification. Download the installer again.');
+    Parameters := '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + HelperPath +
+      '" -Certificate "' + CertificatePath + '" -ExpectedThumbprint "{#KSAT_PUBLISHER_THUMBPRINT}"' +
+      ' -ExpectedSha256 "{#PublisherHash}"';
+    if not Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'), Parameters,
+      '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+      RaiseException('Windows PowerShell could not start. Ask the administrator to check application restrictions and retry setup.');
+    if ResultCode <> 0 then
+      RaiseException('KSAT publisher trust could not be installed. Check the PC date/time and ask the administrator to check certificate-store permissions or security policy, then retry setup.');
+  except
+    Result := GetExceptionMessage;
+    Log(Result);
+  end;
+#endif
+end;
+
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var PortNumber: Integer;
 begin
@@ -165,6 +218,7 @@ begin
   if WizardSilent() and (not HasExistingConfig) and
      ((Trim(HostPage.Values[0]) = '') or (not TryParsePort(PortPage.Values[0], PortNumber))) then
     Result := 'A first silent install requires /HOSTNAME=<dns-name> and optional /PORT=<1-65535>.';
+  if Result = '' then Result := EnsurePublisherTrust();
 end;
 
 function OwnedFirewallMetadata(PortValue: String): String;

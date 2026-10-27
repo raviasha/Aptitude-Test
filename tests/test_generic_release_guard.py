@@ -1,10 +1,12 @@
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
+import pytest
 
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes
 from scripts import windows_release as release
+from scripts.create_lab_signing_identity import create_lab_signing_identity
 
 
 def test_generic_compile_stages_only_matching_public_publisher_before_compiler():
@@ -31,7 +33,8 @@ def test_generic_compile_stages_only_matching_public_publisher_before_compiler()
         assert layout.client_installer.read_bytes() == b"MZ fixture"
 
 
-def test_generic_inspection_cannot_omit_guard_signature_or_inner_bytes():
+@pytest.mark.parametrize('lab', [False, True])
+def test_generic_inspection_cannot_omit_guard_signature_or_inner_bytes(lab):
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
         layout = release.ReleaseLayout(root)
@@ -45,13 +48,22 @@ def test_generic_inspection_cannot_omit_guard_signature_or_inner_bytes():
         extractor.write_bytes(b"tool")
         config = release.create_ephemeral_test_signing_config(root / "identity",
             environ={"KSAT_RELEASE_TEST_SIGNING": "1"})
+        if lab:
+            identity = root / 'lab-identity'
+            create_lab_signing_identity(identity, years=5)
+            config = release.lab_signing_config(pfx_path=identity/'KSATLabReleaseSigning.pfx',
+                password_environment_name='TEST_PASSWORD', expected_publisher=release.LAB_SIGNING_PUBLISHER,
+                environ={'TEST_PASSWORD':(identity/'pfx-password.txt').read_text().strip()})
         signatures, archives, extracted = [], [], []
 
         def archive(path):
             archives.append(path.name)
             return {"C:b:update-release-public.json": "digest"}
 
-        def inspect(installer, executable, tool, additional_executables=()):
+        def inspect(installer, executable, tool, additional_executables=(), additional_resources=()):
+            if installer == layout.coordinator_installer:
+                assert additional_resources == ((layout.dist_dir/'publisher.cer',
+                    root/'scripts/install_coordinator_release_trust.ps1') if lab else ())
             if installer == layout.client_installer:
                 extracted.extend(p.name for p in additional_executables)
 

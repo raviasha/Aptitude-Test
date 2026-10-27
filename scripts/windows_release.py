@@ -41,7 +41,7 @@ from ksat.update_protocol import parse_client_update
 from scripts.build_client_update import build_client_update
 
 
-COORDINATOR_VERSION = "2.2.3"
+COORDINATOR_VERSION = "2.2.4"
 from ksat.client.version import CLIENT_VERSION
 APP_VERSION = COORDINATOR_VERSION  # Backwards-compatible coordinator tooling.
 LAB_SIGNING_PUBLISHER = "CN=KSAT LAB RELEASE SIGNING"
@@ -797,6 +797,26 @@ def discover_innoextract() -> Path | None:
     return None
 
 
+def prepare_coordinator_installer_trust(layout: ReleaseLayout, signing: ReleaseSigningConfig) -> list[str]:
+    """Explicit private-lab opt-in; export only the selected public certificate."""
+    if not signing.lab_identity:
+        return ["/DKSAT_BUNDLE_PUBLISHER_TRUST=0"]
+    validated = lab_signing_config(
+        pfx_path=signing.pfx_path, password_environment_name="BUILD_PASSWORD",
+        expected_publisher=signing.expected_publisher,
+        environ={"BUILD_PASSWORD": signing.password},
+    )
+    if validated.expected_thumbprint != signing.expected_thumbprint:
+        raise SigningConfigurationError("Installer publisher certificate does not match signing identity.")
+    _key, certificate, _chain = pkcs12.load_key_and_certificates(
+        signing.pfx_path.read_bytes(), signing.password.encode("utf-8")
+    )
+    layout.dist_dir.mkdir(parents=True, exist_ok=True)
+    (layout.dist_dir / "publisher.cer").write_bytes(certificate.public_bytes(serialization.Encoding.DER))
+    return ["/DKSAT_BUNDLE_PUBLISHER_TRUST=1",
+            f"/DKSAT_PUBLISHER_THUMBPRINT={signing.expected_thumbprint}"]
+
+
 def compile_installers(
     root: Path,
     iscc: Path,
@@ -823,7 +843,7 @@ def compile_installers(
         layout.root / "installer" / "KSATCoordinator.iss",
         layout.root / "installer" / "KSATClient.iss",
     ):
-        definitions = []
+        definitions = prepare_coordinator_installer_trust(layout, signing)
         if script.name == "KSATClient.iss":
             definitions = [f"/DKSAT_BUNDLE_PUBLISHER_TRUST={int(signing.lab_identity)}",
                 f"/DKSAT_PUBLISHER_THUMBPRINT={signing.expected_thumbprint}"]
@@ -1128,6 +1148,7 @@ def _inspect_installer(
     expected_executable: Path,
     innoextract: Path,
     additional_executables: tuple[Path, ...] = (),
+    additional_resources: tuple[Path, ...] = (),
 ) -> None:
     with tempfile.TemporaryDirectory(prefix="ksat-inno-inspect-") as directory:
         destination = Path(directory)
@@ -1158,6 +1179,10 @@ def _inspect_installer(
             relative = path.relative_to(destination).as_posix()
             _assert_payload_safe(relative, path.read_bytes())
         pyinstaller_payload_manifest(matches[0])
+        for expected in additional_resources:
+            extra = [path for path in files if path.name == expected.name]
+            if len(extra) != 1 or extra[0].read_bytes() != expected.read_bytes():
+                raise ValueError(f"Installer resource differs from approved input: {expected.name}")
         for expected in additional_executables:
             extra = [path for path in files if path.name == expected.name]
             if len(extra) != 1 or hashlib.sha256(extra[0].read_bytes()).digest() != hashlib.sha256(expected.read_bytes()).digest():
@@ -1204,7 +1229,9 @@ def inspect_artifacts(
     extractor = Path(innoextract).resolve() if innoextract is not None else discover_innoextract()
     if extractor is None or not extractor.is_file():
         raise FileNotFoundError("innoextract is required for deep installer inspection.")
-    _inspect_installer(layout.coordinator_installer, layout.coordinator_executable, extractor)
+    _inspect_installer(layout.coordinator_installer, layout.coordinator_executable, extractor,
+        additional_resources=(layout.dist_dir / 'publisher.cer',
+            layout.root / 'scripts/install_coordinator_release_trust.ps1') if signing.lab_identity else ())
     _inspect_installer(
         layout.client_installer, layout.client_executable, extractor,
         (layout.updater_executable, layout.guard_executable),

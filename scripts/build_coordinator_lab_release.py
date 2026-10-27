@@ -50,7 +50,12 @@ def main():
         release.load_release_update_public_key(signing_root / 'update-signing-public.key'),
         layout.build_dir / 'update-release-public.json',
     )
-    subprocess.run(release.build_commands(root, Path(sys.executable))[0], cwd=root, check=True)
+    # A fresh work directory avoids stale/read-only caches in synced workspaces.
+    with tempfile.TemporaryDirectory(prefix='ksat-coordinator-build-') as folder:
+        command = release.build_commands(root, Path(sys.executable))[0]
+        command[command.index('--workpath') + 1] = str(Path(folder)/'work')
+        command[command.index('--specpath') + 1] = str(Path(folder)/'spec')
+        subprocess.run(command, cwd=root, check=True)
     release.sign_and_verify_artifact(layout.coordinator_executable, signing)
     # Verify the same application payload through a non-elevated disposable smoke build.
     with tempfile.TemporaryDirectory(prefix='ksat-coordinator-smoke-') as folder:
@@ -79,10 +84,12 @@ def main():
     output.mkdir(parents=True)
     executable = output / f'KSATCoordinator-{release.APP_VERSION}.exe'
     shutil.copy2(layout.coordinator_executable, executable)
-    subprocess.run([str(compiler), '/O' + str(output), str(root / 'installer/KSATCoordinator.iss')], cwd=root, check=True)
+    definitions = release.prepare_coordinator_installer_trust(layout, signing)
+    subprocess.run([str(compiler), *definitions, '/O' + str(output), str(root / 'installer/KSATCoordinator.iss')], cwd=root, check=True)
     installer = output / f'KSATCoordinatorSetup-{release.APP_VERSION}.exe'
     release.sign_and_verify_artifact(installer, signing)
-    release._inspect_installer(installer, layout.coordinator_executable, extractor)
+    release._inspect_installer(installer, layout.coordinator_executable, extractor,
+        additional_resources=(layout.dist_dir/'publisher.cer', root/'scripts/install_coordinator_release_trust.ps1'))
     release.write_sha256s([executable, installer], output / 'SHA256SUMS.txt')
     evidence = {'version':release.APP_VERSION, 'publisher':signing.expected_publisher,
                 'thumbprint':signing.expected_thumbprint, 'frozen_https_startup':'passed',

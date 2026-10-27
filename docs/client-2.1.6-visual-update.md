@@ -1,5 +1,10 @@
 # Client 2.1.6 — visual update and server rollout
 
+**Server update:** Use [Coordinator 2.2.4](coordinator-2.2.4.md) to install
+publisher trust automatically during setup. This resolves the untrusted
+Authenticode error on servers missing the KSAT signing certificate. The
+Client/Builder 2.1.6 downloads and rollout procedure below are unchanged.
+
 Client 2.1.6 and matching Lab Package Builder 2.1.6 are signed private-lab
 pilot builds alongside Coordinator 2.2.3. Automated artifact checks passed;
 the real installed-PC pilot remains required. The existing release publisher

@@ -1,0 +1,9 @@
+{
+  "coordinator_main.py": "2e7a40d2845551263f5bbaeeccc49784f59847f06ba69696065f7cbbd8dd79df",
+  "app.py": "1987ec14c465b939ce6f332c8b47a2e8e7af0372a73de75072d2916fc9d8e1af",
+  "installer/KSATCoordinator.iss": "564c56efa5a05087ee6ed6511e2569a86f8a8c90daf51bca5531a44b980a5d41",
+  "scripts/windows_release.py": "1537825910d87c1fb31119e2d91627e25f5282fefcce8e00d50f71270d098492",
+  "scripts/build_coordinator_lab_release.py": "31dc126235b32fb043827531b81b11b57232ca640e51427b4e00ee77cc06f566",
+  "static/app.js": "4eb8e3cb52790a9692892e8bf7cf63f19b409f6556c10ca79343d16aa9bbb21b",
+  "static/index.html": "6811db944fe0503db20738433f06cd28f3340bc5b66b7b9c3d0327f7a1bdd4e4"
+}

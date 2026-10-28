@@ -1,0 +1,23 @@
+{
+  "version": "2.2.7",
+  "publisher": "CN=KSAT LAB RELEASE SIGNING",
+  "thumbprint": "13AE2A6440C33E074FC9C99FB35E5A1CFD9BE908",
+  "frozen_https_startup": "passed",
+  "installer_payload": "verified",
+  "uac_payload_equivalence": "verified",
+  "frozen_runtime_upgrade_sources": [
+    "2.2.5",
+    "2.2.6"
+  ],
+  "runtime_upgrade_retained_data": "database, CSV, network settings and security identity unchanged; original config backed up",
+  "client_binaries_rebuilt": false,
+  "source_commit": "31e16218450f20dac1d527616ae1bb3a8b8e2393",
+  "regression_tests": {
+    "passed": 86,
+    "subtests_passed": 22
+  },
+  "independent_review": "no blocking findings",
+  "physical_lab_installation": "not performed",
+  "scope": "Packaged installer validation against legacy fixtures; HTTPS startup against isolated fresh data. User machine runtime file was not inspected.",
+  "source_input_sha256": "cf0bd722e776c190d71a0a4cf98505175138f7bc0e6bf978ab256e8d90811375"
+}

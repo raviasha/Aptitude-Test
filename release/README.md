@@ -1,13 +1,18 @@
 # KSAT release files
 
-## Coordinator 2.2.6, Client 2.1.7 and Lab Package Builder 2.1.7
+## Coordinator 2.2.7, Client 2.1.7 and Lab Package Builder 2.1.7
+
+**Coordinator 2.2.7 fixes the runtime-configuration error when upgrading from
+2.2.5. Use 2.2.7 if the 2.2.6 installer failed.** Keep the existing ProgramData
+folder and install over the existing application.
+[Hotfix details](../docs/coordinator-2.2.7.md).
 
 This is the recovery/bootstrap release for clients blocked by old practice
 submissions. Use these files for new installations and upgrades:
 
 | Purpose | Download |
 | --- | --- |
-| Upgrade the faculty server | [KSATCoordinatorSetup-2.2.6.exe](coordinator-2.2.6/KSATCoordinatorSetup-2.2.6.exe) |
+| Upgrade the faculty server | [KSATCoordinatorSetup-2.2.7.exe](coordinator-2.2.7/KSATCoordinatorSetup-2.2.7.exe) |
 | Install or upgrade a Windows client | [KSATClientSetup-2.1.7.exe](https://github.com/raviasha/Aptitude-Test/releases/download/client-v2.1.7/KSATClientSetup-2.1.7.exe) |
 | Build a lab-specific client installer | [KSATLabPackageBuilder-2.1.7.exe](https://github.com/raviasha/Aptitude-Test/releases/download/client-v2.1.7/KSATLabPackageBuilder-2.1.7.exe) |
 
@@ -22,12 +27,12 @@ selected, confirmed obsolete practice submissions rejected with
 assistance causes are diagnosed without discarding their records. Install over
 the existing application and keep ProgramData intact.
 
-Coordinator 2.2.6 identifies the selected pilot and improves authenticated contact
+Coordinator 2.2.7 identifies the selected pilot and improves authenticated contact
 reporting. Existing question banks, results and logins need no reimport.
 
 [Upgrade and recovery instructions](../docs/client-2.1.7-recovery.md) ·
-[Coordinator checksums](coordinator-2.2.6/SHA256SUMS.txt) ·
-[Coordinator verification](coordinator-2.2.6/verification.json) ·
+[Coordinator checksums](coordinator-2.2.7/SHA256SUMS.txt) ·
+[Coordinator verification](coordinator-2.2.7/verification.json) ·
 [Client/Builder checksums](client-2.1.7/SHA256SUMS.txt) ·
 [Client/Builder verification](client-2.1.7/verification.json)
 

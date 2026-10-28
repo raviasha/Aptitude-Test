@@ -1,8 +1,8 @@
-# Client 2.1.7 and Coordinator 2.2.6
+# Client 2.1.7 and Coordinator 2.2.7
 
 Client 2.1.7 includes an administrator recovery window for obsolete practice
 submissions and preserves completed submissions during subsequent managed
-upgrades. Coordinator 2.2.6 improves pilot identification and contact reporting.
+upgrades. Coordinator 2.2.7 improves pilot identification and contact reporting.
 Lab Package Builder 2.1.7 generates installers with the same client and recovery
 tool. The earlier question-image improvements are retained.
 
@@ -47,7 +47,7 @@ There is no need to update an already installed 2.1.7 client to itself. Existing
 
 ## Coordinator and Builder
 
-Install **KSATCoordinatorSetup-2.2.6.exe** over the existing server installation
+Install **KSATCoordinatorSetup-2.2.7.exe** over the existing server installation
 after stopping the Coordinator. Keep `C:\ProgramData\KSAT Coordinator` intact.
 The new UI identifies the selected pilot by its device label and ID, and reports
 Unknown when no contact evidence exists instead of incorrectly assuming Offline.

@@ -6,8 +6,9 @@ to select the server address and its two public trust files. No terminal command
 are needed for installation/configuration. See the [Ubuntu installation guide](docs/ubuntu-client-installation.md)
 and [GUI build verification](docs/ubuntu-gui-build-verification.md). These remain pilot builds.
 
-**Current Windows private-lab builds: Coordinator 2.2.6 and Client/Builder 2.1.7.**
-See [downloads and checksums](release/README.md). Client 2.1.7 adds an administrator
+**Current Windows private-lab builds: Coordinator 2.2.7 and Client/Builder 2.1.7.**
+See [downloads and checksums](release/README.md). Coordinator 2.2.7 fixes the
+2.2.5-to-2.2.6 installation error. Client 2.1.7 adds an administrator
 recovery tool for obsolete practice submissions and preservation checks for future
 updates. This release requires a one-time interactive client installation;
 there is no 2.1.7 managed-update bundle. See the [upgrade and recovery guide](docs/client-2.1.7-recovery.md).

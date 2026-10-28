@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import sqlite3
 import ssl
 import subprocess
 import sys
@@ -14,6 +15,51 @@ import tempfile
 
 from scripts import windows_release as release
 from ksat.coordinator.tls import load_or_create_coordinator_security
+
+
+def verify_frozen_runtime_upgrades(executable: Path, scratch: Path) -> list[str]:
+    """Exercise the installer's real --validate-config command on old settings."""
+    verified = []
+    for version in ('2.2.5', '2.2.6'):
+        data = scratch / ('upgrade-' + version)
+        data.mkdir()
+        value = dict(bind_host='0.0.0.0', hostname='localhost', interactive=False,
+                     port=9443, version=version)
+        original = json.dumps(value, sort_keys=True, separators=(',', ':')).encode()
+        config = data/'coordinator-runtime.json'
+        config.write_bytes(original)
+        load_or_create_coordinator_security(data, hostname='localhost', port=9443,
+                                             lan_ip_addresses=['192.168.254.254'])
+        database = data/'aptitude.db'
+        connection = sqlite3.connect(database)
+        try:
+            connection.executescript("CREATE TABLE students(id TEXT, password_hash TEXT);"
+                "INSERT INTO students VALUES ('fixture-student','fixture-password-hash');"
+                "CREATE TABLE results(id TEXT, score INTEGER);"
+                "INSERT INTO results VALUES ('fixture-attempt',17);")
+        finally:
+            connection.close()
+        (data/'results.csv').write_bytes(b'attempt,score\nfixture-attempt,17\n')
+        retained = {p.relative_to(data):p.read_bytes() for p in data.rglob('*')
+                    if p.is_file() and p != config}
+        environment = dict(os.environ, KSAT_COORDINATOR_DATA_DIR=str(data),
+                           KSAT_NONINTERACTIVE='1')
+        for _ in range(2):
+            result = subprocess.run([str(executable), '--validate-config'], env=environment,
+                capture_output=True, text=True, timeout=45,
+                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+            if result.returncode != 0:
+                raise RuntimeError(f'Frozen upgrade validation failed for {version}.')
+            expected = json.dumps(dict(value, version=release.APP_VERSION),
+                                  sort_keys=True, separators=(',', ':')).encode()
+            if config.read_bytes() != expected:
+                raise RuntimeError('Frozen upgrade changed saved network settings.')
+            if (data/f'coordinator-runtime.pre-{release.APP_VERSION}.json.bak').read_bytes() != original:
+                raise RuntimeError('Frozen upgrade did not retain the original configuration.')
+            if any((data/name).read_bytes() != raw for name, raw in retained.items()):
+                raise RuntimeError('Frozen upgrade changed retained records or security identity.')
+        verified.append(version)
+    return verified
 
 
 def main():
@@ -65,6 +111,7 @@ def main():
         subprocess.run(command, cwd=root, check=True)
         smoke = scratch / 'smoke/dist/KSATCoordinatorSmoke.exe'
         release.coordinator_payload_manifest(layout.coordinator_executable, smoke)
+        upgrade_versions = verify_frozen_runtime_upgrades(smoke, scratch)
         port = release._free_port()
         data = scratch / 'data'
         security = load_or_create_coordinator_security(data, hostname='localhost', port=port, lan_ip_addresses=['192.168.254.254'])
@@ -94,6 +141,8 @@ def main():
     evidence = {'version':release.APP_VERSION, 'publisher':signing.expected_publisher,
                 'thumbprint':signing.expected_thumbprint, 'frozen_https_startup':'passed',
                 'installer_payload':'verified', 'uac_payload_equivalence':'verified',
+                'frozen_runtime_upgrade_sources':upgrade_versions,
+                'runtime_upgrade_retained_data':'database, CSV, network settings and security identity unchanged; original config backed up',
                 'client_binaries_rebuilt':False}
     (output / 'verification.json').write_text(json.dumps(evidence, indent=2) + '\n')
     print(json.dumps(evidence))

@@ -1,0 +1,45 @@
+{
+  "url": "https://github.com/raviasha/Aptitude-Test/releases/tag/client-v2.1.8",
+  "tag": "client-v2.1.8",
+  "release_commit": "6b02767610aa0965c9dc3eab49b0f6bc9aadfecb",
+  "published_at": "2026-10-29T05:02:26Z",
+  "prerelease": true,
+  "assets": [
+    {
+      "name": "KSATClientSetup-2.1.8.exe",
+      "url": "https://github.com/raviasha/Aptitude-Test/releases/download/client-v2.1.8/KSATClientSetup-2.1.8.exe",
+      "bytes": 141644288,
+      "sha256": "131b36461cfd656f0335fd3a9fc729dca50a4559fe43c1ce82726f067067f235"
+    },
+    {
+      "name": "KSATClientUpdate-2.1.8.ksat-client-update",
+      "url": "https://github.com/raviasha/Aptitude-Test/releases/download/client-v2.1.8/KSATClientUpdate-2.1.8.ksat-client-update",
+      "bytes": 141645334,
+      "sha256": "bcccdee54409abb4476503d366165c5a222da5fa1444acd5b12a56e034c08701"
+    },
+    {
+      "name": "KSATLabPackageBuilder-2.1.8.exe",
+      "url": "https://github.com/raviasha/Aptitude-Test/releases/download/client-v2.1.8/KSATLabPackageBuilder-2.1.8.exe",
+      "bytes": 176659336,
+      "sha256": "2df7e06a098aa1be3f9268e239ed18701bfc262a76daa5353828547a1f483486"
+    },
+    {
+      "name": "SHA256SUMS.txt",
+      "url": "https://github.com/raviasha/Aptitude-Test/releases/download/client-v2.1.8/SHA256SUMS.txt",
+      "bytes": 298,
+      "sha256": "7953641ef537e2fe7e316ee05d1ee0625fd70cbd62f3c2a760720df91dea014b"
+    },
+    {
+      "name": "source-inputs.json",
+      "url": "https://github.com/raviasha/Aptitude-Test/releases/download/client-v2.1.8/source-inputs.json",
+      "bytes": 6636,
+      "sha256": "7df880642deec3ae027a14847b4fc733ce826a76cf34d2fcb051868ccd61ee57"
+    },
+    {
+      "name": "verification.json",
+      "url": "https://github.com/raviasha/Aptitude-Test/releases/download/client-v2.1.8/verification.json",
+      "bytes": 1081,
+      "sha256": "75175532813d7e5a169dd12248a3a80b09d5af2cb5982a040b78ea8cd659b064"
+    }
+  ]
+}

@@ -27,7 +27,10 @@ enrollment, configuration and server results intact.
   source Client 2.1.7. Verify embedded payloads and packaged startup.
 - [x] Verify the actual signed bundle using unchanged Coordinator 2.2.7 upload
   and pilot logic and Client 2.1.7 download/staging logic in isolated fixtures.
-- [ ] Publish verified client artifacts and instructions to GitHub.
+- [x] Publish verified client artifacts and instructions to GitHub.
+  Release `client-v2.1.8` is published with all six assets; their remote sizes
+  and SHA-256 digests match the verified local files. Publication receipt:
+  `release/client-2.1.8/publication.json`.
 - [ ] **Still on hold:** Build Coordinator 2.2.8. Its migration allowlist and
   version label are updated in source, but this client rollout uses 2.2.7.
 

@@ -1,8 +1,9 @@
 # Client 2.1.8: automatic obsolete-attempt recovery
 
-**Source update only. Installers and the managed bundle have not been built or
-published. The lab owner asked to hold packaging while additional issues are
-included. Deployment instructions below describe the planned release.**
+Client 2.1.8 includes a Windows installer, matching Lab Package Builder and a
+signed managed-update bundle for clients already running 2.1.7. See the
+[release downloads](https://github.com/raviasha/Aptitude-Test/releases/tag/client-v2.1.8)
+and [verification record](../release/client-2.1.8/verification.json).
 
 The lab's retention policy now treats submissions rejected with the exact code
 `attempt_identity_mismatch` as obsolete. Client 2.1.8 automatically creates and
@@ -48,15 +49,15 @@ image replaces duplicate directions and table/figure transcripts; a failed image
 restores readable text. Supporting diagrams retain their necessary stem. These
 reasoning banks do not need reimport for this fix.
 
-Coordinator **2.2.8** adds a clearly labelled running version in the page footer.
+Coordinator **2.2.8 source** adds a clearly labelled running version in the page
+footer; its installer has not been built or published as part of this release.
 Client **2.1.8** shows its running version below the assessment title, including
 on login and error screens. Both labels come from the running application.
 
-Coordinator 2.2.8 preserves the existing protocol and supports older clients.
-Install it over the existing Coordinator after stopping the server. Retain
-`C:\ProgramData\KSAT Coordinator`; no bank reimport is required for this release.
-The automatic recovery is in the client, so updating only the server does not
-unblock older clients. The existing 2.2.7 Coordinator can deploy the 2.1.8 bundle.
+**Keep using Coordinator 2.2.7: it can deploy the 2.1.8 bundle. No server upgrade
+or bank reimport is required for this release.** Automatic recovery and the
+test-screen image fix are in the client, so updating only the server does not
+deliver them to older clients.
 
 These are private-lab pilot builds. Automated checks do not establish that a
 physical lab rollout has succeeded; confirm one PC before broad deployment.

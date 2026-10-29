@@ -6,12 +6,14 @@ to select the server address and its two public trust files. No terminal command
 are needed for installation/configuration. See the [Ubuntu installation guide](docs/ubuntu-client-installation.md)
 and [GUI build verification](docs/ubuntu-gui-build-verification.md). These remain pilot builds.
 
-**Current Windows private-lab builds: Coordinator 2.2.7 and Client/Builder 2.1.7.**
-See [downloads and checksums](release/README.md). Coordinator 2.2.7 fixes the
-2.2.5-to-2.2.6 installation error. Client 2.1.7 adds an administrator
-recovery tool for obsolete practice submissions and preservation checks for future
-updates. This release requires a one-time interactive client installation;
-there is no 2.1.7 managed-update bundle. See the [upgrade and recovery guide](docs/client-2.1.7-recovery.md).
+**Current Windows private-lab builds: Coordinator 2.2.7 and Client/Builder 2.1.8.**
+See [downloads and checksums](release/README.md). Client 2.1.8 fixes repeated text
+above complete question images, automatically archives obsolete identity-mismatch
+submissions, and shows the running client version. Deploy the signed update
+bundle through Coordinator 2.2.7 to PCs already on Client 2.1.7. Clients on
+2.1.5/2.1.6 need a one-time interactive upgrade directly to 2.1.8. See the
+[deployment guide](docs/client-2.1.8-automatic-recovery.md). Coordinator 2.2.8
+remains a source-only change; its installer is not part of this release.
 An installed-PC pilot remains required before broad deployment.
 
 KSAT 2.0 ships separate Windows installers for the HTTPS faculty coordinator and

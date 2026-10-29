@@ -23,19 +23,26 @@ enrollment, configuration and server results intact.
   Coordinator without blocking normal UI startup.
 - [x] Restore `source_key` in the real question API and verify the two
   photographed Missing Number questions in the shipping UI.
-- [ ] **ON HOLD per user:** Build Client/Builder 2.1.8 and Coordinator 2.2.8, including the previous
-  Coordinator runtime version in its migration allowlist. Produce a signed
-  managed bundle for clients on 2.1.7 or later.
-- [ ] **ON HOLD per user:** Verify packaged payloads and publish installers
-  and instructions to the existing GitHub repository.
+- [x] Build and sign Client/Builder 2.1.8 plus a managed bundle requiring
+  source Client 2.1.7. Verify embedded payloads and packaged startup.
+- [x] Verify the actual signed bundle using unchanged Coordinator 2.2.7 upload
+  and pilot logic and Client 2.1.7 download/staging logic in isolated fixtures.
+- [ ] Publish verified client artifacts and instructions to GitHub.
+- [ ] **Still on hold:** Build Coordinator 2.2.8. Its migration allowlist and
+  version label are updated in source, but this client rollout uses 2.2.7.
 
 ## Decisions and evidence
 
 - The user subsequently instructed: **do not build installers yet**, and added
   the duplicate-image/text defect with photographs of Missing Number questions
-  72 and 14. Packaging and publication steps are on hold. Version 2.1.8/2.2.8
-  labels in source refer to unreleased work; existing released artifacts remain
-  unchanged. No build has been started.
+  72 and 14. Packaging was held while those issues were fixed. The next request
+  authorized a new client and server-deployable update; Client/Builder 2.1.8 and
+  its managed bundle are now built. Coordinator 2.2.8 remains source-only.
+- Client build evidence is in `release/client-2.1.8/verification.json`. Fresh
+  release checks passed (7 tests); native startup and version label, installer
+  payload, Builder payload, signature and bundle checks passed. The actual
+  bundle staged successfully for source Client 2.1.7, including pending
+  submissions; active tests deferred. No physical lab install was performed.
 - Root cause of duplicate text: `client_app._question_payload` discarded
   `source_key`, which the shipped browser replacement rule requires. Restore
   the field and test actual chapter data through the real API and browser code.

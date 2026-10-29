@@ -1,5 +1,37 @@
 # KSAT release files
 
+## Current: Client 2.1.8 and Lab Package Builder 2.1.8
+
+Client 2.1.8 fixes repeated text above complete question images, automatically
+archives obsolete `attempt_identity_mismatch` submissions, and displays the
+running client version. Keep using **Coordinator 2.2.7** for this rollout.
+
+| Purpose | Download |
+| --- | --- |
+| Upload in Faculty > Client updates | [KSATClientUpdate-2.1.8.ksat-client-update](https://github.com/raviasha/Aptitude-Test/releases/download/client-v2.1.8/KSATClientUpdate-2.1.8.ksat-client-update) |
+| Install or upgrade a Windows client locally | [KSATClientSetup-2.1.8.exe](https://github.com/raviasha/Aptitude-Test/releases/download/client-v2.1.8/KSATClientSetup-2.1.8.exe) |
+| Build a lab-specific client installer | [KSATLabPackageBuilder-2.1.8.exe](https://github.com/raviasha/Aptitude-Test/releases/download/client-v2.1.8/KSATLabPackageBuilder-2.1.8.exe) |
+| Current faculty server installer | [KSATCoordinatorSetup-2.2.7.exe](coordinator-2.2.7/KSATCoordinatorSetup-2.2.7.exe) |
+
+**Remote update requires Client 2.1.7 or later.** Choose one pilot, open KSAT on
+that PC, and confirm its verified successful update before publishing to all.
+Active tests defer installation. Client 2.1.7 preserves completed pending
+submissions while updating; the new client archives eligible obsolete attempts
+after installation health verification finishes.
+
+PCs on 2.1.5/2.1.6 need the 2.1.8 EXE run interactively once. Install over the
+existing client and keep ProgramData to retain its server connection and records.
+No reasoning-bank reimport or new Coordinator installer is needed for this fix.
+The Coordinator 2.2.8 version-label change is source-only for now.
+
+[Instructions](../docs/client-2.1.8-automatic-recovery.md) ·
+[Checksums](client-2.1.8/SHA256SUMS.txt) ·
+[Verification](client-2.1.8/verification.json) ·
+[GitHub release](https://github.com/raviasha/Aptitude-Test/releases/tag/client-v2.1.8)
+
+These are private-lab pilot builds. Physical lab rollout has not been performed
+by the build agent. Earlier releases below are retained for reference.
+
 ## Coordinator 2.2.7, Client 2.1.7 and Lab Package Builder 2.1.7
 
 **Coordinator 2.2.7 fixes the runtime-configuration error when upgrading from

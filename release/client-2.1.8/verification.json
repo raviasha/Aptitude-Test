@@ -1,0 +1,20 @@
+{
+  "client_version": "2.1.8",
+  "publisher": "CN=KSAT LAB RELEASE SIGNING",
+  "thumbprint": "13AE2A6440C33E074FC9C99FB35E5A1CFD9BE908",
+  "installer_payload": "verified",
+  "builder_payload": "verified",
+  "frozen_client_startup": "passed",
+  "client_loopback_only": true,
+  "tls_verified": true,
+  "managed_bundle": "verified; minimum installed client 2.1.7",
+  "physical_lab_pilot": "not yet performed",
+  "source_commit": "ba98090019ac9d18ece6127fc9d8107c540e4b21",
+  "source_hashes": "verified unchanged throughout build",
+  "managed_bundle_release_id": "010e58f3-5ebc-4edd-84b0-ac98a51ec96c",
+  "managed_bundle_sha256": "bcccdee54409abb4476503d366165c5a222da5fa1444acd5b12a56e034c08701",
+  "coordinator_227_upload_and_pilot": "passed with real signed bundle in isolated database",
+  "client_217_download_and_staging": "passed with real signed bundle; pending submissions allowed; active test deferred",
+  "installer_executed_on_lab_pc": false,
+  "automated_source_tests": "409 passed, 1 skipped, 108 subtests passed; 7 additional release checks passed"
+}

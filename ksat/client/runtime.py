@@ -518,6 +518,21 @@ class AssessmentRuntime:
             self._clear_active()
             return True
 
+    def archive_obsolete_attempts(self, data_dir: Path):
+        """Caller owns maintenance; serialize recovery with test actions."""
+        from ksat.client.recovery import archive_obsolete_attempts
+        with self._lock:
+            try:
+                return archive_obsolete_attempts(data_dir, self.store)
+            finally:
+                # Removal may commit before the optional outcome marker can be
+                # written. Never retain a pointer to a verified removed row.
+                if self._attempt_id is not None:
+                    try:
+                        self.store.load_attempt(self._attempt_id)
+                    except KeyError:
+                        self._clear_active()
+
     def recover(self) -> AttemptSnapshot | None:
         with self._lock:
             record = self.store.active_attempt()

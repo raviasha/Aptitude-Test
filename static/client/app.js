@@ -1094,6 +1094,13 @@ if (typeof document !== 'undefined') {
     renderPendingReviewControls(attempt);
     elements.actionArea.append(signOutButton());
     stopPolling();
+    if (attempt.queue?.diagnostic_code === 'attempt_identity_mismatch') {
+      const generation = ui.viewGeneration;
+      ui.pollHandle = window.setTimeout(() => {
+        ui.pollHandle = null;
+        if (ownsView('attempt', generation)) refreshState();
+      }, 1500);
+    }
   }
 
   function renderPendingReviewControls(attempt) {
@@ -1252,6 +1259,11 @@ if (typeof document !== 'undefined') {
       else renderAttempt(attempt);
     } catch (error) {
       if (ownsView(view, generation)) {
+        if (error.problem?.code === 'attempt_mismatch') {
+          stopPolling();
+          await refreshState();
+          return;
+        }
         if (view === 'local_review') {
           setSafeText(ui.localReview.status, 'Could not check upload status. Your answers remain saved; checking again.');
         } else showProblem(error.problem);
@@ -1298,6 +1310,12 @@ if (typeof document !== 'undefined') {
       }
       freshBrowserSession = false;
       ui.state = state.state;
+      if (state.state === 'obsolete_attempt_recovery') {
+        stopPolling();
+        showStatus('Preparing this PC', 'Archiving an obsolete submission. This page will check again automatically. If this persists, Faculty can inspect KSAT Client Recovery.');
+        ui.pollHandle = window.setTimeout(() => { ui.pollHandle = null; refreshState(); }, 1500);
+        return;
+      }
       if (state.state === 'client_update_required') return renderClientUpdate(state.update);
       if (state.state === 'device_setup') return renderDeviceSetup();
       if (state.state === 'login') return renderLogin();
@@ -1312,6 +1330,11 @@ if (typeof document !== 'undefined') {
         renderAttempt(attempt);
       }
     } catch (error) {
+      if (error.problem?.code === 'attempt_mismatch') {
+        stopPolling();
+        ui.pollHandle = window.setTimeout(() => { ui.pollHandle = null; refreshState(); }, 1500);
+        return;
+      }
       showStatus('Client unavailable', problemMessage(error.problem && error.problem.code, error.problem && error.problem.diagnostic_reference));
     }
   }

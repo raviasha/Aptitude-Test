@@ -105,6 +105,94 @@ class ClientRecoveryTests(unittest.TestCase):
     def selected(self):
         return self.backend.preview().candidates
 
+    def test_automatic_recovery_archives_only_exact_obsolete_rejections(self):
+        obsolete = self.attempt()
+        other = self.attempt(error='device_revoked: keep')
+        pending = self.attempt(error=None)
+        acknowledged = self.attempt(acknowledged=True)
+        with self.store() as store:
+            retained = {i: store.load_attempt(i) for i in (other, pending, acknowledged)}
+            result = self.recovery.archive_obsolete_attempts(self.root, store)
+            self.assertEqual((obsolete,), result.removed_attempt_ids)
+            manifest = self.recovery.verify_archive(result.archive_path)
+            self.assertEqual('lab_policy_obsolete_identity_mismatch', manifest['authorization'])
+            with self.assertRaises(KeyError):
+                store.load_attempt(obsolete)
+            for i, record in retained.items():
+                self.assertEqual(record, store.load_attempt(i))
+            self.assertIsNone(self.recovery.archive_obsolete_attempts(self.root, store))
+        self.assertEqual([], self.service.actions)
+
+    def test_automatic_recovery_defers_active_test(self):
+        self.attempt()
+        self.attempt(active=True)
+        before = self.fixture.bytes()
+        with self.store() as store:
+            self.assertIsNone(self.recovery.archive_obsolete_attempts(self.root, store))
+        self.assertEqual(before, self.fixture.bytes())
+
+    def test_automatic_archive_failure_keeps_live_attempt(self):
+        obsolete = self.attempt()
+        with self.store() as store:
+            before = store.load_attempt(obsolete)
+            with patch.object(self.recovery, 'verify_archive', side_effect=self.recovery.RecoveryError('archive_failed')):
+                with self.assertRaises(self.recovery.RecoveryError):
+                    self.recovery.archive_obsolete_attempts(self.root, store)
+            self.assertEqual(before, store.load_attempt(obsolete))
+
+    def test_automatic_recovery_defers_until_update_health_is_recorded(self):
+        obsolete = self.attempt()
+        journal = self.root / 'updates/update-journal.json'
+        journal.parent.mkdir(exist_ok=True)
+        with self.store() as store:
+            before = store.load_attempt(obsolete)
+            for content in ('{"stage":"health_check"}', '{invalid', '{"stage":"rollback_failed"}'):
+                journal.write_text(content)
+                self.assertIsNone(self.recovery.archive_obsolete_attempts(self.root, store))
+                self.assertEqual(before, store.load_attempt(obsolete))
+            journal.write_text('{"stage":"healthy"}')
+            self.assertEqual((obsolete,), self.recovery.archive_obsolete_attempts(self.root, store).removed_attempt_ids)
+
+    def test_runtime_forgets_archived_attempt_and_can_return_to_test_selection(self):
+        from ksat.client.runtime import AssessmentRuntime
+        obsolete = self.attempt()
+        with self.store() as store:
+            identity = DeviceIdentityStore(self.root / 'identity').load_existing()
+            runtime = AssessmentRuntime(store, identity, runtime_fixtures.FakeClock())
+            runtime._attempt_id = obsolete
+            runtime._questions = {'stale': 'must be removed'}
+            result = runtime.archive_obsolete_attempts(self.root)
+            self.assertEqual((obsolete,), result.removed_attempt_ids)
+            self.assertIsNone(runtime.recover())
+            self.assertEqual({}, runtime._questions)
+            with self.assertRaisesRegex(RuntimeError, 'No local assessment'):
+                runtime.snapshot()
+
+    def test_context_recovers_startup_and_newly_rejected_attempt_without_restart(self):
+        from client_app import _ClientContext, ClientServices
+        from ksat.client.runtime import AssessmentRuntime
+        from types import SimpleNamespace
+        obsolete = self.attempt()
+        with self.store() as store:
+            identities = DeviceIdentityStore(self.root / 'identity')
+            runtime = AssessmentRuntime(store, identities.load_existing(), runtime_fixtures.FakeClock())
+            services = ClientServices(identities, store, runtime, SimpleNamespace(), SimpleNamespace(),
+                maintenance_data_dir=self.root)
+            context = _ClientContext(services)
+            self.assertIsNone(context.recover())
+            self.assertIsNone(context.startup_problem)
+            self.assertEqual([], store.pending_submissions())
+        rejected_later = self.attempt()
+        with self.store() as store:
+            services.store = store
+            services.runtime = AssessmentRuntime(store, identities.load_existing(), runtime_fixtures.FakeClock())
+            services.runtime._attempt_id = rejected_later
+            with self.recovery.MaintenanceGate(self.root):
+                self.assertIsNone(context.archive_obsolete_attempts())
+                self.assertIsNotNone(store.load_attempt(rejected_later))
+            self.assertEqual((rejected_later,), context.archive_obsolete_attempts().removed_attempt_ids)
+            self.assertEqual([], store.pending_submissions())
+
     def test_preview_exact_code_only_and_no_sensitive_text(self):
         eligible = self.attempt()
         self.attempt(error='attempt_identity_mismatch_extra: secret')
@@ -118,6 +206,136 @@ class ClientRecoveryTests(unittest.TestCase):
         self.assertNotIn('secret', repr(preview))
         self.assertEqual(before, self.fixture.bytes())
         self.assertEqual([], self.service.actions)
+
+    def test_state_api_returns_to_selection_after_deferred_automatic_archive(self):
+        from client_app import ClientServices, create_client_app
+        from ksat.client.runtime import AssessmentRuntime
+        from tests.test_client_app_api import FakeCoordinator, FakeOutbox
+        from fastapi.testclient import TestClient
+        obsolete = self.attempt()
+        self.attempt()  # Legacy PCs can have several obsolete queued attempts.
+        journal = self.root / 'updates/update-journal.json'
+        journal.parent.mkdir(exist_ok=True)
+        journal.write_text('{"stage":"health_check"}')
+        with self.store() as store:
+            identities = DeviceIdentityStore(self.root / 'identity')
+            runtime = AssessmentRuntime(store, identities.load_existing(), runtime_fixtures.FakeClock())
+            coordinator = FakeCoordinator()
+            coordinator.login('S100', 'fixture-password')
+            services = ClientServices(identities, store, runtime, coordinator, FakeOutbox(),
+                maintenance_data_dir=self.root)
+            with TestClient(create_client_app(services), base_url='http://127.0.0.1:8010') as client:
+                self.assertEqual('obsolete_attempt_recovery', client.get('/api/state').json()['state'])
+                journal.write_text('{"stage":"healthy"}')
+                state = client.get('/api/state').json()
+                self.assertEqual('waiting_or_ready', state['state'])
+                self.assertIsNone(state['problem'])
+                self.assertIsNone(state['attempt'])
+                self.assertEqual([], store.pending_submissions())
+                self.assertEqual(409, client.get('/api/attempts/' + obsolete).status_code)
+
+    def test_outcome_write_failure_does_not_leave_deleted_runtime_attempt(self):
+        from ksat.client.runtime import AssessmentRuntime
+        obsolete = self.attempt()
+        write = self.recovery._durable_write
+        def fail_completed(path, payload):
+            if path.name == 'outcome.json' and json.loads(payload)['status'] == 'completed':
+                raise OSError('outcome write failed')
+            write(path, payload)
+        with self.store() as store:
+            identities = DeviceIdentityStore(self.root / 'identity')
+            runtime = AssessmentRuntime(store, identities.load_existing(), runtime_fixtures.FakeClock())
+            runtime._attempt_id = obsolete
+            with patch.object(self.recovery, '_durable_write', side_effect=fail_completed):
+                with self.assertRaises(OSError):
+                    runtime.archive_obsolete_attempts(self.root)
+            with self.assertRaisesRegex(RuntimeError, 'No local assessment'):
+                runtime.snapshot()
+            archives = list((self.root / 'recovery').glob('*/manifest.json'))
+            self.assertEqual(1, len(archives))
+            self.recovery.verify_archive(archives[0].parent)
+
+    def test_deferred_archive_recovers_retained_submission_questions(self):
+        from client_app import ClientServices, create_client_app
+        from ksat.client.runtime import AssessmentRuntime
+        from tests.test_client_app_api import FakeCoordinator, FakeOutbox
+        from fastapi.testclient import TestClient
+        self.attempt()
+        retained = self.attempt(error='device_revoked: must retain')
+        journal = self.root / 'updates/update-journal.json'
+        journal.parent.mkdir(exist_ok=True)
+        journal.write_text('{"stage":"health_check"}')
+        with self.store() as store:
+            before = store.load_attempt(retained)
+            identities = DeviceIdentityStore(self.root / 'identity')
+            runtime = AssessmentRuntime(store, identities.load_existing(), runtime_fixtures.FakeClock())
+            coordinator = FakeCoordinator()
+            coordinator.login('S100', 'fixture-password')
+            services = ClientServices(identities, store, runtime, coordinator, FakeOutbox(),
+                maintenance_data_dir=self.root)
+            with TestClient(create_client_app(services), base_url='http://127.0.0.1:8010') as client:
+                self.assertEqual('obsolete_attempt_recovery', client.get('/api/state').json()['state'])
+                journal.write_text('{"stage":"healthy"}')
+                self.assertEqual('faculty_intervention_required', client.get('/api/state').json()['state'])
+                attempt = client.get('/api/attempts/' + retained)
+                self.assertEqual(200, attempt.status_code, attempt.text)
+                self.assertEqual(2, len(attempt.json()['questions']))
+                self.assertEqual(before, store.load_attempt(retained))
+
+    def test_live_archive_recovers_retained_submission_without_prior_deferral(self):
+        from client_app import ClientServices, create_client_app
+        from ksat.client.runtime import AssessmentRuntime
+        from tests.test_client_app_api import FakeCoordinator, FakeOutbox
+        from fastapi.testclient import TestClient
+        obsolete = self.attempt(error=None)
+        with self.store() as store:
+            identities = DeviceIdentityStore(self.root / 'identity')
+            runtime = AssessmentRuntime(store, identities.load_existing(), runtime_fixtures.FakeClock())
+            coordinator = FakeCoordinator()
+            coordinator.login('S100', 'fixture-password')
+            services = ClientServices(identities, store, runtime, coordinator, FakeOutbox(),
+                maintenance_data_dir=self.root)
+            with TestClient(create_client_app(services), base_url='http://127.0.0.1:8010') as client:
+                retained = self.attempt(error='device_revoked: must retain')
+                before = store.load_attempt(retained)
+                store.require_faculty_intervention(obsolete, last_error='attempt_identity_mismatch: obsolete')
+                self.assertEqual('faculty_intervention_required', client.get('/api/state').json()['state'])
+                attempt = client.get('/api/attempts/' + retained)
+                self.assertEqual(200, attempt.status_code, attempt.text)
+                self.assertEqual(2, len(attempt.json()['questions']))
+                self.assertEqual(before, store.load_attempt(retained))
+
+    def test_closing_browser_during_deferred_multi_attempt_recovery_preserves_queue(self):
+        self.enterContext(patch('client_app._WINDOW_UPLOAD_GRACE_SECONDS', 0))
+        import re
+        import threading
+        from client_app import ClientServices, create_client_app
+        from ksat.client.runtime import AssessmentRuntime
+        from ksat.client.lifecycle import BrowserLifetime
+        from tests.test_client_app_api import FakeCoordinator, FakeOutbox
+        from fastapi.testclient import TestClient
+        self.attempt()
+        self.attempt()
+        journal = self.root / 'updates/update-journal.json'
+        journal.parent.mkdir(exist_ok=True)
+        journal.write_text('{"stage":"health_check"}')
+        now = [0]
+        lifetime = BrowserLifetime(clock=lambda: now[0])
+        stopped = threading.Event()
+        with self.store() as store:
+            identities = DeviceIdentityStore(self.root / 'identity')
+            runtime = AssessmentRuntime(store, identities.load_existing(), runtime_fixtures.FakeClock())
+            services = ClientServices(identities, store, runtime, FakeCoordinator(), FakeOutbox(),
+                maintenance_data_dir=self.root)
+            app = create_client_app(services, lifetime=lifetime, request_shutdown=stopped.set)
+            with TestClient(app, base_url='http://127.0.0.1:8010') as client:
+                token = re.search(r'name="ksat-csrf" content="([\w-]+)"', client.get('/').text)[1]
+                with client.websocket_connect('ws://127.0.0.1:8010/api/lifecycle/presence',
+                        headers={'Origin': 'http://127.0.0.1:8010'}, subprotocols=['ksat-presence', token]) as socket:
+                    socket.receive_json()
+                now[0] = 500
+                self.assertTrue(stopped.wait(5))
+                self.assertEqual(2, len(store.pending_submissions()))
 
     def test_selected_archive_is_readable_and_unrelated_data_survives(self):
         selected = self.attempt()

@@ -182,6 +182,58 @@ async function boot(initialState = 'waiting_or_ready', routes = {}, savedStorage
 }
 
 const scenarios = {
+  async shipped_api_images_replace_the_full_question() {
+    const visual = JSON.parse(fs.readFileSync(process.argv[4], 'utf8'));
+    const page = await boot('waiting_or_ready', {
+      '/api/assessments/second-release/start': () => visual,
+      [`/api/attempts/${visual.attempt_id}`]: () => visual,
+    });
+    await page.click('Start');
+    await page.elements.get('enter-fullscreen').listeners.get('click')();
+    const text = page.elements.get('question-text');
+    const image = page.elements.get('question-media').children[0];
+    assert.ok(image, 'Actual API must deliver the whole-question image');
+    image.listeners.get('load')?.();
+    assert.equal(text.hidden, true, 'Actual API question must hide duplicated directions and figure/table transcript');
+    image.listeners.get('error')?.();
+    assert.equal(text.hidden, false, 'Keep readable fallback when image fails');
+    image.listeners.get('load')?.();
+    assert.equal(text.hidden, true);
+  },
+  async archive_between_state_and_attempt_returns_to_available_tests() {
+    let calls = 0;
+    const page = await boot('sealed_pending', {
+      '/api/state': () => ++calls === 1 ? {state: 'sealed_pending', attempt: finished} : {state: 'waiting_or_ready'},
+      [`/api/attempts/${finished.attempt_id}`]: () => { throw failure('attempt_mismatch', false); },
+    });
+    await page.tick(1500);
+    assert.ok(page.getButton('Start'));
+  },
+  async deferred_archive_returns_to_available_tests() {
+    const page = await boot('obsolete_attempt_recovery');
+    page.handlers['/api/state'] = () => ({state: 'waiting_or_ready'});
+    await page.tick(1500);
+    assert.ok(page.getButton('Start'));
+  },
+  async obsolete_attempt_returns_to_available_tests() {
+    const page = await boot('sealed_pending');
+    page.handlers[`/api/attempts/${finished.attempt_id}`] = () => { throw failure('attempt_mismatch', false); };
+    page.handlers['/api/state'] = () => ({state: 'waiting_or_ready', attempt: null});
+    await page.tick(1000);
+    assert.ok(page.getButton('Start'));
+    assert.equal(page.calls.some(call => call.path === '/api/logout'), false);
+  },
+  async obsolete_intervention_rechecks_without_administrator() {
+    const page = await boot('faculty_intervention_required', {
+      [`/api/attempts/${finished.attempt_id}`]: () => ({
+        state: 'faculty_intervention_required', attempt_id: finished.attempt_id,
+        queue: {diagnostic_code: 'attempt_identity_mismatch'},
+      }),
+    });
+    page.handlers['/api/state'] = () => ({state: 'waiting_or_ready', attempt: null});
+    await page.tick(1500);
+    assert.ok(page.getButton('Start'));
+  },
   async supporting_chart_preserves_stem_and_restores_transcript_on_failure() {
     const stimulus = { id: 'context', type: 'image', url: `assets/${'c'.repeat(64)}.png`, alt_text: 'Year | Sales\n2005 | 12\n2006 | 24' };
     const visual = { ...attempt, questions: [{ ...attempt.questions[0], source_key: 'ch36-q0001', stimulus }] };

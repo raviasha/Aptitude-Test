@@ -6,3 +6,10 @@
 #faculty-test-library [data-faculty-timing]{min-width:150px}
 #faculty-test-library [data-faculty-timing] small{font:11px/1.45 var(--sans);white-space:nowrap}
 #faculty-test-library [data-faculty-exam-timer]{display:block;font:700 18px/1.5 ui-monospace,monospace;color:var(--navy);white-space:nowrap}
+:root .product-version {
+  padding: .6rem 1rem;
+  text-align: center;
+  font-size: .8rem;
+  color: #475569;
+  background: #f8fafc;
+}

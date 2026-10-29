@@ -121,6 +121,7 @@ class FakeRuntime:
         self.questions = {
             7: SimpleNamespace(
                 question_id=7,
+                source_key='fixture-q0007',
                 category="Aptitude",
                 chapter="Logic",
                 difficulty="Medium",
@@ -132,6 +133,7 @@ class FakeRuntime:
             ),
             3: SimpleNamespace(
                 question_id=3,
+                source_key='fixture-q0003',
                 category="Aptitude",
                 chapter="Logic",
                 difficulty="Easy",
@@ -324,6 +326,50 @@ class FakeOutbox:
 
 
 class ClientAppApiTests(unittest.TestCase):
+    def test_shipped_missing_number_images_replace_text_through_real_api(self):
+        import shutil
+        import subprocess
+        import zipfile
+        import struct
+        from ksat.protocol import PublicQuestion
+        root = Path(__file__).resolve().parents[1]
+        node = os.environ.get('KSAT_NODE') or shutil.which('node')
+        if node is None:
+            self.skipTest('Node.js is required for the shipped UI integration test')
+        bank = root / 'question-banks/latest/new-reasoning/new_reasoning_ch04_missing_number_all_vision_text_only.zip'
+        with zipfile.ZipFile(bank) as archive:
+            rows = [json.loads(line) for name in archive.namelist() if name.endswith('.jsonl')
+                    for line in archive.read(name).decode('utf-8').splitlines()]
+            sizes = {row['key']: struct.unpack('>II', archive.read(row['display_media']['question']['asset'])[16:24])
+                     for row in rows if row['key'] in ('ch404-q0072', 'ch404-q0014')}
+        for key in ('ch404-q0072', 'ch404-q0014'):
+            with self.subTest(source_key=key):
+                row = next(row for row in rows if row['key'] == key)
+                media = row['display_media']['question']
+                self.runtime.questions[7] = PublicQuestion(
+                    question_id=7, source_key=key, category=row['category'], chapter=row['chapter'],
+                    difficulty=row['difficulty'], question_text=row['question_text'], options=row['options'],
+                    display_media={'question': {'url': media['asset'], 'alt_text': media['alt_text'],
+                                                'width': sizes[key][0], 'height': sizes[key][1]}})
+                response = self.client.get('/api/attempts/' + ATTEMPT_ID)
+                self.assertEqual(200, response.status_code)
+                payload = response.json()
+                self.assertNotIn('correct_answer', payload['questions'][0])
+                # Exercise the API output, not a hand-written browser fixture.
+                with tempfile.TemporaryDirectory() as directory:
+                    fixture = Path(directory) / 'attempt.json'
+                    fixture.write_text(json.dumps(payload), encoding='utf-8')
+                    completed = subprocess.run([node, str(root / 'tests/client_ui_flow_harness.js'),
+                        str(root / 'static/client/app.js'), 'shipped_api_images_replace_the_full_question',
+                        str(fixture)], capture_output=True, text=True, encoding='utf-8')
+                self.assertEqual(0, completed.returncode, completed.stderr)
+
+    def test_page_labels_running_client_version(self):
+        with patch('client_app._CLIENT_VERSION', '9.8.7'):
+            page = self.client.get('/')
+        self.assertIn('Client version 9.8.7', page.text)
+        self.assertNotIn('__KSAT_CLIENT_VERSION__', page.text)
+
     def test_attempt_start_refused_during_installation_lease(self):
         from ksat.client.install_guard import MaintenanceGate
         self.services.maintenance_data_dir = self.root

@@ -12,6 +12,7 @@ import ssl
 import subprocess
 import sys
 import tempfile
+import urllib.request
 
 from scripts import windows_release as release
 from ksat.coordinator.tls import load_or_create_coordinator_security
@@ -20,7 +21,7 @@ from ksat.coordinator.tls import load_or_create_coordinator_security
 def verify_frozen_runtime_upgrades(executable: Path, scratch: Path) -> list[str]:
     """Exercise the installer's real --validate-config command on old settings."""
     verified = []
-    for version in ('2.2.5', '2.2.6'):
+    for version in ('2.2.5', '2.2.6', '2.2.7'):
         data = scratch / ('upgrade-' + version)
         data.mkdir()
         value = dict(bind_host='0.0.0.0', hostname='localhost', interactive=False,
@@ -123,6 +124,9 @@ def main():
                 raise RuntimeError('Frozen Coordinator startup failed.')
             if release._wait_json(f'https://localhost:{port}/api/build', context=context) != {'version': '2.1.0'}:
                 raise RuntimeError('Existing client compatibility handshake failed.')
+            with urllib.request.urlopen(f'https://localhost:{port}/', context=context, timeout=10) as page:
+                if f'Coordinator version {release.APP_VERSION}' not in page.read().decode('utf-8'):
+                    raise RuntimeError('Frozen Coordinator version label missing.')
         finally:
             logs = release._terminate_process(process)
         if 'Traceback' in logs:

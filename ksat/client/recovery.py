@@ -322,6 +322,67 @@ def verify_archive(archive_path: Path) -> dict:
         raise RecoveryError('archive_failed', archive_path=archive) from None
 
 
+def _remove_archived(store, selected, archive):
+    """Remove only the exact selection already saved in a verified archive."""
+    with store._transaction() as connection:
+        store._verify_current_authenticated_state(connection)
+        if connection.execute("SELECT 1 FROM local_attempts WHERE state='in_progress'").fetchone():
+            raise RecoveryError('active_attempt', archive_path=archive)
+        for candidate in selected:
+            row = connection.execute('SELECT * FROM submission_outbox WHERE attempt_id=?', (candidate.attempt_id,)).fetchone()
+            attempt = connection.execute('SELECT * FROM local_attempts WHERE attempt_id=?', (candidate.attempt_id,)).fetchone()
+            if row is None or attempt is None:
+                raise RecoveryError('selection_changed', archive_path=archive)
+            token = hmac.new(store._integrity_key, canonical_json([list(attempt), list(row)]), hashlib.sha256).hexdigest()
+            if (attempt['state'] != 'sealed_pending' or row['status'] != 'faculty_intervention_required'
+                    or safe_problem_code(row['last_error']) != 'attempt_identity_mismatch'
+                    or not hmac.compare_digest(candidate.selection_token, token)):
+                raise RecoveryError('selection_changed', archive_path=archive)
+        selected_ids = {candidate.attempt_id for candidate in selected}
+        retained = _retained_rows(connection, selected_ids)
+        for candidate in selected:
+            for table in ('submission_outbox', 'local_responses', 'local_integrity_events', 'local_attempts'):
+                connection.execute(f'DELETE FROM {table} WHERE attempt_id=?', (candidate.attempt_id,))
+        if retained != _retained_rows(connection, selected_ids):
+            raise RecoveryError('mutation_requires_inspection', archive_path=archive)
+        for candidate in selected:
+            if connection.execute('SELECT 1 FROM local_attempts WHERE attempt_id=?', (candidate.attempt_id,)).fetchone():
+                raise RecoveryError('mutation_requires_inspection', archive_path=archive)
+
+
+def archive_obsolete_attempts(data_dir: Path, store: ClientStore) -> RecoveryResult | None:
+    """Apply the lab owner's obsolete-mismatch policy inside the running authority.
+
+    Caller owns the maintenance gate and runtime lock. The store lock spans
+    selection, snapshot and removal so uploads cannot change the archived rows.
+    No SCM operation, database reopening or active-test mutation occurs here.
+    """
+    root = Path(data_dir).absolute()
+    if Path(store.database_path).absolute() != root / 'state/client.sqlite3':
+        raise RecoveryError('installation_missing')
+    with store._lock:
+        preview = _preview_store(store)
+        if not preview.candidates or 'active_attempt' in preview.problem_codes:
+            return None
+        # The previous updater verifies that every baseline attempt survived.
+        # Wait for that verification before applying this new retention policy.
+        journal_path = root / 'updates/update-journal.json'
+        if journal_path.exists():
+            try:
+                journal = strict_json(_read(journal_path, 16384), 16384)
+                if journal.get('stage') not in {'healthy', 'rolled_back'}:
+                    return None
+            except (ValueError, OSError, AttributeError):
+                return None
+        backend = ClientRecovery(root)
+        backend._validate_installation()
+        archive = root / 'recovery' / (datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ-') + uuid.uuid4().hex)
+        backend._archive(store, archive, preview.candidates, automatic=True)
+        _remove_archived(store, preview.candidates, archive)
+        _durable_write(archive / 'outcome.json', canonical_json({'status': 'completed'}))
+        return RecoveryResult(archive, tuple(c.attempt_id for c in preview.candidates))
+
+
 class ClientRecovery:
     """Backend rooted at existing ProgramData/KSAT Client; never initializes it."""
     def __init__(self, data_dir: Path, *, service=None):
@@ -387,7 +448,7 @@ class ClientRecovery:
         except RecoveryError as error:
             return RecoveryPreview(problem_codes=(error.code,))
 
-    def _archive(self, store: ClientStore, archive: Path, selected: tuple[RecoveryCandidate, ...]) -> None:
+    def _archive(self, store: ClientStore, archive: Path, selected: tuple[RecoveryCandidate, ...], *, automatic=False) -> None:
         for directory in (archive.parent, archive, archive / 'state', archive / 'identity'):
             _create_protected_directory(directory)
         with store._read_transaction():
@@ -405,6 +466,8 @@ class ClientRecovery:
                 'selected_attempt_ids': [c.attempt_id for c in selected],
                 'selection_tokens': {c.attempt_id: c.selection_token for c in selected},
                 'sha256': {name: _hash(archive / name) for name in files}}
+        if automatic:
+            body['authorization'] = 'lab_policy_obsolete_identity_mismatch'
         body['manifest_mac'] = hmac.new(store._integrity_key, canonical_json(body), hashlib.sha256).hexdigest()
         _durable_write(archive / 'manifest.json', canonical_json(body))
         verify_archive(archive)
@@ -432,31 +495,7 @@ class ClientRecovery:
                             phase = 'archive_failed'
                             self._archive(store, archive, selected)
                             phase = 'mutation_requires_inspection'
-                            with store._transaction() as connection:
-                                # Cannot nest _read_transaction in the write transaction.
-                                store._verify_current_authenticated_state(connection)
-                                if connection.execute("SELECT 1 FROM local_attempts WHERE state='in_progress'").fetchone():
-                                    raise RecoveryError('active_attempt', archive_path=archive)
-                                for candidate in selected:
-                                    row = connection.execute('SELECT * FROM submission_outbox WHERE attempt_id=?', (candidate.attempt_id,)).fetchone()
-                                    attempt = connection.execute('SELECT * FROM local_attempts WHERE attempt_id=?', (candidate.attempt_id,)).fetchone()
-                                    if row is None or attempt is None:
-                                        raise RecoveryError('selection_changed', archive_path=archive)
-                                    token = hmac.new(store._integrity_key, canonical_json([list(attempt), list(row)]), hashlib.sha256).hexdigest()
-                                    if (attempt['state'] != 'sealed_pending' or row['status'] != 'faculty_intervention_required'
-                                            or safe_problem_code(row['last_error']) != 'attempt_identity_mismatch'
-                                            or not hmac.compare_digest(candidate.selection_token, token)):
-                                        raise RecoveryError('selection_changed', archive_path=archive)
-                                selected_ids = {candidate.attempt_id for candidate in selected}
-                                retained = _retained_rows(connection, selected_ids)
-                                for candidate in selected:
-                                    for table in ('submission_outbox', 'local_responses', 'local_integrity_events', 'local_attempts'):
-                                        connection.execute(f'DELETE FROM {table} WHERE attempt_id=?', (candidate.attempt_id,))
-                                if retained != _retained_rows(connection, selected_ids):
-                                    raise RecoveryError('mutation_requires_inspection', archive_path=archive)
-                                for candidate in selected:
-                                    if connection.execute('SELECT 1 FROM local_attempts WHERE attempt_id=?', (candidate.attempt_id,)).fetchone():
-                                        raise RecoveryError('mutation_requires_inspection', archive_path=archive)
+                            _remove_archived(store, selected, archive)
                             with _existing_store(self.root):
                                 pass
                             _durable_write(archive / 'outcome.json', canonical_json({'status': 'completed'}))

@@ -12,7 +12,7 @@ class UpdateLifecycleTests(unittest.TestCase):
         manager.check.return_value = SimpleNamespace(stage='required')
         manager.download.return_value = SimpleNamespace(stage='ready_to_install')
         manager.prepare_install.return_value = 'request'
-        services = SimpleNamespace(update_manager=manager, maintenance_data_dir=None,
+        services = SimpleNamespace(update_manager=manager, maintenance_data_dir=None, runtime=None,
             updater_launcher=Mock(), store=SimpleNamespace(update_deferral_reason=lambda: 'pending_submission'))
         context = _ClientContext(services)
         context.identity = SimpleNamespace(device_id='enrolled')

@@ -52,8 +52,11 @@ class WindowsEntrypointTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             client_updater_module.main([])
     def test_product_version_and_legacy_handshake_are_separate(self):
-        self.assertEqual("2.2.7", faculty_app.APP_VERSION)
-        self.assertEqual({"version": "2.2.7"}, faculty_app.coordinator_build_information())
+        self.assertEqual("2.2.8", faculty_app.APP_VERSION)
+        self.assertEqual({"version": "2.2.8"}, faculty_app.coordinator_build_information())
+        with patch.object(faculty_app, 'APP_VERSION', '9.8.7'):
+            page = faculty_app.home()
+        self.assertIn(b'Coordinator version 9.8.7', page.body)
         response = faculty_app.build_information()
         self.assertEqual({"version": "2.1.0"}, response)
 

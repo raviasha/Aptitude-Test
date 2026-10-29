@@ -12,6 +12,7 @@ import ssl
 import subprocess
 import sys
 import tempfile
+import urllib.request
 
 from scripts import windows_release as release
 from scripts import build_lab_package_builder as builder
@@ -63,6 +64,9 @@ def smoke_client(root, layout):
                 raise RuntimeError('Frozen client did not reach device setup.')
             if release._wait_json(f'http://127.0.0.1:{client_port}/api/build', context=None) != {'version': release.CLIENT_VERSION}:
                 raise RuntimeError('Frozen client version mismatch.')
+            with urllib.request.urlopen(f'http://127.0.0.1:{client_port}/', timeout=10) as page:
+                if f'Client version {release.CLIENT_VERSION}' not in page.read().decode('utf-8'):
+                    raise RuntimeError('Frozen client version label missing.')
             release._assert_loopback_listener(client, client_port)
         finally:
             outputs = [release._terminate_process(p) for p in (client, server) if p is not None]
@@ -139,10 +143,22 @@ def main(argv=None):
         builder.verify_frozen_builder(built_builder, payload)
         builder_output = output/built_builder.name
         shutil.copyfile(built_builder, builder_output)
-        release.write_sha256s([installer, builder_output], output/'SHA256SUMS.txt')
+        artifacts = [installer, builder_output]
+        managed_bundle = 'not published: interactive bootstrap required'
+        if tuple(map(int, release.CLIENT_VERSION.split('.'))) > (2, 1, 7):
+            bundle = release.build_client_update(
+                installer=installer, version=release.CLIENT_VERSION,
+                minimum_source_version='2.1.7', publisher=PUBLISHER,
+                private_key_file=keys/'update-signing-private.key',
+                output=output/f'KSATClientUpdate-{release.CLIENT_VERSION}.ksat-client-update',
+                release_notes=f'KSAT Client {release.CLIENT_VERSION}: automatically archive obsolete identity-mismatch submissions and show the installed version',
+                authenticode_verifier=lambda path, publisher: release.verify_authenticode_signature(path, signing))
+            artifacts.append(bundle)
+            managed_bundle = 'verified; minimum installed client 2.1.7'
+        release.write_sha256s(artifacts, output/'SHA256SUMS.txt')
         evidence = dict(client_version=release.CLIENT_VERSION, publisher=PUBLISHER, thumbprint=THUMBPRINT,
             installer_payload='verified', builder_payload='verified', frozen_client_startup='passed',
-            client_loopback_only=True, tls_verified=True, managed_bundle='not published: interactive bootstrap required',
+            client_loopback_only=True, tls_verified=True, managed_bundle=managed_bundle,
             physical_lab_pilot='not yet performed')
         (output/'verification.json').write_text(json.dumps(evidence, indent=2)+'\n', encoding='utf-8')
         print(json.dumps(evidence), flush=True)

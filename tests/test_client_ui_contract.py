@@ -12,6 +12,18 @@ INDEX = ROOT / "static" / "client" / "index.html"
 
 
 class ClientUiContractTests(unittest.TestCase):
+    def test_archive_between_state_and_attempt_returns_to_available_tests(self):
+        self._run_flow('archive_between_state_and_attempt_returns_to_available_tests')
+
+    def test_deferred_archive_returns_to_available_tests(self):
+        self._run_flow('deferred_archive_returns_to_available_tests')
+
+    def test_obsolete_attempt_returns_to_available_tests(self):
+        self._run_flow('obsolete_attempt_returns_to_available_tests')
+
+    def test_obsolete_intervention_rechecks_without_administrator(self):
+        self._run_flow('obsolete_intervention_rechecks_without_administrator')
+
     def test_recovery_and_deferred_update_messages_are_actionable(self):
         result = self._run_node("""
 const ui = require(process.argv[1]);

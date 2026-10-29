@@ -103,7 +103,7 @@ class ClientLifecycleApiTests(unittest.TestCase):
         self.assertIsNotNone(self.coord.session)
 
     def test_pending_answers_are_retained_on_close(self):
-        self.store.pending = [SimpleNamespace(attempt_id='pending')]
+        self.store.pending = [SimpleNamespace(attempt_id='pending', status='pending', last_error=None)]
         with patch('client_app._WINDOW_UPLOAD_GRACE_SECONDS', 0):
             self.now = 121
             self.assertTrue(self.stopped.wait(3))

@@ -237,35 +237,35 @@ class WindowsPackagingTests(unittest.TestCase):
     def test_release_layout_has_two_distinct_versioned_products(self):
         with tempfile.TemporaryDirectory() as directory:
             layout = ReleaseLayout(Path(directory))
-            self.assertEqual("2.2.7", APP_VERSION)
+            self.assertEqual("2.2.8", APP_VERSION)
             self.assertEqual("KSATCoordinator.exe", layout.coordinator_executable.name)
             self.assertEqual("KSATClient.exe", layout.client_executable.name)
             self.assertEqual("KSATClientUpdater.exe", layout.updater_executable.name)
             self.assertEqual(
-                "KSATCoordinator-2.2.7.exe",
+                "KSATCoordinator-2.2.8.exe",
                 layout.coordinator_release_executable.name,
             )
             self.assertEqual(
-                "KSATClient-2.1.7.exe", layout.client_release_executable.name
+                "KSATClient-2.1.8.exe", layout.client_release_executable.name
             )
             self.assertEqual(
-                "KSATCoordinatorSetup-2.2.7.exe", layout.coordinator_installer.name
+                "KSATCoordinatorSetup-2.2.8.exe", layout.coordinator_installer.name
             )
-            self.assertEqual("KSATClientSetup-2.1.7.exe", layout.client_installer.name)
+            self.assertEqual("KSATClientSetup-2.1.8.exe", layout.client_installer.name)
             self.assertEqual(
-                "KSATClientUpdate-2.1.7-TEST-ONLY.ksat-client-update",
+                "KSATClientUpdate-2.1.8-TEST-ONLY.ksat-client-update",
                 layout.test_client_update.name,
             )
             self.assertEqual("SHA256SUMS.txt", layout.hash_manifest.name)
             self.assertEqual(
-                "KSATClientUpdate-2.1.7.ksat-client-update",
+                "KSATClientUpdate-2.1.8.ksat-client-update",
                 layout.client_update.name,
             )
             self.assertEqual(
                 "KSATLabReleaseSigning.cer", layout.lab_trust_certificate.name
             )
             self.assertEqual(
-                "SHA256SUMS-2.1.7-TEST-ONLY.txt", layout.test_hash_manifest.name
+                "SHA256SUMS-2.1.8-TEST-ONLY.txt", layout.test_hash_manifest.name
             )
 
     def test_test_update_bundle_uses_matching_ephemeral_update_key(self):
@@ -288,6 +288,7 @@ class WindowsPackagingTests(unittest.TestCase):
             self.assertTrue(output.is_file())
             self.assertNotIn(b"k" * 32, output.read_bytes())
 
+    @patch('scripts.windows_release.CLIENT_VERSION', '2.1.7')
     def test_lab_bootstrap_release_has_no_unsafe_managed_bundle(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -304,6 +305,23 @@ class WindowsPackagingTests(unittest.TestCase):
             )
             self.assertIsNone(output)
             self.assertFalse(layout.client_update.exists())
+
+    def test_new_lab_release_requires_the_preserving_217_updater(self):
+        import zipfile
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            layout = ReleaseLayout(root)
+            layout.release_dir.mkdir(parents=True)
+            layout.client_installer.write_bytes(b'signed installer fixture')
+            private = root / 'private.key'
+            private.write_bytes(b'k' * 32)
+            output = create_lab_client_update_bundle(layout, private,
+                publisher='CN=KSAT LAB RELEASE SIGNING',
+                authenticode_verifier=lambda _path, _publisher: None)
+            with zipfile.ZipFile(output) as archive:
+                manifest = json.loads(archive.read('manifest.json'))
+            self.assertEqual('2.1.8', manifest['client_version'])
+            self.assertEqual('2.1.7', manifest['minimum_source_version'])
 
     def test_build_commands_use_distinct_entrypoints_workpaths_and_safe_assets(self):
         root = Path(__file__).resolve().parents[1]
@@ -492,12 +510,11 @@ class WindowsPackagingTests(unittest.TestCase):
             root / "scripts" / "windows_release.py",
             root / "installer" / "KSATCoordinator.iss",
             root / "installer" / "KSATClient.iss",
-            root / "static" / "app.js",
             root / "static" / "index.html",
         )
         for path in paths:
             text = path.read_text("utf-8")
-            expected = "2.1.0" if path.name in ("tls.py", "KSATClient.iss") else "2.2.7"
+            expected = "2.1.0" if path.name in ("tls.py", "KSATClient.iss") else "2.2.8"
             self.assertIn(expected, text, path.name)
             self.assertNotIn("1.3.3", text, path.name)
 

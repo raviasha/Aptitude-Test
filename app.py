@@ -41,7 +41,7 @@ from typing import Any, Dict, List, Literal, Optional
 import bcrypt
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.middleware.sessions import SessionMiddleware
@@ -106,7 +106,7 @@ QUESTION_BANKS_DIR = DATA_DIR / "Question Banks"
 STATIC_DIR = BUNDLE_DIR / "static"
 TEMPLATE_DIR = BUNDLE_DIR / "templates"
 SERVER_URL = "http://127.0.0.1:8000"
-APP_VERSION = "2.2.7"
+APP_VERSION = "2.2.8"
 DEFAULT_FACULTY_NAME = "Prof R Ravi Shankar"
 
 CATEGORIES = [
@@ -2242,8 +2242,10 @@ def shutdown_submission_writer() -> None:
 
 
 @app.get("/")
-def home() -> FileResponse:
-    return FileResponse(STATIC_DIR / "index.html")
+def home() -> HTMLResponse:
+    source = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    return HTMLResponse(source.replace("__KSAT_COORDINATOR_VERSION__", html.escape(APP_VERSION)),
+                        headers={"Cache-Control": "no-store"})
 
 
 @app.get("/api/me")

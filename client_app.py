@@ -662,6 +662,7 @@ class _ClientContext:
         self.catalog: dict[str, Any] = {}
         self.ready_releases: set[str] = set()
         self.startup_problem: dict[str, Any] | None = None
+        self._recovery_deferred = False
         self.identity = None
         self._prefetch_thread: threading.Thread | None = None
         self._prefetch_stop = threading.Event()
@@ -732,7 +733,8 @@ class _ClientContext:
         manager = self.services.update_manager if self.services is not None else None
         if manager is None or getattr(self.identity, "device_id", None) is None or self._prefetch_shutdown_requested:
             return
-        reason = self.services.store.update_deferral_reason()
+        reason = ('pending_submission' if self.obsolete_recovery_pending()
+                  else self.services.store.update_deferral_reason())
         self.update_snapshot = manager.check(
             active_attempt=reason == "active_attempt",
             pending_submission=reason == "pending_submission",
@@ -861,10 +863,46 @@ class _ClientContext:
         if self.services is None or self.services.runtime is None:
             return None
         try:
-            return self.observe_snapshot(self.services.runtime.recover())
+            self.archive_obsolete_attempts()
+            if self.obsolete_recovery_pending():
+                self._recovery_deferred = True
+                return None
+            snapshot = self.services.runtime.recover()
+            self._recovery_deferred = False
+            return self.observe_snapshot(snapshot)
         except (ValueError, KeyError, TypeError, OSError, sqlite3.Error):
             if self.startup_problem is None:
                 self.startup_problem = self.problem("corrupt_local_attempt", status=409)
+            return None
+
+    def obsolete_recovery_pending(self):
+        current = self.services
+        if (current is None or current.runtime is None
+                or current.maintenance_data_dir is None or self.startup_problem is not None):
+            return False
+        # Avoid archive/config/ACL work on normal state polls and active tests.
+        if not any(item.status == 'faculty_intervention_required'
+                   and (item.last_error or '').split(':', 1)[0].strip() == 'attempt_identity_mismatch'
+                   for item in current.store.pending_submissions()):
+            return False
+        with current.store._read_transaction() as connection:
+            return not connection.execute("SELECT 1 FROM local_attempts WHERE state='in_progress'").fetchone()
+
+    def archive_obsolete_attempts(self):
+        if not self.obsolete_recovery_pending():
+            return None
+        # After removing the foreground attempt, fully load any retained one.
+        # This also covers a commit followed by a failed outcome-marker write.
+        self._recovery_deferred = True
+        current = self.services
+        try:
+            with _maintenance_section(current):
+                return current.runtime.archive_obsolete_attempts(current.maintenance_data_dir)
+        except MaintenanceBusy:
+            return None
+        except (ValueError, KeyError, RuntimeError, OSError, sqlite3.Error):
+            # A failed archive must not masquerade as success or reset local state.
+            # Keep the existing intervention screen and administrator recovery.
             return None
 
     def observe_snapshot(self, snapshot: Any | None) -> Any | None:
@@ -902,6 +940,8 @@ class _ClientContext:
         return snapshot
 
     def _start_control_thread(self) -> None:
+        if self.obsolete_recovery_pending():
+            return
         if (
             self.services is None
             or self.services.runtime is None
@@ -1476,6 +1516,7 @@ def _question_payload(question: Any) -> dict[str, Any]:
     display_media = _jsonable(question.display_media)
     return {
         "question_id": question.question_id,
+        "source_key": question.source_key,
         "category": question.category,
         "chapter": question.chapter,
         "difficulty": question.difficulty,
@@ -1576,6 +1617,9 @@ def create_client_app(services: ClientServices | None = None, *, lifetime=None, 
                 if current is None or current.runtime is None:
                     continue
                 try:
+                    if context.obsolete_recovery_pending():
+                        await run_in_threadpool(context.archive_obsolete_attempts)
+                        continue
                     active = current.store.active_attempt()
                     if active is not None and active.state == "in_progress":
                         context.observe_snapshot(current.runtime.tick())
@@ -1602,7 +1646,8 @@ def create_client_app(services: ClientServices | None = None, *, lifetime=None, 
                         continue
                     try:
                         current = context.services
-                        if current and current.runtime and current.store.active_attempt() is not None:
+                        if (current and current.runtime and not context.obsolete_recovery_pending()
+                                and current.store.active_attempt() is not None):
                             context.observe_snapshot(current.runtime.checkpoint_for_close())
                         if not lifetime.begin_close(maintenance_busy=False):
                             gate.__exit__(None, None, None)
@@ -1803,6 +1848,12 @@ def create_client_app(services: ClientServices | None = None, *, lifetime=None, 
         if current.runtime is None:
             return None
         try:
+            context.archive_obsolete_attempts()
+            if context.obsolete_recovery_pending():
+                context._recovery_deferred = True
+                return None
+            if context._recovery_deferred:
+                return context.recover()
             return context.observe_snapshot(current.runtime.snapshot())
         except RuntimeError:
             return None
@@ -1827,7 +1878,9 @@ def create_client_app(services: ClientServices | None = None, *, lifetime=None, 
     @app.get("/")
     async def index():
         source = (_CLIENT_STATIC / "index.html").read_text(encoding="utf-8")
-        return HTMLResponse(source.replace("__KSAT_CSRF_TOKEN__", context.csrf_token))
+        return HTMLResponse(source.replace("__KSAT_CSRF_TOKEN__", context.csrf_token)
+                            .replace("__KSAT_CLIENT_VERSION__", _CLIENT_VERSION),
+                            headers={"Cache-Control": "no-store"})
 
     @app.get("/client/app.js")
     async def client_script():
@@ -1867,6 +1920,10 @@ def create_client_app(services: ClientServices | None = None, *, lifetime=None, 
         current = require_services()
         session = current.coordinator.session
         snapshot = current_snapshot()
+        if context.obsolete_recovery_pending():
+            return {"state": "obsolete_attempt_recovery", "enrolled": True,
+                    "student": _student_payload(session) if session else None,
+                    "attempt": None, "problem": None}
         if snapshot is not None and session is not None:
             attempt = _attempt_payload(context, snapshot, include_questions=False)
             return {
